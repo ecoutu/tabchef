@@ -13,7 +13,9 @@
     "check": "svelte-check --tsconfig ./tsconfig.json && tsc --noEmit",
     "e2e": "playwright test",
     "postinstall": "wxt prepare",
-    "prepare": "husky"
+    "prepare": "husky",
+    "gen:validator": "node scripts/gen-validator.mjs",
+    "check:csp": "node scripts/check-no-eval.mjs"
   },
   "devDependencies": {
     "@commitlint/cli": "21.2.4",
