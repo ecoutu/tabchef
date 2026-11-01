@@ -10,17 +10,19 @@
   import Dedupe from './Dedupe.svelte';
   import History from './History.svelte';
   import Backups from './Backups.svelte';
+  import Import from './Import.svelte';
 
   /**
    * Route table. To add a page (e.g. '/import' in Task 17), add one entry here; the nav and hash routing pick it up.
    */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const ROUTES: { path: string; label: string; page: 'rules' | 'dedupe' | 'history' | 'backups' | Component<any> }[] = [
+  const ROUTES: { path: string; label: string; page: 'rules' | 'dedupe' | 'history' | 'backups' | 'import' | Component<any> }[] = [
     { path: '/rules', label: 'Group rules', page: 'rules' },
     { path: '/dedupe', label: 'Duplicates', page: 'dedupe' },
     { path: '/history', label: 'History', page: 'history' },
     { path: '/backups', label: 'Backups', page: 'backups' },
-    // ROUTE-INSERT-POINT: { path: '/import', label: 'Import', page: ... } (Task 17)
+    { path: '/import', label: 'Import', page: 'import' },
+    // ROUTE-INSERT-POINT
   ];
 
   const parseHash = (): string => {
@@ -38,6 +40,7 @@
   let saving = $state(false);
   let baseRev = $state<string | undefined>(undefined);
   let conflict = $state(false);
+  let syncWarning = $state('');
 
   const dirty = $derived(saved !== null && draft !== null && JSON.stringify(saved) !== JSON.stringify(draft));
   const summary = $derived(unclaimedErrors(saveErrors));
@@ -62,6 +65,12 @@
     conflict = false;
   }
 
+  /** Sync problems (quota, failed writes, adopted remote settings) are shown, never silent. */
+  async function loadStatus(): Promise<void> {
+    const r = await send({ type: 'config.status' });
+    if (r.ok) syncWarning = r.data?.warning ?? '';
+  }
+
   async function loadTabs(): Promise<void> {
     const r = await send({ type: 'tabs.list' });
     if (r.ok) tabs = r.data;
@@ -77,6 +86,7 @@
       const g = await send({ type: 'config.get' });
       if (g.ok) baseRev = g.data.rev;
       saving = false;
+      void loadStatus();
       return;
     }
     saving = false;
@@ -89,10 +99,13 @@
   onMount(() => {
     void loadConfig();
     void loadTabs();
+    void loadStatus();
     const onHash = (): void => { route = parseHash(); };
     const onUnload = (e: BeforeUnloadEvent): void => { if (dirty) { e.preventDefault(); e.returnValue = ''; } };
     const onMsg = (m: unknown): void => {
-      if (!isConfigChangedMessage(m) || saving || m.rev === baseRev) return;
+      if (!isConfigChangedMessage(m)) return;
+      void loadStatus();
+      if (saving || m.rev === baseRev) return;
       if (dirty) conflict = true; else void loadConfig();
     };
     browser.runtime.onMessage.addListener(onMsg);
@@ -116,6 +129,7 @@
   </nav>
 
   {#if loadError}<p class="err" role="alert">{loadError}</p>{/if}
+  {#if syncWarning}<div class="banner warn" role="alert" data-testid="sync-warning">{syncWarning}</div>{/if}
   {#if conflict}
     <div class="banner" role="alert">
       <span>Settings changed elsewhere.</span>
@@ -135,6 +149,8 @@
       <History />
     {:else if current.page === 'backups'}
       {#if saved}<Backups saved={saved!} {dirty} onApplied={loadConfig} />{/if}
+    {:else if current.page === 'import'}
+      {#if saved}<Import {dirty} onApplied={loadConfig} />{/if}
     {:else if draft && current.page === 'rules'}
       <GroupRules config={draft} {tabs} {dirty} {saving} serverErrors={saveErrors} onChange={edit} onSave={save} />
     {:else if draft && current.page === 'dedupe'}
@@ -174,6 +190,7 @@
   nav a { padding: 8px 12px; color: var(--muted); text-decoration: none; border-bottom: 2px solid transparent; }
   nav a[aria-current='page'] { color: var(--text); border-bottom-color: var(--accent); }
   .banner { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; border: 1px solid var(--accent); border-radius: 8px; padding: 6px 10px; margin-bottom: 8px; }
+  .banner.warn { border-color: var(--danger); }
   .err { color: var(--danger); }
   .ok { color: var(--accent); }
 </style>

@@ -76,6 +76,8 @@ export default defineBackground(() => {
     updateConfig,
     recentlyClosed,
     log: whyLog,
+    // scheduleBadge is defined below; this only runs after startup.
+    scheduleBadge: () => scheduleBadge(),
     isLocked: (id) => safety.isLocked(id),
     onClosed: (id, entry, focused) => { safety.toast(id, entry, focused).catch(warn('undo toast')); },
   });
@@ -137,9 +139,9 @@ export default defineBackground(() => {
     if (dedupeUrl) candidate(tabId, dedupeUrl, 'pending');
     if (info.url !== undefined) {
       safety.onTabSeen({ id: tabId, url: info.url, windowId: tab.windowId });
-      void reconciler.onTabUrlChanged(tabId);
+      void reconciler.onTabUrlChanged(tabId, info.url);
     }
-    if (info.groupId !== undefined) void reconciler.onTabGroupChanged(tabId, info.groupId);
+    if (info.groupId !== undefined) void reconciler.onTabGroupChanged(tabId, info.groupId, tab.url);
     if (info.url !== undefined || info.groupId !== undefined || info.pinned !== undefined) {
       reconciler.schedule('tab-updated');
     }

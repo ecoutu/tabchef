@@ -2,6 +2,7 @@
   import type { Config, DedupeMode, DedupeSettings } from '../../core/types';
   import { configPatternErrors, errorsForPath, patternError } from '../../ui/rules-model';
   import LinesField from './LinesField.svelte';
+  import Permissions from './Permissions.svelte';
 
   let { config, dirty, saving, serverErrors, onChange, onSave }: {
     config: Config; dirty: boolean; saving: boolean; serverErrors: string[];
@@ -58,6 +59,8 @@
     <button type="button" class="primary" disabled={!dirty || saving || hasErrors} onclick={onSave}>Save</button>
     {#if hasErrors}<span class="err">Fix pattern errors to save.</span>{/if}
   </div>
+
+  <Permissions />
 </section>
 
 <style>
