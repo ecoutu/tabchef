@@ -399,7 +399,11 @@ describe('Reconciler', () => {
       f.state.tabs = f.state.tabs.filter((t) => t.id !== 2);
       f.state.groups = f.state.groups.filter((g) => g.id !== 10);
       await r.flush();
-      const after = ((await browser.storage.session.get('rt')) as { rt: RuntimeState }).rt;
+      // Absent for one flush: kept (it may be briefly empty); absent for a second: dropped (CR#6).
+      let after = ((await browser.storage.session.get('rt')) as { rt: RuntimeState }).rt;
+      expect(after.creationOrder).toEqual([['1|zeta', 1], ['1|alpha', 2], ['1|beta', 3]]);
+      await r.flush();
+      after = ((await browser.storage.session.get('rt')) as { rt: RuntimeState }).rt;
       expect(after.creationOrder).toEqual([['1|zeta', 1], ['1|beta', 3]]);
     });
   });
@@ -476,5 +480,85 @@ describe('Reconciler', () => {
     await r.onTabUrlChanged(1, 'https://a.com/y');
     await r.flush();
     expect(groupOf(f, 1)).toBe('A');
+  });
+
+  describe('code-review fixes', () => {
+    const rt = async () => ((await browser.storage.session.get('rt')) as { rt: RuntimeState }).rt;
+
+    it('a retitle that keeps failing never blocks planning; the entry is dropped after 3 failures (CR#5)', async () => {
+      const f = world();
+      f.addTab(tab(1, A));
+      const failing = new Set<number>();
+      const orig = f.updateGroup.bind(f);
+      let created = true;
+      f.updateGroup = async (gid, p) => {
+        if (created) { created = false; failing.add(gid); }
+        if (failing.has(gid)) throw new Error('No group with id: ' + gid);
+        return orig(gid, p);
+      };
+      const log = { add: vi.fn() };
+      const r = new Reconciler(f, async () => config, { log });
+      emitGroupEvents(f, r);
+      await r.flush(); // group created, title call fails: pending
+      expect((await rt()).pendingTitles).toHaveLength(1);
+      log.add.mockClear();
+      f.addTab(tab(2, B));
+      await r.flush();
+      expect(groupOf(f, 2)).toBe('B'); // planning still ran
+      expect(log.add).toHaveBeenCalledWith(expect.objectContaining({ action: 'retitle-failed' }));
+      expect(log.add).not.toHaveBeenCalledWith(expect.objectContaining({ action: 'reconcile-error' }));
+      expect((await rt()).pendingTitles).toHaveLength(1);
+      await r.flush();
+      expect((await rt()).pendingTitles).toHaveLength(1);
+      await r.flush(); // third consecutive failure
+      expect((await rt()).pendingTitles).toEqual([]);
+      expect(log.add.mock.calls.filter(([e]) => (e as { action: string }).action === 'retitle-failed')).toHaveLength(3);
+    });
+
+    it('a drag lock during retitle still waits for the drag (CR#5)', async () => {
+      const f = world();
+      f.addTab(tab(1, A));
+      f.failNext('updateGroup', 'Group busy');
+      const log = { add: vi.fn() };
+      const r = new Reconciler(f, async () => config, { log });
+      await r.flush();
+      f.failNext('updateGroup', DRAG, 5); // 1 try + 4 retries (3.75 s): exhausted
+      const p = r.flush();
+      await vi.advanceTimersByTimeAsync(4000);
+      await p;
+      expect(log.add).toHaveBeenCalledWith(expect.objectContaining({ action: 'drag-retry-exhausted' }));
+      expect((await rt()).pendingTitles).toHaveLength(1);
+    });
+
+    it('a group whose title is still pending keeps its creation number (CR#6)', async () => {
+      const f = world();
+      f.addTab(tab(1, A));
+      f.failNext('updateGroup', 'Group busy');
+      const r = new Reconciler(f, async () => config);
+      emitGroupEvents(f, r);
+      await r.flush();
+      expect(f.state.groups.map((g) => g.title)).toEqual(['']);
+      expect((await rt()).creationOrder).toEqual([['1|A', 1]]);
+      await r.flush();
+      expect(f.state.groups.map((g) => g.title)).toEqual(['A']);
+      expect((await rt()).creationOrder).toEqual([['1|A', 1]]);
+    });
+
+    it('merge rule in window 1 and a non-merge rule with the same title in window 2 converge to one group (CR#9)', async () => {
+      const f = world([1, 2]);
+      const mixed: Config = { ...defaultConfig(), groupRules: [
+        { ...rule('m', 'https://a.com/m*', 'api', 'blue'), merge: true }, rule('n', 'https://a.com/n*', 'api', 'blue')] };
+      f.addTab(tab(1, 'https://a.com/m'));
+      f.addTab(tab(2, 'https://a.com/n', { windowId: 2 }));
+      const log = { add: vi.fn() };
+      const r = new Reconciler(f, async () => mixed, { log });
+      emitGroupEvents(f, r);
+      await r.flush();
+      expect(f.state.groups.filter((g) => g.title === 'api')).toHaveLength(1);
+      expect(log.add).not.toHaveBeenCalledWith(expect.objectContaining({ action: 'reconcile-not-converged' }));
+      f.calls = [];
+      await r.flush();
+      expect(mutations(f)).toEqual([]);
+    });
   });
 });
