@@ -76,8 +76,8 @@ export default defineBackground(() => {
     updateConfig,
     recentlyClosed,
     log: whyLog,
-    // badgeDeps is defined below; this only runs after startup.
-    refreshBadge: () => refreshBadge(badgeDeps),
+    // scheduleBadge is defined below; this only runs after startup.
+    scheduleBadge: () => scheduleBadge(),
     isLocked: (id) => safety.isLocked(id),
     onClosed: (id, entry, focused) => { safety.toast(id, entry, focused).catch(warn('undo toast')); },
   });
