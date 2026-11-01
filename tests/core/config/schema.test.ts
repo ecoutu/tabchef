@@ -20,7 +20,7 @@ describe('config schema', () => {
       mode: 'always-switch', keep: 'existing', stripFragment: true, ignoreTrailingSlash: true,
       followFragment: true, includeIncognito: false, canonicalizers: ['githubPr'],
       stripParams: ['utm_*', 'fbclid', 'gclid', 'mc_cid', 'mc_eid'],
-      allowDuplicates: [], scope: 'all-windows', urlTransforms: [],
+      allowDuplicates: [], alwaysSwitchSites: [], scope: 'all-windows', urlTransforms: [],
     });
     expect(defaultConfig().version).toBe(1);
   });

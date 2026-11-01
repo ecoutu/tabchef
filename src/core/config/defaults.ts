@@ -13,6 +13,7 @@ export function defaultConfig(): Config {
       canonicalizers: ['githubPr'],
       followFragment: true,
       allowDuplicates: [],
+      alwaysSwitchSites: [],
       includeIncognito: false,
       scope: 'all-windows',
       urlTransforms: [],

@@ -1,3 +1,4 @@
+import { compilePattern, PatternError } from '../core/match/pattern';
 import { findDuplicate, tabUrl } from '../core/dedupe/find';
 import { evaluateGroupRules } from '../core/group/evaluate';
 import { isExemptUrl, normalizeUrl } from '../core/url/normalize';
@@ -193,8 +194,9 @@ export class DedupeHandler {
     const pool = snap.tabs.filter((t) => t.id < tabId || !this.isCandidateLike(t.id));
     const dup = findDuplicate(newTab, pool, s, ruleMode, locked);
     if (!dup) return;
-    const mode = ruleMode ?? s.mode;
+    let mode = ruleMode ?? s.mode;
     if (mode === 'off') return;
+    if (mode === 'ask' && matchesAny(url, s.alwaysSwitchSites ?? [])) mode = 'always-switch';
     if (mode === 'ask') {
       this.handled.set(tabId, key);
       await this.deps.ask(newTab, dup.existing);
@@ -227,6 +229,17 @@ export class DedupeHandler {
   }
 }
 
+function matchesAny(url: string, patterns: string[]): boolean {
+  for (const p of patterns) {
+    try {
+      if (compilePattern(p)(url)) return true;
+    } catch (e) {
+      if (!(e instanceof PatternError)) throw e;
+    }
+  }
+  return false;
+}
+
 /** chrome://newtab/, chrome://new-tab-page/ or about:blank (not empty/unparseable URLs). */
 function isBlankPage(url: string): boolean {
   if (url === 'about:blank') return true;
@@ -239,7 +252,7 @@ function isBlankPage(url: string): boolean {
 }
 
 /** existingUrl with `#fragment`, or undefined when the fragment is empty or already the existing tab's fragment. */
-function withFragment(existingUrl: string, fragment: string): string | undefined {
+export function withFragment(existingUrl: string, fragment: string): string | undefined {
   if (!fragment) return undefined;
   try {
     const u = new URL(existingUrl);

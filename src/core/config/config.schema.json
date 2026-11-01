@@ -117,6 +117,7 @@
         "canonicalizers",
         "followFragment",
         "allowDuplicates",
+        "alwaysSwitchSites",
         "includeIncognito",
         "scope",
         "urlTransforms"
@@ -155,6 +156,12 @@
           "type": "boolean"
         },
         "allowDuplicates": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "alwaysSwitchSites": {
           "type": "array",
           "items": {
             "type": "string"
