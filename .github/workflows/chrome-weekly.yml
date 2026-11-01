@@ -1,0 +1,38 @@
+name: Weekly Chromium check
+
+# Runs the e2e suite against the newest Playwright Chromium build (not the pinned one),
+# so changes in Chrome's tab/tab-group/extension behavior surface before users hit them.
+on:
+  schedule:
+    - cron: "0 9 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  e2e-latest-chromium:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Use the latest Playwright (and its Chromium) without touching the lockfile
+        run: npm install --no-save @playwright/test@latest
+      - run: npx playwright install --with-deps chromium
+      - run: npx playwright --version
+      - run: npm run e2e
+      - name: Open an issue on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          title="Weekly Chromium check failed ($(date -u +%F))"
+          gh issue list --state open --search "Weekly Chromium check failed in:title" --json number --jq 'length' | grep -q '^0$' || exit 0
+          gh issue create --title "$title" --label bug \
+            --body "The e2e suite failed against the latest Playwright Chromium: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            || gh issue create --title "$title" --body "The e2e suite failed against the latest Playwright Chromium: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

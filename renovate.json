@@ -1,0 +1,33 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", ":pinAllExceptPeerDependencies", ":semanticCommits"],
+  "schedule": ["before 6am on monday"],
+  "timezone": "America/Toronto",
+  "rangeStrategy": "pin",
+  "packageRules": [
+    {
+      "description": "WXT is pre-1.0: every minor can break, review individually",
+      "matchPackageNames": ["wxt", "@wxt-dev/**"],
+      "groupName": "wxt",
+      "automerge": false
+    },
+    {
+      "description": "Playwright bumps bring new Chromium builds; the weekly Chrome check also tests @latest",
+      "matchPackageNames": ["@playwright/test"],
+      "groupName": "playwright"
+    },
+    {
+      "description": "Low-risk dev tooling, grouped",
+      "matchDepTypes": ["devDependencies"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "excludePackageNames": ["wxt", "@playwright/test"],
+      "groupName": "dev tooling (minor/patch)"
+    },
+    {
+      "description": "GitHub Actions",
+      "matchManagers": ["github-actions"],
+      "groupName": "github actions"
+    }
+  ],
+  "commitMessagePrefix": "chore(deps):"
+}
