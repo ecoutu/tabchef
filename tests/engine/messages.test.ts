@@ -62,6 +62,14 @@ describe('messages', () => {
     expect((await s.port.snapshot()).tabs.map((t) => t.id)).toEqual([1, 2, 3]);
   });
 
+  it('tabs.list returns the snapshot tabs for extension pages only', async () => {
+    const s = setup();
+    s.mk(1, A); s.mk(2, 'https://b.example/');
+    const r = (await s.handle({ type: 'tabs.list' }, ui)) as { ok: boolean; data: { id: number }[] };
+    expect(r.data.map((t) => t.id)).toEqual([1, 2]);
+    expect(await s.handle({ type: 'tabs.list' }, content)).toEqual({ ok: false, error: 'forbidden' });
+  });
+
   it('dupes.list returns sets and pending', async () => {
     const s = setup();
     s.mk(1, A); s.mk(2, A);
@@ -93,6 +101,21 @@ describe('messages', () => {
     expect(s.set).not.toHaveBeenCalled();
     expect(await s.handle({ type: 'config.set', config: defaultConfig() }, ui)).toEqual({ ok: true, data: null });
     expect(s.set).toHaveBeenCalledOnce();
+  });
+
+  it('config.get returns config and rev; config.set with stale baseRev conflicts', async () => {
+    const s = setup();
+    const g = (await s.handle({ type: 'config.get' }, ui)) as { ok: boolean; data: { config: Config; rev: string } };
+    expect(g.data.config).toEqual(defaultConfig());
+    expect(typeof g.data.rev).toBe('string');
+    const changed = { ...defaultConfig(), groupRules: [{ id: 'r', name: 'r', enabled: true, match: { url: 'a.com/*' }, group: { title: 'r', color: 'blue' as const } }] };
+    expect(await s.handle({ type: 'config.set', config: changed, baseRev: g.data.rev }, ui)).toEqual({ ok: true, data: null });
+    expect(s.set).toHaveBeenCalledTimes(1);
+    expect(await s.handle({ type: 'config.set', config: defaultConfig(), baseRev: g.data.rev }, ui)).toEqual({ ok: false, error: 'conflict' });
+    expect(s.set).toHaveBeenCalledTimes(1);
+    const g2 = (await s.handle({ type: 'config.get' }, ui)) as { data: { rev: string } };
+    expect(g2.data.rev).not.toBe(g.data.rev);
+    expect((await s.handle({ type: 'config.set', config: defaultConfig(), baseRev: g2.data.rev }, ui)).ok).toBe(true);
   });
 
   it('rejects content scripts and foreign senders', async () => {
