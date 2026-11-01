@@ -45,7 +45,13 @@ done
 
 wait_green() {
   echo "Waiting for checks on #$1 ..."
-  [ "$dry" = 1 ] || gh pr checks "$1" --watch --fail-fast
+  [ "$dry" = 1 ] && return 0
+  # After a fold-in merge GitHub needs a moment to register the new runs; don't fail on "no checks reported".
+  for _ in $(seq 1 40); do
+    [ -n "$(gh pr checks "$1" 2>/dev/null)" ] && break
+    sleep 15
+  done
+  gh pr checks "$1" --watch --fail-fast
 }
 
 if [ "$mode" = single-release ]; then
