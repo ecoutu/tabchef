@@ -16,6 +16,10 @@ export interface DedupeDeps {
   ask: (newTab: TabSnap, existing: TabSnap) => Promise<void>;
   isPaused: () => boolean;
   isLocked: (tabId: number) => boolean;
+  /** Awaited before the pause/lock checks (e.g. SafetyService.ready) so state loaded after a worker wake is honoured. */
+  beforeDecide?: () => Promise<void>;
+  /** Called (fire-and-forget) after an automatic close, with the focused existing tab; used for the undo toast. */
+  onClosed?: (entryId: string, entry: RecentlyClosedEntry, focused: TabSnap) => void;
   /** Injectable clock (ms). Defaults to Date.now. */
   now?: () => number;
   /**
@@ -33,6 +37,8 @@ export type CandidateSource = 'pending' | 'committed';
 export const NEW_TAB_AGE_MS = 10_000;
 /** After browser startup, all candidates are ignored and no tab created in the window counts as new (session restore). */
 export const STARTUP_GRACE_MS = 10_000;
+/** An armed (undo) exemption that no tab consumed expires after this long. */
+export const PENDING_EXEMPT_TTL_MS = 15_000;
 
 /**
  * Detects duplicates as tabs navigate and, in 'always-switch' mode, closes the NEW tab and focuses the existing one.
@@ -49,6 +55,9 @@ export class DedupeHandler {
   /** tabId -> normalized key already handled (closed or asked). */
   private readonly handled = new Map<number, string>();
   private readonly inFlight = new Set<string>();
+  /** Restored tabs exempt from dedupe: tabId -> normalized key of the restored page (undefined until first seen). */
+  private readonly exempt = new Map<number, string | undefined>();
+  private pendingExempt: { url: string; windowId: number | undefined; expires: number }[] = [];
   /** Candidate tab ids queued or running in the chain. */
   private readonly queued = new Map<number, number>();
   private chain: Promise<void> = Promise.resolve();
@@ -112,8 +121,58 @@ export class DedupeHandler {
     }
   }
 
+  /**
+   * Exempt a restored (undone) tab from dedupe: until its URL changes, it is never closed or asked about.
+   * Call right after creating the tab.
+   */
+  exemptOnce(tabId: number): void {
+    this.exempt.set(tabId, undefined);
+  }
+
+  /**
+   * Arm an exemption BEFORE creating the tab: Chrome fires onCreated/navigation events before tabs.create resolves.
+   * The first candidate tab in that window (any window if undefined) whose URL key matches consumes it. Returns a disarm.
+   */
+  armExemption(url: string, windowId?: number): () => void {
+    const p = { url, windowId, expires: this.now() + PENDING_EXEMPT_TTL_MS };
+    this.pendingExempt.push(p);
+    return () => {
+      const i = this.pendingExempt.indexOf(p);
+      if (i >= 0) this.pendingExempt.splice(i, 1);
+    };
+  }
+
+  private consumePending(tabId: number, key: string, windowId: number, cfg: Config): boolean {
+    const t = this.now();
+    this.pendingExempt = this.pendingExempt.filter((p) => p.expires > t);
+    const i = this.pendingExempt.findIndex((p) =>
+      (p.windowId === undefined || p.windowId === windowId) && normalizeUrl(p.url, cfg.dedupe)?.key === key);
+    if (i < 0) return false;
+    this.pendingExempt.splice(i, 1);
+    this.exempt.set(tabId, key);
+    return true;
+  }
+
+  private exemptNow(tabId: number, key: string, windowId: number, cfg: Config): boolean {
+    return this.isExempt(tabId, key) || this.consumePending(tabId, key, windowId, cfg);
+  }
+
+  /** The first non-exempt URL seen pins the exemption; a different URL later ends it. */
+  private isExempt(tabId: number, key: string): boolean {
+    if (!this.exempt.has(tabId)) return false;
+    const k = this.exempt.get(tabId);
+    if (k === undefined) {
+      this.exempt.set(tabId, key);
+      return true;
+    }
+    if (k === key) return true;
+    this.exempt.delete(tabId);
+    return false;
+  }
+
   /** Call from tabs.onRemoved. */
   onRemoved(tabId: number): void {
+    this.exempt.delete(tabId);
     this.created.delete(tabId);
     this.fresh.delete(tabId);
     this.established.delete(tabId);
@@ -156,6 +215,7 @@ export class DedupeHandler {
     }
     if (isExemptUrl(url)) return;
     await this.ready;
+    await this.deps.beforeDecide?.();
     if (this.inStartupGrace() || this.deps.isPaused()) return;
     const isNew = this.isYoung(tabId) || (wasFresh && !this.createdInGrace(tabId));
     if (!isNew || this.deps.isLocked(tabId)) return;
@@ -179,11 +239,12 @@ export class DedupeHandler {
   }
 
   private async handle(tabId: number, url: string, key: string, cfg: Config): Promise<void> {
-    if (this.handled.get(tabId) === key) return;
+    if (this.handled.get(tabId) === key || this.isExempt(tabId, key)) return;
     const s = cfg.dedupe;
     const snap = await this.port.snapshot();
     const live = snap.tabs.find((t) => t.id === tabId);
     if (!live) return;
+    if (this.exemptNow(tabId, key, live.windowId, cfg)) return;
     const newTab: TabSnap = { ...live, url };
     delete newTab.pendingUrl;
     const match = evaluateGroupRules(newTab, cfg.groupRules);
@@ -198,6 +259,7 @@ export class DedupeHandler {
     if (mode === 'off') return;
     if (mode === 'ask' && matchesAny(url, s.alwaysSwitchSites ?? [])) mode = 'always-switch';
     if (mode === 'ask') {
+      if (this.exemptNow(tabId, key, live.windowId, cfg)) return;
       this.handled.set(tabId, key);
       await this.deps.ask(newTab, dup.existing);
       return;
@@ -207,7 +269,7 @@ export class DedupeHandler {
     const fresh = await this.port.snapshot();
     const cand = fresh.tabs.find((t) => t.id === tabId);
     const existing = fresh.tabs.find((t) => t.id === dup.existing.id);
-    if (!cand || !existing || cand.pinned || this.deps.isLocked(tabId)) return;
+    if (!cand || !existing || cand.pinned || this.deps.isLocked(tabId) || this.exemptNow(tabId, key, cand.windowId, cfg)) return;
     const keyOf = (u: string | undefined) => (u ? normalizeUrl(u, s)?.key : undefined);
     if (keyOf(cand.pendingUrl) !== key && keyOf(cand.url) !== key) return;
     if (keyOf(tabUrl(existing)) !== key) return;
@@ -215,17 +277,19 @@ export class DedupeHandler {
     this.handled.set(tabId, key);
     const at = this.now();
     const groupTitle = fresh.groups.find((g) => g.id === cand.groupId)?.title;
-    this.deps.recentlyClosed.add({
+    const entry: RecentlyClosedEntry = {
       url, title: cand.title, windowId: cand.windowId, reason: 'duplicate', at,
       ...(groupTitle !== undefined ? { groupTitle } : {}),
       ...(ruleId !== undefined ? { ruleId } : {}),
-    });
+    };
+    const entryId = this.deps.recentlyClosed.add(entry);
     await this.port.closeTab(tabId);
     await this.port.focusTab(existing.id, existing.windowId, s.followFragment ? withFragment(tabUrl(existing), dup.fragment) : undefined);
     this.deps.log.add({
       tabId, action: 'dedupe-close', detail: `Closed duplicate of tab ${existing.id} (${existing.title})`, at,
       ...(ruleId !== undefined ? { ruleId } : {}),
     });
+    this.deps.onClosed?.(entryId, entry, existing);
   }
 }
 

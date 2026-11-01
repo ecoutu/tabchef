@@ -2,9 +2,14 @@ import { browser } from 'wxt/browser';
 import { defaultConfig } from '../core/config/defaults';
 import type { Config } from '../core/types';
 import { createAskController } from '../engine/ask';
-import { isBannerChoiceMessage } from '../engine/messages';
-import { DedupeHandler, type LogEntry, type RecentlyClosedEntry } from '../engine/dedupe-handler';
+import { RecentlyClosed } from '../core/safety/recently-closed';
+import { WhyLog } from '../core/safety/why-log';
+import {
+  isBannerChoiceMessage, isFormEditedMessage, isUndoChoiceMessage, UNDO_NOTIFICATION_PREFIX,
+} from '../engine/messages';
+import { DedupeHandler } from '../engine/dedupe-handler';
 import { Reconciler } from '../engine/reconciler';
+import { SafetyService } from '../engine/safety';
 import { ChromePort } from '../platform/chrome-port';
 
 export default defineBackground(() => {
@@ -16,25 +21,18 @@ export default defineBackground(() => {
     config = fn(config);
   };
   const port = new ChromePort();
-  const reconciler = new Reconciler(port, getConfig);
+  const whyLog = new WhyLog();
+  const recentlyClosed = new RecentlyClosed();
+  const warn = (what: string) => (e: unknown) => console.warn(`[tabchef] ${what} failed`, e);
+  // `safety` is used lazily by the closures below (it needs the reconciler and dedupe handler, which need it).
+  const reconciler = new Reconciler(port, getConfig, {
+    log: whyLog,
+    isPaused: () => safety.isPaused(),
+    beforeRun: () => safety.ready,
+    extraLeaveAlone: () => safety.lockedTabIds(),
+  });
   const schedule = (reason: string) => () => reconciler.schedule(reason);
 
-  // TODO(Task 12): replace with RecentlyClosed / WhyLog. Minimal in-memory stubs until then.
-  const recentlyClosed: RecentlyClosedEntry[] = [];
-  const whyLog: LogEntry[] = [];
-  const logDep = {
-    add: (e: LogEntry) => {
-      whyLog.push(e);
-      if (whyLog.length > 1000) whyLog.shift();
-    },
-  };
-  const recentlyClosedDep = {
-    add: (e: RecentlyClosedEntry) => {
-      recentlyClosed.unshift(e);
-      recentlyClosed.length = Math.min(recentlyClosed.length, 100);
-      return `${e.at}-${recentlyClosed.length}`;
-    },
-  };
   const askController = createAskController(port, {
     // scripting / notifications are optional permissions: the namespaces are undefined until granted (the port checks first).
     api: {
@@ -70,21 +68,43 @@ export default defineBackground(() => {
     bannerFile: 'content-scripts/banner.js',
     getConfig,
     updateConfig,
-    recentlyClosed: recentlyClosedDep,
-    log: logDep,
-    isLocked: () => false,
+    recentlyClosed,
+    log: whyLog,
+    isLocked: (id) => safety.isLocked(id),
+    onClosed: (id, entry, focused) => { safety.toast(id, entry, focused).catch(warn('undo toast')); },
   });
-  const dedupe = new DedupeHandler(port, getConfig, {
-    recentlyClosed: recentlyClosedDep,
-    log: logDep,
+  const dedupe: DedupeHandler = new DedupeHandler(port, getConfig, {
+    recentlyClosed,
+    log: whyLog,
     ask: askController.ask,
-    isPaused: () => false,
-    isLocked: () => false,
+    isPaused: () => safety.isPaused(),
+    isLocked: (id) => safety.isLocked(id),
+    beforeDecide: () => safety.ready,
+    onClosed: (id, entry, focused) => { safety.toast(id, entry, focused).catch(warn('undo toast')); },
     // Cleared on browser restart: a missing marker at worker start opens the startup grace (order-independent).
     session: {
       get: async (k) => (await browser.storage.session.get(k))[k],
       set: (k, v) => browser.storage.session.set({ [k]: v }),
     },
+  });
+  const safety: SafetyService = new SafetyService(port, {
+    recentlyClosed,
+    log: whyLog,
+    schedule: (r) => reconciler.schedule(r),
+    exemptOnce: (id) => dedupe.exemptOnce(id),
+    armExemption: (url, windowId) => dedupe.armExemption(url, windowId),
+    api: {
+      executeScript: async (tabId, file) => {
+        await browser.scripting.executeScript({ target: { tabId }, files: [file as never] });
+      },
+      sendMessage: (tabId, message) => browser.tabs.sendMessage(tabId, message),
+      createNotification: async (id, o) => {
+        await browser.notifications.create(id, {
+          type: 'basic', iconUrl: browser.runtime.getURL('/icon/128.png'), ...o,
+        });
+      },
+    },
+    bannerFile: 'content-scripts/banner.js',
   });
   const candidate = (...a: Parameters<DedupeHandler['onCandidate']>) => {
     dedupe.onCandidate(...a).catch((e: unknown) => console.warn('[tabchef] dedupe failed', e));
@@ -95,6 +115,7 @@ export default defineBackground(() => {
   // MV3: every listener is registered synchronously at the top level so a restarted worker receives the event.
   browser.tabs.onCreated.addListener((tab) => {
     if (tab.id !== undefined) {
+      safety.onTabSeen({ id: tab.id, url: tab.url ?? tab.pendingUrl ?? '', windowId: tab.windowId });
       dedupe.recordCreated(tab.id, { discarded: tab.discarded, status: tab.status });
       const url = tab.pendingUrl || tab.url;
       if (url) candidate(tab.id, url, 'pending');
@@ -108,7 +129,10 @@ export default defineBackground(() => {
   browser.tabs.onUpdated.addListener((tabId, info, tab) => {
     const dedupeUrl = info.url ?? (info.status === 'loading' ? tab.pendingUrl : undefined);
     if (dedupeUrl) candidate(tabId, dedupeUrl, 'pending');
-    if (info.url !== undefined) void reconciler.onTabUrlChanged(tabId);
+    if (info.url !== undefined) {
+      safety.onTabSeen({ id: tabId, url: info.url, windowId: tab.windowId });
+      void reconciler.onTabUrlChanged(tabId);
+    }
     if (info.groupId !== undefined) void reconciler.onTabGroupChanged(tabId, info.groupId);
     if (info.url !== undefined || info.groupId !== undefined || info.pinned !== undefined) {
       reconciler.schedule('tab-updated');
@@ -120,7 +144,8 @@ export default defineBackground(() => {
   };
   browser.tabs.onMoved.addListener(movedOrAttached('tab-moved'));
   browser.tabs.onAttached.addListener(movedOrAttached('tab-attached'));
-  browser.tabs.onRemoved.addListener((tabId) => {
+  browser.tabs.onRemoved.addListener((tabId, info) => {
+    safety.onTabRemoved(tabId, info.isWindowClosing);
     dedupe.onRemoved(tabId);
     askController.onTabRemoved(tabId).catch((e: unknown) => console.warn('[tabchef] pending ask cleanup failed', e));
     reconciler.schedule('tab-removed');
@@ -135,22 +160,30 @@ export default defineBackground(() => {
   });
   // Banner choices arrive from the content script in the duplicate tab.
   browser.runtime.onMessage.addListener((msg: unknown, sender) => {
-    if (!isBannerChoiceMessage(msg) || sender.id !== browser.runtime.id) return;
+    if (sender.id !== browser.runtime.id) return;
     const tabId = sender.tab?.id;
     if (tabId === undefined) return;
-    askController.handleChoice(tabId, msg.existingTabId, msg.choice).catch((e: unknown) => console.warn('[tabchef] banner choice failed', e));
+    if (isBannerChoiceMessage(msg)) {
+      askController.handleChoice(tabId, msg.existingTabId, msg.choice).catch(warn('banner choice'));
+    } else if (isUndoChoiceMessage(msg)) {
+      safety.undo(msg.entryId).catch(warn('undo'));
+    } else if (isFormEditedMessage(msg)) {
+      safety.markFormEdited(tabId, sender.tab?.url);
+    }
   });
+  browser.alarms.onAlarm.addListener((alarm) => safety.onAlarm(alarm));
   // notifications is an optional permission: its events exist only once granted, so (re)register on grant as well.
   let notificationsWired = false;
   const wireNotifications = () => {
     if (notificationsWired || !browser.notifications) return;
     notificationsWired = true;
-    const warn = (e: unknown) => console.warn('[tabchef] notification handler failed', e);
+    const onErr = warn('notification handler');
     browser.notifications.onButtonClicked.addListener((id, i) => {
-      askController.onNotificationButton(id, i).catch(warn);
+      if (id.startsWith(UNDO_NOTIFICATION_PREFIX)) safety.undo(id.slice(UNDO_NOTIFICATION_PREFIX.length)).catch(onErr);
+      else askController.onNotificationButton(id, i).catch(onErr);
       void browser.notifications.clear(id);
     });
-    browser.notifications.onClosed.addListener((id) => { askController.onNotificationClosed(id).catch(warn); });
+    browser.notifications.onClosed.addListener((id) => { askController.onNotificationClosed(id).catch(onErr); });
   };
   wireNotifications();
   browser.permissions.onAdded.addListener(wireNotifications);

@@ -391,3 +391,12 @@ describe('ask: pending list lifecycle', () => {
     expect(w.api.clearNotification.mock.calls).toEqual([['dedupe:2:1']]);
   });
 });
+
+describe('ask: onClosed', () => {
+  it('reports the close after a switch', async () => {
+    const onClosed = vi.fn();
+    const w = setup({ onClosed });
+    await w.ctl.handleChoice(2, 1, 'switch');
+    expect(onClosed).toHaveBeenCalledWith('rc', expect.objectContaining({ reason: 'duplicate' }), expect.objectContaining({ id: 1 }));
+  });
+});

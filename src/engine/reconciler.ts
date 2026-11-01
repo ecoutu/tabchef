@@ -13,6 +13,10 @@ export interface ReconcilerOptions {
   debounceMs?: number;
   log?: WhyLog;
   isPaused?: () => boolean;
+  /** Awaited before each run, ahead of the pause check (e.g. SafetyService.ready). */
+  beforeRun?: () => Promise<void>;
+  /** Tab ids (e.g. locked tabs) merged into the planner's leaveAlone at plan time; never persisted. */
+  extraLeaveAlone?: () => Iterable<number>;
   now?: () => number;
 }
 
@@ -114,6 +118,7 @@ export class Reconciler {
   }
 
   private async flushOnce(): Promise<void> {
+    await this.opts.beforeRun?.();
     if (this.opts.isPaused?.()) return;
     const st = await this.load();
     this.clearPendingDrag();
@@ -122,7 +127,8 @@ export class Reconciler {
       for (let pass = 0; ; pass++) {
         const snap = await this.port.snapshot();
         this.track(snap, st);
-        const ops = planGroups(snap, config, st);
+        const extra = this.opts.extraLeaveAlone?.();
+        const ops = planGroups(snap, config, extra ? { ...st, leaveAlone: new Set([...st.leaveAlone, ...extra]) } : st);
         if (ops.length === 0) break;
         if (pass === MAX_PASSES) {
           this.log({ action: 'reconcile-not-converged', detail: `${ops.length} op(s) still planned after ${MAX_PASSES} passes` });
