@@ -17,6 +17,21 @@ describe('ChromePort', () => {
     expect(s.groups.map((g) => g.id)).toEqual([5]);
   });
 
+  it('snapshot keeps only http(s)/data favicons', async () => {
+    const api = {
+      windows: { getAll: async () => [{ id: 1, type: 'normal', focused: true }] },
+      tabs: { query: async () => [
+        { ...base, id: 1, windowId: 1, url: 'https://a', favIconUrl: 'https://a/f.ico' },
+        { ...base, id: 2, windowId: 1, url: 'https://b', favIconUrl: 'chrome://favicon/x' },
+        { ...base, id: 3, windowId: 1, url: 'https://c', favIconUrl: 'data:image/png;base64,AA' },
+        { ...base, id: 4, windowId: 1, url: 'https://d' },
+      ] },
+      tabGroups: { query: async () => [] },
+    } as unknown as ConstructorParameters<typeof ChromePort>[0];
+    const s = await new ChromePort(api).snapshot();
+    expect(s.tabs.map((t) => t.favIconUrl)).toEqual(['https://a/f.ico', undefined, 'data:image/png;base64,AA', undefined]);
+  });
+
   it('mutating calls go through drag retry', async () => {
     vi.useFakeTimers();
     const remove = vi.fn()

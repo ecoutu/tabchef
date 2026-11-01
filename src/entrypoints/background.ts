@@ -4,8 +4,9 @@ import { createAskController } from '../engine/ask';
 import { RecentlyClosed } from '../core/safety/recently-closed';
 import { WhyLog } from '../core/safety/why-log';
 import {
-  isBannerChoiceMessage, isFormEditedMessage, isUndoChoiceMessage, UNDO_NOTIFICATION_PREFIX,
+  configRev, createDebounce, createHandler, createOnMessage, isBannerChoiceMessage, isFormEditedMessage, isUndoChoiceMessage, refreshBadge, UNDO_NOTIFICATION_PREFIX,
 } from '../engine/messages';
+import { listPendingAsks } from '../engine/ask';
 import { DedupeHandler } from '../engine/dedupe-handler';
 import { Reconciler } from '../engine/reconciler';
 import { SafetyService } from '../engine/safety';
@@ -30,7 +31,11 @@ export default defineBackground(() => {
     extraLeaveAlone: () => safety.lockedTabIds(),
   });
   const schedule = (reason: string) => () => reconciler.schedule(reason);
-  store.onChange(() => reconciler.schedule('config'));
+  store.onChange((c) => {
+    reconciler.schedule('config');
+    // Tell open extension pages (options) the config changed; "no receiver" rejections are expected.
+    Promise.resolve(browser.runtime.sendMessage({ type: 'config.changed', rev: configRev(c) })).catch(() => {});
+  });
   // Persist a pending (debounced) config write before the worker is torn down.
   browser.runtime.onSuspend.addListener(() => { store.flush().catch(warn('config flush')); });
 
@@ -71,6 +76,8 @@ export default defineBackground(() => {
     updateConfig,
     recentlyClosed,
     log: whyLog,
+    // scheduleBadge is defined below; this only runs after startup.
+    scheduleBadge: () => scheduleBadge(),
     isLocked: (id) => safety.isLocked(id),
     onClosed: (id, entry, focused) => { safety.toast(id, entry, focused).catch(warn('undo toast')); },
   });
@@ -132,9 +139,9 @@ export default defineBackground(() => {
     if (dedupeUrl) candidate(tabId, dedupeUrl, 'pending');
     if (info.url !== undefined) {
       safety.onTabSeen({ id: tabId, url: info.url, windowId: tab.windowId });
-      void reconciler.onTabUrlChanged(tabId);
+      void reconciler.onTabUrlChanged(tabId, info.url);
     }
-    if (info.groupId !== undefined) void reconciler.onTabGroupChanged(tabId, info.groupId);
+    if (info.groupId !== undefined) void reconciler.onTabGroupChanged(tabId, info.groupId, tab.url);
     if (info.url !== undefined || info.groupId !== undefined || info.pinned !== undefined) {
       reconciler.schedule('tab-updated');
     }
@@ -159,19 +166,48 @@ export default defineBackground(() => {
     dedupe.noteStartup();
     reconciler.schedule('startup');
   });
-  // Banner choices arrive from the content script in the duplicate tab.
-  browser.runtime.onMessage.addListener((msg: unknown, sender) => {
-    if (sender.id !== browser.runtime.id) return;
-    const tabId = sender.tab?.id;
-    if (tabId === undefined) return;
-    if (isBannerChoiceMessage(msg)) {
-      askController.handleChoice(tabId, msg.existingTabId, msg.choice).catch(warn('banner choice'));
-    } else if (isUndoChoiceMessage(msg)) {
-      safety.undo(msg.entryId).catch(warn('undo'));
-    } else if (isFormEditedMessage(msg)) {
-      safety.markFormEdited(tabId, sender.tab?.url);
-    }
+  const session = { get: async (k: string) => (await browser.storage.session.get(k))[k] };
+  const badgeDeps = {
+    port,
+    isLocked: (id: number) => safety.isLocked(id),
+    getSettings: async () => (await store.get()).dedupe,
+    ask: {
+      listPending: () => listPendingAsks(session),
+      resolvePending: (n: number, e: number, c: 'switch' | 'keep') => askController.resolvePending(n, e, c),
+    },
+  };
+  const scheduleBadge = createDebounce(() => { refreshBadge(badgeDeps).catch(warn('badge refresh')); }, 500, 2000);
+  for (const ev of [browser.tabs.onCreated, browser.tabs.onRemoved, browser.tabs.onUpdated, browser.tabs.onReplaced, browser.tabs.onAttached]) {
+    ev.addListener(scheduleBadge);
+  }
+  scheduleBadge();
+  const handleRequest = createHandler({
+    ...badgeDeps,
+    runtimeId: browser.runtime.id,
+    extensionOrigin: new URL(browser.runtime.getURL('/')).origin,
+    store,
+    safety,
+    recentlyClosed,
+    whyLog,
   });
+  // UI requests (popup / options) and banner choices (content script in the duplicate tab).
+  browser.runtime.onMessage.addListener(createOnMessage({
+    runtimeId: browser.runtime.id,
+    handleRequest,
+    handleBanner: (msg, sender) => {
+      if (!isBannerChoiceMessage(msg) && !isUndoChoiceMessage(msg) && !isFormEditedMessage(msg)) return false;
+      const tabId = sender.tab?.id;
+      if (tabId === undefined) return true;
+      if (isBannerChoiceMessage(msg)) {
+        askController.handleChoice(tabId, msg.existingTabId, msg.choice).catch(warn('banner choice'));
+      } else if (isUndoChoiceMessage(msg)) {
+        safety.undo(msg.entryId).catch(warn('undo'));
+      } else if (isFormEditedMessage(msg)) {
+        safety.markFormEdited(tabId, sender.tab?.url);
+      }
+      return true;
+    },
+  }));
   browser.alarms.onAlarm.addListener((alarm) => safety.onAlarm(alarm));
   // notifications is an optional permission: its events exist only once granted, so (re)register on grant as well.
   let notificationsWired = false;

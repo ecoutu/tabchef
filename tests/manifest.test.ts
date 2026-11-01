@@ -34,4 +34,7 @@ describe('manifest permissions', () => {
   it('opens options in a tab', () => {
     expect(manifestConfig.options_ui?.open_in_tab).toBe(true);
   });
+  it('requires Chrome 116+ (storage.session, sidePanel.open, tab group APIs)', () => {
+    expect(manifestConfig.minimum_chrome_version).toBe('116');
+  });
 });

@@ -19,6 +19,12 @@ const bytes = (s: string) => new TextEncoder().encode(s).length;
 const mk = (retryMs = 5000) => new ConfigStore({ debounceMs: 2000, retryMs });
 const sync = () => browser.storage.sync;
 const local = () => browser.storage.local;
+async function putSync(json: string): Promise<void> {
+  const sha = [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(json)))]
+    .map((x) => x.toString(16).padStart(2, '0')).join('');
+  await sync().set({ 'cfg:0': json });
+  await sync().set({ 'cfg:meta': { v: 1, n: 1, sha, at: Date.now() } });
+}
 
 describe('ConfigStore', () => {
   beforeEach(() => {
@@ -388,7 +394,8 @@ describe('ConfigStore', () => {
   it('remote change during a pending local write: local wins (last write wins), no onChange for the remote', async () => {
     const a = mk();
     const got: Config[] = [];
-    await a.get();
+    await a.set(withSite('first.com'));
+    await a.flush(); // this device has synced before (a never-synced device adopts the remote instead: I4)
     a.onChange((c) => got.push(c));
     const mine = withSite('mine.com');
     await a.set(mine);
@@ -403,5 +410,154 @@ describe('ConfigStore', () => {
     expect(await a.get()).toEqual(mine);
     await a.flush();
     expect(await mk().get()).toEqual(mine);
+  });
+  it('fresh device: a remote config that appears before the first write is adopted; the local edit becomes a backup (I4)', async () => {
+    const b = mk();
+    await b.get(); // nothing synced yet: defaults
+    const got: Config[] = [];
+    b.onChange((c) => got.push(c));
+    const mine = withSite('mine.com');
+    await b.set(mine);
+    // Chrome sync delivers the account's config (written by another device) while our write is debounced.
+    const theirs = withSite('theirs.com');
+    const json = JSON.stringify(theirs);
+    const sha = [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(json)))]
+      .map((x) => x.toString(16).padStart(2, '0')).join('');
+    await sync().set({ 'cfg:0': json });
+    await sync().set({ 'cfg:meta': { v: 1, n: 1, sha, at: 7 } });
+    got.length = 0;
+    await b.flush();
+    expect(await b.get()).toEqual(theirs);
+    expect((await sync().get('cfg:meta'))['cfg:meta']).toMatchObject({ sha });
+    expect(await mk().get()).toEqual(theirs);
+    expect((await b.backups()).some((x) => JSON.stringify(x.config) === JSON.stringify(mine))).toBe(true);
+    expect((await b.status()).warning).toBe('Synced settings were found and loaded; your change on this device was saved as a backup.');
+    expect(got).toEqual([theirs]);
+    expect((await local().get('cfg:pending'))['cfg:pending']).toBe(false);
+  });
+
+  it('fresh device: the fresh state survives a worker kill before the debounced sync write', async () => {
+    const a = mk();
+    await a.get();
+    const mine = withSite('mine.com');
+    await a.set(mine); // worker killed here: no flush
+    const theirs = withSite('theirs.com');
+    await putSync(JSON.stringify(theirs));
+    const b = mk(); // new worker over the same storage
+    expect(await b.get()).toEqual(mine);
+    await b.flush();
+    expect(await b.get()).toEqual(theirs);
+    expect((await b.backups()).some((x) => JSON.stringify(x.config) === JSON.stringify(mine))).toBe(true);
+    expect((await b.status()).warning).toContain('Synced settings were found and loaded');
+    expect((await local().get('cfg:freshDevice'))['cfg:freshDevice']).toBe(false);
+  });
+
+  it('fresh flag is cleared after a successful sync write', async () => {
+    const a = mk();
+    await a.set(withSite('mine.com'));
+    await a.flush();
+    expect((await local().get('cfg:freshDevice'))['cfg:freshDevice']).toBe(false);
+  });
+
+  it('fresh device with nothing in sync still writes the local edit (I4)', async () => {
+    const b = mk();
+    await b.set(withSite('mine.com'));
+    await b.flush();
+    expect(await mk().get()).toEqual(withSite('mine.com'));
+    expect((await b.status()).warning).toBeUndefined();
+  });
+
+  it('set() is serialized with update(): a set issued after an update is never overwritten by it (T13)', async () => {
+    const a = mk();
+    await a.get();
+    const u = a.update((c) => ({ ...c, dedupe: { ...c.dedupe, alwaysSwitchSites: ['u.com'] } }));
+    const s = a.set(withSite('s.com'));
+    await Promise.all([u, s]);
+    expect((await a.get()).dedupe.alwaysSwitchSites).toEqual(['s.com']);
+  });
+
+  describe('stored configs from laxer versions are repaired, not discarded (CR#1)', () => {
+    const okRule = { id: 'ok', name: 'Fine', enabled: true, match: { url: 'https://a.com/*' }, group: { title: 'A', color: 'blue' } };
+    const badRule = { id: 'gh', name: 'GH repos', enabled: true, match: { url: ['github.com/:org/:repo/*', 'example.com/*'] }, group: { title: 'GH {repo}', color: 'red' } };
+    const legacy = () => ({ ...defaultConfig(), groupRules: [okRule, badRule] });
+    const WARN = '1 rule(s) disabled: GH repos — fix them on the Rules page.';
+    const expectRepaired = (c: Config) => {
+      expect(c.groupRules.map((r) => [r.id, r.enabled])).toEqual([['ok', true], ['gh', false]]);
+      expect(c.groupRules[1]!.group.title).toBe('GH {repo}');
+      expect(c.groupRules[0]).toEqual(okRule);
+    };
+    it('from sync: the bad rule is disabled with a warning; other rules intact; no fallback to defaults', async () => {
+      await putSync(JSON.stringify(legacy()));
+      const s = mk();
+      expectRepaired(await s.get());
+      expect((await s.status()).warning).toContain(WARN);
+    });
+    it('from lastGood (pending local edit)', async () => {
+      await local().set({ 'cfg:lastGood': legacy(), 'cfg:pending': true });
+      const s = mk();
+      expectRepaired(await s.get());
+      expect((await s.status()).warning).toContain(WARN);
+    });
+    it('from lastGood when sync is corrupt', async () => {
+      await local().set({ 'cfg:lastGood': legacy(), 'cfg:syncedSha': 'x' });
+      await sync().set({ 'cfg:0': '{', 'cfg:meta': { v: 1, n: 1, sha: 'nope', at: 1 } });
+      expectRepaired(await mk().get());
+    });
+    it('load backs up the ORIGINAL (pre-repair) config; current is repaired; restoring it re-repairs with the warning', async () => {
+      await putSync(JSON.stringify(legacy()));
+      const s = mk();
+      expectRepaired(await s.get());
+      const [b] = await s.backups();
+      expect(b!.config.groupRules.map((r) => [r.id, r.enabled])).toEqual([['ok', true], ['gh', true]]);
+      await s.set(withSite('x.com'));
+      await s.restore(b!.at);
+      expectRepaired(await s.get());
+      expect((await s.status()).warning).toContain(WARN);
+    });
+    it('restore() of such a backup', async () => {
+      const s = mk();
+      await s.get();
+      await local().set({ 'cfg:backups': [{ at: 5, config: legacy() }] });
+      await s.restore(5);
+      expectRepaired(await s.get());
+      expect((await s.status()).warning).toContain(WARN);
+    });
+  });
+
+  describe('adopt-remote only on a genuinely fresh device (CR#2, CR#3)', () => {
+    it('upgraded device with a PENDING local edit and no synced sha: local wins over sync', async () => {
+      const mine = withSite('mine.com');
+      await local().set({ 'cfg:lastGood': mine, 'cfg:pending': true });
+      await putSync(JSON.stringify(withSite('theirs.com')));
+      const s = mk();
+      expect(await s.get()).toEqual(mine);
+      await s.flush();
+      expect(await s.get()).toEqual(mine);
+      expect((await s.status()).warning).toBeUndefined();
+      expect(await mk().get()).toEqual(mine);
+      expect(typeof (await local().get('cfg:syncedSha'))['cfg:syncedSha']).toBe('string');
+    });
+    it('upgraded LOCAL_ONLY device with no synced sha: a new edit that fits is written, not replaced by sync', async () => {
+      await local().set({ 'cfg:lastGood': withSite('old-local.com'), 'cfg:localOnly': true });
+      await putSync(JSON.stringify(withSite('theirs.com')));
+      const s = mk();
+      await s.get();
+      const mine = withSite('mine.com');
+      await s.set(mine);
+      await s.flush();
+      expect(await s.get()).toEqual(mine);
+      expect(await mk().get()).toEqual(mine);
+    });
+    it('load saw a corrupt sync; user saves; sync is repaired by another device: the saved edit survives', async () => {
+      await sync().set({ 'cfg:0': '{', 'cfg:meta': { v: 1, n: 1, sha: 'nope', at: 1 } });
+      const s = new ConfigStore({ debounceMs: 2000, retryMs: 60_000 });
+      expect(await s.get()).toEqual(defaultConfig());
+      const mine = withSite('mine.com');
+      await s.set(mine);
+      await putSync(JSON.stringify(withSite('theirs.com')));
+      await s.flush();
+      expect(await s.get()).toEqual(mine);
+      expect(await mk().get()).toEqual(mine);
+    });
   });
 });

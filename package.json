@@ -11,7 +11,7 @@
     "test": "vitest run",
     "lint": "eslint .",
     "check": "svelte-check --tsconfig ./tsconfig.json && tsc --noEmit",
-    "e2e": "playwright test",
+    "e2e": "wxt build && playwright test",
     "postinstall": "wxt prepare",
     "prepare": "husky",
     "gen:validator": "node scripts/gen-validator.mjs",
@@ -26,8 +26,10 @@
     "@semantic-release/git": "11.0.1",
     "@semantic-release/github": "12.0.10",
     "@semantic-release/npm": "13.2.0",
+    "@sveltejs/vite-plugin-svelte": "7.3.1",
     "@testing-library/svelte": "5.4.2",
     "@tsconfig/svelte": "5.0.8",
+    "@types/node": "24.19.2",
     "@wxt-dev/module-svelte": "2.0.5",
     "ajv": "8.20.0",
     "eslint": "10.14.0",
@@ -44,5 +46,8 @@
     "vitest": "5.0.5",
     "wxt": "0.21.5",
     "yaml": "2.9.1"
+  },
+  "dependencies": {
+    "lzma": "2.3.2"
   }
 }
