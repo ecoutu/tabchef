@@ -72,4 +72,16 @@ describe('Duplicates', () => {
     expect(r.container.querySelector('img')).toBeNull();
     expect(r.container.querySelector('.fav-ph')).not.toBeNull();
   });
+  it('each row has a Lock / Unlock action for the tab it shows', async () => {
+    send.mockResolvedValue({ ok: true, data: null });
+    const onChange = vi.fn();
+    render(Duplicates, { data: data(), onChange });
+    await fireEvent.click(screen.getByRole('button', { name: 'Lock tab Page A' }));
+    expect(send).toHaveBeenCalledWith({ type: 'tab.lock', tabId: 1 });
+    expect(onChange).toHaveBeenCalled();
+    cleanup();
+    render(Duplicates, { data: data({ locked: [1] }), onChange });
+    await fireEvent.click(screen.getByRole('button', { name: 'Unlock tab Page A' }));
+    expect(send).toHaveBeenLastCalledWith({ type: 'tab.unlock', tabId: 1 });
+  });
 });
