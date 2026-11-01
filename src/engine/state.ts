@@ -1,4 +1,5 @@
 import { browser } from 'wxt/browser';
+import type { GroupColor } from '../core/types';
 
 /** Persisted (JSON) form, stored in chrome.storage.session under `rt` so it survives service-worker restarts. */
 export interface RuntimeState {
@@ -9,7 +10,13 @@ export interface RuntimeState {
   expectedGroupChanges: [number, number][];
   /** [tabId, groupId] for tabs last known to be in a managed group (drag-out detection across restarts). */
   managedTabs: [number, number][];
+  /** [groupId, props]: groups Tabchef created but has not titled yet (the title call failed); re-titled next flush. */
+  pendingTitles?: [number, PendingTitle][];
+  /** [tabId, url without #fragment] of leave-alone tabs: a fragment-only change is not a navigation. */
+  leaveAloneUrls?: [number, string][];
 }
+
+export interface PendingTitle { title: string; color: GroupColor; collapsed?: boolean }
 
 export const EXPECTATION_TTL_MS = 2000;
 
@@ -21,6 +28,8 @@ export interface LiveState {
   /** Multiset of [tabId, expiresAt]; a tab's next onUpdated(groupId) event before expiry is Tabchef's own. */
   expectedGroupChanges: [number, number][];
   managedTabs: Map<number, number>;
+  pendingTitles: Map<number, PendingTitle>;
+  leaveAloneUrls: Map<number, string>;
 }
 
 export const RT_KEY = 'rt';
@@ -32,6 +41,8 @@ export function toLive(rt: Partial<RuntimeState> | undefined): LiveState {
     creationOrder: new Map(rt?.creationOrder ?? []),
     expectedGroupChanges: (rt?.expectedGroupChanges ?? []).map(([id, at]) => [id, at] as [number, number]),
     managedTabs: new Map(rt?.managedTabs ?? []),
+    pendingTitles: new Map(rt?.pendingTitles ?? []),
+    leaveAloneUrls: new Map(rt?.leaveAloneUrls ?? []),
   };
 }
 
@@ -42,6 +53,8 @@ export function toRuntime(s: LiveState): RuntimeState {
     creationOrder: [...s.creationOrder],
     expectedGroupChanges: s.expectedGroupChanges.map(([id, at]) => [id, at] as [number, number]),
     managedTabs: [...s.managedTabs],
+    pendingTitles: [...s.pendingTitles],
+    leaveAloneUrls: [...s.leaveAloneUrls],
   };
 }
 

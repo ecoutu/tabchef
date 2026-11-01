@@ -35,6 +35,8 @@ export interface AskDeps {
   updateConfig: (fn: (c: Config) => Config) => Promise<void>;
   recentlyClosed: { add(e: RecentlyClosedEntry): string };
   log: { add(e: LogEntry): void };
+  /** The shared badge refresh (closable duplicates + pending asks); the pending list alone is not the badge. */
+  refreshBadge: () => Promise<void>;
   isLocked?: (tabId: number) => boolean;
   /** Called (fire-and-forget) after an ask-mode close, with the focused existing tab; used for the undo toast. */
   onClosed?: (entryId: string, entry: RecentlyClosedEntry, focused: TabSnap) => void;
@@ -78,7 +80,7 @@ export function createAskController(port: BrowserPort, deps: AskDeps) {
 
   const writePending = async (list: PendingAsk[]): Promise<void> => {
     await api.session.set(PENDING_KEY, list);
-    await port.setBadge(list.length ? String(list.length) : '');
+    await deps.refreshBadge();
   };
   const mutatePending = (fn: (l: PendingAsk[]) => PendingAsk[]) =>
     serial(async () => {
