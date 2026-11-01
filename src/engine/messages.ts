@@ -59,9 +59,10 @@ export const UNDO_NOTIFICATION_PREFIX = 'undo:';
 
 export type Request =
   | { type: 'config.get' }
-  | { type: 'config.set'; config: unknown }
+  | { type: 'config.set'; config: unknown; baseRev?: string }
   | { type: 'config.backups' }
   | { type: 'config.restore'; at: number }
+  | { type: 'tabs.list' }
   | { type: 'dupes.list' }
   | { type: 'dupes.closeExtras'; key: string }
   | { type: 'dupes.closeAll' }
@@ -79,16 +80,31 @@ export type Request =
 
 export type Response<T = unknown> = { ok: true; data: T } | { ok: false; error: string; errors?: string[] };
 
+/** Identifies a stored config's content (FNV-1a over its JSON); used for optimistic concurrency. */
+export function configRev(c: Config): string {
+  const j = JSON.stringify(c);
+  let h = 0x811c9dc5;
+  for (let i = 0; i < j.length; i++) { h ^= j.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  return `${h.toString(16)}-${j.length}`;
+}
+
+/** Broadcast to extension pages when the stored config changes. */
+export type ConfigChangedMessage = { type: 'config.changed'; rev: string };
+export function isConfigChangedMessage(m: unknown): m is ConfigChangedMessage {
+  return typeof m === 'object' && m !== null && (m as Record<string, unknown>).type === 'config.changed' && typeof (m as Record<string, unknown>).rev === 'string';
+}
+
 export interface DupeSet { key: string; tabs: TabSnap[] }
 /** A dupe set as listed to the UI: `closable` = extras the close button would actually close. */
 export interface DupeSetView extends DupeSet { closable: number }
 export interface SafetyStatus { paused: boolean }
 
 export interface ResponseData {
-  'config.get': Config;
+  'config.get': { config: Config; rev: string };
   'config.set': null;
   'config.backups': Backup[];
   'config.restore': null;
+  'tabs.list': TabSnap[];
   'dupes.list': { sets: DupeSetView[]; pending: PendingAsk[] };
   'dupes.closeExtras': number;
   'dupes.closeAll': number;
@@ -108,7 +124,7 @@ export type ResponseFor<R extends Request> = Response<ResponseData[R['type']]>;
 
 const num = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
 const str = (v: unknown): v is string => typeof v === 'string';
-const NO_ARGS = new Set(['config.get', 'config.backups', 'dupes.list', 'dupes.closeAll', 'recent.list', 'why.all',
+const NO_ARGS = new Set(['config.get', 'config.backups', 'tabs.list', 'dupes.list', 'dupes.closeAll', 'recent.list', 'why.all',
   'safety.resume', 'safety.status']);
 
 /** Structural check of an untrusted message. */
@@ -118,7 +134,7 @@ export function isRequest(m: unknown): m is Request {
   if (!str(x.type)) return false;
   if (NO_ARGS.has(x.type)) return true;
   switch (x.type) {
-    case 'config.set': return typeof x.config === 'object' && x.config !== null;
+    case 'config.set': return typeof x.config === 'object' && x.config !== null && (x.baseRev === undefined || str(x.baseRev));
     case 'config.restore': return num(x.at);
     case 'dupes.closeExtras': return str(x.key);
     case 'dupes.resolve': return num(x.newTabId) && num(x.existingTabId) && (x.choice === 'switch' || x.choice === 'keep');
@@ -222,15 +238,17 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
 
   async function run(req: Request): Promise<Response> {
     switch (req.type) {
-      case 'config.get': return ok(await deps.store.get());
+      case 'config.get': { const config = await deps.store.get(); return ok({ config, rev: configRev(config) }); }
       case 'config.set': {
         const r = validateConfig(req.config);
         if (!r.ok) return fail('invalid config', r.errors);
+        if (req.baseRev !== undefined && req.baseRev !== configRev(await deps.store.get())) return fail('conflict');
         await deps.store.set(req.config as Config);
         return ok(null);
       }
       case 'config.backups': return ok(await deps.store.backups());
       case 'config.restore': await deps.store.restore(req.at); return ok(null);
+      case 'tabs.list': return ok((await deps.port.snapshot()).tabs);
       case 'dupes.list': {
         const views = (await sets()).map((s): DupeSetView => ({
           ...s, closable: s.tabs.slice(1).filter((t) => !t.pinned && !deps.safety.isLocked(t.id)).length,
