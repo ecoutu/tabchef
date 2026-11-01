@@ -4,7 +4,7 @@ import { createAskController } from '../engine/ask';
 import { RecentlyClosed } from '../core/safety/recently-closed';
 import { WhyLog } from '../core/safety/why-log';
 import {
-  createDebounce, createHandler, createOnMessage, isBannerChoiceMessage, isFormEditedMessage, isUndoChoiceMessage, refreshBadge, UNDO_NOTIFICATION_PREFIX,
+  configRev, createDebounce, createHandler, createOnMessage, isBannerChoiceMessage, isFormEditedMessage, isUndoChoiceMessage, refreshBadge, UNDO_NOTIFICATION_PREFIX,
 } from '../engine/messages';
 import { listPendingAsks } from '../engine/ask';
 import { DedupeHandler } from '../engine/dedupe-handler';
@@ -31,7 +31,11 @@ export default defineBackground(() => {
     extraLeaveAlone: () => safety.lockedTabIds(),
   });
   const schedule = (reason: string) => () => reconciler.schedule(reason);
-  store.onChange(() => reconciler.schedule('config'));
+  store.onChange((c) => {
+    reconciler.schedule('config');
+    // Tell open extension pages (options) the config changed; "no receiver" rejections are expected.
+    Promise.resolve(browser.runtime.sendMessage({ type: 'config.changed', rev: configRev(c) })).catch(() => {});
+  });
   // Persist a pending (debounced) config write before the worker is torn down.
   browser.runtime.onSuspend.addListener(() => { store.flush().catch(warn('config flush')); });
 
