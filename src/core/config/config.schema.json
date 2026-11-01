@@ -1,0 +1,204 @@
+{
+  "type": "object",
+  "required": [
+    "version",
+    "groupRules",
+    "dedupe"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "groupRules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "enabled",
+          "match",
+          "group"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "name": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "match": {
+            "type": "object",
+            "required": [
+              "url"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "url": {
+                "oneOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "group": {
+            "type": "object",
+            "required": [
+              "title",
+              "color"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "title": {
+                "type": "string"
+              },
+              "color": {
+                "enum": [
+                  "grey",
+                  "blue",
+                  "red",
+                  "yellow",
+                  "green",
+                  "pink",
+                  "purple",
+                  "cyan",
+                  "orange"
+                ]
+              },
+              "collapsed": {
+                "type": "boolean"
+              }
+            }
+          },
+          "sortGroups": {
+            "enum": [
+              "creation",
+              "alphabetical"
+            ]
+          },
+          "dedupe": {
+            "enum": [
+              "always-switch",
+              "ask",
+              "off"
+            ]
+          },
+          "strict": {
+            "type": "boolean"
+          },
+          "merge": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "dedupe": {
+      "type": "object",
+      "required": [
+        "mode",
+        "keep",
+        "stripParams",
+        "stripFragment",
+        "ignoreTrailingSlash",
+        "canonicalizers",
+        "followFragment",
+        "allowDuplicates",
+        "alwaysSwitchSites",
+        "includeIncognito",
+        "scope",
+        "urlTransforms"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "enum": [
+            "always-switch",
+            "ask",
+            "off"
+          ]
+        },
+        "keep": {
+          "const": "existing"
+        },
+        "stripParams": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "stripFragment": {
+          "type": "boolean"
+        },
+        "ignoreTrailingSlash": {
+          "type": "boolean"
+        },
+        "canonicalizers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "followFragment": {
+          "type": "boolean"
+        },
+        "allowDuplicates": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "alwaysSwitchSites": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "includeIncognito": {
+          "type": "boolean"
+        },
+        "scope": {
+          "enum": [
+            "all-windows",
+            "same-window"
+          ]
+        },
+        "urlTransforms": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "pattern",
+              "replacement"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "pattern": {
+                "type": "string"
+              },
+              "replacement": {
+                "type": "string"
+              },
+              "flags": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
