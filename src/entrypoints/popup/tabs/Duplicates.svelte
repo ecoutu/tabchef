@@ -19,6 +19,9 @@
   const resolve = (a: PendingAsk, choice: 'switch' | 'keep') =>
     act(() => send({ type: 'dupes.resolve', newTabId: a.newTabId, existingTabId: a.existingTabId, choice }));
   const anyClosable = $derived(data.sets.some((s) => s.closable > 0));
+  // Sets whose tabs are listed; locking happens per extra tab there (the kept, oldest tab is never closed anyway).
+  let expanded = $state<Record<string, boolean>>({});
+  const toggleExpanded = (key: string) => { expanded[key] = !expanded[key]; };
 </script>
 
 <section>
@@ -47,13 +50,26 @@
             <span class="fav fav-ph" aria-hidden="true"></span>
           {/if}
           <button type="button" class="title" onclick={() => focus(oldest.id)}>{oldest.title || oldest.url}</button>
-          <span class="count">open {s.tabs.length}×</span>
-          <button type="button" class="lock" aria-label={`${isLocked(oldest.id) ? 'Unlock' : 'Lock'} tab ${oldest.title || oldest.url}`}
-            aria-pressed={isLocked(oldest.id)} onclick={() => toggleLock(oldest.id)}>{isLocked(oldest.id) ? 'Unlock' : 'Lock'}</button>
+          <button type="button" class="count" aria-expanded={!!expanded[s.key]}
+            aria-label={`${expanded[s.key] ? 'Hide' : 'Show'} ${s.tabs.length} tabs`} onclick={() => toggleExpanded(s.key)}>open {s.tabs.length}×</button>
           {#if s.closable > 0}
             <button type="button" class="close" onclick={() => closeExtras(s.key)}>close {s.closable}</button>
           {/if}
         </li>
+        {#if expanded[s.key]}
+          <li>
+            <ul class="extras">
+              {#each s.tabs.slice(1) as t, i (t.id)}
+                {@const name = `copy ${i + 2}: ${t.title || t.url}`}
+                <li class="row extra">
+                  <button type="button" class="title" onclick={() => focus(t.id)}>{t.title || t.url}</button>
+                  <button type="button" class="lock" aria-label={`${isLocked(t.id) ? 'Unlock' : 'Lock'} ${name}`}
+                    aria-pressed={isLocked(t.id)} onclick={() => toggleLock(t.id)}>{isLocked(t.id) ? 'Unlock' : 'Lock'}</button>
+                </li>
+              {/each}
+            </ul>
+          </li>
+        {/if}
       {/if}
     {/each}
   </ul>
@@ -71,7 +87,8 @@
   .fav-ph { background: var(--border); display: inline-block; }
   .title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left;
     background: none; border: 0; color: inherit; font: inherit; cursor: pointer; padding: 2px 0; }
-  .count { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .count { color: var(--muted); font-size: 12px; white-space: nowrap; background: none; border: 0; cursor: pointer; padding: 2px 4px; }
+  .extra { padding-left: 36px; }
   button { font: inherit; }
   .close, .lock, .ask button, .all { border: 1px solid var(--border); background: var(--surface); color: inherit; border-radius: 6px; padding: 2px 8px; cursor: pointer; }
   .all { display: block; width: calc(100% - 24px); margin: 8px 12px; padding: 6px; }
