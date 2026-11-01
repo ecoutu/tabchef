@@ -1,0 +1,53 @@
+{
+  "name": "tabchef",
+  "description": "Rule-based tab grouping and de-duplication for Chrome",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "wxt",
+    "build": "wxt build",
+    "zip": "wxt zip",
+    "test": "vitest run",
+    "lint": "eslint .",
+    "check": "svelte-check --tsconfig ./tsconfig.json && tsc --noEmit",
+    "e2e": "wxt build && playwright test",
+    "postinstall": "wxt prepare",
+    "prepare": "husky",
+    "gen:validator": "node scripts/gen-validator.mjs",
+    "check:csp": "node scripts/check-no-eval.mjs"
+  },
+  "devDependencies": {
+    "@commitlint/cli": "21.2.4",
+    "@commitlint/config-conventional": "21.2.4",
+    "@playwright/test": "1.64.1",
+    "@semantic-release/changelog": "7.0.0",
+    "@semantic-release/exec": "7.1.0",
+    "@semantic-release/git": "11.0.1",
+    "@semantic-release/github": "12.0.10",
+    "@semantic-release/npm": "13.2.0",
+    "@sveltejs/vite-plugin-svelte": "7.3.1",
+    "@testing-library/svelte": "5.4.2",
+    "@tsconfig/svelte": "5.0.8",
+    "@types/node": "24.19.2",
+    "@wxt-dev/module-svelte": "2.0.5",
+    "ajv": "8.20.0",
+    "eslint": "10.14.0",
+    "eslint-plugin-svelte": "3.23.1",
+    "husky": "9.1.7",
+    "jsdom": "30.1.3",
+    "semantic-release": "25.0.9",
+    "svelte": "5.57.3",
+    "svelte-check": "4.7.7",
+    "tslib": "2.9.1",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.72.1",
+    "vite": "8.3.5",
+    "vitest": "5.0.5",
+    "wxt": "0.21.5",
+    "yaml": "2.9.1"
+  },
+  "dependencies": {
+    "lzma": "2.3.2"
+  }
+}
