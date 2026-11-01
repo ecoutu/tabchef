@@ -1,0 +1,351 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { fakeBrowser } from 'wxt/testing/fake-browser';
+import { browser } from 'wxt/browser';
+import { Reconciler } from '../../src/engine/reconciler';
+import type { RuntimeState } from '../../src/engine/state';
+import { defaultConfig } from '../../src/core/config/defaults';
+import { FakeBrowserPort } from '../../src/platform/fake-port';
+import type { Config, GroupColor, GroupRule, TabSnap } from '../../src/core/types';
+
+type NewTab = Omit<TabSnap, 'index' | 'groupId'> & Partial<Pick<TabSnap, 'index' | 'groupId'>>;
+
+const A = 'https://a.com/x';
+const B = 'https://b.com/x';
+const OTHER = 'https://other.com/';
+const DRAG = 'Tabs cannot be edited right now (user may be dragging a tab).';
+const MUTATING = new Set(['group', 'ungroup', 'moveTabs', 'moveGroup', 'updateGroup', 'closeTab', 'createTab', 'focusTab']);
+
+const rule = (id: string, url: string, title: string, color: GroupColor): GroupRule => ({
+  id, name: id, enabled: true, match: { url }, group: { title, color },
+});
+const config: Config = {
+  ...defaultConfig(),
+  groupRules: [rule('a', 'https://a.com/**', 'A', 'red'), rule('b', 'https://b.com/**', 'B', 'blue')],
+};
+const tab = (id: number, url: string, o: Partial<NewTab> = {}): NewTab => ({
+  id, windowId: 1, url, title: `t${id}`, pinned: false, incognito: false, discarded: false,
+  active: false, audible: false, ...o,
+});
+const world = (windows: number[] = [1]): FakeBrowserPort => {
+  const f = new FakeBrowserPort();
+  for (const w of windows) f.addWindow(w);
+  return f;
+};
+const order = (f: FakeBrowserPort, w = 1): number[] => {
+  f.assertInvariants();
+  return f.state.tabs.filter((t) => t.windowId === w).sort((a, b) => a.index - b.index).map((t) => t.id);
+};
+const groupTitles = (f: FakeBrowserPort, w = 1): string[] => {
+  const ids: number[] = [];
+  for (const t of f.state.tabs.filter((x) => x.windowId === w).sort((a, b) => a.index - b.index)) {
+    if (t.groupId !== -1 && ids[ids.length - 1] !== t.groupId) ids.push(t.groupId);
+  }
+  return ids.map((id) => f.state.groups.find((g) => g.id === id)!.title);
+};
+const groupOf = (f: FakeBrowserPort, tabId: number): string | undefined => {
+  const gid = f.state.tabs.find((t) => t.id === tabId)!.groupId;
+  return f.state.groups.find((g) => g.id === gid)?.title;
+};
+const mutations = (f: FakeBrowserPort) => f.calls.filter((c) => MUTATING.has(c.method));
+const count = (f: FakeBrowserPort, m: string) => f.calls.filter((c) => c.method === m).length;
+const setUrl = (f: FakeBrowserPort, id: number, url: string) => { f.state.tabs.find((t) => t.id === id)!.url = url; };
+
+/** Mimic Chrome: fire tabs.onUpdated(groupId) for every tab whose group changes during a port call. */
+function emitGroupEvents(f: FakeBrowserPort, r: Reconciler): void {
+  for (const m of ['group', 'ungroup', 'moveTabs'] as const) {
+    const orig = f[m].bind(f) as (...a: unknown[]) => Promise<unknown>;
+    (f as unknown as Record<string, unknown>)[m] = async (...args: unknown[]) => {
+      const before = new Map(f.state.tabs.map((t) => [t.id, t.groupId]));
+      const res = await orig(...args);
+      for (const t of f.state.tabs) if (before.get(t.id) !== t.groupId) void r.onTabGroupChanged(t.id, t.groupId);
+      return res;
+    };
+  }
+}
+
+describe('Reconciler', () => {
+  beforeEach(() => {
+    fakeBrowser.reset();
+    vi.useFakeTimers();
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it('debounces: 5 schedule calls within 100 ms → a single snapshot', async () => {
+    const f = world();
+    f.addTab(tab(1, OTHER));
+    const r = new Reconciler(f, async () => config);
+    for (let i = 0; i < 5; i++) {
+      r.schedule('test');
+      await vi.advanceTimersByTimeAsync(20);
+    }
+    expect(count(f, 'snapshot')).toBe(0);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(count(f, 'snapshot')).toBe(1);
+  });
+
+  it('flush orders groups per config and sets title/color; second flush is idempotent', async () => {
+    const f = world();
+    f.addTab(tab(1, B));
+    f.addTab(tab(2, OTHER));
+    f.addTab(tab(3, A));
+    f.addTab(tab(4, B));
+    const r = new Reconciler(f, async () => config);
+    emitGroupEvents(f, r);
+    await r.flush();
+    expect(groupTitles(f)).toEqual(['A', 'B']);
+    expect(f.state.groups.find((g) => g.title === 'A')!.color).toBe('red');
+    expect(f.state.groups.find((g) => g.title === 'B')!.color).toBe('blue');
+    expect(order(f).at(-1)).toBe(2);
+    f.calls = [];
+    await r.flush();
+    expect(mutations(f)).toEqual([]);
+  });
+
+  it('end-to-end: reverse-order tabs across 2 windows → config order in both; second flush zero mutations', async () => {
+    const f = world([1, 2]);
+    f.addTab(tab(1, B));
+    f.addTab(tab(2, A));
+    f.addTab(tab(3, B));
+    f.addTab(tab(4, A));
+    f.addTab(tab(10, OTHER, { windowId: 2 }));
+    f.addTab(tab(11, B, { windowId: 2 }));
+    f.addTab(tab(12, A, { windowId: 2 }));
+    const r = new Reconciler(f, async () => config);
+    emitGroupEvents(f, r);
+    await r.flush();
+    expect(groupTitles(f, 1)).toEqual(['A', 'B']);
+    expect(groupTitles(f, 2)).toEqual(['A', 'B']);
+    expect(order(f, 2)).toEqual([12, 11, 10]);
+    f.assertInvariants();
+    f.calls = [];
+    await r.flush();
+    expect(mutations(f)).toEqual([]);
+  });
+
+  it('user ungroup is left alone until the URL changes', async () => {
+    const f = world();
+    f.addTab(tab(1, A));
+    f.addTab(tab(2, A));
+    const r = new Reconciler(f, async () => config);
+    emitGroupEvents(f, r);
+    await r.flush();
+    expect(groupOf(f, 1)).toBe('A');
+    // User drags tab 1 out of the group (not through the reconciler).
+    f.state.tabs.find((t) => t.id === 1)!.groupId = -1;
+    await r.onTabGroupChanged(1, -1);
+    await r.flush();
+    await r.flush();
+    expect(groupOf(f, 1)).toBeUndefined();
+    await r.onTabUrlChanged(1);
+    await r.flush();
+    expect(groupOf(f, 1)).toBe('A');
+  });
+
+  it('ungrouping done by Tabchef itself is not treated as a user drag', async () => {
+    const f = world();
+    f.addTab(tab(1, A));
+    f.addTab(tab(2, A));
+    const r = new Reconciler(f, async () => config);
+    emitGroupEvents(f, r);
+    await r.flush();
+    setUrl(f, 1, OTHER); // strict rule → Tabchef ungroups it (no onTabUrlChanged, to isolate the expectation path)
+    await r.flush();
+    expect(count(f, 'ungroup')).toBe(1);
+    expect(groupOf(f, 1)).toBeUndefined();
+    setUrl(f, 1, A);
+    await r.flush();
+    expect(groupOf(f, 1)).toBe('A');
+  });
+
+  it('drag retry exhaustion → re-schedules on the next onMoved/onAttached, then order is correct', async () => {
+    const f = world();
+    f.addTab(tab(1, B, { groupId: 50 }));
+    f.addTab(tab(2, A, { groupId: 60 }));
+    f.addGroup({ id: 50, windowId: 1, title: 'B', color: 'blue', collapsed: false });
+    f.addGroup({ id: 60, windowId: 1, title: 'A', color: 'red', collapsed: false });
+    f.failNext('moveGroup', DRAG, 99);
+    const log = { add: vi.fn() };
+    const r = new Reconciler(f, async () => config, { log });
+    r.schedule('test');
+    await vi.advanceTimersByTimeAsync(150 + 250 + 500 + 1000 + 2000 + 10);
+    expect(count(f, 'moveGroup')).toBe(5);
+    expect(log.add).toHaveBeenCalledWith(expect.objectContaining({ action: 'drag-retry-exhausted' }));
+    expect(groupTitles(f)).toEqual(['B', 'A']);
+    f.clearFailures();
+    r.onTabMovedOrAttached();
+    await vi.advanceTimersByTimeAsync(200);
+    expect(groupTitles(f)).toEqual(['A', 'B']);
+    f.calls = [];
+    await vi.advanceTimersByTimeAsync(10_000); // fallback timer was cancelled
+    expect(count(f, 'snapshot')).toBe(0);
+  });
+
+  it('drag retry exhaustion → 5 s fallback timer schedules once when no event arrives', async () => {
+    const f = world();
+    f.addTab(tab(1, B, { groupId: 50 }));
+    f.addTab(tab(2, A, { groupId: 60 }));
+    f.addGroup({ id: 50, windowId: 1, title: 'B', color: 'blue', collapsed: false });
+    f.addGroup({ id: 60, windowId: 1, title: 'A', color: 'red', collapsed: false });
+    f.failNext('moveGroup', DRAG, 5);
+    const r = new Reconciler(f, async () => config);
+    const p = r.flush();
+    await vi.advanceTimersByTimeAsync(250 + 500 + 1000 + 2000 + 10);
+    await expect(p).resolves.toBeUndefined(); // flush never rejects on drag exhaustion
+    expect(groupTitles(f)).toEqual(['B', 'A']);
+    expect(count(f, 'moveGroup')).toBe(5);
+    f.calls = [];
+    // no failures left: the fallback (5 s + debounce) fixes it
+    await vi.advanceTimersByTimeAsync(5000 + 150 + 10);
+    expect(groupTitles(f)).toEqual(['A', 'B']);
+    const snaps = count(f, 'snapshot');
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(count(f, 'snapshot')).toBe(snaps);
+  });
+
+  it('paused → zero mutating calls', async () => {
+    const f = world();
+    f.addTab(tab(1, B));
+    f.addTab(tab(2, A));
+    const r = new Reconciler(f, async () => config, { isPaused: () => true });
+    await r.flush();
+    r.schedule('x');
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(mutations(f)).toEqual([]);
+  });
+
+  it('never runs flush concurrently; schedule during a flush queues exactly one more', async () => {
+    const f = world();
+    f.addTab(tab(1, A));
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const getConfig = vi.fn(async () => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((res) => setTimeout(res, 1000));
+      inFlight--;
+      return config;
+    });
+    const r = new Reconciler(f, getConfig);
+    const p = r.flush();
+    await vi.advanceTimersByTimeAsync(10);
+    r.schedule('a');
+    r.schedule('b');
+    await vi.advanceTimersByTimeAsync(200); // debounce fires mid-flush
+    void r.flush();
+    await vi.advanceTimersByTimeAsync(5000);
+    await p;
+    expect(maxInFlight).toBe(1);
+    expect(getConfig).toHaveBeenCalledTimes(2);
+  });
+
+  it('persists runtime state to storage.session "rt" and reloads it after a restart', async () => {
+    const f = world();
+    f.addTab(tab(1, A));
+    f.addTab(tab(2, B));
+    const r = new Reconciler(f, async () => config);
+    emitGroupEvents(f, r);
+    await r.flush();
+    f.state.tabs.find((t) => t.id === 1)!.groupId = -1;
+    f.state.groups = f.state.groups.filter((g) => g.title !== 'A');
+    await r.onTabGroupChanged(1, -1);
+    const { rt } = (await browser.storage.session.get('rt')) as { rt: RuntimeState };
+    expect(rt).toMatchObject({ leaveAlone: [1], expectedGroupChanges: [] });
+    expect([...rt.managedTitles].sort()).toEqual(['A', 'B']);
+    expect(rt.creationOrder).toEqual([['1|A', 1], ['1|B', 2]]);
+    // service worker restart: new instance, same storage
+    const r2 = new Reconciler(f, async () => config);
+    f.calls = [];
+    await r2.flush();
+    expect(f.calls.filter((c) => c.method === 'group')).toEqual([]); // only a moveGroup (B left of the loose tab)
+    expect(groupOf(f, 1)).toBeUndefined();
+  });
+
+  it('detects a drag-out after a service-worker restart (managed-tab membership is persisted)', async () => {
+    const f = world();
+    f.addTab(tab(1, A));
+    f.addTab(tab(2, A));
+    const r = new Reconciler(f, async () => config);
+    emitGroupEvents(f, r);
+    await r.flush();
+    expect(groupOf(f, 1)).toBe('A');
+    // Worker idles out; the drag event wakes a fresh instance before any flush.
+    const r2 = new Reconciler(f, async () => config);
+    f.state.tabs.find((t) => t.id === 1)!.groupId = -1;
+    await r2.onTabGroupChanged(1, -1);
+    const { rt } = (await browser.storage.session.get('rt')) as { rt: RuntimeState };
+    expect(rt.leaveAlone).toEqual([1]);
+    await r2.flush();
+    expect(groupOf(f, 1)).toBeUndefined();
+    expect(f.calls.filter((c) => c.method === 'group' && (c.args[0] as number[]).includes(1))).toHaveLength(1);
+  });
+
+  describe('expectations expire after 2 s', () => {
+    const merged = (): { f: FakeBrowserPort; r: Reconciler } => {
+      const f = world([1, 2]);
+      const merge: Config = { ...defaultConfig(), groupRules: [{ ...rule('a', 'https://a.com/**', 'A', 'red'), merge: true }] };
+      f.addTab(tab(1, A, { groupId: 70 }));
+      f.addGroup({ id: 70, windowId: 1, title: 'A', color: 'red', collapsed: false });
+      f.addTab(tab(2, A, { windowId: 2 }));
+      return { f, r: new Reconciler(f, async () => merge) };
+    };
+    const leaveAlone = async () => ((await browser.storage.session.get('rt')) as { rt: RuntimeState }).rt.leaveAlone;
+
+    it('a late groupId=-1 event for a Tabchef move within 2 s is ignored', async () => {
+      const { f, r } = merged();
+      await r.flush(); // moveTabs + regroup of tab 2; events not delivered yet
+      expect(groupOf(f, 2)).toBe('A');
+      await vi.advanceTimersByTimeAsync(1500);
+      await r.onTabGroupChanged(2, -1);
+      expect(await leaveAlone()).toEqual([]);
+    });
+
+    it('the same event after 2 s is treated as a user drag', async () => {
+      const { r } = merged();
+      await r.flush();
+      await vi.advanceTimersByTimeAsync(2001);
+      await r.onTabGroupChanged(2, -1);
+      expect(await leaveAlone()).toEqual([2]);
+    });
+  });
+
+  it('logs reconcile-not-converged when ops remain after 3 passes', async () => {
+    const f = world();
+    f.addTab(tab(1, B, { groupId: 50 }));
+    f.addTab(tab(2, A, { groupId: 60 }));
+    f.addGroup({ id: 50, windowId: 1, title: 'B', color: 'blue', collapsed: false });
+    f.addGroup({ id: 60, windowId: 1, title: 'A', color: 'red', collapsed: false });
+    f.moveGroup = async () => {}; // the browser ignores the move: the planner can never converge
+    const log = { add: vi.fn() };
+    const r = new Reconciler(f, async () => config, { log });
+    await r.flush();
+    expect(log.add).toHaveBeenCalledWith(expect.objectContaining({ action: 'reconcile-not-converged', detail: expect.stringContaining('1 op') }));
+  });
+
+  it('applies merge moveTabs by moving then regrouping into the home group', async () => {
+    const f = world([1, 2]);
+    const merge: Config = { ...defaultConfig(), groupRules: [{ ...rule('a', 'https://a.com/**', 'A', 'red'), merge: true }] };
+    f.addTab(tab(1, A, { groupId: 70 }));
+    f.addGroup({ id: 70, windowId: 1, title: 'A', color: 'red', collapsed: false });
+    f.addTab(tab(2, A, { windowId: 2 }));
+    const r = new Reconciler(f, async () => merge);
+    emitGroupEvents(f, r);
+    await r.flush();
+    expect(order(f, 1)).toEqual([1, 2]);
+    expect(groupOf(f, 2)).toBe('A');
+    f.calls = [];
+    await r.flush();
+    expect(mutations(f)).toEqual([]);
+  });
+
+  it('logs and swallows non-drag errors', async () => {
+    const f = world();
+    f.addTab(tab(1, A));
+    f.failNext('group', 'No tab with id: 1');
+    const log = { add: vi.fn() };
+    const r = new Reconciler(f, async () => config, { log });
+    await expect(r.flush()).resolves.toBeUndefined();
+    expect(log.add).toHaveBeenCalledWith(expect.objectContaining({ action: 'reconcile-error' }));
+    await r.flush();
+    expect(groupOf(f, 1)).toBe('A');
+  });
+});
