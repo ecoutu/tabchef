@@ -1,5 +1,8 @@
-import type { Config, DedupeSettings, TabSnap } from '../core/types';
+import type { Config, DedupeSettings, GroupRule, TabSnap } from '../core/types';
 import { validateConfig } from '../core/config/schema';
+import { importAutoGroupTabs } from '../core/import/auto-group-tabs';
+import { mergeDedupe } from '../core/import/merge';
+import { importTabDeduper } from '../core/import/tab-deduper';
 import { findDuplicateSets, tabUrl } from '../core/dedupe/find';
 import type { RecentlyClosed, RecentlyClosedItem } from '../core/safety/recently-closed';
 import type { WhyEntry, WhyLog } from '../core/safety/why-log';
@@ -76,7 +79,13 @@ export type Request =
   | { type: 'safety.status' }
   | { type: 'tab.lock'; tabId: number }
   | { type: 'tab.unlock'; tabId: number }
-  | { type: 'tab.focus'; tabId: number };
+  | { type: 'tab.focus'; tabId: number }
+  | { type: 'import.preview'; source: ImportSource; data: unknown }
+  | { type: 'import.apply'; source: ImportSource; data: unknown; baseRev: string };
+
+export type ImportSource = 'auto-group-tabs' | 'tab-deduper';
+export interface ImportPreview { rules: GroupRule[]; dedupe: Partial<DedupeSettings>; warnings: string[]; changes: string[] }
+const MAX_IMPORT_BYTES = 5 * 1024 * 1024;
 
 export type Response<T = unknown> = { ok: true; data: T } | { ok: false; error: string; errors?: string[] };
 
@@ -119,6 +128,8 @@ export interface ResponseData {
   'tab.lock': null;
   'tab.unlock': null;
   'tab.focus': null;
+  'import.preview': ImportPreview;
+  'import.apply': { rules: number };
 }
 export type ResponseFor<R extends Request> = Response<ResponseData[R['type']]>;
 
@@ -126,6 +137,16 @@ const num = (v: unknown): v is number => typeof v === 'number' && Number.isFinit
 const str = (v: unknown): v is string => typeof v === 'string';
 const NO_ARGS = new Set(['config.get', 'config.backups', 'tabs.list', 'dupes.list', 'dupes.closeAll', 'recent.list', 'why.all',
   'safety.resume', 'safety.status']);
+
+const isImportSource = (v: unknown): v is ImportSource => v === 'auto-group-tabs' || v === 'tab-deduper';
+
+async function runImport(source: ImportSource, data: unknown, current: Config): Promise<ImportPreview> {
+  if ((JSON.stringify(data) ?? '').length > MAX_IMPORT_BYTES) throw new Error('Import data too large (max 5 MB)');
+  const r = source === 'auto-group-tabs' ? { dedupe: {}, ...(await importAutoGroupTabs(data)) } : { rules: [] as GroupRule[], ...importTabDeduper(data) };
+  const titles = new Set(current.groupRules.map((x) => x.group.title));
+  const warnings = [...r.warnings, ...r.rules.filter((x) => titles.has(x.group.title)).map((x) => `Already have a rule titled "${x.group.title}"`)];
+  return { ...r, warnings, changes: mergeDedupe(current.dedupe, r.dedupe).changes };
+}
 
 /** Structural check of an untrusted message. */
 export function isRequest(m: unknown): m is Request {
@@ -140,6 +161,8 @@ export function isRequest(m: unknown): m is Request {
     case 'dupes.resolve': return num(x.newTabId) && num(x.existingTabId) && (x.choice === 'switch' || x.choice === 'keep');
     case 'recent.undo': return str(x.id);
     case 'why.forTab': case 'tab.lock': case 'tab.unlock': case 'tab.focus': return num(x.tabId);
+    case 'import.preview': return isImportSource(x.source);
+    case 'import.apply': return isImportSource(x.source) && 'data' in x && str(x.baseRev);
     case 'safety.pause': return x.d === '15m' || x.d === '1h' || x.d === 'restart';
     default: return false;
   }
@@ -245,6 +268,24 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
         if (req.baseRev !== undefined && req.baseRev !== configRev(await deps.store.get())) return fail('conflict');
         await deps.store.set(req.config as Config);
         return ok(null);
+      }
+      case 'import.preview': return ok(await runImport(req.source, req.data, await deps.store.get()));
+      case 'import.apply': {
+        const current = await deps.store.get();
+        const imp = await runImport(req.source, req.data, current);
+        if (imp.rules.length === 0 && Object.keys(imp.dedupe).length === 0) return fail('nothing to import', imp.warnings);
+        if (req.baseRev !== configRev(current)) return fail('conflict');
+        const ids = new Set(current.groupRules.map((r) => r.id));
+        const added = imp.rules.map((r) => {
+          const id = ids.has(r.id) ? crypto.randomUUID() : r.id;
+          ids.add(id);
+          return { ...r, id };
+        });
+        const next: Config = { ...current, groupRules: [...current.groupRules, ...added], dedupe: mergeDedupe(current.dedupe, imp.dedupe).merged };
+        const v = validateConfig(next);
+        if (!v.ok) return fail('invalid config', v.errors);
+        await deps.store.set(next);
+        return ok({ rules: added.length });
       }
       case 'config.backups': return ok(await deps.store.backups());
       case 'config.restore': await deps.store.restore(req.at); return ok(null);

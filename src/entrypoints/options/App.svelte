@@ -10,17 +10,19 @@
   import Dedupe from './Dedupe.svelte';
   import History from './History.svelte';
   import Backups from './Backups.svelte';
+  import Import from './Import.svelte';
 
   /**
    * Route table. To add a page (e.g. '/import' in Task 17), add one entry here; the nav and hash routing pick it up.
    */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const ROUTES: { path: string; label: string; page: 'rules' | 'dedupe' | 'history' | 'backups' | Component<any> }[] = [
+  const ROUTES: { path: string; label: string; page: 'rules' | 'dedupe' | 'history' | 'backups' | 'import' | Component<any> }[] = [
     { path: '/rules', label: 'Group rules', page: 'rules' },
     { path: '/dedupe', label: 'Duplicates', page: 'dedupe' },
     { path: '/history', label: 'History', page: 'history' },
     { path: '/backups', label: 'Backups', page: 'backups' },
-    // ROUTE-INSERT-POINT: { path: '/import', label: 'Import', page: ... } (Task 17)
+    { path: '/import', label: 'Import', page: 'import' },
+    // ROUTE-INSERT-POINT
   ];
 
   const parseHash = (): string => {
@@ -135,6 +137,8 @@
       <History />
     {:else if current.page === 'backups'}
       {#if saved}<Backups saved={saved!} {dirty} onApplied={loadConfig} />{/if}
+    {:else if current.page === 'import'}
+      {#if saved}<Import {dirty} onApplied={loadConfig} />{/if}
     {:else if draft && current.page === 'rules'}
       <GroupRules config={draft} {tabs} {dirty} {saving} serverErrors={saveErrors} onChange={edit} onSave={save} />
     {:else if draft && current.page === 'dedupe'}
