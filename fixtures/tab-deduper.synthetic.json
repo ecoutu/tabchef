@@ -1,0 +1,12 @@
+{
+  "sync": {},
+  "local": {
+    "dedupAllWindows": false,
+    "useTitleDefault": true,
+    "ignoreFragmentDefault": true,
+    "urlExempts": "mail.google.com\n/^docs\\.google\\.com\\/spreadsheets/",
+    "titleOverrides": "-github.com/acme",
+    "fragmentOverrides": "-app.example.com/#/",
+    "urlTranforms": "\\?.*$``\n(github\\.com/[^/]+/[^/]+/pull/\\d+).*`$1`"
+  }
+}

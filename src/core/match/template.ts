@@ -9,3 +9,8 @@ export function renderTemplate(t: string, vars: Record<string, string>): string 
     return v;
   });
 }
+
+/** Distinct variable names used by a title template, in first-use order. */
+export function templateVars(t: string): string[] {
+  return [...new Set([...t.matchAll(TOKEN)].map((m) => m[1] as string))];
+}
