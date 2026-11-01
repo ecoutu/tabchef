@@ -11,6 +11,7 @@ const BACKUPS_KEY = 'cfg:backups';
 const PENDING_KEY = 'cfg:pending'; // local edit not yet confirmed written to sync
 const LOCAL_ONLY_KEY = 'cfg:localOnly'; // config too large for sync; local copy is authoritative
 const SYNCED_SHA_KEY = 'cfg:syncedSha'; // sha this device last read from / wrote to sync (absent: never synced)
+const FRESH_KEY = 'cfg:freshDevice'; // device was fresh (never synced, no local state) when it first loaded; cleared on first sync contact
 const CHUNK_BYTES = 7000; // measured on the JSON-escaped value, so the stored item stays far below 8,192 B
 const MAX_SYNC_BYTES = 90_000;
 const MAX_BACKUPS = 20;
@@ -23,7 +24,7 @@ const MAX_BACKOFF_MS = 600_000;
 
 type ReadResult =
   | { kind: 'none' }
-  | { kind: 'ok'; config: Config; sha: string; warnings: string[] }
+  | { kind: 'ok'; config: Config; original: Config; sha: string; warnings: string[] }
   | { kind: 'bad'; reason: string };
 
 const enc = new TextEncoder();
@@ -62,13 +63,14 @@ function migrate(raw: unknown): unknown {
   return { ...d, ...raw, dedupe: { ...d.dedupe, ...(isObj(raw.dedupe) ? raw.dedupe : {}) } };
 }
 
-type Loaded = { ok: true; config: Config; warnings: string[] } | { ok: false; reason: string };
+type Loaded = { ok: true; config: Config; original: Config; warnings: string[] } | { ok: false; reason: string };
 
 /** Load path for any stored config (sync, lastGood, backups): migrate, repair (see repairConfig), then validate. */
 function loadStored(raw: unknown): Loaded {
-  const { config, warnings } = repairConfig(migrate(raw));
+  const original = migrate(raw);
+  const { config, warnings } = repairConfig(original);
   const r = validateConfig(config);
-  return r.ok ? { ok: true, config: r.config, warnings } : { ok: false, reason: `invalid: ${r.errors[0] ?? ''}` };
+  return r.ok ? { ok: true, config: r.config, original: original as Config, warnings } : { ok: false, reason: `invalid: ${r.errors[0] ?? ''}` };
 }
 
 function parseConfig(json: string): Loaded {
@@ -269,11 +271,11 @@ export class ConfigStore {
     const sha = await sha256(json);
     if (sha !== meta.sha) return { kind: 'bad', reason: 'checksum mismatch' };
     const p = parseConfig(json);
-    return p.ok ? { kind: 'ok', config: p.config, sha, warnings: p.warnings } : { kind: 'bad', reason: p.reason };
+    return p.ok ? { kind: 'ok', config: p.config, original: p.original, sha, warnings: p.warnings } : { kind: 'bad', reason: p.reason };
   }
 
   private async load(): Promise<Config> {
-    const local = await browser.storage.local.get([LOCAL_ONLY_KEY, PENDING_KEY, SYNCED_SHA_KEY]);
+    const local = await browser.storage.local.get([LOCAL_ONLY_KEY, PENDING_KEY, SYNCED_SHA_KEY, FRESH_KEY]);
     if (typeof local[SYNCED_SHA_KEY] === 'string') this.syncedSha = local[SYNCED_SHA_KEY];
     const stored = await this.readLastGood();
     const lastGood = stored?.config;
@@ -288,6 +290,7 @@ export class ConfigStore {
     if (lastGood && local[PENDING_KEY] === true) {
       // An edit made on this device never reached sync (worker killed inside the debounce window): it wins.
       this.dirty = JSON.stringify(lastGood);
+      this.freshDevice = local[FRESH_KEY] === true; // persisted: first save of a fresh device whose sync write was lost
       this.repairWarning = lastGoodWarning;
       this.scheduleWrite();
       return (this.current = lastGood);
@@ -299,17 +302,19 @@ export class ConfigStore {
       await this.enqueueLocal(async () => {
         // Keep the loaded version restorable: a later set() replaces it.
         const backups = await this.readBackups();
-        if (JSON.stringify(backups[0]?.config) !== JSON.stringify(r.config)) {
-          backups.unshift({ at: this.nextAt(backups), config: r.config });
+        // Back up the original (pre-repair) config so restoring gives back exactly what the user had.
+        if (JSON.stringify(backups[0]?.config) !== JSON.stringify(r.original)) {
+          backups.unshift({ at: this.nextAt(backups), config: r.original });
           backups.length = Math.min(backups.length, MAX_BACKUPS);
         }
-        await browser.storage.local.set({ [LAST_GOOD_KEY]: r.config, [BACKUPS_KEY]: backups, [SYNCED_SHA_KEY]: r.sha });
+        await browser.storage.local.set({ [LAST_GOOD_KEY]: r.config, [BACKUPS_KEY]: backups, [SYNCED_SHA_KEY]: r.sha, [FRESH_KEY]: false });
       });
       return (this.current = r.config);
     }
     this.repairWarning = lastGood ? lastGoodWarning : undefined;
     if (r.kind === 'none') {
       this.freshDevice = this.syncedSha === undefined && lastGood === undefined && !hasLocalFlag;
+      if (this.freshDevice) await this.enqueueLocal(() => browser.storage.local.set({ [FRESH_KEY]: true }));
       return (this.current = lastGood ?? defaultConfig());
     }
     this.warning = `Synced config failed verification (${r.reason}); using the last good copy on this device.`;
@@ -357,7 +362,7 @@ export class ConfigStore {
       const backups = await this.readBackups();
       backups.unshift({ at: this.nextAt(backups), config });
       backups.length = Math.min(backups.length, MAX_BACKUPS);
-      await browser.storage.local.set({ [LAST_GOOD_KEY]: config, [BACKUPS_KEY]: backups, [SYNCED_SHA_KEY]: sha });
+      await browser.storage.local.set({ [LAST_GOOD_KEY]: config, [BACKUPS_KEY]: backups, [SYNCED_SHA_KEY]: sha, [FRESH_KEY]: false });
     });
     this.emit(config);
   }
@@ -384,7 +389,7 @@ export class ConfigStore {
       }
       await browser.storage.local.set({
         [LAST_GOOD_KEY]: remote.config, [BACKUPS_KEY]: backups, [PENDING_KEY]: false, [LOCAL_ONLY_KEY]: false,
-        [SYNCED_SHA_KEY]: remote.sha,
+        [SYNCED_SHA_KEY]: remote.sha, [FRESH_KEY]: false,
       });
     });
     if (!same) this.emit(remote.config);
@@ -427,9 +432,9 @@ export class ConfigStore {
       if (this.dirty === json) {
         this.dirty = undefined;
         this.warning = undefined;
-        await this.enqueueLocal(() => browser.storage.local.set({ [PENDING_KEY]: false, [LOCAL_ONLY_KEY]: false, [SYNCED_SHA_KEY]: sha }));
+        await this.enqueueLocal(() => browser.storage.local.set({ [PENDING_KEY]: false, [LOCAL_ONLY_KEY]: false, [SYNCED_SHA_KEY]: sha, [FRESH_KEY]: false }));
       } else {
-        await this.enqueueLocal(() => browser.storage.local.set({ [SYNCED_SHA_KEY]: sha }));
+        await this.enqueueLocal(() => browser.storage.local.set({ [SYNCED_SHA_KEY]: sha, [FRESH_KEY]: false }));
       }
     } catch (e) {
       const msg = String((e as Error)?.message ?? e);
