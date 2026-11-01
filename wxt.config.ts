@@ -6,6 +6,8 @@ export const manifestConfig: UserManifest = {
   optional_permissions: ['notifications', 'identity', 'scripting', 'sidePanel', 'bookmarks'],
   optional_host_permissions: ['https://*/*', 'http://localhost/*'],
   options_ui: { page: 'options.html', open_in_tab: true },
+  // storage.session, sidePanel.open and the tab group APIs Tabchef relies on.
+  minimum_chrome_version: '116',
 };
 
 /**
