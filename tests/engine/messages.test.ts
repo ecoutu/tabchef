@@ -274,6 +274,23 @@ describe('import.*', () => {
     expect(w.data.warnings).toContain('Already have a rule titled "Old"');
   });
 
+  it('skips imported rules with empty titles or uncaptured template variables, with a warning (I1)', async () => {
+    const s = setup();
+    const data = { groups: [
+      { id: 'e', title: '', color: 'blue', matchers: ['https://e.example/*'] },
+      { id: 't', title: '{repo}', color: 'blue', matchers: ['https://t.example/*'] },
+      { id: 'k', title: 'Keep', color: 'blue', matchers: ['https://k.example/*'] },
+    ] };
+    const p = (await s.handle({ type: 'import.preview', source: 'auto-group-tabs', data }, ui)) as { data: { rules: { id: string }[]; warnings: string[] } };
+    expect(p.data.rules.map((r) => r.id)).toEqual(['k']);
+    expect(p.data.warnings).toEqual(expect.arrayContaining([
+      'Rule "" skipped: title must not be empty.',
+      'Rule "{repo}" skipped: title uses {repo}, which pattern "https://t.example/*" does not capture.',
+    ]));
+    const r = await s.handle({ type: 'import.apply', source: 'auto-group-tabs', data, baseRev: configRev(s.getCfg()) }, ui);
+    expect(r).toEqual({ ok: true, data: { rules: 1 } });
+  });
+
   it('rejects import data over 5 MB', async () => {
     const s = setup();
     const r = await s.handle({ type: 'import.preview', source: 'tab-deduper', data: { local: { urlExempts: 'x'.repeat(5 * 1024 * 1024 + 1) } } }, ui);

@@ -74,13 +74,71 @@ function planMoves(windowTabs: TabSnap[], desired: number[]): Op[] {
   return ops;
 }
 
+type ManagedCtx = Pick<PlanContext, 'leaveAlone' | 'managedTitles'>;
+
+interface Targets {
+  normal: Set<number>;
+  /** Tabs of normal windows in (window, index) order. */
+  tabs: TabSnap[];
+  eligible: (t: TabSnap) => boolean;
+  matches: Map<number, GroupMatch>;
+  /** Lowest-ruleIndex match per target title. */
+  titleMatch: Map<string, GroupMatch>;
+  managed: Set<number>;
+}
+
+function targets(snap: Snapshot, config: Config, ctx: ManagedCtx): Targets {
+  const normal = new Set(snap.windows.filter((w) => w.type === 'normal').map((w) => w.id));
+  const tabs = snap.tabs.filter((t) => normal.has(t.windowId)).sort(byPos);
+  const eligible = (t: TabSnap): boolean => !t.pinned && !ctx.leaveAlone.has(t.id) && !isExemptUrl(urlOf(t));
+  const matches = new Map<number, GroupMatch>();
+  const titleMatch = new Map<string, GroupMatch>();
+  for (const t of tabs) {
+    if (!eligible(t)) continue;
+    const m = evaluateGroupRules(t, config.groupRules);
+    if (!m) continue;
+    matches.set(t.id, m);
+    const prev = titleMatch.get(m.title);
+    if (!prev || m.ruleIndex < prev.ruleIndex) titleMatch.set(m.title, m);
+  }
+  // Untitled groups are always the user's (Tabchef never renders an empty title).
+  const managed = new Set(snap.groups
+    .filter((g) => normal.has(g.windowId) && g.title !== '' && (ctx.managedTitles.has(g.title) || titleMatch.has(g.title)))
+    .map((g) => g.id));
+  return { normal, tabs, eligible, matches, titleMatch, managed };
+}
+
+/**
+ * Ids of groups Tabchef manages: titled groups (normal windows) whose title Tabchef created/adopted or that some
+ * eligible tab currently targets. The planner and the reconciler's membership tracking share this definition.
+ */
+export function managedGroupIds(snap: Snapshot, config: Config, ctx: ManagedCtx): Set<number> {
+  return targets(snap, config, ctx).managed;
+}
+
+/**
+ * Gives every managed group without a creation number one (after all known numbers, in tab-strip order), so groups
+ * restored by the browser keep their place when new ones are created; drops numbers of groups that no longer exist.
+ */
+export function syncCreationOrder(snap: Snapshot, managed: Set<number>, order: Map<string, number>): void {
+  const groupsById = new Map(snap.groups.map((g) => [g.id, g]));
+  const live = new Set(snap.groups.map((g) => `${g.windowId}|${g.title}`));
+  for (const k of [...order.keys()]) if (!live.has(k)) order.delete(k);
+  let next = Math.max(0, ...order.values());
+  for (const t of [...snap.tabs].sort(byPos)) {
+    const g = groupsById.get(t.groupId);
+    if (!g || !managed.has(g.id)) continue;
+    const k = `${g.windowId}|${g.title}`;
+    if (!order.has(k)) order.set(k, ++next);
+  }
+}
+
 /**
  * Plans grouping ops for a snapshot. Pure. Groups are matched by title + window, never by stored id.
  * Windows that get structural ops (group/ungroup/moveTabs) get no moveGroup ops this pass; the reconciler re-plans.
  */
 export function planGroups(snap: Snapshot, config: Config, ctx: PlanContext): Op[] {
-  const normal = new Set(snap.windows.filter((w) => w.type === 'normal').map((w) => w.id));
-  const tabs = snap.tabs.filter((t) => normal.has(t.windowId)).sort(byPos);
+  const { normal, tabs, eligible, matches, titleMatch, managed } = targets(snap, config, ctx);
   const groupsById = new Map(snap.groups.map((g) => [g.id, g]));
   const incognitoWindows = new Set(tabs.filter((t) => t.incognito).map((t) => t.windowId));
 
@@ -91,19 +149,7 @@ export function planGroups(snap: Snapshot, config: Config, ctx: PlanContext): Op
     if (list) list.push(g); else byTitle.set(g.title, [g]);
   }
 
-  const eligible = (t: TabSnap): boolean => !t.pinned && !ctx.leaveAlone.has(t.id) && !isExemptUrl(urlOf(t));
-  const matches = new Map<number, GroupMatch>();
-  const titleMatch = new Map<string, GroupMatch>(); // lowest-ruleIndex match per target title
-  for (const t of tabs) {
-    if (!eligible(t)) continue;
-    const m = evaluateGroupRules(t, config.groupRules);
-    if (!m) continue;
-    matches.set(t.id, m);
-    const prev = titleMatch.get(m.title);
-    if (!prev || m.ruleIndex < prev.ruleIndex) titleMatch.set(m.title, m);
-  }
-
-  const isManaged = (g: GroupSnap): boolean => ctx.managedTitles.has(g.title) || titleMatch.has(g.title);
+  const isManaged = (g: GroupSnap): boolean => managed.has(g.id);
   const strictFor = (g: GroupSnap): boolean => {
     const m = titleMatch.get(g.title);
     if (m) return m.strict;
@@ -144,10 +190,13 @@ export function planGroups(snap: Snapshot, config: Config, ctx: PlanContext): Op
         moveTabs.set(k, mv);
         continue;
       }
-      key = home ? `${t.windowId}|${m.title}` : `merge|${incog}|${m.title}`;
+      // A non-merge rule with the same title may already plan a group in this window: share it (one title per window).
+      key = home || buckets.has(`${t.windowId}|${m.title}`) ? `${t.windowId}|${m.title}` : `merge|${incog}|${m.title}`;
     } else {
       home = candidates.find((g) => g.windowId === t.windowId);
       key = `${t.windowId}|${m.title}`;
+      const mk = `merge|${t.incognito}|${m.title}`;
+      if (!home && !buckets.has(key) && buckets.get(mk)?.windowId === t.windowId) key = mk;
     }
     let b = buckets.get(key);
     if (!b) {
