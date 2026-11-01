@@ -24,6 +24,7 @@ function setup() {
     extensionOrigin: 'chrome-extension://ext',
     store: {
       get: async () => cfg, set, backups: async () => [{ at: 1, config: cfg }], restore: vi.fn(async () => {}),
+      update: vi.fn(async (fn: (c: Config) => Config) => { const next = fn(await deps.store.get()); await set(next); return next; }),
       status: async () => ({ syncing: true }),
     },
     port,
@@ -116,6 +117,16 @@ describe('messages', () => {
     const g2 = (await s.handle({ type: 'config.get' }, ui)) as { data: { rev: string } };
     expect(g2.data.rev).not.toBe(g.data.rev);
     expect((await s.handle({ type: 'config.set', config: defaultConfig(), baseRev: g2.data.rev }, ui)).ok).toBe(true);
+  });
+
+  it('config.set checks baseRev inside the store update, against the config it replaces (T13)', async () => {
+    const s = setup();
+    const base = configRev(defaultConfig());
+    const newer = { ...defaultConfig(), dedupe: { ...defaultConfig().dedupe, alwaysSwitchSites: ['x.com'] } };
+    // Another writer lands between the handler's read and its write: the update sees the newer config.
+    s.deps.store.update = vi.fn(async (fn: (c: Config) => Config) => fn(newer));
+    expect(await createHandler(s.deps)({ type: 'config.set', config: defaultConfig(), baseRev: base }, ui)).toEqual({ ok: false, error: 'conflict' });
+    expect(s.set).not.toHaveBeenCalled();
   });
 
   it('rejects content scripts and foreign senders', async () => {
