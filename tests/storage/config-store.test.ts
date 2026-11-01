@@ -436,6 +436,29 @@ describe('ConfigStore', () => {
     expect((await local().get('cfg:pending'))['cfg:pending']).toBe(false);
   });
 
+  it('fresh device: the fresh state survives a worker kill before the debounced sync write', async () => {
+    const a = mk();
+    await a.get();
+    const mine = withSite('mine.com');
+    await a.set(mine); // worker killed here: no flush
+    const theirs = withSite('theirs.com');
+    await putSync(JSON.stringify(theirs));
+    const b = mk(); // new worker over the same storage
+    expect(await b.get()).toEqual(mine);
+    await b.flush();
+    expect(await b.get()).toEqual(theirs);
+    expect((await b.backups()).some((x) => JSON.stringify(x.config) === JSON.stringify(mine))).toBe(true);
+    expect((await b.status()).warning).toContain('Synced settings were found and loaded');
+    expect((await local().get('cfg:freshDevice'))['cfg:freshDevice']).toBe(false);
+  });
+
+  it('fresh flag is cleared after a successful sync write', async () => {
+    const a = mk();
+    await a.set(withSite('mine.com'));
+    await a.flush();
+    expect((await local().get('cfg:freshDevice'))['cfg:freshDevice']).toBe(false);
+  });
+
   it('fresh device with nothing in sync still writes the local edit (I4)', async () => {
     const b = mk();
     await b.set(withSite('mine.com'));
@@ -479,6 +502,17 @@ describe('ConfigStore', () => {
       await local().set({ 'cfg:lastGood': legacy(), 'cfg:syncedSha': 'x' });
       await sync().set({ 'cfg:0': '{', 'cfg:meta': { v: 1, n: 1, sha: 'nope', at: 1 } });
       expectRepaired(await mk().get());
+    });
+    it('load backs up the ORIGINAL (pre-repair) config; current is repaired; restoring it re-repairs with the warning', async () => {
+      await putSync(JSON.stringify(legacy()));
+      const s = mk();
+      expectRepaired(await s.get());
+      const [b] = await s.backups();
+      expect(b!.config.groupRules.map((r) => [r.id, r.enabled])).toEqual([['ok', true], ['gh', true]]);
+      await s.set(withSite('x.com'));
+      await s.restore(b!.at);
+      expectRepaired(await s.get());
+      expect((await s.status()).warning).toContain(WARN);
     });
     it('restore() of such a backup', async () => {
       const s = mk();
