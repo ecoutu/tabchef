@@ -15,6 +15,7 @@ export interface DedupeSettings {
   canonicalizers: string[];                   // ids, e.g. ['githubPr']
   followFragment: boolean;                    // kept tab navigates to the new #fragment (default true)
   allowDuplicates: string[];                  // url patterns exempt from dedupe
+  alwaysSwitchSites: string[];                // url patterns that skip the ask prompt and always switch (ask mode)
   includeIncognito: boolean;
   scope: 'all-windows' | 'same-window';       // default 'all-windows' (Tab Deduper dedupAllWindows)
   urlTransforms: { pattern: string; replacement: string; flags?: string }[];  // regex replace applied to the dedupe key, after canonicalizers

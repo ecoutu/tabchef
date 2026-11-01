@@ -616,4 +616,30 @@ describe('DedupeHandler', () => {
     expect(w.calls('closeTab')).toEqual([[2], [3], [4]]);
     expect(w.port.state.tabs.map((x) => x.id)).toEqual([1]);
   });
+
+  it('ask mode with a matching alwaysSwitchSites pattern closes the new tab without asking', async () => {
+    const cfg = defaultConfig();
+    cfg.dedupe.mode = 'ask';
+    cfg.dedupe.alwaysSwitchSites = ['https://github.com/*'];
+    const w = setup(cfg);
+    w.port.addTab(tab(1, PR));
+    w.port.addTab(tab(2, `${PR}/files`, { active: true }));
+    w.h.recordCreated(2);
+    await w.h.onCandidate(2, `${PR}/files`, 'pending');
+    expect(w.ask).not.toHaveBeenCalled();
+    expect(w.calls('closeTab')).toEqual([[2]]);
+  });
+
+  it('ask mode with a non-matching alwaysSwitchSites pattern still asks', async () => {
+    const cfg = defaultConfig();
+    cfg.dedupe.mode = 'ask';
+    cfg.dedupe.alwaysSwitchSites = ['https://example.com/*'];
+    const w = setup(cfg);
+    w.port.addTab(tab(1, PR));
+    w.port.addTab(tab(2, `${PR}/files`, { active: true }));
+    w.h.recordCreated(2);
+    await w.h.onCandidate(2, `${PR}/files`, 'pending');
+    expect(w.ask).toHaveBeenCalledTimes(1);
+    expect(w.calls('closeTab')).toEqual([]);
+  });
 });

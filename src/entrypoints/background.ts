@@ -1,12 +1,20 @@
 import { browser } from 'wxt/browser';
 import { defaultConfig } from '../core/config/defaults';
+import type { Config } from '../core/types';
+import { createAskController } from '../engine/ask';
+import { isBannerChoiceMessage } from '../engine/messages';
 import { DedupeHandler, type LogEntry, type RecentlyClosedEntry } from '../engine/dedupe-handler';
 import { Reconciler } from '../engine/reconciler';
 import { ChromePort } from '../platform/chrome-port';
 
 export default defineBackground(() => {
   // TODO(Task 13): replace with ConfigStore.get().
-  const getConfig = async () => defaultConfig();
+  // Task 13: persist via ConfigStore
+  let config: Config = defaultConfig();
+  const getConfig = async () => config;
+  const updateConfig = async (fn: (c: Config) => Config) => {
+    config = fn(config);
+  };
   const port = new ChromePort();
   const reconciler = new Reconciler(port, getConfig);
   const schedule = (reason: string) => () => reconciler.schedule(reason);
@@ -14,22 +22,62 @@ export default defineBackground(() => {
   // TODO(Task 12): replace with RecentlyClosed / WhyLog. Minimal in-memory stubs until then.
   const recentlyClosed: RecentlyClosedEntry[] = [];
   const whyLog: LogEntry[] = [];
+  const logDep = {
+    add: (e: LogEntry) => {
+      whyLog.push(e);
+      if (whyLog.length > 1000) whyLog.shift();
+    },
+  };
+  const recentlyClosedDep = {
+    add: (e: RecentlyClosedEntry) => {
+      recentlyClosed.unshift(e);
+      recentlyClosed.length = Math.min(recentlyClosed.length, 100);
+      return `${e.at}-${recentlyClosed.length}`;
+    },
+  };
+  const askController = createAskController(port, {
+    // scripting / notifications are optional permissions: the namespaces are undefined until granted (the port checks first).
+    api: {
+      executeScript: async (tabId, file) => {
+        await browser.scripting.executeScript({ target: { tabId }, files: [file as never] });
+      },
+      sendMessage: (tabId, message) => browser.tabs.sendMessage(tabId, message),
+      waitForComplete: (tabId, timeoutMs) => new Promise<boolean>((resolve) => {
+        const onUpdated = (id: number, info: { status?: string }) => {
+          if (id === tabId && info.status === 'complete') done(true);
+        };
+        function done(ok: boolean) {
+          clearTimeout(timer);
+          browser.tabs.onUpdated.removeListener(onUpdated);
+          resolve(ok);
+        }
+        const timer = setTimeout(() => done(false), timeoutMs);
+        browser.tabs.onUpdated.addListener(onUpdated);
+        browser.tabs.get(tabId).then((t) => { if (t.status === 'complete') done(true); }, () => done(false));
+      }),
+      clearNotification: async (id) => { await browser.notifications.clear(id); },
+      listNotificationIds: async () => (browser.notifications ? Object.keys(await browser.notifications.getAll()) : []),
+      createNotification: async (id, o) => {
+        await browser.notifications.create(id, {
+          type: 'basic', iconUrl: browser.runtime.getURL('/icon/128.png'), requireInteraction: true, ...o,
+        });
+      },
+      session: {
+        get: async (k) => (await browser.storage.session.get(k))[k],
+        set: (k, v) => browser.storage.session.set({ [k]: v }),
+      },
+    },
+    bannerFile: 'content-scripts/banner.js',
+    getConfig,
+    updateConfig,
+    recentlyClosed: recentlyClosedDep,
+    log: logDep,
+    isLocked: () => false,
+  });
   const dedupe = new DedupeHandler(port, getConfig, {
-    recentlyClosed: {
-      add: (e) => {
-        recentlyClosed.unshift(e);
-        recentlyClosed.length = Math.min(recentlyClosed.length, 100);
-        return `${e.at}-${recentlyClosed.length}`;
-      },
-    },
-    log: {
-      add: (e) => {
-        whyLog.push(e);
-        if (whyLog.length > 1000) whyLog.shift();
-      },
-    },
-    // TODO(Task 11): replace with the in-page ask prompt.
-    ask: async (newTab, existing) => console.debug('[tabchef] dedupe ask (stub)', newTab.id, existing.id),
+    recentlyClosed: recentlyClosedDep,
+    log: logDep,
+    ask: askController.ask,
     isPaused: () => false,
     isLocked: () => false,
     // Cleared on browser restart: a missing marker at worker start opens the startup grace (order-independent).
@@ -74,6 +122,7 @@ export default defineBackground(() => {
   browser.tabs.onAttached.addListener(movedOrAttached('tab-attached'));
   browser.tabs.onRemoved.addListener((tabId) => {
     dedupe.onRemoved(tabId);
+    askController.onTabRemoved(tabId).catch((e: unknown) => console.warn('[tabchef] pending ask cleanup failed', e));
     reconciler.schedule('tab-removed');
   });
   browser.tabs.onReplaced.addListener((added, removed) => dedupe.onReplaced(added, removed));
@@ -84,5 +133,26 @@ export default defineBackground(() => {
     dedupe.noteStartup();
     reconciler.schedule('startup');
   });
+  // Banner choices arrive from the content script in the duplicate tab.
+  browser.runtime.onMessage.addListener((msg: unknown, sender) => {
+    if (!isBannerChoiceMessage(msg) || sender.id !== browser.runtime.id) return;
+    const tabId = sender.tab?.id;
+    if (tabId === undefined) return;
+    askController.handleChoice(tabId, msg.existingTabId, msg.choice).catch((e: unknown) => console.warn('[tabchef] banner choice failed', e));
+  });
+  // notifications is an optional permission: its events exist only once granted, so (re)register on grant as well.
+  let notificationsWired = false;
+  const wireNotifications = () => {
+    if (notificationsWired || !browser.notifications) return;
+    notificationsWired = true;
+    const warn = (e: unknown) => console.warn('[tabchef] notification handler failed', e);
+    browser.notifications.onButtonClicked.addListener((id, i) => {
+      askController.onNotificationButton(id, i).catch(warn);
+      void browser.notifications.clear(id);
+    });
+    browser.notifications.onClosed.addListener((id) => { askController.onNotificationClosed(id).catch(warn); });
+  };
+  wireNotifications();
+  browser.permissions.onAdded.addListener(wireNotifications);
   browser.runtime.onInstalled.addListener(schedule('installed'));
 });
