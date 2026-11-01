@@ -76,7 +76,8 @@ function planMoves(windowTabs: TabSnap[], desired: number[]): Op[] {
 
 type ManagedCtx = Pick<PlanContext, 'leaveAlone' | 'managedTitles'>;
 
-interface Targets {
+/** Per-pass rule evaluation shared by managedGroupIds and planGroups (compute once with planTargets). */
+export interface Targets {
   normal: Set<number>;
   /** Tabs of normal windows in (window, index) order. */
   tabs: TabSnap[];
@@ -87,7 +88,7 @@ interface Targets {
   managed: Set<number>;
 }
 
-function targets(snap: Snapshot, config: Config, ctx: ManagedCtx): Targets {
+export function planTargets(snap: Snapshot, config: Config, ctx: ManagedCtx): Targets {
   const normal = new Set(snap.windows.filter((w) => w.type === 'normal').map((w) => w.id));
   const tabs = snap.tabs.filter((t) => normal.has(t.windowId)).sort(byPos);
   const eligible = (t: TabSnap): boolean => !t.pinned && !ctx.leaveAlone.has(t.id) && !isExemptUrl(urlOf(t));
@@ -112,18 +113,40 @@ function targets(snap: Snapshot, config: Config, ctx: ManagedCtx): Targets {
  * Ids of groups Tabchef manages: titled groups (normal windows) whose title Tabchef created/adopted or that some
  * eligible tab currently targets. The planner and the reconciler's membership tracking share this definition.
  */
-export function managedGroupIds(snap: Snapshot, config: Config, ctx: ManagedCtx): Set<number> {
-  return targets(snap, config, ctx).managed;
+export function managedGroupIds(snap: Snapshot, config: Config, ctx: ManagedCtx, pre?: Targets): Set<number> {
+  return (pre ?? planTargets(snap, config, ctx)).managed;
 }
+
+/** Options for syncCreationOrder's deletion of numbers whose group is not live. */
+export interface CreationPrune {
+  /** Titles of groups created but not titled yet (they are untitled meanwhile): their numbers are kept. */
+  pendingTitles?: Iterable<string>;
+  /** Tombstones: key → consecutive counted calls it was absent. A key is dropped once it reaches ABSENT_LIMIT. */
+  absent: Map<string, number>;
+  /** Count absence on this call (once per flush; later passes of the same flush pass false). */
+  count: boolean;
+}
+const ABSENT_LIMIT = 2;
+const titleOfKey = (k: string): string => k.slice(k.indexOf('|') + 1);
 
 /**
  * Gives every managed group without a creation number one (after all known numbers, in tab-strip order), so groups
  * restored by the browser keep their place when new ones are created; drops numbers of groups that no longer exist.
+ * With `prune`, a number survives while its title is pending a retitle, and is dropped only after its group was
+ * absent for ABSENT_LIMIT consecutive flushes (a group that is briefly empty or untitled keeps its place).
  */
-export function syncCreationOrder(snap: Snapshot, managed: Set<number>, order: Map<string, number>): void {
+export function syncCreationOrder(snap: Snapshot, managed: Set<number>, order: Map<string, number>, prune?: CreationPrune): void {
   const groupsById = new Map(snap.groups.map((g) => [g.id, g]));
   const live = new Set(snap.groups.map((g) => `${g.windowId}|${g.title}`));
-  for (const k of [...order.keys()]) if (!live.has(k)) order.delete(k);
+  const pending = new Set(prune?.pendingTitles ?? []);
+  for (const k of [...order.keys()]) {
+    if (live.has(k) || pending.has(titleOfKey(k))) { prune?.absent.delete(k); continue; }
+    if (!prune) { order.delete(k); continue; }
+    if (!prune.count) continue;
+    const n = (prune.absent.get(k) ?? 0) + 1;
+    if (n >= ABSENT_LIMIT) { order.delete(k); prune.absent.delete(k); } else prune.absent.set(k, n);
+  }
+  if (prune) for (const k of [...prune.absent.keys()]) if (!order.has(k)) prune.absent.delete(k);
   let next = Math.max(0, ...order.values());
   for (const t of [...snap.tabs].sort(byPos)) {
     const g = groupsById.get(t.groupId);
@@ -136,9 +159,15 @@ export function syncCreationOrder(snap: Snapshot, managed: Set<number>, order: M
 /**
  * Plans grouping ops for a snapshot. Pure. Groups are matched by title + window, never by stored id.
  * Windows that get structural ops (group/ungroup/moveTabs) get no moveGroup ops this pass; the reconciler re-plans.
+ * `pre` is planTargets(snap, config, ctx) when the caller already computed it this pass.
+ *
+ * Merge titles are global: a title that any merge rule claims (some eligible tab matched it via a merge rule) gets
+ * one group across all windows (per incognito-ness), and every tab targeting that title joins it, including tabs
+ * matched by a non-merge rule with the same title. Titles no merge rule claims get one group per window.
  */
-export function planGroups(snap: Snapshot, config: Config, ctx: PlanContext): Op[] {
-  const { normal, tabs, eligible, matches, titleMatch, managed } = targets(snap, config, ctx);
+export function planGroups(snap: Snapshot, config: Config, ctx: PlanContext, pre?: Targets): Op[] {
+  const { normal, tabs, eligible, matches, titleMatch, managed } = pre ?? planTargets(snap, config, ctx);
+  const mergeTitles = new Set([...matches.values()].filter((m) => m.merge).map((m) => m.title));
   const groupsById = new Map(snap.groups.map((g) => [g.id, g]));
   const incognitoWindows = new Set(tabs.filter((t) => t.incognito).map((t) => t.windowId));
 
@@ -185,7 +214,7 @@ export function planGroups(snap: Snapshot, config: Config, ctx: PlanContext): Op
     const candidates = byTitle.get(m.title) ?? [];
     let key: string;
     let home: GroupSnap | undefined;
-    if (m.merge) {
+    if (mergeTitles.has(m.title)) {
       const incog = t.incognito;
       home = candidates.find((g) => incognitoWindows.has(g.windowId) === incog);
       if (home && home.windowId !== t.windowId) {
@@ -195,13 +224,10 @@ export function planGroups(snap: Snapshot, config: Config, ctx: PlanContext): Op
         moveTabs.set(k, mv);
         continue;
       }
-      // A non-merge rule with the same title may already plan a group in this window: share it (one title per window).
-      key = home || buckets.has(`${t.windowId}|${m.title}`) ? `${t.windowId}|${m.title}` : `merge|${incog}|${m.title}`;
+      key = home ? `${t.windowId}|${m.title}` : `merge|${incog}|${m.title}`;
     } else {
       home = candidates.find((g) => g.windowId === t.windowId);
       key = `${t.windowId}|${m.title}`;
-      const mk = `merge|${t.incognito}|${m.title}`;
-      if (!home && !buckets.has(key) && buckets.get(mk)?.windowId === t.windowId) key = mk;
     }
     let b = buckets.get(key);
     if (!b) {

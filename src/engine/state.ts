@@ -14,6 +14,10 @@ export interface RuntimeState {
   pendingTitles?: [number, PendingTitle][];
   /** [tabId, url without #fragment] of leave-alone tabs: a fragment-only change is not a navigation. */
   leaveAloneUrls?: [number, string][];
+  /** [groupId, consecutive non-drag failures] of pendingTitles entries; dropped after MAX_RETITLE_FAILURES. */
+  retitleFailures?: [number, number][];
+  /** ["<windowId>|<title>", consecutive flushes absent]: creation numbers are dropped only after 2 (tombstones). */
+  creationAbsent?: [string, number][];
 }
 
 export interface PendingTitle { title: string; color: GroupColor; collapsed?: boolean }
@@ -30,6 +34,8 @@ export interface LiveState {
   managedTabs: Map<number, number>;
   pendingTitles: Map<number, PendingTitle>;
   leaveAloneUrls: Map<number, string>;
+  retitleFailures: Map<number, number>;
+  creationAbsent: Map<string, number>;
 }
 
 export const RT_KEY = 'rt';
@@ -43,6 +49,8 @@ export function toLive(rt: Partial<RuntimeState> | undefined): LiveState {
     managedTabs: new Map(rt?.managedTabs ?? []),
     pendingTitles: new Map(rt?.pendingTitles ?? []),
     leaveAloneUrls: new Map(rt?.leaveAloneUrls ?? []),
+    retitleFailures: new Map(rt?.retitleFailures ?? []),
+    creationAbsent: new Map(rt?.creationAbsent ?? []),
   };
 }
 
@@ -55,6 +63,8 @@ export function toRuntime(s: LiveState): RuntimeState {
     managedTabs: [...s.managedTabs],
     pendingTitles: [...s.pendingTitles],
     leaveAloneUrls: [...s.leaveAloneUrls],
+    retitleFailures: [...s.retitleFailures],
+    creationAbsent: [...s.creationAbsent],
   };
 }
 
