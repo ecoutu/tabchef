@@ -41,8 +41,8 @@ function setup(over: Partial<AskDeps> = {}) {
     updateConfig: async (fn) => { cfg = fn(cfg); },
     recentlyClosed: { add: (e) => { closed.push(e); return 'rc'; } },
     log: { add: (e) => { logs.push(e); } },
-    // Stand-in for the shared refreshBadge (no duplicate sets in these worlds' badge expectations).
-    refreshBadge: async () => {
+    // Stand-in for the shared badge refresh (no duplicate sets in these worlds' badge expectations).
+    scheduleBadge: async () => {
       const l = await listPendingAsks(api.session);
       await port.setBadge(l.length ? String(l.length) : '');
     },
@@ -102,12 +102,22 @@ describe('ask: preference order', () => {
     expect(w.store.has(PENDING_KEY)).toBe(true);
   });
 
-  it('updates the badge through the shared refreshBadge, never with a pending-only count (M8)', async () => {
-    const refreshBadge = vi.fn(async () => {});
-    const w = setup({ refreshBadge });
+  it('updates the badge through the shared scheduleBadge, never with a pending-only count (M8)', async () => {
+    const scheduleBadge = vi.fn(async () => {});
+    const w = setup({ scheduleBadge });
     await w.askDefault();
-    expect(refreshBadge).toHaveBeenCalled();
+    expect(scheduleBadge).toHaveBeenCalled();
     expect(w.calls('setBadge')).toEqual([]);
+  });
+
+  it('a failing badge refresh (snapshot throws) never rejects a pending mutation (CR#7)', async () => {
+    let failBadge = false;
+    const w = setup({ scheduleBadge: async () => { if (failBadge) throw new Error('snapshot failed'); } });
+    await w.askDefault();
+    expect(await listPendingAsks(w.api.session)).toHaveLength(1);
+    failBadge = true;
+    await expect(w.ctl.resolvePending(2, 1, 'keep')).resolves.toBeUndefined();
+    expect(await listPendingAsks(w.api.session)).toEqual([]);
   });
 
   it('frozen tab with host permission uses the notification path and never executeScript', async () => {
