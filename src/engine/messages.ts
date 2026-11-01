@@ -65,6 +65,7 @@ export type Request =
   | { type: 'config.set'; config: unknown; baseRev?: string }
   | { type: 'config.backups' }
   | { type: 'config.restore'; at: number }
+  | { type: 'config.status' }
   | { type: 'tabs.list' }
   | { type: 'dupes.list' }
   | { type: 'dupes.closeExtras'; key: string }
@@ -106,13 +107,15 @@ export function isConfigChangedMessage(m: unknown): m is ConfigChangedMessage {
 export interface DupeSet { key: string; tabs: TabSnap[] }
 /** A dupe set as listed to the UI: `closable` = extras the close button would actually close. */
 export interface DupeSetView extends DupeSet { closable: number }
-export interface SafetyStatus { paused: boolean }
+export interface SafetyStatus { paused: boolean; locked: number[] }
+export interface ConfigStatus { syncing: boolean; warning?: string }
 
 export interface ResponseData {
   'config.get': { config: Config; rev: string };
   'config.set': null;
   'config.backups': Backup[];
   'config.restore': null;
+  'config.status': ConfigStatus;
   'tabs.list': TabSnap[];
   'dupes.list': { sets: DupeSetView[]; pending: PendingAsk[] };
   'dupes.closeExtras': number;
@@ -135,7 +138,7 @@ export type ResponseFor<R extends Request> = Response<ResponseData[R['type']]>;
 
 const num = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
 const str = (v: unknown): v is string => typeof v === 'string';
-const NO_ARGS = new Set(['config.get', 'config.backups', 'tabs.list', 'dupes.list', 'dupes.closeAll', 'recent.list', 'why.all',
+const NO_ARGS = new Set(['config.get', 'config.backups', 'config.status', 'tabs.list', 'dupes.list', 'dupes.closeAll', 'recent.list', 'why.all',
   'safety.resume', 'safety.status']);
 
 const isImportSource = (v: unknown): v is ImportSource => v === 'auto-group-tabs' || v === 'tab-deduper';
@@ -182,9 +185,9 @@ export interface HandlerDeps {
   store: Pick<ConfigStore, 'get' | 'set' | 'backups' | 'restore' | 'status'>;
   port: BrowserPort;
   getSettings: () => Promise<DedupeSettings>;
-  safety: Pick<SafetyService, 'pause' | 'resume' | 'isPaused' | 'lock' | 'unlock' | 'isLocked' | 'undo'>;
-  recentlyClosed: Pick<RecentlyClosed, 'list' | 'add'>;
-  whyLog: Pick<WhyLog, 'all' | 'forTab' | 'add'>;
+  safety: Pick<SafetyService, 'pause' | 'resume' | 'isPaused' | 'lock' | 'unlock' | 'isLocked' | 'lockedTabIds' | 'undo'>;
+  recentlyClosed: Pick<RecentlyClosed, 'list' | 'add' | 'ready'>;
+  whyLog: Pick<WhyLog, 'all' | 'forTab' | 'add' | 'ready'>;
   ask: { listPending: () => Promise<PendingAsk[]>; resolvePending: (n: number, e: number, c: 'switch' | 'keep') => Promise<void> };
   now?: () => number;
 }
@@ -296,6 +299,7 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
       }
       case 'config.backups': return ok(await deps.store.backups());
       case 'config.restore': await deps.store.restore(req.at); return ok(null);
+      case 'config.status': return ok(await deps.store.status());
       case 'tabs.list': return ok((await deps.port.snapshot()).tabs);
       case 'dupes.list': {
         const views = (await sets()).map((s): DupeSetView => ({
@@ -319,13 +323,13 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
         await deps.ask.resolvePending(req.newTabId, req.existingTabId, req.choice);
         await refreshBadge({ ...deps, isLocked: (id) => deps.safety.isLocked(id) });
         return ok(null);
-      case 'recent.list': return ok(deps.recentlyClosed.list());
+      case 'recent.list': await deps.recentlyClosed.ready; return ok(deps.recentlyClosed.list());
       case 'recent.undo': await deps.safety.undo(req.id); return ok(null);
-      case 'why.forTab': return ok(deps.whyLog.forTab(req.tabId));
-      case 'why.all': return ok(deps.whyLog.all());
+      case 'why.forTab': await deps.whyLog.ready; return ok(deps.whyLog.forTab(req.tabId));
+      case 'why.all': await deps.whyLog.ready; return ok(deps.whyLog.all());
       case 'safety.pause': deps.safety.pause(req.d); return ok(null);
       case 'safety.resume': deps.safety.resume(); return ok(null);
-      case 'safety.status': return ok({ paused: deps.safety.isPaused() });
+      case 'safety.status': return ok({ paused: deps.safety.isPaused(), locked: deps.safety.lockedTabIds() });
       case 'tab.lock': deps.safety.lock(req.tabId); return ok(null);
       case 'tab.unlock': deps.safety.unlock(req.tabId); return ok(null);
       case 'tab.focus': {

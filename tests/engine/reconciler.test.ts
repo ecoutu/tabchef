@@ -361,4 +361,120 @@ describe('Reconciler', () => {
     await r.flush();
     expect(groupOf(f, 1)).toBe('A');
   });
+  describe('restored groups without Tabchef state (I2, I3)', () => {
+    const repoCfg: Config = { ...defaultConfig(), groupRules: [{ ...rule('gh', 'github.com/:org/:repo/*', '{repo}', 'blue'), name: 'Repos' }] };
+    const GH = (r: string) => `https://github.com/acme/${r}/pulls`;
+
+    it('detects a drag-out of a restored, already-correct group (no managedTitles)', async () => {
+      const f = world();
+      f.addTab(tab(1, A, { groupId: 50 }));
+      f.addTab(tab(2, A, { groupId: 50 }));
+      f.addGroup({ id: 50, windowId: 1, title: 'A', color: 'red', collapsed: false });
+      const r = new Reconciler(f, async () => config);
+      await r.flush();
+      expect(mutations(f)).toEqual([]);
+      f.state.tabs.find((t) => t.id === 1)!.groupId = -1;
+      await r.onTabGroupChanged(1, -1);
+      const { rt } = (await browser.storage.session.get('rt')) as { rt: RuntimeState };
+      expect(rt.leaveAlone).toEqual([1]);
+      await r.flush();
+      expect(groupOf(f, 1)).toBeUndefined();
+    });
+
+    it('a new templated group appends after restored groups; existing groups do not shift', async () => {
+      const f = world();
+      f.addTab(tab(1, GH('zeta'), { groupId: 20 }));
+      f.addTab(tab(2, GH('alpha'), { groupId: 10 }));
+      f.addGroup({ id: 20, windowId: 1, title: 'zeta', color: 'blue', collapsed: false });
+      f.addGroup({ id: 10, windowId: 1, title: 'alpha', color: 'blue', collapsed: false });
+      f.addTab(tab(3, GH('beta')));
+      const r = new Reconciler(f, async () => repoCfg);
+      emitGroupEvents(f, r);
+      await r.flush();
+      expect(groupTitles(f)).toEqual(['zeta', 'alpha', 'beta']);
+      expect(count(f, 'moveGroup')).toBe(0);
+      const { rt } = (await browser.storage.session.get('rt')) as { rt: RuntimeState };
+      expect(rt.creationOrder).toEqual([['1|zeta', 1], ['1|alpha', 2], ['1|beta', 3]]);
+      // A group that disappears loses its number.
+      f.state.tabs = f.state.tabs.filter((t) => t.id !== 2);
+      f.state.groups = f.state.groups.filter((g) => g.id !== 10);
+      await r.flush();
+      const after = ((await browser.storage.session.get('rt')) as { rt: RuntimeState }).rt;
+      expect(after.creationOrder).toEqual([['1|zeta', 1], ['1|beta', 3]]);
+    });
+  });
+
+  it('why-log: one entry per tab per real membership change, with the rule (I7)', async () => {
+    const f = world();
+    const named: Config = { ...defaultConfig(), groupRules: [{ ...rule('a', 'https://a.com/**', 'A', 'red'), name: 'Alpha rule' }] };
+    f.addTab(tab(1, A));
+    f.addTab(tab(2, A));
+    const entries: { tabId?: number; ruleId?: string; action: string; detail: string }[] = [];
+    const r = new Reconciler(f, async () => named, { log: { add: (e) => { entries.push(e); } } });
+    emitGroupEvents(f, r);
+    await r.flush();
+    expect(entries.filter((e) => e.action === 'grouped')).toEqual([
+      expect.objectContaining({ tabId: 1, ruleId: 'a', detail: 'Moved to A by rule Alpha rule' }),
+      expect.objectContaining({ tabId: 2, ruleId: 'a', detail: 'Moved to A by rule Alpha rule' }),
+    ]);
+    await r.flush();
+    expect(entries.filter((e) => e.action === 'grouped')).toHaveLength(2);
+    setUrl(f, 1, OTHER);
+    await r.flush();
+    expect(entries.filter((e) => e.action === 'ungrouped')).toEqual([
+      expect.objectContaining({ tabId: 1, ruleId: 'a', detail: 'Removed from A (no longer matches Alpha rule)' }),
+    ]);
+  });
+
+  it('re-titles a group it created but could not title, on the next flush (M1)', async () => {
+    const f = world();
+    f.addTab(tab(1, A));
+    f.failNext('updateGroup', 'Group busy');
+    const r = new Reconciler(f, async () => config);
+    emitGroupEvents(f, r);
+    await r.flush();
+    expect(f.state.groups.map((g) => g.title)).toEqual(['']);
+    await r.flush();
+    expect(f.state.groups.map((g) => g.title)).toEqual(['A']);
+    expect(f.state.groups.find((g) => g.title === 'A')!.color).toBe('red');
+    expect(groupOf(f, 1)).toBe('A');
+    expect(count(f, 'group')).toBe(1);
+  });
+
+  it('the expectation window starts again when the mutating call resolves (M2)', async () => {
+    const f = world([1, 2]);
+    const merge: Config = { ...defaultConfig(), groupRules: [{ ...rule('a', 'https://a.com/**', 'A', 'red'), merge: true }] };
+    f.addTab(tab(1, A, { groupId: 70 }));
+    f.addGroup({ id: 70, windowId: 1, title: 'A', color: 'red', collapsed: false });
+    f.addTab(tab(2, A, { windowId: 2 }));
+    f.failNext('moveTabs', DRAG, 3); // 250 + 500 + 1000 ms of drag retries before the move succeeds
+    const r = new Reconciler(f, async () => merge);
+    const p = r.flush();
+    await vi.advanceTimersByTimeAsync(1800);
+    await p;
+    expect(groupOf(f, 2)).toBe('A');
+    await vi.advanceTimersByTimeAsync(1500); // 3.3 s after the move was issued, 1.5 s after it resolved
+    await r.onTabGroupChanged(2, -1); // Chrome's late echo of the move (tabs leave their group when moved)
+    const { rt } = (await browser.storage.session.get('rt')) as { rt: RuntimeState };
+    expect(rt.leaveAlone).toEqual([]);
+  });
+
+  it('a fragment-only URL change keeps leave-alone; a real navigation clears it (M3)', async () => {
+    const f = world();
+    f.addTab(tab(1, A));
+    f.addTab(tab(2, A));
+    const r = new Reconciler(f, async () => config);
+    emitGroupEvents(f, r);
+    await r.flush();
+    f.state.tabs.find((t) => t.id === 1)!.groupId = -1;
+    await r.onTabGroupChanged(1, -1, A);
+    setUrl(f, 1, `${A}#section`);
+    await r.onTabUrlChanged(1, `${A}#section`);
+    await r.flush();
+    expect(groupOf(f, 1)).toBeUndefined();
+    setUrl(f, 1, 'https://a.com/y');
+    await r.onTabUrlChanged(1, 'https://a.com/y');
+    await r.flush();
+    expect(groupOf(f, 1)).toBe('A');
+  });
 });

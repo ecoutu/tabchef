@@ -94,8 +94,8 @@ describe('planGroups: config order', () => {
     f.addTab(tab(1, B));
     f.addTab(tab(2, A));
     expect(planGroups(snap(f), AB, ctx())).toEqual([
-      { kind: 'group', tabIds: [2], windowId: 1, title: 'A', color: 'blue', collapsed: false },
-      { kind: 'group', tabIds: [1], windowId: 1, title: 'B', color: 'red', collapsed: false },
+      { kind: 'group', tabIds: [2], windowId: 1, title: 'A', color: 'blue', collapsed: false, ruleId: 'a' },
+      { kind: 'group', tabIds: [1], windowId: 1, title: 'B', color: 'red', collapsed: false, ruleId: 'b' },
     ]);
   });
 
@@ -184,7 +184,7 @@ describe('planGroups: adoption by title + window', () => {
     f.addTab(tab(2, A));
     f.addGroup({ id: 999, windowId: 1, title: 'api', color: 'blue', collapsed: false });
     const ops = planGroups(snap(f), API, ctx());
-    expect(ops).toEqual([{ kind: 'group', tabIds: [2], windowId: 1, title: 'api', color: 'blue', existingGroupId: 999 }]);
+    expect(ops).toEqual([{ kind: 'group', tabIds: [2], windowId: 1, title: 'api', color: 'blue', existingGroupId: 999, ruleId: 'api' }]);
     expect(ops.some((o) => o.kind === 'group' && o.existingGroupId === undefined)).toBe(false);
   });
 
@@ -202,7 +202,7 @@ describe('planGroups: adoption by title + window', () => {
     f.addGroup({ id: 5, windowId: 1, title: 'api', color: 'blue', collapsed: false });
     f.addGroup({ id: 3, windowId: 1, title: 'api', color: 'blue', collapsed: false });
     const ops = planGroups(snap(f), API, ctx());
-    expect(ops).toEqual([{ kind: 'group', tabIds: [1], windowId: 1, title: 'api', color: 'blue', existingGroupId: 3 }]);
+    expect(ops).toEqual([{ kind: 'group', tabIds: [1], windowId: 1, title: 'api', color: 'blue', existingGroupId: 3, ruleId: 'api' }]);
     await apply(f, ops);
     expect(f.state.groups.filter((g) => g.title === 'api').map((g) => g.id)).toEqual([3]);
     expect(f.state.tabs.map((t) => t.groupId)).toEqual([3, 3]);
@@ -213,8 +213,8 @@ describe('planGroups: adoption by title + window', () => {
     f.addTab(tab(1, A));
     f.addTab(tab(2, A, { windowId: 2 }));
     expect(planGroups(snap(f), API, ctx())).toEqual([
-      { kind: 'group', tabIds: [1], windowId: 1, title: 'api', color: 'blue', collapsed: false },
-      { kind: 'group', tabIds: [2], windowId: 2, title: 'api', color: 'blue', collapsed: false },
+      { kind: 'group', tabIds: [1], windowId: 1, title: 'api', color: 'blue', collapsed: false, ruleId: 'api' },
+      { kind: 'group', tabIds: [2], windowId: 2, title: 'api', color: 'blue', collapsed: false, ruleId: 'api' },
     ]);
   });
 
@@ -224,7 +224,7 @@ describe('planGroups: adoption by title + window', () => {
     f.addTab(tab(2, A, { windowId: 2 }));
     f.addGroup({ id: 10, windowId: 1, title: 'api', color: 'blue', collapsed: false });
     expect(planGroups(snap(f), API, ctx())).toEqual([
-      { kind: 'group', tabIds: [2], windowId: 2, title: 'api', color: 'blue', collapsed: false },
+      { kind: 'group', tabIds: [2], windowId: 2, title: 'api', color: 'blue', collapsed: false, ruleId: 'api' },
     ]);
   });
 
@@ -344,7 +344,7 @@ describe('planGroups: strict', () => {
 
   it('strict unset → ungroup', () => {
     expect(planGroups(snap(setup()), cfg(rule('api', 'a.com/*', 'api')), managed()))
-      .toEqual([{ kind: 'ungroup', tabIds: [1] }]);
+      .toEqual([{ kind: 'ungroup', tabIds: [1], ruleId: 'api' }]);
   });
 
   it('strict-ungroup applies only to managed groups', () => {
@@ -355,7 +355,7 @@ describe('planGroups: strict', () => {
     const f = setup();
     f.addTab(tab(2, A, { groupId: 10 }));
     expect(planGroups(snap(f), cfg(rule('api', 'a.com/*', 'api')), ctx()))
-      .toEqual([{ kind: 'ungroup', tabIds: [1] }]);
+      .toEqual([{ kind: 'ungroup', tabIds: [1], ruleId: 'api' }]);
   });
 
   it('strict: false is taken from the rule of tabs still targeting the group', () => {
@@ -377,7 +377,7 @@ describe('planGroups: strict', () => {
     f.addTab(tab(1, B, { groupId: 10 }));
     f.addGroup({ id: 10, windowId: 1, title: 'A', color: 'blue', collapsed: false });
     expect(planGroups(snap(f), AB, ctx({ managedTitles: new Set(['A']) }))).toEqual([
-      { kind: 'group', tabIds: [1], windowId: 1, title: 'B', color: 'red', collapsed: false },
+      { kind: 'group', tabIds: [1], windowId: 1, title: 'B', color: 'red', collapsed: false, ruleId: 'b' },
     ]);
   });
 });
@@ -391,7 +391,7 @@ describe('planGroups: merge', () => {
     f.addTab(tab(2, A, { windowId: 2 }));
     f.addGroup({ id: 10, windowId: 1, title: 'api', color: 'blue', collapsed: false });
     const ops = planGroups(snap(f), merged, ctx());
-    expect(ops).toEqual([{ kind: 'moveTabs', tabIds: [2], windowId: 1, groupId: 10 }]);
+    expect(ops).toEqual([{ kind: 'moveTabs', tabIds: [2], windowId: 1, groupId: 10, ruleId: 'api' }]);
     await apply(f, ops);
     expect(f.state.tabs.find((t) => t.id === 2)).toMatchObject({ windowId: 1, groupId: 10 });
     expect(planGroups(snap(f), merged, ctx())).toEqual([]);
@@ -403,7 +403,7 @@ describe('planGroups: merge', () => {
     f.addTab(tab(2, A, { windowId: 2 }));
     f.addGroup({ id: 10, windowId: 1, title: 'api', color: 'blue', collapsed: false });
     expect(planGroups(snap(f), cfg(rule('api', 'a.com/*', 'api')), ctx())).toEqual([
-      { kind: 'group', tabIds: [2], windowId: 2, title: 'api', color: 'blue', collapsed: false },
+      { kind: 'group', tabIds: [2], windowId: 2, title: 'api', color: 'blue', collapsed: false, ruleId: 'api' },
     ]);
   });
 
@@ -415,8 +415,8 @@ describe('planGroups: merge', () => {
     f.addGroup({ id: 30, windowId: 1, title: 'api', color: 'blue', collapsed: false });
     f.addGroup({ id: 12, windowId: 2, title: 'api', color: 'blue', collapsed: false });
     expect(planGroups(snap(f), merged, ctx())).toEqual([
-      { kind: 'moveTabs', tabIds: [1], windowId: 2, groupId: 12 },
-      { kind: 'moveTabs', tabIds: [3], windowId: 2, groupId: 12 },
+      { kind: 'moveTabs', tabIds: [1], windowId: 2, groupId: 12, ruleId: 'api' },
+      { kind: 'moveTabs', tabIds: [3], windowId: 2, groupId: 12, ruleId: 'api' },
     ]);
   });
 
@@ -425,7 +425,7 @@ describe('planGroups: merge', () => {
     f.addTab(tab(1, A, { windowId: 2 }));
     f.addTab(tab(2, A));
     const ops = planGroups(snap(f), merged, ctx());
-    expect(ops).toEqual([{ kind: 'group', tabIds: [2, 1], windowId: 1, title: 'api', color: 'blue', collapsed: false }]);
+    expect(ops).toEqual([{ kind: 'group', tabIds: [2, 1], windowId: 1, title: 'api', color: 'blue', collapsed: false, ruleId: 'api' }]);
     const passes = await converge(f, merged);
     expect(passes.length).toBeLessThanOrEqual(3);
     expect(f.state.groups.filter((g) => g.title === 'api')).toHaveLength(1);
@@ -463,7 +463,7 @@ describe('planGroups: merge disagreement (T8)', () => {
       f.addTab(tab(1, first));
       f.addTab(tab(2, second));
       const ops = planGroups(snap(f), mixed, ctx());
-      expect(ops).toEqual([{ kind: 'group', tabIds: [1, 2], windowId: 1, title: 'api', color: 'blue', collapsed: false }]);
+      expect(ops).toEqual([{ kind: 'group', tabIds: [1, 2], windowId: 1, title: 'api', color: 'blue', collapsed: false, ruleId: 'n' }]);
       await converge(f, mixed);
       expect(f.state.groups.filter((g) => g.title === 'api')).toHaveLength(1);
     }
@@ -516,5 +516,25 @@ describe('syncCreationOrder (I3)', () => {
     const order = new Map([['1|y', 7], ['1|gone', 3]]);
     syncCreationOrder(snap(f), new Set([20, 30, 40]), order);
     expect([...order]).toEqual([['1|y', 7], ['1|z', 8], ['2|x', 9]]);
+  });
+});
+
+describe('planGroups: ops carry the rule (I7)', () => {
+  it('group, ungroup and moveTabs ops name the rule; ungroups are split per source group', () => {
+    const f = world([1, 2]);
+    f.addTab(tab(1, A));
+    f.addTab(tab(2, OTHER, { groupId: 10 }));
+    f.addTab(tab(3, OTHER, { groupId: 11 }));
+    f.addGroup({ id: 10, windowId: 1, title: 'api', color: 'blue', collapsed: false });
+    f.addGroup({ id: 11, windowId: 1, title: 'B', color: 'red', collapsed: false });
+    const config = cfg(rule('api', 'a.com/*', 'api', { merge: true }), rule('b', 'b.com/*', 'B', {}, 'red'));
+    f.addTab(tab(4, A, { windowId: 2 }));
+    const ops = planGroups(snap(f), config, ctx({ managedTitles: new Set(['api', 'B']) }));
+    expect(ops).toEqual([
+      { kind: 'ungroup', tabIds: [2], ruleId: 'api' },
+      { kind: 'ungroup', tabIds: [3], ruleId: 'b' },
+      { kind: 'group', tabIds: [1], windowId: 1, title: 'api', color: 'blue', existingGroupId: 10, ruleId: 'api' },
+      { kind: 'moveTabs', tabIds: [4], windowId: 1, groupId: 10, ruleId: 'api' },
+    ]);
   });
 });
