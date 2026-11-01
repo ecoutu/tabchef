@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { badgeCount, createDebounce, createHandler, createOnMessage, type HandlerDeps } from '../../src/engine/messages';
+import { configRev, badgeCount, createDebounce, createHandler, createOnMessage, type HandlerDeps } from '../../src/engine/messages';
 import { defaultConfig } from '../../src/core/config/defaults';
 import { FakeBrowserPort } from '../../src/platform/fake-port';
 import type { Config } from '../../src/core/types';
@@ -209,5 +209,74 @@ describe('createDebounce', () => {
     vi.advanceTimersByTime(1); expect(fn).toHaveBeenCalledTimes(1);
     for (let i = 0; i < 30; i++) { d(); vi.advanceTimersByTime(100); }
     expect(fn.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe('import.*', () => {
+  const agt = { groups: [
+    { id: 'n1', title: 'New', color: 'blue', matchers: ['https://n.example/*'], options: { strict: true } },
+    { id: 'old', title: 'Dup', color: 'red', matchers: ['https://d.example/*'] },
+  ] };
+  const seed = (s: ReturnType<typeof setup>) => {
+    const cfg = defaultConfig();
+    cfg.groupRules = [{ id: 'old', name: 'Old', enabled: true, match: { url: 'o.example/*' }, group: { title: 'Old', color: 'green' } }];
+    s.deps.store.get = async () => cfg;
+    return cfg;
+  };
+
+  it('preview returns rules, dedupe and warnings without writing', async () => {
+    const s = setup();
+    const r = (await s.handle({ type: 'import.preview', source: 'auto-group-tabs', data: agt }, ui)) as { ok: boolean; data: { rules: unknown[] } };
+    expect(r.ok).toBe(true);
+    expect(r.data.rules).toHaveLength(2);
+    const t = (await s.handle({ type: 'import.preview', source: 'tab-deduper', data: { local: { dedupAllWindows: false } } }, ui)) as { data: { dedupe: unknown; rules: unknown[] } };
+    expect(t.data).toMatchObject({ dedupe: { scope: 'same-window' }, rules: [] });
+    expect(s.set).not.toHaveBeenCalled();
+  });
+
+  it('apply appends after existing rules, renames colliding ids, merges dedupe', async () => {
+    const s = setup();
+    const cfg = seed(s);
+    const r = await s.handle({ type: 'import.apply', source: 'auto-group-tabs', data: agt, baseRev: configRev(cfg) }, ui);
+    expect(r.ok).toBe(true);
+    const saved = s.set.mock.calls[0]![0] as Config;
+    expect(saved.groupRules.map((x) => x.group.title)).toEqual(['Old', 'New', 'Dup']);
+    expect(saved.groupRules[1]!.id).toBe('n1');
+    expect(saved.groupRules[2]!.id).not.toBe('old');
+    expect(new Set(saved.groupRules.map((x) => x.id)).size).toBe(3);
+    const t = await s.handle({ type: 'import.apply', source: 'tab-deduper', data: { local: { dedupAllWindows: false, urlExempts: 'a.com' } }, baseRev: configRev(cfg) }, ui);
+    expect(t.ok).toBe(true);
+    const saved2 = s.set.mock.calls[1]![0] as Config;
+    expect(saved2.dedupe).toMatchObject({ scope: 'same-window', allowDuplicates: ['a.com*'], mode: 'always-switch' });
+    expect(saved2.groupRules).toHaveLength(1);
+  });
+
+  it('apply reports conflict on stale baseRev and nothing-to-import on garbage; rejects non-UI senders', async () => {
+    const s = setup();
+    seed(s);
+    expect(await s.handle({ type: 'import.apply', source: 'auto-group-tabs', data: agt, baseRev: 'stale' }, ui)).toEqual({ ok: false, error: 'conflict' });
+    expect(await s.handle({ type: 'import.apply', source: 'auto-group-tabs', data: 'junk', baseRev: configRev(s.getCfg()) }, ui)).toMatchObject({ ok: false, error: 'nothing to import' });
+    expect(await s.handle({ type: 'import.apply', source: 'auto-group-tabs', data: agt, baseRev: 'x' }, content)).toEqual({ ok: false, error: 'forbidden' });
+    expect(await s.handle({ type: 'import.preview', source: 'bogus', data: {} }, ui)).toEqual({ ok: false, error: 'unknown request' });
+    expect(s.set).not.toHaveBeenCalled();
+  });
+
+  it('merges dedupe lists instead of replacing, lists changes in preview, warns on existing titles', async () => {
+    const s = setup();
+    const cfg = seed(s);
+    cfg.dedupe = { ...cfg.dedupe, allowDuplicates: ['keep.com*'] };
+    const data = { local: { dedupAllWindows: false, urlExempts: 'a.com' } };
+    const p = (await s.handle({ type: 'import.preview', source: 'tab-deduper', data }, ui)) as { data: { changes: string[] } };
+    expect(p.data.changes.join('\n')).toMatch(/scope: all-windows \u2192 same-window/);
+    await s.handle({ type: 'import.apply', source: 'tab-deduper', data, baseRev: configRev(cfg) }, ui);
+    expect((s.set.mock.calls[0]![0] as Config).dedupe.allowDuplicates).toEqual(['keep.com*', 'a.com*']);
+    const w = (await s.handle({ type: 'import.preview', source: 'auto-group-tabs', data: { groups: [{ id: 'z', title: 'Old', color: 'red', matchers: ['https://z.example/*'] }] } }, ui)) as { data: { warnings: string[] } };
+    expect(w.data.warnings).toContain('Already have a rule titled "Old"');
+  });
+
+  it('rejects import data over 5 MB', async () => {
+    const s = setup();
+    const r = await s.handle({ type: 'import.preview', source: 'tab-deduper', data: { local: { urlExempts: 'x'.repeat(5 * 1024 * 1024 + 1) } } }, ui);
+    expect(r).toMatchObject({ ok: false, error: 'Import data too large (max 5 MB)' });
   });
 });
