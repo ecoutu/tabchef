@@ -70,6 +70,19 @@ describe('Reconciler', () => {
   });
   afterEach(() => vi.useRealTimers());
 
+  it('awaits beforeRun before checking pause (pause state loaded late)', async () => {
+    const f = world();
+    f.addTab(tab(1, A));
+    let paused = false;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = () => { paused = true; r(); }; });
+    const r = new Reconciler(f, async () => config, { isPaused: () => paused, beforeRun: () => gate });
+    const p = r.flush();
+    release();
+    await p;
+    expect(count(f, 'snapshot')).toBe(0);
+  });
+
   it('debounces: 5 schedule calls within 100 ms → a single snapshot', async () => {
     const f = world();
     f.addTab(tab(1, OTHER));
