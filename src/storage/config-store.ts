@@ -4,11 +4,13 @@ import { validateConfig } from '../core/config/schema';
 import type { Config } from '../core/types';
 
 export const QUOTA_WARNING = 'Config too large to sync; saved on this device only.';
+export const ADOPTED_REMOTE_WARNING = 'Synced settings were found and loaded; your change on this device was saved as a backup.';
 const META_KEY = 'cfg:meta';
 const LAST_GOOD_KEY = 'cfg:lastGood';
 const BACKUPS_KEY = 'cfg:backups';
 const PENDING_KEY = 'cfg:pending'; // local edit not yet confirmed written to sync
 const LOCAL_ONLY_KEY = 'cfg:localOnly'; // config too large for sync; local copy is authoritative
+const SYNCED_SHA_KEY = 'cfg:syncedSha'; // sha this device last read from / wrote to sync (absent: never synced)
 const CHUNK_BYTES = 7000; // measured on the JSON-escaped value, so the stored item stays far below 8,192 B
 const MAX_SYNC_BYTES = 90_000;
 const MAX_BACKUPS = 20;
@@ -116,7 +118,12 @@ export class ConfigStore {
     return this.loading;
   }
 
-  async set(c: Config): Promise<void> {
+  /** Stores a config. Serialized with update(), so a set issued after an update is never overwritten by it. */
+  set(c: Config): Promise<void> {
+    return this.serial(() => this.write(c));
+  }
+
+  private async write(c: Config): Promise<void> {
     const r = validateConfig(c);
     if (!r.ok) throw new Error(`Refusing to store invalid config: ${r.errors.join('; ')}`);
     await this.get();
@@ -143,13 +150,19 @@ export class ConfigStore {
     this.emit(c);
   }
 
-  /** Read-modify-write on the latest config; concurrent updates are serialized so none is lost. */
+  /**
+   * Read-modify-write on the latest config; updates and sets are serialized so none is lost. `fn` may throw to abort
+   * (e.g. an optimistic-concurrency check), which rejects the returned promise and writes nothing.
+   */
   update(fn: (c: Config) => Config): Promise<Config> {
-    const run = async () => {
+    return this.serial(async () => {
       const next = fn(await this.get());
-      await this.set(next);
+      await this.write(next);
       return next;
-    };
+    });
+  }
+
+  private serial<T>(run: () => Promise<T>): Promise<T> {
     const p = this.updateChain.then(run, run);
     this.updateChain = p.catch(() => {});
     return p;
@@ -240,7 +253,8 @@ export class ConfigStore {
   }
 
   private async load(): Promise<Config> {
-    const local = await browser.storage.local.get([LOCAL_ONLY_KEY, PENDING_KEY]);
+    const local = await browser.storage.local.get([LOCAL_ONLY_KEY, PENDING_KEY, SYNCED_SHA_KEY]);
+    if (typeof local[SYNCED_SHA_KEY] === 'string') this.syncedSha = local[SYNCED_SHA_KEY];
     const lastGood = await this.readLastGood();
     if (lastGood && local[LOCAL_ONLY_KEY] === true) {
       this.localOnly = true;
@@ -263,7 +277,7 @@ export class ConfigStore {
           backups.unshift({ at: this.nextAt(backups), config: r.config });
           backups.length = Math.min(backups.length, MAX_BACKUPS);
         }
-        await browser.storage.local.set({ [LAST_GOOD_KEY]: r.config, [BACKUPS_KEY]: backups });
+        await browser.storage.local.set({ [LAST_GOOD_KEY]: r.config, [BACKUPS_KEY]: backups, [SYNCED_SHA_KEY]: r.sha });
       });
       return (this.current = r.config);
     }
@@ -284,7 +298,10 @@ export class ConfigStore {
   private async retryRead(attempt: number): Promise<void> {
     const r = await this.readSync();
     if (r.kind === 'bad') return this.scheduleRetry(attempt + 1);
-    if (r.kind === 'ok') await this.applyRemote(r.config, r.sha);
+    if (r.kind !== 'ok') return;
+    // Repaired to the version this device already has: nothing to apply, the verification warning is stale.
+    if (r.sha === this.syncedSha && this.dirty === undefined && !this.localOnly) this.warning = undefined;
+    else await this.applyRemote(r.config, r.sha);
   }
 
   private async onRemote(): Promise<void> {
@@ -308,9 +325,35 @@ export class ConfigStore {
       const backups = await this.readBackups();
       backups.unshift({ at: this.nextAt(backups), config });
       backups.length = Math.min(backups.length, MAX_BACKUPS);
-      await browser.storage.local.set({ [LAST_GOOD_KEY]: config, [BACKUPS_KEY]: backups });
+      await browser.storage.local.set({ [LAST_GOOD_KEY]: config, [BACKUPS_KEY]: backups, [SYNCED_SHA_KEY]: sha });
     });
     this.emit(config);
+  }
+
+  /**
+   * First write from a device that never synced (e.g. a fresh install whose account data arrived after load):
+   * the synced config wins and becomes current; the local edit stays restorable as a backup.
+   */
+  private async adoptRemoteOverLocal(localJson: string, remote: { config: Config; sha: string }): Promise<void> {
+    this.dirty = undefined;
+    this.syncedSha = remote.sha;
+    const same = JSON.stringify(remote.config) === localJson;
+    if (!same) {
+      this.current = remote.config;
+      this.warning = ADOPTED_REMOTE_WARNING;
+    }
+    await this.enqueueLocal(async () => {
+      const backups = await this.readBackups();
+      if (!same && !backups.some((b) => JSON.stringify(b.config) === localJson)) {
+        backups.unshift({ at: this.nextAt(backups), config: JSON.parse(localJson) as Config });
+        backups.length = Math.min(backups.length, MAX_BACKUPS);
+      }
+      await browser.storage.local.set({
+        [LAST_GOOD_KEY]: remote.config, [BACKUPS_KEY]: backups, [PENDING_KEY]: false, [LOCAL_ONLY_KEY]: false,
+        [SYNCED_SHA_KEY]: remote.sha,
+      });
+    });
+    if (!same) this.emit(remote.config);
   }
 
   private scheduleWrite(delay = this.debounceMs): void {
@@ -325,6 +368,13 @@ export class ConfigStore {
     if (json === undefined) return;
     this.inflight = true;
     try {
+      if (this.syncedSha === undefined) {
+        const remote = await this.readSync();
+        if (remote.kind === 'ok') {
+          await this.adoptRemoteOverLocal(this.dirty ?? json, remote);
+          return;
+        }
+      }
       const chunks = splitChunks(json);
       const sha = await sha256(json);
       const meta: Meta = { v: 1, n: chunks.length, sha, at: Date.now() };
@@ -342,7 +392,9 @@ export class ConfigStore {
       if (this.dirty === json) {
         this.dirty = undefined;
         this.warning = undefined;
-        await this.enqueueLocal(() => browser.storage.local.set({ [PENDING_KEY]: false, [LOCAL_ONLY_KEY]: false }));
+        await this.enqueueLocal(() => browser.storage.local.set({ [PENDING_KEY]: false, [LOCAL_ONLY_KEY]: false, [SYNCED_SHA_KEY]: sha }));
+      } else {
+        await this.enqueueLocal(() => browser.storage.local.set({ [SYNCED_SHA_KEY]: sha }));
       }
     } catch (e) {
       const msg = String((e as Error)?.message ?? e);

@@ -182,7 +182,7 @@ export interface HandlerDeps {
   runtimeId: string;
   /** e.g. `chrome-extension://<id>` */
   extensionOrigin: string;
-  store: Pick<ConfigStore, 'get' | 'set' | 'backups' | 'restore' | 'status'>;
+  store: Pick<ConfigStore, 'get' | 'set' | 'update' | 'backups' | 'restore' | 'status'>;
   port: BrowserPort;
   getSettings: () => Promise<DedupeSettings>;
   safety: Pick<SafetyService, 'pause' | 'resume' | 'isPaused' | 'lock' | 'unlock' | 'isLocked' | 'lockedTabIds' | 'undo'>;
@@ -214,6 +214,9 @@ export async function refreshBadge(deps: BadgeDeps): Promise<void> {
   const n = await badgeCount(deps);
   await deps.port.setBadge(n > 0 ? String(n) : '');
 }
+
+/** Thrown inside a store update to abort it when the config changed since the UI read it. */
+class Conflict extends Error {}
 
 const fail = (error: string, errors?: string[]): Response => (errors ? { ok: false, error, errors } : { ok: false, error });
 const ok = <T>(data: T): Response<T> => ({ ok: true, data });
@@ -275,8 +278,21 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
       case 'config.set': {
         const r = validateConfig(req.config);
         if (!r.ok) return fail('invalid config', r.errors);
-        if (req.baseRev !== undefined && req.baseRev !== configRev(await deps.store.get())) return fail('conflict');
-        await deps.store.set(req.config as Config);
+        const { baseRev } = req;
+        if (baseRev === undefined) {
+          await deps.store.set(r.config);
+          return ok(null);
+        }
+        // Check and write in one store update: nothing can land between them.
+        try {
+          await deps.store.update((cur) => {
+            if (configRev(cur) !== baseRev) throw new Conflict();
+            return r.config;
+          });
+        } catch (e) {
+          if (e instanceof Conflict) return fail('conflict');
+          throw e;
+        }
         return ok(null);
       }
       case 'import.preview': return ok(await runImport(req.source, req.data, await deps.store.get()));
@@ -285,17 +301,28 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
         const imp = await runImport(req.source, req.data, current);
         if (imp.rules.length === 0 && Object.keys(imp.dedupe).length === 0) return fail('nothing to import', imp.warnings);
         if (req.baseRev !== configRev(current)) return fail('conflict');
-        const ids = new Set(current.groupRules.map((r) => r.id));
-        const added = imp.rules.map((r) => {
-          const id = ids.has(r.id) ? crypto.randomUUID() : r.id;
-          ids.add(id);
-          return { ...r, id };
-        });
-        const next: Config = { ...current, groupRules: [...current.groupRules, ...added], dedupe: mergeDedupe(current.dedupe, imp.dedupe).merged };
-        const v = validateConfig(next);
-        if (!v.ok) return fail('invalid config', v.errors);
-        await deps.store.set(next);
-        return ok({ rules: added.length });
+        let added = 0;
+        let invalid: string[] | undefined;
+        try {
+          await deps.store.update((cur) => {
+            if (configRev(cur) !== req.baseRev) throw new Conflict();
+            const ids = new Set(cur.groupRules.map((r) => r.id));
+            const rules = imp.rules.map((r) => {
+              const id = ids.has(r.id) ? crypto.randomUUID() : r.id;
+              ids.add(id);
+              return { ...r, id };
+            });
+            const next: Config = { ...cur, groupRules: [...cur.groupRules, ...rules], dedupe: mergeDedupe(cur.dedupe, imp.dedupe).merged };
+            const v = validateConfig(next);
+            if (!v.ok) { invalid = v.errors; throw new Conflict(); }
+            added = rules.length;
+            return next;
+          });
+        } catch (e) {
+          if (!(e instanceof Conflict)) throw e;
+          return invalid ? fail('invalid config', invalid) : fail('conflict');
+        }
+        return ok({ rules: added });
       }
       case 'config.backups': return ok(await deps.store.backups());
       case 'config.restore': await deps.store.restore(req.at); return ok(null);
