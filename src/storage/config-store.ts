@@ -1,6 +1,6 @@
 import { browser } from 'wxt/browser';
 import { defaultConfig } from '../core/config/defaults';
-import { validateConfig } from '../core/config/schema';
+import { repairConfig, validateConfig } from '../core/config/schema';
 import type { Config } from '../core/types';
 
 export const QUOTA_WARNING = 'Config too large to sync; saved on this device only.';
@@ -23,7 +23,7 @@ const MAX_BACKOFF_MS = 600_000;
 
 type ReadResult =
   | { kind: 'none' }
-  | { kind: 'ok'; config: Config; sha: string }
+  | { kind: 'ok'; config: Config; sha: string; warnings: string[] }
   | { kind: 'bad'; reason: string };
 
 const enc = new TextEncoder();
@@ -62,15 +62,23 @@ function migrate(raw: unknown): unknown {
   return { ...d, ...raw, dedupe: { ...d.dedupe, ...(isObj(raw.dedupe) ? raw.dedupe : {}) } };
 }
 
-function parseConfig(json: string): { ok: true; config: Config } | { ok: false; reason: string } {
+type Loaded = { ok: true; config: Config; warnings: string[] } | { ok: false; reason: string };
+
+/** Load path for any stored config (sync, lastGood, backups): migrate, repair (see repairConfig), then validate. */
+function loadStored(raw: unknown): Loaded {
+  const { config, warnings } = repairConfig(migrate(raw));
+  const r = validateConfig(config);
+  return r.ok ? { ok: true, config: r.config, warnings } : { ok: false, reason: `invalid: ${r.errors[0] ?? ''}` };
+}
+
+function parseConfig(json: string): Loaded {
   let raw: unknown;
   try {
     raw = JSON.parse(json);
   } catch {
     return { ok: false, reason: 'unparseable' };
   }
-  const r = validateConfig(migrate(raw));
-  return r.ok ? { ok: true, config: r.config } : { ok: false, reason: `invalid: ${r.errors[0] ?? ''}` };
+  return loadStored(raw);
 }
 
 /** Sync cost of a config: sum of JSON-escaped chunk sizes plus keys and meta. */
@@ -94,6 +102,13 @@ export class ConfigStore {
   private timer?: ReturnType<typeof setTimeout>;
   private retryTimer?: ReturnType<typeof setTimeout>;
   private syncedSha?: string; // sha of the last config this device read from or wrote to sync
+  private repairWarning?: string; // rules disabled while loading a stored config; cleared by the next save
+  /**
+   * Genuinely fresh device: load found no synced sha, no lastGood, no PENDING/LOCAL_ONLY flag, and sync was empty.
+   * Only then may the first write adopt a config that appeared in sync meanwhile (I4). After a 'bad' read, or on any
+   * device with local state, the local edit is authoritative.
+   */
+  private freshDevice = false;
   private localChain: Promise<void> = Promise.resolve();
   private writeChain: Promise<void> = Promise.resolve();
 
@@ -130,6 +145,7 @@ export class ConfigStore {
     const json = JSON.stringify(c);
     const tooBig = syncCost(splitChunks(json)) > MAX_SYNC_BYTES;
     this.current = c;
+    this.repairWarning = undefined;
     this.localOnly = tooBig;
     this.warning = tooBig ? QUOTA_WARNING : undefined;
     if (tooBig) {
@@ -181,12 +197,16 @@ export class ConfigStore {
   async restore(at: number): Promise<void> {
     const b = (await this.backups()).find((x) => x.at === at);
     if (!b) throw new Error(`No backup at ${at}`);
-    await this.set(b.config);
+    const l = loadStored(b.config);
+    if (!l.ok) throw new Error(`Backup at ${at} is not a valid config (${l.reason})`);
+    await this.set(l.config);
+    this.repairWarning = l.warnings.join(' ') || undefined;
   }
 
   async status(): Promise<{ syncing: boolean; warning?: string }> {
     await this.get();
-    return { syncing: this.dirty !== undefined || this.inflight, ...(this.warning ? { warning: this.warning } : {}) };
+    const warning = [this.warning, this.repairWarning].filter(Boolean).join(' ');
+    return { syncing: this.dirty !== undefined || this.inflight, ...(warning ? { warning } : {}) };
   }
 
   /** Writes any pending config to sync now (tests, runtime.onSuspend). */
@@ -225,11 +245,11 @@ export class ConfigStore {
     return Array.isArray(v) ? (v as Backup[]) : [];
   }
 
-  private async readLastGood(): Promise<Config | undefined> {
+  private async readLastGood(): Promise<{ config: Config; warnings: string[] } | undefined> {
     const v = (await browser.storage.local.get(LAST_GOOD_KEY))[LAST_GOOD_KEY];
     if (v === undefined) return undefined;
-    const r = validateConfig(migrate(v));
-    return r.ok ? r.config : undefined;
+    const r = loadStored(v);
+    return r.ok ? r : undefined;
   }
 
   private async readSync(): Promise<ReadResult> {
@@ -249,27 +269,33 @@ export class ConfigStore {
     const sha = await sha256(json);
     if (sha !== meta.sha) return { kind: 'bad', reason: 'checksum mismatch' };
     const p = parseConfig(json);
-    return p.ok ? { kind: 'ok', config: p.config, sha } : { kind: 'bad', reason: p.reason };
+    return p.ok ? { kind: 'ok', config: p.config, sha, warnings: p.warnings } : { kind: 'bad', reason: p.reason };
   }
 
   private async load(): Promise<Config> {
     const local = await browser.storage.local.get([LOCAL_ONLY_KEY, PENDING_KEY, SYNCED_SHA_KEY]);
     if (typeof local[SYNCED_SHA_KEY] === 'string') this.syncedSha = local[SYNCED_SHA_KEY];
-    const lastGood = await this.readLastGood();
+    const stored = await this.readLastGood();
+    const lastGood = stored?.config;
+    const lastGoodWarning = stored?.warnings.join(' ') || undefined;
+    const hasLocalFlag = local[PENDING_KEY] === true || local[LOCAL_ONLY_KEY] === true;
     if (lastGood && local[LOCAL_ONLY_KEY] === true) {
       this.localOnly = true;
       this.warning = QUOTA_WARNING;
+      this.repairWarning = lastGoodWarning;
       return (this.current = lastGood);
     }
     if (lastGood && local[PENDING_KEY] === true) {
       // An edit made on this device never reached sync (worker killed inside the debounce window): it wins.
       this.dirty = JSON.stringify(lastGood);
+      this.repairWarning = lastGoodWarning;
       this.scheduleWrite();
       return (this.current = lastGood);
     }
     const r = await this.readSync();
     if (r.kind === 'ok') {
       this.syncedSha = r.sha;
+      this.repairWarning = r.warnings.join(' ') || undefined;
       await this.enqueueLocal(async () => {
         // Keep the loaded version restorable: a later set() replaces it.
         const backups = await this.readBackups();
@@ -281,7 +307,11 @@ export class ConfigStore {
       });
       return (this.current = r.config);
     }
-    if (r.kind === 'none') return (this.current = lastGood ?? defaultConfig());
+    this.repairWarning = lastGood ? lastGoodWarning : undefined;
+    if (r.kind === 'none') {
+      this.freshDevice = this.syncedSha === undefined && lastGood === undefined && !hasLocalFlag;
+      return (this.current = lastGood ?? defaultConfig());
+    }
     this.warning = `Synced config failed verification (${r.reason}); using the last good copy on this device.`;
     this.scheduleRetry(1);
     return (this.current = lastGood ?? defaultConfig());
@@ -301,7 +331,7 @@ export class ConfigStore {
     if (r.kind !== 'ok') return;
     // Repaired to the version this device already has: nothing to apply, the verification warning is stale.
     if (r.sha === this.syncedSha && this.dirty === undefined && !this.localOnly) this.warning = undefined;
-    else await this.applyRemote(r.config, r.sha);
+    else await this.applyRemote(r.config, r.sha, r.warnings);
   }
 
   private async onRemote(): Promise<void> {
@@ -309,17 +339,19 @@ export class ConfigStore {
     if (this.dirty !== undefined || this.localOnly) return; // our pending local write supersedes
     const r = await this.readSync();
     if (r.kind === 'ok') {
-      await this.applyRemote(r.config, r.sha);
+      await this.applyRemote(r.config, r.sha, r.warnings);
     } else if (r.kind === 'bad') {
       this.warning = `Synced config failed verification (${r.reason}); keeping the current config.`;
       this.scheduleRetry(1);
     }
   }
 
-  private async applyRemote(config: Config, sha: string): Promise<void> {
+  private async applyRemote(config: Config, sha: string, warnings: string[]): Promise<void> {
     if (this.dirty !== undefined || this.localOnly || sha === this.syncedSha) return;
     this.syncedSha = sha;
+    this.freshDevice = false;
     this.warning = undefined;
+    this.repairWarning = warnings.join(' ') || undefined;
     this.current = config;
     await this.enqueueLocal(async () => {
       const backups = await this.readBackups();
@@ -334,13 +366,15 @@ export class ConfigStore {
    * First write from a device that never synced (e.g. a fresh install whose account data arrived after load):
    * the synced config wins and becomes current; the local edit stays restorable as a backup.
    */
-  private async adoptRemoteOverLocal(localJson: string, remote: { config: Config; sha: string }): Promise<void> {
+  private async adoptRemoteOverLocal(localJson: string, remote: { config: Config; sha: string; warnings: string[] }): Promise<void> {
     this.dirty = undefined;
     this.syncedSha = remote.sha;
+    this.freshDevice = false;
     const same = JSON.stringify(remote.config) === localJson;
     if (!same) {
       this.current = remote.config;
       this.warning = ADOPTED_REMOTE_WARNING;
+      this.repairWarning = remote.warnings.join(' ') || undefined;
     }
     await this.enqueueLocal(async () => {
       const backups = await this.readBackups();
@@ -368,7 +402,7 @@ export class ConfigStore {
     if (json === undefined) return;
     this.inflight = true;
     try {
-      if (this.syncedSha === undefined) {
+      if (this.freshDevice && this.syncedSha === undefined) {
         const remote = await this.readSync();
         if (remote.kind === 'ok') {
           await this.adoptRemoteOverLocal(this.dirty ?? json, remote);
@@ -379,6 +413,7 @@ export class ConfigStore {
       const sha = await sha256(json);
       const meta: Meta = { v: 1, n: chunks.length, sha, at: Date.now() };
       this.syncedSha = sha; // set before writing so our own onChanged echo is recognised
+      this.freshDevice = false;
       const items: Record<string, string> = {};
       chunks.forEach((c, i) => { items[chunkKey(i)] = c; });
       await browser.storage.sync.set(items);
