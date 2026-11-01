@@ -1,4 +1,4 @@
-import { managedGroupIds, planGroups, syncCreationOrder, type PlanContext } from '../core/group/plan';
+import { planGroups, planTargets, syncCreationOrder, type PlanContext, type Targets } from '../core/group/plan';
 import type { Config, Op, Snapshot } from '../core/types';
 import type { BrowserPort } from '../platform/browser-port';
 import { DragRetryExhausted, withDragRetry } from '../platform/retry';
@@ -21,6 +21,8 @@ export interface ReconcilerOptions {
 }
 
 const MAX_PASSES = 3;
+/** Consecutive non-drag failures after which a pending retitle is given up. */
+const MAX_RETITLE_FAILURES = 3;
 /** Marks an expectation an event already consumed. */
 const CONSUMED = -1;
 
@@ -147,8 +149,9 @@ export class Reconciler {
         const snap = await this.port.snapshot();
         const extra = this.opts.extraLeaveAlone?.();
         const ctx: PlanContext = extra ? { ...st, leaveAlone: new Set([...st.leaveAlone, ...extra]) } : st;
-        this.track(snap, st, config, ctx);
-        const ops = planGroups(snap, config, ctx);
+        const pre = planTargets(snap, config, ctx); // once per pass, shared by tracking and planning
+        this.track(snap, st, pre, pass === 0);
+        const ops = planGroups(snap, config, ctx, pre);
         if (ops.length === 0) break;
         if (pass === MAX_PASSES) {
           this.log({ action: 'reconcile-not-converged', detail: `${ops.length} op(s) still planned after ${MAX_PASSES} passes` });
@@ -184,10 +187,12 @@ export class Reconciler {
    * Membership tracking uses the planner's managed-group definition, so groups restored by the browser (no session
    * state) are tracked too; restored groups also get creation numbers in their current tab-strip order.
    */
-  private track(snap: Snapshot, st: LiveState, config: Config, ctx: PlanContext): void {
-    const managed = managedGroupIds(snap, config, ctx);
+  private track(snap: Snapshot, st: LiveState, pre: Targets, firstPass: boolean): void {
+    const { managed } = pre;
     st.managedTabs = new Map(snap.tabs.filter((t) => managed.has(t.groupId)).map((t) => [t.id, t.groupId]));
-    syncCreationOrder(snap, managed, st.creationOrder);
+    syncCreationOrder(snap, managed, st.creationOrder, {
+      pendingTitles: [...st.pendingTitles.values()].map((p) => p.title), absent: st.creationAbsent, count: firstPass,
+    });
     const urls = new Map(snap.tabs.map((t) => [t.id, t.url]));
     for (const id of st.leaveAlone) {
       const url = urls.get(id);
@@ -197,17 +202,35 @@ export class Reconciler {
     for (const id of st.leaveAloneUrls.keys()) if (!st.leaveAlone.has(id)) st.leaveAloneUrls.delete(id);
   }
 
-  /** Titles groups Tabchef created whose title call failed; drops entries for groups that are gone or now titled. */
+  /**
+   * Titles groups Tabchef created whose title call failed; drops entries for groups that are gone or now titled.
+   * A non-drag failure is logged and never blocks planning; the entry is dropped after MAX_RETITLE_FAILURES in a row.
+   * A drag lock still aborts the flush (it is retried when the drag ends).
+   */
   private async retitlePending(st: LiveState): Promise<void> {
+    for (const gid of st.retitleFailures.keys()) if (!st.pendingTitles.has(gid)) st.retitleFailures.delete(gid);
     if (st.pendingTitles.size === 0) return;
     const snap = await this.port.snapshot();
     for (const [gid, p] of [...st.pendingTitles]) {
       const g = snap.groups.find((x) => x.id === gid);
       if (g && g.title === '') {
-        await this.call(() => this.port.updateGroup(gid, p));
+        try {
+          await this.call(() => this.port.updateGroup(gid, p));
+        } catch (e) {
+          if (e instanceof DragRetryExhausted) throw e;
+          const n = (st.retitleFailures.get(gid) ?? 0) + 1;
+          const giveUp = n >= MAX_RETITLE_FAILURES;
+          this.log({
+            action: 'retitle-failed',
+            detail: `Could not title group ${gid} "${p.title}" (${e instanceof Error ? e.message : String(e)})${giveUp ? '; giving up' : ''}`,
+          });
+          if (giveUp) { st.pendingTitles.delete(gid); st.retitleFailures.delete(gid); } else st.retitleFailures.set(gid, n);
+          continue;
+        }
         this.adopt(st, gid, p.title);
       }
       st.pendingTitles.delete(gid);
+      st.retitleFailures.delete(gid);
     }
   }
 
