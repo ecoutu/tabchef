@@ -69,7 +69,7 @@ test.describe('extension in Chromium', () => {
 
   test('(c) paused: duplicates are left open', async () => {
     await send(h, { type: 'safety.pause', d: '15m' });
-    expect(await send<{ paused: boolean }>(h, { type: 'safety.status' })).toEqual({ paused: true });
+    expect(await send<{ paused: boolean }>(h, { type: 'safety.status' })).toEqual({ paused: true, locked: [] });
     const url = `${base.a}/pause/a`;
     const first = await openTab(h, url);
     await waitLoaded(h, first, url);
@@ -116,5 +116,46 @@ test.describe('extension in Chromium', () => {
     const data = JSON.parse(readFileSync(resolve(import.meta.dirname, '../../fixtures/auto-group-tabs.json'), 'utf8')) as unknown;
     const preview = await send<{ rules: unknown[]; warnings: string[] }>(h, { type: 'import.preview', source: 'auto-group-tabs', data });
     expect(preview.rules).toHaveLength(13);
+  });
+  test('(g) groups restored without Tabchef state: new groups append, a user ungroup sticks', async () => {
+    const groupOf = async (id: number) => (await tabs(h)).find((t) => t.id === id)?.groupId ?? -2;
+    // Tabs and groups exist before the rule does, as after a browser restart (titles match the rule's template).
+    // A window of their own: already in the right order, so no move/update op touches (and adopts) them.
+    const windowId = await h.sw.evaluate(async (u) => (await chrome.windows.create({ url: u }))!.id!, `${base.a}/rs/zeta/1`);
+    const z1 = (await tabs(h)).find((t) => t.windowId === windowId)!.id;
+    await waitLoaded(h, z1, `${base.a}/rs/zeta/1`);
+    const open = async (path: string) => {
+      const id = await openTab(h, `${base.a}${path}`, windowId);
+      await waitLoaded(h, id, `${base.a}${path}`);
+      return id;
+    };
+    const z2 = await open('/rs/zeta/2');
+    const a1 = await open('/rs/alpha/1');
+    await h.sw.evaluate(async ({ zs, as, w }) => {
+      const z: number = await chrome.tabs.group({ tabIds: zs as [number, ...number[]], createProperties: { windowId: w } });
+      await chrome.tabGroups.update(z, { title: 'zeta', color: 'blue' });
+      const a: number = await chrome.tabs.group({ tabIds: as as [number, ...number[]], createProperties: { windowId: w } });
+      await chrome.tabGroups.update(a, { title: 'alpha', color: 'blue' });
+    }, { zs: [z1, z2], as: [a1], w: windowId });
+    await h.sw.evaluate(() => chrome.storage.session.remove('rt'));
+    expect(await groupOrder(h, windowId)).toEqual(['zeta', 'alpha']);
+    await setConfig(h, config([rule('rs', `localhost:${h.port}/rs/:name/*`, '{name}', 'blue')]));
+
+    // (a) A tab for a different templated value: its new group appends; the restored groups don't shift.
+    const b1 = await openTab(h, `${base.a}/rs/beta/1`, windowId);
+    await expect.poll(() => groupOrder(h, windowId), { timeout: 5000 }).toEqual(['zeta', 'alpha', 'beta']);
+    expect(await groupOf(b1)).toBeGreaterThan(-1);
+    await h.ui.waitForTimeout(500);
+    expect(await groupOrder(h, windowId)).toEqual(['zeta', 'alpha', 'beta']);
+
+    // (b) The user ungroups a tab of a restored group: it stays ungrouped after reconciles.
+    await h.sw.evaluate((id) => chrome.tabs.ungroup(id), z2);
+    await expect.poll(() => groupOf(z2)).toBe(-1);
+    const b2 = await openTab(h, `${base.a}/rs/beta/2`, windowId);
+    await expect.poll(async () => (await groupOf(b2)) === (await groupOf(b1)), { timeout: 5000 }).toBe(true);
+    await setConfig(h, config([rule('rs', `localhost:${h.port}/rs/:name/*`, '{name}', 'cyan')]));
+    await expect.poll(async () => (await groups(h)).find((g) => g.title === 'zeta')?.color, { timeout: 5000 }).toBe('cyan');
+    expect(await groupOf(z2)).toBe(-1);
+    expect(await groupOf(z1)).toBeGreaterThan(-1);
   });
 });
