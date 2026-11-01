@@ -1,5 +1,5 @@
 import type { Config, DedupeSettings, GroupRule, TabSnap } from '../core/types';
-import { validateConfig } from '../core/config/schema';
+import { ruleTitleProblems, validateConfig } from '../core/config/schema';
 import { importAutoGroupTabs } from '../core/import/auto-group-tabs';
 import { mergeDedupe } from '../core/import/merge';
 import { importTabDeduper } from '../core/import/tab-deduper';
@@ -142,9 +142,16 @@ const isImportSource = (v: unknown): v is ImportSource => v === 'auto-group-tabs
 
 async function runImport(source: ImportSource, data: unknown, current: Config): Promise<ImportPreview> {
   if ((JSON.stringify(data) ?? '').length > MAX_IMPORT_BYTES) throw new Error('Import data too large (max 5 MB)');
-  const r = source === 'auto-group-tabs' ? { dedupe: {}, ...(await importAutoGroupTabs(data)) } : { rules: [] as GroupRule[], ...importTabDeduper(data) };
+  const raw = source === 'auto-group-tabs' ? { dedupe: {}, ...(await importAutoGroupTabs(data)) } : { rules: [] as GroupRule[], ...importTabDeduper(data) };
+  const skipped: string[] = [];
+  const rules = raw.rules.filter((x) => {
+    const problems = ruleTitleProblems(x);
+    if (problems.length) skipped.push(`Rule "${x.group.title}" skipped: ${problems.map((m) => `title ${m}`).join('; ')}.`);
+    return problems.length === 0;
+  });
+  const r = { ...raw, rules };
   const titles = new Set(current.groupRules.map((x) => x.group.title));
-  const warnings = [...r.warnings, ...r.rules.filter((x) => titles.has(x.group.title)).map((x) => `Already have a rule titled "${x.group.title}"`)];
+  const warnings = [...r.warnings, ...skipped, ...r.rules.filter((x) => titles.has(x.group.title)).map((x) => `Already have a rule titled "${x.group.title}"`)];
   return { ...r, warnings, changes: mergeDedupe(current.dedupe, r.dedupe).changes };
 }
 

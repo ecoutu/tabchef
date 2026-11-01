@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { planGroups, type PlanContext } from '../../../src/core/group/plan';
+import { managedGroupIds, planGroups, syncCreationOrder, type PlanContext } from '../../../src/core/group/plan';
 import { defaultConfig } from '../../../src/core/config/defaults';
 import { FakeBrowserPort } from '../../../src/platform/fake-port';
 import type { Config, GroupColor, GroupRule, Op, Snapshot, TabSnap } from '../../../src/core/types';
@@ -449,5 +449,72 @@ describe('planGroups: determinism', () => {
     const shuffled: Snapshot = { tabs: [...s.tabs].reverse(), groups: [...s.groups].reverse(), windows: [...s.windows].reverse() };
     expect(planGroups(shuffled, AB, c)).toEqual(first);
     expect(first.length).toBeGreaterThan(0);
+  });
+});
+
+describe('planGroups: merge disagreement (T8)', () => {
+  const mixed = cfg(rule('n', 'a.com/n*', 'api'), rule('m', 'a.com/m*', 'api', { merge: true }));
+  const N = 'https://a.com/n';
+  const M = 'https://a.com/m';
+
+  it('a non-merge and a merge rule with the same title never create two groups in one window', async () => {
+    for (const [first, second] of [[N, M], [M, N]] as const) {
+      const f = world();
+      f.addTab(tab(1, first));
+      f.addTab(tab(2, second));
+      const ops = planGroups(snap(f), mixed, ctx());
+      expect(ops).toEqual([{ kind: 'group', tabIds: [1, 2], windowId: 1, title: 'api', color: 'blue', collapsed: false }]);
+      await converge(f, mixed);
+      expect(f.state.groups.filter((g) => g.title === 'api')).toHaveLength(1);
+    }
+  });
+});
+
+describe('planGroups: empty titles (I1)', () => {
+  it('never adopts or rewrites an untitled user group, even if a rule renders an empty title', () => {
+    const f = world();
+    f.addTab(tab(1, 'https://a.com/', { groupId: 10 }));
+    f.addTab(tab(2, 'https://a.com/'));
+    f.addGroup({ id: 10, windowId: 1, title: '', color: 'grey', collapsed: false });
+    const config = cfg(rule('r', '/a\\.com\\/(?<x>z)?/', '{x}', {}, 'red'));
+    expect(planGroups(snap(f), config, ctx())).toEqual([]);
+    expect(planGroups(snap(f), config, ctx({ managedTitles: new Set(['']) }))).toEqual([]);
+  });
+
+  it('an untitled group is not managed even when managedTitles has ""', () => {
+    const f = world();
+    f.addTab(tab(1, OTHER, { groupId: 10 }));
+    f.addGroup({ id: 10, windowId: 1, title: '', color: 'grey', collapsed: false });
+    expect(planGroups(snap(f), AB, ctx({ managedTitles: new Set(['']) }))).toEqual([]);
+    expect([...managedGroupIds(snap(f), AB, ctx({ managedTitles: new Set(['']) }))]).toEqual([]);
+  });
+});
+
+describe('managedGroupIds (I2)', () => {
+  it('a group is managed when its title is in managedTitles or a tab targets it', () => {
+    const f = world();
+    f.addTab(tab(1, A, { groupId: 10 }));
+    f.addTab(tab(2, OTHER, { groupId: 11 }));
+    f.addTab(tab(3, OTHER, { groupId: 12 }));
+    f.addGroup({ id: 10, windowId: 1, title: 'A', color: 'blue', collapsed: false });
+    f.addGroup({ id: 11, windowId: 1, title: 'B', color: 'blue', collapsed: false });
+    f.addGroup({ id: 12, windowId: 1, title: 'mine', color: 'blue', collapsed: false });
+    expect([...managedGroupIds(snap(f), AB, ctx())]).toEqual([10]);
+    expect([...managedGroupIds(snap(f), AB, ctx({ managedTitles: new Set(['B']) }))].sort()).toEqual([10, 11]);
+  });
+});
+
+describe('syncCreationOrder (I3)', () => {
+  it('numbers managed groups lacking an order in tab-strip order, after known ones; drops vanished keys', () => {
+    const f = world([1, 2]);
+    f.addTab(tab(1, A, { groupId: 30 }));
+    f.addTab(tab(2, A, { groupId: 20 }));
+    f.addTab(tab(3, A, { windowId: 2, groupId: 40 }));
+    f.addGroup({ id: 30, windowId: 1, title: 'z', color: 'blue', collapsed: false });
+    f.addGroup({ id: 20, windowId: 1, title: 'y', color: 'blue', collapsed: false });
+    f.addGroup({ id: 40, windowId: 2, title: 'x', color: 'blue', collapsed: false });
+    const order = new Map([['1|y', 7], ['1|gone', 3]]);
+    syncCreationOrder(snap(f), new Set([20, 30, 40]), order);
+    expect([...order]).toEqual([['1|y', 7], ['1|z', 8], ['2|x', 9]]);
   });
 });
