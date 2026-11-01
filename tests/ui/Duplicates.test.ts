@@ -72,4 +72,38 @@ describe('Duplicates', () => {
     expect(r.container.querySelector('img')).toBeNull();
     expect(r.container.querySelector('.fav-ph')).not.toBeNull();
   });
+  it('has no per-set Lock button (it would lock the kept tab); extras get Lock toggles in an expandable list (CR#4)', async () => {
+    render(Duplicates, { data: data(), onChange: vi.fn() });
+    expect(screen.queryByRole('button', { name: /^(Lock|Unlock)\b/ })).toBeNull();
+    const toggle = screen.getByRole('button', { name: 'Show 3 tabs' });
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    await fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getAllByRole('button', { name: /^Lock copy/ }).map((b) => b.getAttribute('aria-label')))
+      .toEqual(['Lock copy 2: Page A', 'Lock copy 3: Page A']);
+  });
+
+  it('locking an extra reduces "close N" by one; Unlock sends tab.unlock (CR#4)', async () => {
+    let locked: number[] = [];
+    const view = () => data({ locked: [...locked], sets: [{ key: 'k1', tabs: [tab(1), tab(2), tab(3)], closable: 2 - locked.length }] });
+    send.mockImplementation((r: { type: string; tabId: number }) => {
+      if (r.type === 'tab.lock') locked.push(r.tabId);
+      if (r.type === 'tab.unlock') locked = locked.filter((x) => x !== r.tabId);
+      return Promise.resolve({ ok: true, data: null });
+    });
+    // eslint-disable-next-line prefer-const
+    let rerender: (p: { data: ReturnType<typeof data> }) => Promise<void>;
+    const onChange = () => { void rerender({ data: view() }); };
+    ({ rerender } = render(Duplicates, { data: view(), onChange }));
+    expect(screen.getByRole('button', { name: 'close 2' })).toBeTruthy();
+    await fireEvent.click(screen.getByRole('button', { name: 'Show 3 tabs' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Lock copy 2: Page A' }));
+    expect(send).toHaveBeenCalledWith({ type: 'tab.lock', tabId: 2 });
+    expect(await screen.findByRole('button', { name: 'close 1' })).toBeTruthy();
+    const unlock = screen.getByRole('button', { name: 'Unlock copy 2: Page A' });
+    expect(unlock.getAttribute('aria-pressed')).toBe('true');
+    await fireEvent.click(unlock);
+    expect(send).toHaveBeenLastCalledWith({ type: 'tab.unlock', tabId: 2 });
+    expect(await screen.findByRole('button', { name: 'close 2' })).toBeTruthy();
+  });
 });

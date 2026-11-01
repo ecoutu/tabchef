@@ -24,16 +24,17 @@ function setup() {
     extensionOrigin: 'chrome-extension://ext',
     store: {
       get: async () => cfg, set, backups: async () => [{ at: 1, config: cfg }], restore: vi.fn(async () => {}),
+      update: vi.fn(async (fn: (c: Config) => Config) => { const next = fn(await deps.store.get()); await set(next); return next; }),
       status: async () => ({ syncing: true }),
     },
     port,
     getSettings: async () => cfg.dedupe,
     safety: {
       pause: vi.fn(), resume: vi.fn(), isPaused: () => false, lock: (id) => { locked.add(id); }, unlock: (id) => { locked.delete(id); },
-      isLocked: (id) => locked.has(id), undo: vi.fn(async () => {}),
+      isLocked: (id) => locked.has(id), lockedTabIds: () => [...locked], undo: vi.fn(async () => {}),
     },
-    recentlyClosed: { list: () => [], add: (e) => { added.push(e); return 'id'; } },
-    whyLog: { all: () => [], forTab: () => [], add: () => {} },
+    recentlyClosed: { ready: Promise.resolve(), list: () => [], add: (e) => { added.push(e); return 'id'; } },
+    whyLog: { ready: Promise.resolve(), all: () => [], forTab: () => [], add: () => {} },
     ask: { listPending: async () => [{ newTabId: 5, existingTabId: 1, key: 'k', at: 1 }], resolvePending: vi.fn(async () => {}) },
     now: () => 42,
   };
@@ -118,6 +119,16 @@ describe('messages', () => {
     expect((await s.handle({ type: 'config.set', config: defaultConfig(), baseRev: g2.data.rev }, ui)).ok).toBe(true);
   });
 
+  it('config.set checks baseRev inside the store update, against the config it replaces (T13)', async () => {
+    const s = setup();
+    const base = configRev(defaultConfig());
+    const newer = { ...defaultConfig(), dedupe: { ...defaultConfig().dedupe, alwaysSwitchSites: ['x.com'] } };
+    // Another writer lands between the handler's read and its write: the update sees the newer config.
+    s.deps.store.update = vi.fn(async (fn: (c: Config) => Config) => fn(newer));
+    expect(await createHandler(s.deps)({ type: 'config.set', config: defaultConfig(), baseRev: base }, ui)).toEqual({ ok: false, error: 'conflict' });
+    expect(s.set).not.toHaveBeenCalled();
+  });
+
   it('rejects content scripts and foreign senders', async () => {
     const s = setup();
     s.mk(1, A); s.mk(2, A);
@@ -149,6 +160,39 @@ describe('messages', () => {
     expect(await s.handle({ type: 'recent.undo', id: 'q' }, ui)).toEqual({ ok: true, data: null });
     expect(await s.handle({ type: 'why.all' }, ui)).toEqual({ ok: true, data: [] });
     expect((await s.handle({ type: 'config.backups' }, ui)).ok).toBe(true);
+  });
+
+  it('recent.list and why.all wait for their stores to load (M7)', async () => {
+    const s = setup();
+    let loaded = false;
+    let release!: () => void;
+    const ready = new Promise<void>((r) => { release = () => { loaded = true; r(); }; });
+    const item = { id: 'x', url: A, title: 't', windowId: 1, reason: 'duplicate', at: 1 };
+    const entry = { action: 'grouped', detail: 'd', at: 1 };
+    s.deps.recentlyClosed = { ready, list: () => (loaded ? [item] : []), add: () => 'id' };
+    s.deps.whyLog = { ready, all: () => (loaded ? [entry] : []), forTab: () => (loaded ? [entry] : []), add: () => {} };
+    const handle = createHandler(s.deps);
+    const pr = handle({ type: 'recent.list' }, ui);
+    const pw = handle({ type: 'why.all' }, ui);
+    const pt = handle({ type: 'why.forTab', tabId: 1 }, ui);
+    release();
+    expect(await pr).toEqual({ ok: true, data: [item] });
+    expect(await pw).toEqual({ ok: true, data: [entry] });
+    expect(await pt).toEqual({ ok: true, data: [entry] });
+  });
+
+  it('config.status reports the store status (I5)', async () => {
+    const s = setup();
+    s.deps.store.status = async () => ({ syncing: false, warning: 'Synced settings were found and loaded.' });
+    expect(await createHandler(s.deps)({ type: 'config.status' }, ui)).toEqual({ ok: true, data: { syncing: false, warning: 'Synced settings were found and loaded.' } });
+  });
+
+  it('safety.status lists locked tabs (popup lock toggle)', async () => {
+    const s = setup();
+    await s.handle({ type: 'tab.lock', tabId: 7 }, ui);
+    expect(await s.handle({ type: 'safety.status' }, ui)).toEqual({ ok: true, data: { paused: false, locked: [7] } });
+    await s.handle({ type: 'tab.unlock', tabId: 7 }, ui);
+    expect(await s.handle({ type: 'safety.status' }, ui)).toEqual({ ok: true, data: { paused: false, locked: [] } });
   });
 
   it('records recently closed only after closeTab succeeds', async () => {
@@ -272,6 +316,23 @@ describe('import.*', () => {
     expect((s.set.mock.calls[0]![0] as Config).dedupe.allowDuplicates).toEqual(['keep.com*', 'a.com*']);
     const w = (await s.handle({ type: 'import.preview', source: 'auto-group-tabs', data: { groups: [{ id: 'z', title: 'Old', color: 'red', matchers: ['https://z.example/*'] }] } }, ui)) as { data: { warnings: string[] } };
     expect(w.data.warnings).toContain('Already have a rule titled "Old"');
+  });
+
+  it('skips imported rules with empty titles or uncaptured template variables, with a warning (I1)', async () => {
+    const s = setup();
+    const data = { groups: [
+      { id: 'e', title: '', color: 'blue', matchers: ['https://e.example/*'] },
+      { id: 't', title: '{repo}', color: 'blue', matchers: ['https://t.example/*'] },
+      { id: 'k', title: 'Keep', color: 'blue', matchers: ['https://k.example/*'] },
+    ] };
+    const p = (await s.handle({ type: 'import.preview', source: 'auto-group-tabs', data }, ui)) as { data: { rules: { id: string }[]; warnings: string[] } };
+    expect(p.data.rules.map((r) => r.id)).toEqual(['k']);
+    expect(p.data.warnings).toEqual(expect.arrayContaining([
+      'Rule "" skipped: title must not be empty.',
+      'Rule "{repo}" skipped: title uses {repo}, which pattern "https://t.example/*" does not capture.',
+    ]));
+    const r = await s.handle({ type: 'import.apply', source: 'auto-group-tabs', data, baseRev: configRev(s.getCfg()) }, ui);
+    expect(r).toEqual({ ok: true, data: { rules: 1 } });
   });
 
   it('rejects import data over 5 MB', async () => {

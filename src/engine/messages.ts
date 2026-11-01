@@ -1,5 +1,5 @@
 import type { Config, DedupeSettings, GroupRule, TabSnap } from '../core/types';
-import { validateConfig } from '../core/config/schema';
+import { ruleTitleProblems, validateConfig } from '../core/config/schema';
 import { importAutoGroupTabs } from '../core/import/auto-group-tabs';
 import { mergeDedupe } from '../core/import/merge';
 import { importTabDeduper } from '../core/import/tab-deduper';
@@ -65,6 +65,7 @@ export type Request =
   | { type: 'config.set'; config: unknown; baseRev?: string }
   | { type: 'config.backups' }
   | { type: 'config.restore'; at: number }
+  | { type: 'config.status' }
   | { type: 'tabs.list' }
   | { type: 'dupes.list' }
   | { type: 'dupes.closeExtras'; key: string }
@@ -106,13 +107,15 @@ export function isConfigChangedMessage(m: unknown): m is ConfigChangedMessage {
 export interface DupeSet { key: string; tabs: TabSnap[] }
 /** A dupe set as listed to the UI: `closable` = extras the close button would actually close. */
 export interface DupeSetView extends DupeSet { closable: number }
-export interface SafetyStatus { paused: boolean }
+export interface SafetyStatus { paused: boolean; locked: number[] }
+export interface ConfigStatus { syncing: boolean; warning?: string }
 
 export interface ResponseData {
   'config.get': { config: Config; rev: string };
   'config.set': null;
   'config.backups': Backup[];
   'config.restore': null;
+  'config.status': ConfigStatus;
   'tabs.list': TabSnap[];
   'dupes.list': { sets: DupeSetView[]; pending: PendingAsk[] };
   'dupes.closeExtras': number;
@@ -135,16 +138,23 @@ export type ResponseFor<R extends Request> = Response<ResponseData[R['type']]>;
 
 const num = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
 const str = (v: unknown): v is string => typeof v === 'string';
-const NO_ARGS = new Set(['config.get', 'config.backups', 'tabs.list', 'dupes.list', 'dupes.closeAll', 'recent.list', 'why.all',
+const NO_ARGS = new Set(['config.get', 'config.backups', 'config.status', 'tabs.list', 'dupes.list', 'dupes.closeAll', 'recent.list', 'why.all',
   'safety.resume', 'safety.status']);
 
 const isImportSource = (v: unknown): v is ImportSource => v === 'auto-group-tabs' || v === 'tab-deduper';
 
 async function runImport(source: ImportSource, data: unknown, current: Config): Promise<ImportPreview> {
   if ((JSON.stringify(data) ?? '').length > MAX_IMPORT_BYTES) throw new Error('Import data too large (max 5 MB)');
-  const r = source === 'auto-group-tabs' ? { dedupe: {}, ...(await importAutoGroupTabs(data)) } : { rules: [] as GroupRule[], ...importTabDeduper(data) };
+  const raw = source === 'auto-group-tabs' ? { dedupe: {}, ...(await importAutoGroupTabs(data)) } : { rules: [] as GroupRule[], ...importTabDeduper(data) };
+  const skipped: string[] = [];
+  const rules = raw.rules.filter((x) => {
+    const problems = ruleTitleProblems(x);
+    if (problems.length) skipped.push(`Rule "${x.group.title}" skipped: ${problems.map((m) => `title ${m}`).join('; ')}.`);
+    return problems.length === 0;
+  });
+  const r = { ...raw, rules };
   const titles = new Set(current.groupRules.map((x) => x.group.title));
-  const warnings = [...r.warnings, ...r.rules.filter((x) => titles.has(x.group.title)).map((x) => `Already have a rule titled "${x.group.title}"`)];
+  const warnings = [...r.warnings, ...skipped, ...r.rules.filter((x) => titles.has(x.group.title)).map((x) => `Already have a rule titled "${x.group.title}"`)];
   return { ...r, warnings, changes: mergeDedupe(current.dedupe, r.dedupe).changes };
 }
 
@@ -172,12 +182,12 @@ export interface HandlerDeps {
   runtimeId: string;
   /** e.g. `chrome-extension://<id>` */
   extensionOrigin: string;
-  store: Pick<ConfigStore, 'get' | 'set' | 'backups' | 'restore' | 'status'>;
+  store: Pick<ConfigStore, 'get' | 'set' | 'update' | 'backups' | 'restore' | 'status'>;
   port: BrowserPort;
   getSettings: () => Promise<DedupeSettings>;
-  safety: Pick<SafetyService, 'pause' | 'resume' | 'isPaused' | 'lock' | 'unlock' | 'isLocked' | 'undo'>;
-  recentlyClosed: Pick<RecentlyClosed, 'list' | 'add'>;
-  whyLog: Pick<WhyLog, 'all' | 'forTab' | 'add'>;
+  safety: Pick<SafetyService, 'pause' | 'resume' | 'isPaused' | 'lock' | 'unlock' | 'isLocked' | 'lockedTabIds' | 'undo'>;
+  recentlyClosed: Pick<RecentlyClosed, 'list' | 'add' | 'ready'>;
+  whyLog: Pick<WhyLog, 'all' | 'forTab' | 'add' | 'ready'>;
   ask: { listPending: () => Promise<PendingAsk[]>; resolvePending: (n: number, e: number, c: 'switch' | 'keep') => Promise<void> };
   now?: () => number;
 }
@@ -204,6 +214,9 @@ export async function refreshBadge(deps: BadgeDeps): Promise<void> {
   const n = await badgeCount(deps);
   await deps.port.setBadge(n > 0 ? String(n) : '');
 }
+
+/** Thrown inside a store update to abort it when the config changed since the UI read it. */
+class Conflict extends Error {}
 
 const fail = (error: string, errors?: string[]): Response => (errors ? { ok: false, error, errors } : { ok: false, error });
 const ok = <T>(data: T): Response<T> => ({ ok: true, data });
@@ -265,8 +278,21 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
       case 'config.set': {
         const r = validateConfig(req.config);
         if (!r.ok) return fail('invalid config', r.errors);
-        if (req.baseRev !== undefined && req.baseRev !== configRev(await deps.store.get())) return fail('conflict');
-        await deps.store.set(req.config as Config);
+        const { baseRev } = req;
+        if (baseRev === undefined) {
+          await deps.store.set(r.config);
+          return ok(null);
+        }
+        // Check and write in one store update: nothing can land between them.
+        try {
+          await deps.store.update((cur) => {
+            if (configRev(cur) !== baseRev) throw new Conflict();
+            return r.config;
+          });
+        } catch (e) {
+          if (e instanceof Conflict) return fail('conflict');
+          throw e;
+        }
         return ok(null);
       }
       case 'import.preview': return ok(await runImport(req.source, req.data, await deps.store.get()));
@@ -275,20 +301,32 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
         const imp = await runImport(req.source, req.data, current);
         if (imp.rules.length === 0 && Object.keys(imp.dedupe).length === 0) return fail('nothing to import', imp.warnings);
         if (req.baseRev !== configRev(current)) return fail('conflict');
-        const ids = new Set(current.groupRules.map((r) => r.id));
-        const added = imp.rules.map((r) => {
-          const id = ids.has(r.id) ? crypto.randomUUID() : r.id;
-          ids.add(id);
-          return { ...r, id };
-        });
-        const next: Config = { ...current, groupRules: [...current.groupRules, ...added], dedupe: mergeDedupe(current.dedupe, imp.dedupe).merged };
-        const v = validateConfig(next);
-        if (!v.ok) return fail('invalid config', v.errors);
-        await deps.store.set(next);
-        return ok({ rules: added.length });
+        let added = 0;
+        let invalid: string[] | undefined;
+        try {
+          await deps.store.update((cur) => {
+            if (configRev(cur) !== req.baseRev) throw new Conflict();
+            const ids = new Set(cur.groupRules.map((r) => r.id));
+            const rules = imp.rules.map((r) => {
+              const id = ids.has(r.id) ? crypto.randomUUID() : r.id;
+              ids.add(id);
+              return { ...r, id };
+            });
+            const next: Config = { ...cur, groupRules: [...cur.groupRules, ...rules], dedupe: mergeDedupe(cur.dedupe, imp.dedupe).merged };
+            const v = validateConfig(next);
+            if (!v.ok) { invalid = v.errors; throw new Conflict(); }
+            added = rules.length;
+            return next;
+          });
+        } catch (e) {
+          if (!(e instanceof Conflict)) throw e;
+          return invalid ? fail('invalid config', invalid) : fail('conflict');
+        }
+        return ok({ rules: added });
       }
       case 'config.backups': return ok(await deps.store.backups());
       case 'config.restore': await deps.store.restore(req.at); return ok(null);
+      case 'config.status': return ok(await deps.store.status());
       case 'tabs.list': return ok((await deps.port.snapshot()).tabs);
       case 'dupes.list': {
         const views = (await sets()).map((s): DupeSetView => ({
@@ -312,13 +350,13 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
         await deps.ask.resolvePending(req.newTabId, req.existingTabId, req.choice);
         await refreshBadge({ ...deps, isLocked: (id) => deps.safety.isLocked(id) });
         return ok(null);
-      case 'recent.list': return ok(deps.recentlyClosed.list());
+      case 'recent.list': await deps.recentlyClosed.ready; return ok(deps.recentlyClosed.list());
       case 'recent.undo': await deps.safety.undo(req.id); return ok(null);
-      case 'why.forTab': return ok(deps.whyLog.forTab(req.tabId));
-      case 'why.all': return ok(deps.whyLog.all());
+      case 'why.forTab': await deps.whyLog.ready; return ok(deps.whyLog.forTab(req.tabId));
+      case 'why.all': await deps.whyLog.ready; return ok(deps.whyLog.all());
       case 'safety.pause': deps.safety.pause(req.d); return ok(null);
       case 'safety.resume': deps.safety.resume(); return ok(null);
-      case 'safety.status': return ok({ paused: deps.safety.isPaused() });
+      case 'safety.status': return ok({ paused: deps.safety.isPaused(), locked: deps.safety.lockedTabIds() });
       case 'tab.lock': deps.safety.lock(req.tabId); return ok(null);
       case 'tab.unlock': deps.safety.unlock(req.tabId); return ok(null);
       case 'tab.focus': {
