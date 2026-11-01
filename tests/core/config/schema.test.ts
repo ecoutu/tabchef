@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { validateConfig, configJsonSchema } from '../../../src/core/config/schema';
+import { validateConfig, configJsonSchema, ruleTitleProblems } from '../../../src/core/config/schema';
 import { defaultConfig } from '../../../src/core/config/defaults';
 
 const rule = (over: Record<string, unknown> = {}) => ({
@@ -74,5 +74,25 @@ describe('config schema', () => {
   });
   it('exports the JSON schema', () => {
     expect(configJsonSchema).toHaveProperty('properties.version');
+  });
+});
+
+describe('config schema: group titles (I1)', () => {
+  it('rejects an empty group title', () => {
+    const r = validateConfig(cfg([rule({ group: { title: '', color: 'blue' } })]));
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.errors.some((e) => e.startsWith('/groupRules/0/group/title '))).toBe(true);
+  });
+  it('rejects template variables the patterns do not capture', () => {
+    const r = validateConfig(cfg([rule({ match: { url: ['github.com/:org/:repo/*', 'example.com/*'] }, group: { title: '{repo}', color: 'blue' } })]));
+    expect(r).toEqual({ ok: false, errors: ['/groupRules/0/group/title uses {repo}, which pattern "example.com/*" does not capture'] });
+  });
+  it('accepts template variables captured by :params or regex named groups', () => {
+    expect(validateConfig(cfg([rule({ match: { url: 'github.com/:org/:repo/*' }, group: { title: '{org}/{repo|upper}', color: 'blue' } })])).ok).toBe(true);
+    expect(validateConfig(cfg([rule({ match: { url: '/github\\.com\\/(?<owner>[^/]+)/' }, group: { title: '{owner}', color: 'blue' } })])).ok).toBe(true);
+  });
+  it('ruleTitleProblems reports the same problems for a single rule', () => {
+    expect(ruleTitleProblems({ ...rule(), group: { title: '', color: 'blue' } } as never)).toEqual(['must not be empty']);
+    expect(ruleTitleProblems(rule() as never)).toEqual([]);
   });
 });
