@@ -70,6 +70,14 @@ describe('messages', () => {
     expect(r.data.pending).toHaveLength(1);
   });
 
+  it('dupes.list exposes closable extras per set (excludes pinned and locked)', async () => {
+    const s = setup();
+    s.mk(1, A); s.mk(2, A, { pinned: true }); s.mk(3, A); s.mk(4, A);
+    s.locked.add(3);
+    const r = (await s.handle({ type: 'dupes.list' }, ui)) as { data: { sets: { closable: number }[] } };
+    expect(r.data.sets[0]?.closable).toBe(1);
+  });
+
   it('unknown or malformed requests', async () => {
     const s = setup();
     for (const bad of [{ type: 'nope' }, null, 'x', { type: 'tab.focus' }, { type: 'dupes.closeExtras' }, {}]) {
