@@ -1,3 +1,13 @@
+import type { Config, DedupeSettings, TabSnap } from '../core/types';
+import { validateConfig } from '../core/config/schema';
+import { findDuplicateSets, tabUrl } from '../core/dedupe/find';
+import type { RecentlyClosed, RecentlyClosedItem } from '../core/safety/recently-closed';
+import type { WhyEntry, WhyLog } from '../core/safety/why-log';
+import type { BrowserPort } from '../platform/browser-port';
+import type { ConfigStore, Backup } from '../storage/config-store';
+import type { PendingAsk } from './ask';
+import type { PauseDuration, SafetyService } from './safety';
+
 /** Messages between the background worker and the dedupe banner content script. */
 export type BannerShowMessage = {
   type: 'banner.show';
@@ -44,3 +54,223 @@ export function undoText(e: { title: string; url: string; reason: string }): str
 }
 
 export const UNDO_NOTIFICATION_PREFIX = 'undo:';
+
+// ---- UI <-> engine request API (popup / options / side panel -> background) ----
+
+export type Request =
+  | { type: 'config.get' }
+  | { type: 'config.set'; config: unknown }
+  | { type: 'config.backups' }
+  | { type: 'config.restore'; at: number }
+  | { type: 'dupes.list' }
+  | { type: 'dupes.closeExtras'; key: string }
+  | { type: 'dupes.closeAll' }
+  | { type: 'dupes.resolve'; newTabId: number; existingTabId: number; choice: 'switch' | 'keep' }
+  | { type: 'recent.list' }
+  | { type: 'recent.undo'; id: string }
+  | { type: 'why.forTab'; tabId: number }
+  | { type: 'why.all' }
+  | { type: 'safety.pause'; d: PauseDuration }
+  | { type: 'safety.resume' }
+  | { type: 'safety.status' }
+  | { type: 'tab.lock'; tabId: number }
+  | { type: 'tab.unlock'; tabId: number }
+  | { type: 'tab.focus'; tabId: number };
+
+export type Response<T = unknown> = { ok: true; data: T } | { ok: false; error: string; errors?: string[] };
+
+export interface DupeSet { key: string; tabs: TabSnap[] }
+export interface SafetyStatus { paused: boolean }
+
+export interface ResponseData {
+  'config.get': Config;
+  'config.set': null;
+  'config.backups': Backup[];
+  'config.restore': null;
+  'dupes.list': { sets: DupeSet[]; pending: PendingAsk[] };
+  'dupes.closeExtras': number;
+  'dupes.closeAll': number;
+  'dupes.resolve': null;
+  'recent.list': RecentlyClosedItem[];
+  'recent.undo': null;
+  'why.forTab': WhyEntry[];
+  'why.all': WhyEntry[];
+  'safety.pause': null;
+  'safety.resume': null;
+  'safety.status': SafetyStatus;
+  'tab.lock': null;
+  'tab.unlock': null;
+  'tab.focus': null;
+}
+export type ResponseFor<R extends Request> = Response<ResponseData[R['type']]>;
+
+const num = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+const str = (v: unknown): v is string => typeof v === 'string';
+const NO_ARGS = new Set(['config.get', 'config.backups', 'dupes.list', 'dupes.closeAll', 'recent.list', 'why.all',
+  'safety.resume', 'safety.status']);
+
+/** Structural check of an untrusted message. */
+export function isRequest(m: unknown): m is Request {
+  if (typeof m !== 'object' || m === null) return false;
+  const x = m as Record<string, unknown>;
+  if (!str(x.type)) return false;
+  if (NO_ARGS.has(x.type)) return true;
+  switch (x.type) {
+    case 'config.set': return typeof x.config === 'object' && x.config !== null;
+    case 'config.restore': return num(x.at);
+    case 'dupes.closeExtras': return str(x.key);
+    case 'dupes.resolve': return num(x.newTabId) && num(x.existingTabId) && (x.choice === 'switch' || x.choice === 'keep');
+    case 'recent.undo': return str(x.id);
+    case 'why.forTab': case 'tab.lock': case 'tab.unlock': case 'tab.focus': return num(x.tabId);
+    case 'safety.pause': return x.d === '15m' || x.d === '1h' || x.d === 'restart';
+    default: return false;
+  }
+}
+
+export interface HandlerDeps {
+  runtimeId: string;
+  /** e.g. `chrome-extension://<id>` */
+  extensionOrigin: string;
+  store: Pick<ConfigStore, 'get' | 'set' | 'backups' | 'restore' | 'status'>;
+  port: BrowserPort;
+  getSettings: () => Promise<DedupeSettings>;
+  safety: Pick<SafetyService, 'pause' | 'resume' | 'isPaused' | 'lock' | 'unlock' | 'isLocked' | 'undo'>;
+  recentlyClosed: Pick<RecentlyClosed, 'list' | 'add'>;
+  whyLog: Pick<WhyLog, 'all' | 'forTab' | 'add'>;
+  ask: { listPending: () => Promise<PendingAsk[]>; resolvePending: (n: number, e: number, c: 'switch' | 'keep') => Promise<void> };
+  now?: () => number;
+}
+
+export interface MessageSender { id?: string; url?: string; tab?: { id?: number; url?: string } }
+
+/** True for the extension's own pages (popup, options, side panel); false for content scripts and other extensions. */
+export function isExtensionPage(sender: MessageSender, d: Pick<HandlerDeps, 'runtimeId' | 'extensionOrigin'>): boolean {
+  if (sender.id !== d.runtimeId) return false;
+  if (!sender.tab) return true;
+  return typeof sender.url === 'string' && (sender.url === d.extensionOrigin || sender.url.startsWith(`${d.extensionOrigin}/`));
+}
+
+type BadgeDeps = Pick<HandlerDeps, 'port' | 'getSettings' | 'ask'> & { isLocked: (tabId: number) => boolean };
+
+/** Closable duplicate extras (tabs after the oldest, excluding pinned and locked) plus pending asks. */
+export async function badgeCount(deps: BadgeDeps): Promise<number> {
+  const [snap, settings, pending] = await Promise.all([deps.port.snapshot(), deps.getSettings(), deps.ask.listPending()]);
+  const extras = findDuplicateSets(snap.tabs, settings).reduce((n, s) => n + s.tabs.slice(1).filter((t) => !t.pinned && !deps.isLocked(t.id)).length, 0);
+  return extras + pending.length;
+}
+
+export async function refreshBadge(deps: BadgeDeps): Promise<void> {
+  const n = await badgeCount(deps);
+  await deps.port.setBadge(n > 0 ? String(n) : '');
+}
+
+const fail = (error: string, errors?: string[]): Response => (errors ? { ok: false, error, errors } : { ok: false, error });
+const ok = <T>(data: T): Response<T> => ({ ok: true, data });
+
+/** Debounce with a max wait so continuous activity still fires. */
+export function createDebounce(fn: () => void, waitMs: number, maxWaitMs: number): () => void {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let first = 0;
+  return () => {
+    const t = Date.now();
+    if (timer === undefined) first = t;
+    else clearTimeout(timer);
+    timer = setTimeout(() => { timer = undefined; fn(); }, Math.max(0, Math.min(waitMs, first + maxWaitMs - t)));
+  };
+}
+
+export interface OnMessageDeps {
+  runtimeId: string;
+  handleRequest: (req: unknown, sender: MessageSender) => Promise<Response>;
+  /** Handles banner / form-edit messages from content scripts; returns true when the message was one of them. */
+  handleBanner: (msg: unknown, sender: MessageSender) => boolean;
+}
+
+/** runtime.onMessage listener: banner messages stay fire-and-forget, everything else is answered via sendResponse. */
+export function createOnMessage(d: OnMessageDeps) {
+  return (msg: unknown, sender: MessageSender, sendResponse: (r: Response) => void): boolean | undefined => {
+    if (sender.id !== d.runtimeId) return undefined;
+    if (d.handleBanner(msg, sender)) return undefined;
+    d.handleRequest(msg, sender).then(sendResponse, (e: unknown) => sendResponse({ ok: false, error: String(e) }));
+    return true;
+  };
+}
+
+export function createHandler(deps: HandlerDeps): (req: unknown, sender: MessageSender) => Promise<Response> {
+  const now = deps.now ?? Date.now;
+
+  /** Closes everything but the oldest tab; pinned and locked tabs are never closed. */
+  async function closeSet(set: DupeSet): Promise<number> {
+    let closed = 0;
+    for (const t of set.tabs.slice(1)) {
+      if (t.pinned || deps.safety.isLocked(t.id)) continue;
+      const url = tabUrl(t);
+      await deps.port.closeTab(t.id);
+      deps.recentlyClosed.add({ url, title: t.title, windowId: t.windowId, reason: 'duplicate', at: now() });
+      deps.whyLog.add({ tabId: t.id, action: 'dupes-close', detail: `Closed duplicate of tab ${set.tabs[0]!.id} from the popup`, at: now() });
+      closed++;
+    }
+    return closed;
+  }
+
+  async function sets(): Promise<DupeSet[]> {
+    const [snap, settings] = await Promise.all([deps.port.snapshot(), deps.getSettings()]);
+    return findDuplicateSets(snap.tabs, settings);
+  }
+
+  async function run(req: Request): Promise<Response> {
+    switch (req.type) {
+      case 'config.get': return ok(await deps.store.get());
+      case 'config.set': {
+        const r = validateConfig(req.config);
+        if (!r.ok) return fail('invalid config', r.errors);
+        await deps.store.set(req.config as Config);
+        return ok(null);
+      }
+      case 'config.backups': return ok(await deps.store.backups());
+      case 'config.restore': await deps.store.restore(req.at); return ok(null);
+      case 'dupes.list': return ok({ sets: await sets(), pending: await deps.ask.listPending() });
+      case 'dupes.closeExtras': {
+        const set = (await sets()).find((s) => s.key === req.key);
+        const n = set ? await closeSet(set) : 0;
+        await refreshBadge({ ...deps, isLocked: (id) => deps.safety.isLocked(id) });
+        return ok(n);
+      }
+      case 'dupes.closeAll': {
+        let n = 0;
+        for (const s of await sets()) n += await closeSet(s);
+        await refreshBadge({ ...deps, isLocked: (id) => deps.safety.isLocked(id) });
+        return ok(n);
+      }
+      case 'dupes.resolve':
+        await deps.ask.resolvePending(req.newTabId, req.existingTabId, req.choice);
+        await refreshBadge({ ...deps, isLocked: (id) => deps.safety.isLocked(id) });
+        return ok(null);
+      case 'recent.list': return ok(deps.recentlyClosed.list());
+      case 'recent.undo': await deps.safety.undo(req.id); return ok(null);
+      case 'why.forTab': return ok(deps.whyLog.forTab(req.tabId));
+      case 'why.all': return ok(deps.whyLog.all());
+      case 'safety.pause': deps.safety.pause(req.d); return ok(null);
+      case 'safety.resume': deps.safety.resume(); return ok(null);
+      case 'safety.status': return ok({ paused: deps.safety.isPaused() });
+      case 'tab.lock': deps.safety.lock(req.tabId); return ok(null);
+      case 'tab.unlock': deps.safety.unlock(req.tabId); return ok(null);
+      case 'tab.focus': {
+        const t = (await deps.port.snapshot()).tabs.find((x) => x.id === req.tabId);
+        if (!t) return fail('tab not found');
+        await deps.port.focusTab(t.id, t.windowId);
+        return ok(null);
+      }
+    }
+  }
+
+  return async (req, sender) => {
+    if (!isExtensionPage(sender, deps)) return fail('forbidden');
+    if (!isRequest(req)) return fail('unknown request');
+    try {
+      return await run(req);
+    } catch (e) {
+      return fail(e instanceof Error ? e.message : String(e));
+    }
+  };
+}
