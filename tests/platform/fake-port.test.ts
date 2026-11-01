@@ -48,6 +48,17 @@ describe('FakeBrowserPort', () => {
     expect(f.state.tabs.find((t) => t.id === 1)!.groupId).toBe(-1);
   });
 
+  it('ungroup moves a middle tab to just after its former group block (groups stay contiguous)', async () => {
+    const f = mk([1, 2, 3, 4]);
+    const g = await f.group([1, 2, 3], { windowId: 1 });
+    await f.ungroup([2]);
+    expect(order(f)).toEqual([1, 3, 2, 4]);
+    expect(f.state.tabs.filter((t) => t.groupId === g).map((t) => t.id)).toEqual([1, 3]);
+    await f.ungroup([1, 3]);
+    expect(order(f)).toEqual([1, 3, 2, 4]);
+    expect(f.state.groups).toHaveLength(0);
+  });
+
   it('moveGroup reorders tab indices', async () => {
     const f = mk([1, 2, 3, 4, 5]);
     const g = await f.group([2, 3], { windowId: 1 });
