@@ -643,3 +643,30 @@ describe('DedupeHandler', () => {
     expect(w.calls('closeTab')).toEqual([]);
   });
 });
+
+describe('DedupeHandler onClosed / exemptOnce', () => {
+  it('reports the close (entry id, entry, focused tab) after closing', async () => {
+    const onClosed = vi.fn();
+    const w = setup(undefined, { onClosed });
+    w.port.addTab(tab(1, PR, { windowId: 2 }));
+    w.port.addTab(tab(2, `${PR}/files`, { active: true }));
+    w.h.recordCreated(2);
+    await w.h.onCandidate(2, `${PR}/files`, 'pending');
+    expect(onClosed).toHaveBeenCalledWith('rc1', expect.objectContaining({ url: `${PR}/files` }), expect.objectContaining({ id: 1 }));
+  });
+
+  it('exemptOnce skips the restored tab until its URL changes', async () => {
+    const w = setup();
+    w.port.addTab(tab(1, PR, { windowId: 2 }));
+    w.port.addTab(tab(2, `${PR}/files`, { active: true }));
+    w.port.addTab(tab(3, 'https://example.com/a', { windowId: 2 }));
+    w.h.recordCreated(2);
+    w.h.exemptOnce(2);
+    await w.h.onCandidate(2, `${PR}/files`, 'pending');
+    await w.h.onCandidate(2, `${PR}/files`, 'committed');
+    expect(w.calls('closeTab')).toEqual([]);
+    w.port.state.tabs.find((t) => t.id === 2)!.url = 'https://example.com/a';
+    await w.h.onCandidate(2, 'https://example.com/a', 'pending');
+    expect(w.calls('closeTab')).toEqual([[2]]);
+  });
+});

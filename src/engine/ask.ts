@@ -35,7 +35,15 @@ export interface AskDeps {
   updateConfig: (fn: (c: Config) => Config) => Promise<void>;
   recentlyClosed: { add(e: RecentlyClosedEntry): string };
   log: { add(e: LogEntry): void };
+  /**
+   * Requests the shared badge refresh (closable duplicates + pending asks; the pending list alone is not the badge).
+   * Wire the debounced scheduler: it is called fire-and-forget after each pending write, and its failures never
+   * reject the pending mutation.
+   */
+  scheduleBadge: () => void | Promise<void>;
   isLocked?: (tabId: number) => boolean;
+  /** Called (fire-and-forget) after an ask-mode close, with the focused existing tab; used for the undo toast. */
+  onClosed?: (entryId: string, entry: RecentlyClosedEntry, focused: TabSnap) => void;
   /** How long to wait for the tab to finish loading before giving up on the banner. Default 10 s. */
   completeTimeoutMs?: number;
   now?: () => number;
@@ -76,7 +84,9 @@ export function createAskController(port: BrowserPort, deps: AskDeps) {
 
   const writePending = async (list: PendingAsk[]): Promise<void> => {
     await api.session.set(PENDING_KEY, list);
-    await port.setBadge(list.length ? String(list.length) : '');
+    // Not awaited: a slow or failing badge refresh (it snapshots all tabs) must not hold up the serialized queue.
+    void Promise.resolve().then(() => deps.scheduleBadge())
+      .catch((e: unknown) => console.warn('[tabchef] badge refresh failed', e));
   };
   const mutatePending = (fn: (l: PendingAsk[]) => PendingAsk[]) =>
     serial(async () => {
@@ -193,20 +203,22 @@ export function createAskController(port: BrowserPort, deps: AskDeps) {
     if (!dup) return;
     const at = now();
     const groupTitle = snap.groups.find((g) => g.id === cand.groupId)?.title;
-    deps.recentlyClosed.add({
+    const entry: RecentlyClosedEntry = {
       url: cur.url, title: cand.title, windowId: cand.windowId, reason: 'duplicate', at,
       ...(groupTitle !== undefined ? { groupTitle } : {}),
       ...(ruleId !== undefined ? { ruleId } : {}),
-    });
+    };
+    const entryId = deps.recentlyClosed.add(entry);
     await port.closeTab(newTabId);
     await port.focusTab(existing.id, existing.windowId, s.followFragment ? withFragment(tabUrl(existing), dup.fragment) : undefined);
     deps.log.add({
       tabId: newTabId, action: 'dedupe-close', detail: `Closed duplicate of tab ${existing.id} (${existing.title}) after ask`, at,
       ...(ruleId !== undefined ? { ruleId } : {}),
     });
+    deps.onClosed?.(entryId, entry, existing);
   }
 
-    async function addAlwaysSwitchSite(url: string): Promise<void> {
+  async function addAlwaysSwitchSite(url: string): Promise<void> {
     const origin = originOf(url);
     if (origin === undefined) return;
     const pattern = `${origin}/*`;
