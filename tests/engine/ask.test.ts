@@ -41,6 +41,11 @@ function setup(over: Partial<AskDeps> = {}) {
     updateConfig: async (fn) => { cfg = fn(cfg); },
     recentlyClosed: { add: (e) => { closed.push(e); return 'rc'; } },
     log: { add: (e) => { logs.push(e); } },
+    // Stand-in for the shared refreshBadge (no duplicate sets in these worlds' badge expectations).
+    refreshBadge: async () => {
+      const l = await listPendingAsks(api.session);
+      await port.setBadge(l.length ? String(l.length) : '');
+    },
     ...over,
   };
   const ctl = createAskController(port, deps);
@@ -95,6 +100,14 @@ describe('ask: preference order', () => {
     const pending = await listPendingAsks(w.api.session);
     expect(pending).toEqual([expect.objectContaining({ newTabId: 2, existingTabId: 1, key: 'https://github.com/acme/api/pull/1' })]);
     expect(w.store.has(PENDING_KEY)).toBe(true);
+  });
+
+  it('updates the badge through the shared refreshBadge, never with a pending-only count (M8)', async () => {
+    const refreshBadge = vi.fn(async () => {});
+    const w = setup({ refreshBadge });
+    await w.askDefault();
+    expect(refreshBadge).toHaveBeenCalled();
+    expect(w.calls('setBadge')).toEqual([]);
   });
 
   it('frozen tab with host permission uses the notification path and never executeScript', async () => {

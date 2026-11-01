@@ -30,9 +30,10 @@ export interface GroupSnap { id: number; windowId: number; title: string; color:
 export interface WindowSnap { id: number; type: 'normal'|'popup'|'app'|'devtools'; focused: boolean; }
 export interface Snapshot { tabs: TabSnap[]; groups: GroupSnap[]; windows: WindowSnap[]; }
 export type Op =
-  | { kind: 'group'; tabIds: number[]; windowId: number; title: string; color: GroupColor; existingGroupId?: number; collapsed?: boolean }
-  | { kind: 'ungroup'; tabIds: number[] }
-  | { kind: 'moveTabs'; tabIds: number[]; windowId: number; groupId: number }   // merge rules
+  // ruleId (group/ungroup/moveTabs): the rule that moved the tabs in, or whose group they no longer match (why-log).
+  | { kind: 'group'; tabIds: number[]; windowId: number; title: string; color: GroupColor; existingGroupId?: number; collapsed?: boolean; ruleId?: string }
+  | { kind: 'ungroup'; tabIds: number[]; ruleId?: string }
+  | { kind: 'moveTabs'; tabIds: number[]; windowId: number; groupId: number; ruleId?: string }   // merge rules
   | { kind: 'moveGroup'; groupId: number; index: number }
   | { kind: 'updateGroup'; groupId: number; color?: GroupColor; collapsed?: boolean }
   | { kind: 'closeTab'; tabId: number; reason: string; ruleId?: string }

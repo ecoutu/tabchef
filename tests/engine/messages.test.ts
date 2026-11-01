@@ -30,10 +30,10 @@ function setup() {
     getSettings: async () => cfg.dedupe,
     safety: {
       pause: vi.fn(), resume: vi.fn(), isPaused: () => false, lock: (id) => { locked.add(id); }, unlock: (id) => { locked.delete(id); },
-      isLocked: (id) => locked.has(id), undo: vi.fn(async () => {}),
+      isLocked: (id) => locked.has(id), lockedTabIds: () => [...locked], undo: vi.fn(async () => {}),
     },
-    recentlyClosed: { list: () => [], add: (e) => { added.push(e); return 'id'; } },
-    whyLog: { all: () => [], forTab: () => [], add: () => {} },
+    recentlyClosed: { ready: Promise.resolve(), list: () => [], add: (e) => { added.push(e); return 'id'; } },
+    whyLog: { ready: Promise.resolve(), all: () => [], forTab: () => [], add: () => {} },
     ask: { listPending: async () => [{ newTabId: 5, existingTabId: 1, key: 'k', at: 1 }], resolvePending: vi.fn(async () => {}) },
     now: () => 42,
   };
@@ -149,6 +149,39 @@ describe('messages', () => {
     expect(await s.handle({ type: 'recent.undo', id: 'q' }, ui)).toEqual({ ok: true, data: null });
     expect(await s.handle({ type: 'why.all' }, ui)).toEqual({ ok: true, data: [] });
     expect((await s.handle({ type: 'config.backups' }, ui)).ok).toBe(true);
+  });
+
+  it('recent.list and why.all wait for their stores to load (M7)', async () => {
+    const s = setup();
+    let loaded = false;
+    let release!: () => void;
+    const ready = new Promise<void>((r) => { release = () => { loaded = true; r(); }; });
+    const item = { id: 'x', url: A, title: 't', windowId: 1, reason: 'duplicate', at: 1 };
+    const entry = { action: 'grouped', detail: 'd', at: 1 };
+    s.deps.recentlyClosed = { ready, list: () => (loaded ? [item] : []), add: () => 'id' };
+    s.deps.whyLog = { ready, all: () => (loaded ? [entry] : []), forTab: () => (loaded ? [entry] : []), add: () => {} };
+    const handle = createHandler(s.deps);
+    const pr = handle({ type: 'recent.list' }, ui);
+    const pw = handle({ type: 'why.all' }, ui);
+    const pt = handle({ type: 'why.forTab', tabId: 1 }, ui);
+    release();
+    expect(await pr).toEqual({ ok: true, data: [item] });
+    expect(await pw).toEqual({ ok: true, data: [entry] });
+    expect(await pt).toEqual({ ok: true, data: [entry] });
+  });
+
+  it('config.status reports the store status (I5)', async () => {
+    const s = setup();
+    s.deps.store.status = async () => ({ syncing: false, warning: 'Synced settings were found and loaded.' });
+    expect(await createHandler(s.deps)({ type: 'config.status' }, ui)).toEqual({ ok: true, data: { syncing: false, warning: 'Synced settings were found and loaded.' } });
+  });
+
+  it('safety.status lists locked tabs (popup lock toggle)', async () => {
+    const s = setup();
+    await s.handle({ type: 'tab.lock', tabId: 7 }, ui);
+    expect(await s.handle({ type: 'safety.status' }, ui)).toEqual({ ok: true, data: { paused: false, locked: [7] } });
+    await s.handle({ type: 'tab.unlock', tabId: 7 }, ui);
+    expect(await s.handle({ type: 'safety.status' }, ui)).toEqual({ ok: true, data: { paused: false, locked: [] } });
   });
 
   it('records recently closed only after closeTab succeeds', async () => {

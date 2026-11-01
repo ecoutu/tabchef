@@ -150,16 +150,19 @@ export function planGroups(snap: Snapshot, config: Config, ctx: PlanContext): Op
   }
 
   const isManaged = (g: GroupSnap): boolean => managed.has(g.id);
-  const strictFor = (g: GroupSnap): boolean => {
+  /** The rule a managed group belongs to: one of its targeting tabs' rule, else the first whose template produces it. */
+  const ruleFor = (g: GroupSnap): { strict: boolean; ruleId?: string } => {
     const m = titleMatch.get(g.title);
-    if (m) return m.strict;
+    if (m) return { strict: m.strict, ruleId: m.ruleId };
     const rule = config.groupRules.find((r: GroupRule) => r.enabled && templateProduces(r.group.title, g.title));
-    return rule?.strict ?? true;
+    return rule ? { strict: rule.strict ?? true, ruleId: rule.id } : { strict: true };
   };
+  const strictFor = (g: GroupSnap): boolean => ruleFor(g).strict;
 
   const buckets = new Map<string, Bucket>();
-  const moveTabs = new Map<string, { from: number; to: GroupSnap; tabIds: number[] }>();
-  const ungroups = new Map<number, number[]>();
+  const moveTabs = new Map<string, { from: number; to: GroupSnap; tabIds: number[]; ruleId: string }>();
+  /** window → source group id → tabs to ungroup (one op per source group, so each names its rule). */
+  const ungroups = new Map<number, Map<number, number[]>>();
   const dirty = new Set<number>();
 
   for (const t of tabs) {
@@ -169,9 +172,11 @@ export function planGroups(snap: Snapshot, config: Config, ctx: PlanContext): Op
     const m = matches.get(t.id);
     if (!m) {
       if (cur && strictFor(cur)) {
-        const list = ungroups.get(t.windowId) ?? [];
+        const byGroup = ungroups.get(t.windowId) ?? new Map<number, number[]>();
+        const list = byGroup.get(cur.id) ?? [];
         list.push(t.id);
-        ungroups.set(t.windowId, list);
+        byGroup.set(cur.id, list);
+        ungroups.set(t.windowId, byGroup);
       }
       continue;
     }
@@ -185,7 +190,7 @@ export function planGroups(snap: Snapshot, config: Config, ctx: PlanContext): Op
       home = candidates.find((g) => incognitoWindows.has(g.windowId) === incog);
       if (home && home.windowId !== t.windowId) {
         const k = `${t.windowId}|${home.id}`;
-        const mv = moveTabs.get(k) ?? { from: t.windowId, to: home, tabIds: [] };
+        const mv = moveTabs.get(k) ?? { from: t.windowId, to: home, tabIds: [], ruleId: m.ruleId };
         mv.tabIds.push(t.id);
         moveTabs.set(k, mv);
         continue;
@@ -217,10 +222,13 @@ export function planGroups(snap: Snapshot, config: Config, ctx: PlanContext): Op
   const order = bucketCompare(ctx);
   const ops: Op[] = [];
   for (const w of [...normal].sort((a, b) => a - b)) {
-    const ug = ungroups.get(w);
-    if (ug) ops.push({ kind: 'ungroup', tabIds: ug });
+    for (const [gid, tabIds] of ungroups.get(w) ?? []) {
+      const g = groupsById.get(gid);
+      const ruleId = g ? ruleFor(g).ruleId : undefined;
+      ops.push(ruleId !== undefined ? { kind: 'ungroup', tabIds, ruleId } : { kind: 'ungroup', tabIds });
+    }
     for (const mv of moveTabs.values()) {
-      if (mv.from === w) ops.push({ kind: 'moveTabs', tabIds: mv.tabIds, windowId: mv.to.windowId, groupId: mv.to.id });
+      if (mv.from === w) ops.push({ kind: 'moveTabs', tabIds: mv.tabIds, windowId: mv.to.windowId, groupId: mv.to.id, ruleId: mv.ruleId });
     }
     const mine = [...buckets.values()].filter((b) => b.windowId === w).sort(order);
     for (const b of mine) {
@@ -228,8 +236,8 @@ export function planGroups(snap: Snapshot, config: Config, ctx: PlanContext): Op
       const tabIds = b.join.map((t) => t.id);
       const base = { kind: 'group' as const, tabIds, windowId: w, title: b.title, color: b.match.color };
       ops.push(b.groupId !== undefined
-        ? { ...base, existingGroupId: b.groupId }
-        : { ...base, collapsed: b.match.collapsed });
+        ? { ...base, existingGroupId: b.groupId, ruleId: b.match.ruleId }
+        : { ...base, collapsed: b.match.collapsed, ruleId: b.match.ruleId });
     }
     for (const b of mine) {
       const g = b.groupId !== undefined ? groupsById.get(b.groupId) : undefined;
