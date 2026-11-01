@@ -1,5 +1,4 @@
 import { browser } from 'wxt/browser';
-import { defaultConfig } from '../core/config/defaults';
 import type { Config } from '../core/types';
 import { createAskController } from '../engine/ask';
 import { RecentlyClosed } from '../core/safety/recently-closed';
@@ -11,14 +10,13 @@ import { DedupeHandler } from '../engine/dedupe-handler';
 import { Reconciler } from '../engine/reconciler';
 import { SafetyService } from '../engine/safety';
 import { ChromePort } from '../platform/chrome-port';
+import { ConfigStore } from '../storage/config-store';
 
 export default defineBackground(() => {
-  // TODO(Task 13): replace with ConfigStore.get().
-  // Task 13: persist via ConfigStore
-  let config: Config = defaultConfig();
-  const getConfig = async () => config;
+  const store = new ConfigStore();
+  const getConfig = () => store.get();
   const updateConfig = async (fn: (c: Config) => Config) => {
-    config = fn(config);
+    await store.update(fn);
   };
   const port = new ChromePort();
   const whyLog = new WhyLog();
@@ -32,6 +30,9 @@ export default defineBackground(() => {
     extraLeaveAlone: () => safety.lockedTabIds(),
   });
   const schedule = (reason: string) => () => reconciler.schedule(reason);
+  store.onChange(() => reconciler.schedule('config'));
+  // Persist a pending (debounced) config write before the worker is torn down.
+  browser.runtime.onSuspend.addListener(() => { store.flush().catch(warn('config flush')); });
 
   const askController = createAskController(port, {
     // scripting / notifications are optional permissions: the namespaces are undefined until granted (the port checks first).
