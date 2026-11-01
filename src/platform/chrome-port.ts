@@ -34,6 +34,7 @@ export class ChromePort implements BrowserPort {
         };
         if (t.pendingUrl !== undefined) snap.pendingUrl = t.pendingUrl;
         if (t.lastAccessed !== undefined) snap.lastAccessed = t.lastAccessed;
+        if (t.favIconUrl && /^(https?:|data:)/i.test(t.favIconUrl)) snap.favIconUrl = t.favIconUrl;
         return snap;
       }),
       groups: groups.filter((g) => ids.has(g.windowId)).map((g) => ({
