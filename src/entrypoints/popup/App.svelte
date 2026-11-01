@@ -11,6 +11,9 @@
   let sets = $state<DupeSetView[]>([]);
   let pending = $state<PendingAsk[]>([]);
   let paused = $state(false);
+  let locked = $state<number[]>([]);
+  let currentTabId = $state<number | undefined>(undefined);
+  let syncWarning = $state('');
   let recentCount = $state(0);
   let lastTab = $state<string | undefined>(undefined);
   let error = $state('');
@@ -19,11 +22,14 @@
   const model = $derived(buildPopupModel({ dupes: sets, pending, paused, recentCount, lastTab }, TAB_REGISTRY));
 
   async function refresh(): Promise<void> {
-    const [d, s, r] = await Promise.all([send({ type: 'dupes.list' }), send({ type: 'safety.status' }), send({ type: 'recent.list' })]);
+    const [d, s, r, c] = await Promise.all([
+      send({ type: 'dupes.list' }), send({ type: 'safety.status' }), send({ type: 'recent.list' }), send({ type: 'config.status' }),
+    ]);
     const errs: string[] = [];
     if (d.ok) { sets = d.data.sets; pending = d.data.pending; } else errs.push(d.error);
-    if (s.ok) paused = s.data.paused; else errs.push(s.error);
+    if (s.ok) { paused = s.data.paused; locked = s.data.locked ?? []; } else errs.push(s.error);
     if (r.ok) recentCount = r.data.length; else errs.push(r.error);
+    if (c.ok) syncWarning = c.data?.warning ?? ''; else errs.push(c.error);
     error = errs[0] ?? '';
   }
 
@@ -32,6 +38,9 @@
       const v = (await browser.storage.local.get('popup.lastTab'))['popup.lastTab'];
       if (typeof v === 'string') lastTab = v;
     } catch { /* storage unavailable: use default tab */ }
+    try {
+      currentTabId = (await browser.tabs.query({ active: true, currentWindow: true }))[0]?.id;
+    } catch { /* no current tab (e.g. devtools): no lock button */ }
     await refresh();
   });
 
@@ -43,6 +52,15 @@
   async function setPause(d: PauseDuration | 'resume'): Promise<void> {
     menuOpen = false;
     const r = d === 'resume' ? await send({ type: 'safety.resume' }) : await send({ type: 'safety.pause', d });
+    if (!r.ok) error = r.error;
+    await refresh();
+  }
+
+  const currentLocked = $derived(currentTabId !== undefined && locked.includes(currentTabId));
+
+  async function toggleCurrentLock(): Promise<void> {
+    if (currentTabId === undefined) return;
+    const r = await send({ type: currentLocked ? 'tab.unlock' : 'tab.lock', tabId: currentTabId });
     if (!r.ok) error = r.error;
     await refresh();
   }
@@ -61,6 +79,11 @@
   <header>
     <h1>Tabchef</h1>
     <span class="total" aria-label="{model.header.total} items">{model.header.total}</span>
+    {#if currentTabId !== undefined}
+      <button type="button" class="lock" aria-pressed={currentLocked} onclick={toggleCurrentLock}>
+        {currentLocked ? 'Unlock current tab' : 'Lock current tab'}
+      </button>
+    {/if}
     <div class="pause">
       <button type="button" aria-haspopup="menu" aria-expanded={menuOpen} onclick={() => (menuOpen = !menuOpen)}>
         {model.header.paused ? 'Paused' : 'Pause'}
@@ -77,6 +100,7 @@
   </header>
 
   {#if error}<p class="error" role="alert">{error}</p>{/if}
+  {#if syncWarning}<p class="warn" role="status" title={syncWarning} data-testid="sync-warning">{syncWarning}</p>{/if}
 
   <div class="tabs" role="tablist">
     {#each model.tabs as t (t.id)}
@@ -88,7 +112,7 @@
 
   <div class="body" role="tabpanel">
     {#if model.activeTab === 'duplicates'}
-      <Duplicates data={{ sets, pending }} onChange={refresh} />
+      <Duplicates data={{ sets, pending, locked }} onChange={refresh} />
     {/if}
   </div>
 
@@ -120,7 +144,7 @@
   .menu button { text-align: left; border: 0; background: none; padding: 5px 8px; border-radius: 4px; }
   .menu button:hover { background: var(--hover); }
   button { font: inherit; color: inherit; cursor: pointer; }
-  header > .pause > button, footer button { border: 1px solid var(--border); background: var(--surface); border-radius: 6px; padding: 3px 8px; }
+  header > .pause > button, header > .lock, footer button { border: 1px solid var(--border); background: var(--surface); border-radius: 6px; padding: 3px 8px; }
   .tabs { display: flex; border-bottom: 1px solid var(--border); }
   .tabs button { background: none; border: 0; border-bottom: 2px solid transparent; padding: 8px 12px; }
   .tabs button[aria-selected='true'] { border-bottom-color: var(--accent); }
@@ -129,5 +153,6 @@
   .body { max-height: 400px; overflow-y: auto; }
   footer { display: flex; justify-content: space-between; padding: 8px 12px; border-top: 1px solid var(--border); }
   .error { color: var(--danger); margin: 6px 12px; font-size: 12px; }
+  .warn { color: var(--danger); margin: 6px 12px; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 </style>
