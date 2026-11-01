@@ -388,7 +388,8 @@ describe('ConfigStore', () => {
   it('remote change during a pending local write: local wins (last write wins), no onChange for the remote', async () => {
     const a = mk();
     const got: Config[] = [];
-    await a.get();
+    await a.set(withSite('first.com'));
+    await a.flush(); // this device has synced before (a never-synced device adopts the remote instead: I4)
     a.onChange((c) => got.push(c));
     const mine = withSite('mine.com');
     await a.set(mine);
@@ -403,5 +404,46 @@ describe('ConfigStore', () => {
     expect(await a.get()).toEqual(mine);
     await a.flush();
     expect(await mk().get()).toEqual(mine);
+  });
+  it('fresh device: a remote config that appears before the first write is adopted; the local edit becomes a backup (I4)', async () => {
+    const b = mk();
+    await b.get(); // nothing synced yet: defaults
+    const got: Config[] = [];
+    b.onChange((c) => got.push(c));
+    const mine = withSite('mine.com');
+    await b.set(mine);
+    // Chrome sync delivers the account's config (written by another device) while our write is debounced.
+    const theirs = withSite('theirs.com');
+    const json = JSON.stringify(theirs);
+    const sha = [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(json)))]
+      .map((x) => x.toString(16).padStart(2, '0')).join('');
+    await sync().set({ 'cfg:0': json });
+    await sync().set({ 'cfg:meta': { v: 1, n: 1, sha, at: 7 } });
+    got.length = 0;
+    await b.flush();
+    expect(await b.get()).toEqual(theirs);
+    expect((await sync().get('cfg:meta'))['cfg:meta']).toMatchObject({ sha });
+    expect(await mk().get()).toEqual(theirs);
+    expect((await b.backups()).some((x) => JSON.stringify(x.config) === JSON.stringify(mine))).toBe(true);
+    expect((await b.status()).warning).toBe('Synced settings were found and loaded; your change on this device was saved as a backup.');
+    expect(got).toEqual([theirs]);
+    expect((await local().get('cfg:pending'))['cfg:pending']).toBe(false);
+  });
+
+  it('fresh device with nothing in sync still writes the local edit (I4)', async () => {
+    const b = mk();
+    await b.set(withSite('mine.com'));
+    await b.flush();
+    expect(await mk().get()).toEqual(withSite('mine.com'));
+    expect((await b.status()).warning).toBeUndefined();
+  });
+
+  it('set() is serialized with update(): a set issued after an update is never overwritten by it (T13)', async () => {
+    const a = mk();
+    await a.get();
+    const u = a.update((c) => ({ ...c, dedupe: { ...c.dedupe, alwaysSwitchSites: ['u.com'] } }));
+    const s = a.set(withSite('s.com'));
+    await Promise.all([u, s]);
+    expect((await a.get()).dedupe.alwaysSwitchSites).toEqual(['s.com']);
   });
 });
