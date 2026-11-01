@@ -33,6 +33,9 @@ function compileRegex(p: string): Matcher {
   };
 }
 
+/** `*.` before a host: optional subdomain labels that never leave the host (no `/`, `?`, `#` or userinfo `@`). */
+const HOST_PREFIX = '(?:[^/?#@]*\\.)?';
+
 const escapeRe = (s: string) => s.replace(/[.+?^${}()|[\]\\]/g, '\\$&');
 
 /** Translate glob/param source into regex source; `*` => `.*`, `:name` at a segment start => named group. */
@@ -65,12 +68,12 @@ function compileGlob(p: string): Matcher {
     let rest = p.slice(sm[0].length);
     let hostPre = '';
     if (rest.startsWith('*.')) {
-      hostPre = '(?:.*\\.)?';
+      hostPre = HOST_PREFIX;
       rest = rest.slice(2);
     }
     source = `${scheme}://${hostPre}${translate(rest, names)}`;
   } else if (p.startsWith('*.')) {
-    source = `(?:.*\\.)?${translate(p.slice(2), names)}`;
+    source = `${HOST_PREFIX}${translate(p.slice(2), names)}`;
   } else {
     source = translate(p, names);
   }
@@ -100,4 +103,22 @@ export function compilePattern(p: string): Matcher {
   const fn = isRegex ? compileRegex(p) : compileGlob(p);
   cache.set(p, fn);
   return fn;
+}
+
+/**
+ * Variable names a pattern can capture (`:param`s or regex named groups), or null if the pattern does not compile.
+ * Regex groups inside an optional part may still be missing at match time.
+ */
+export function patternCaptures(p: string): Set<string> | null {
+  try {
+    compilePattern(p);
+  } catch (e) {
+    if (e instanceof PatternError) return null;
+    throw e;
+  }
+  const isRegex = p.length >= 2 && p.startsWith('/') && p.lastIndexOf('/') > 0;
+  if (isRegex) return new Set([...p.slice(1, p.lastIndexOf('/')).matchAll(/\(\?<([A-Za-z_$][\w$]*)>/g)].map((m) => m[1] as string));
+  const names = new Set<string>();
+  translate(p, names);
+  return names;
 }

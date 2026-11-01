@@ -74,13 +74,100 @@ function planMoves(windowTabs: TabSnap[], desired: number[]): Op[] {
   return ops;
 }
 
+type ManagedCtx = Pick<PlanContext, 'leaveAlone' | 'managedTitles'>;
+
+/** Per-pass rule evaluation shared by managedGroupIds and planGroups (compute once with planTargets). */
+export interface Targets {
+  normal: Set<number>;
+  /** Tabs of normal windows in (window, index) order. */
+  tabs: TabSnap[];
+  eligible: (t: TabSnap) => boolean;
+  matches: Map<number, GroupMatch>;
+  /** Lowest-ruleIndex match per target title. */
+  titleMatch: Map<string, GroupMatch>;
+  managed: Set<number>;
+}
+
+export function planTargets(snap: Snapshot, config: Config, ctx: ManagedCtx): Targets {
+  const normal = new Set(snap.windows.filter((w) => w.type === 'normal').map((w) => w.id));
+  const tabs = snap.tabs.filter((t) => normal.has(t.windowId)).sort(byPos);
+  const eligible = (t: TabSnap): boolean => !t.pinned && !ctx.leaveAlone.has(t.id) && !isExemptUrl(urlOf(t));
+  const matches = new Map<number, GroupMatch>();
+  const titleMatch = new Map<string, GroupMatch>();
+  for (const t of tabs) {
+    if (!eligible(t)) continue;
+    const m = evaluateGroupRules(t, config.groupRules);
+    if (!m) continue;
+    matches.set(t.id, m);
+    const prev = titleMatch.get(m.title);
+    if (!prev || m.ruleIndex < prev.ruleIndex) titleMatch.set(m.title, m);
+  }
+  // Untitled groups are always the user's (Tabchef never renders an empty title).
+  const managed = new Set(snap.groups
+    .filter((g) => normal.has(g.windowId) && g.title !== '' && (ctx.managedTitles.has(g.title) || titleMatch.has(g.title)))
+    .map((g) => g.id));
+  return { normal, tabs, eligible, matches, titleMatch, managed };
+}
+
+/**
+ * Ids of groups Tabchef manages: titled groups (normal windows) whose title Tabchef created/adopted or that some
+ * eligible tab currently targets. The planner and the reconciler's membership tracking share this definition.
+ */
+export function managedGroupIds(snap: Snapshot, config: Config, ctx: ManagedCtx, pre?: Targets): Set<number> {
+  return (pre ?? planTargets(snap, config, ctx)).managed;
+}
+
+/** Options for syncCreationOrder's deletion of numbers whose group is not live. */
+export interface CreationPrune {
+  /** Titles of groups created but not titled yet (they are untitled meanwhile): their numbers are kept. */
+  pendingTitles?: Iterable<string>;
+  /** Tombstones: key → consecutive counted calls it was absent. A key is dropped once it reaches ABSENT_LIMIT. */
+  absent: Map<string, number>;
+  /** Count absence on this call (once per flush; later passes of the same flush pass false). */
+  count: boolean;
+}
+const ABSENT_LIMIT = 2;
+const titleOfKey = (k: string): string => k.slice(k.indexOf('|') + 1);
+
+/**
+ * Gives every managed group without a creation number one (after all known numbers, in tab-strip order), so groups
+ * restored by the browser keep their place when new ones are created; drops numbers of groups that no longer exist.
+ * With `prune`, a number survives while its title is pending a retitle, and is dropped only after its group was
+ * absent for ABSENT_LIMIT consecutive flushes (a group that is briefly empty or untitled keeps its place).
+ */
+export function syncCreationOrder(snap: Snapshot, managed: Set<number>, order: Map<string, number>, prune?: CreationPrune): void {
+  const groupsById = new Map(snap.groups.map((g) => [g.id, g]));
+  const live = new Set(snap.groups.map((g) => `${g.windowId}|${g.title}`));
+  const pending = new Set(prune?.pendingTitles ?? []);
+  for (const k of [...order.keys()]) {
+    if (live.has(k) || pending.has(titleOfKey(k))) { prune?.absent.delete(k); continue; }
+    if (!prune) { order.delete(k); continue; }
+    if (!prune.count) continue;
+    const n = (prune.absent.get(k) ?? 0) + 1;
+    if (n >= ABSENT_LIMIT) { order.delete(k); prune.absent.delete(k); } else prune.absent.set(k, n);
+  }
+  if (prune) for (const k of [...prune.absent.keys()]) if (!order.has(k)) prune.absent.delete(k);
+  let next = Math.max(0, ...order.values());
+  for (const t of [...snap.tabs].sort(byPos)) {
+    const g = groupsById.get(t.groupId);
+    if (!g || !managed.has(g.id)) continue;
+    const k = `${g.windowId}|${g.title}`;
+    if (!order.has(k)) order.set(k, ++next);
+  }
+}
+
 /**
  * Plans grouping ops for a snapshot. Pure. Groups are matched by title + window, never by stored id.
  * Windows that get structural ops (group/ungroup/moveTabs) get no moveGroup ops this pass; the reconciler re-plans.
+ * `pre` is planTargets(snap, config, ctx) when the caller already computed it this pass.
+ *
+ * Merge titles are global: a title that any merge rule claims (some eligible tab matched it via a merge rule) gets
+ * one group across all windows (per incognito-ness), and every tab targeting that title joins it, including tabs
+ * matched by a non-merge rule with the same title. Titles no merge rule claims get one group per window.
  */
-export function planGroups(snap: Snapshot, config: Config, ctx: PlanContext): Op[] {
-  const normal = new Set(snap.windows.filter((w) => w.type === 'normal').map((w) => w.id));
-  const tabs = snap.tabs.filter((t) => normal.has(t.windowId)).sort(byPos);
+export function planGroups(snap: Snapshot, config: Config, ctx: PlanContext, pre?: Targets): Op[] {
+  const { normal, tabs, eligible, matches, titleMatch, managed } = pre ?? planTargets(snap, config, ctx);
+  const mergeTitles = new Set([...matches.values()].filter((m) => m.merge).map((m) => m.title));
   const groupsById = new Map(snap.groups.map((g) => [g.id, g]));
   const incognitoWindows = new Set(tabs.filter((t) => t.incognito).map((t) => t.windowId));
 
@@ -91,29 +178,20 @@ export function planGroups(snap: Snapshot, config: Config, ctx: PlanContext): Op
     if (list) list.push(g); else byTitle.set(g.title, [g]);
   }
 
-  const eligible = (t: TabSnap): boolean => !t.pinned && !ctx.leaveAlone.has(t.id) && !isExemptUrl(urlOf(t));
-  const matches = new Map<number, GroupMatch>();
-  const titleMatch = new Map<string, GroupMatch>(); // lowest-ruleIndex match per target title
-  for (const t of tabs) {
-    if (!eligible(t)) continue;
-    const m = evaluateGroupRules(t, config.groupRules);
-    if (!m) continue;
-    matches.set(t.id, m);
-    const prev = titleMatch.get(m.title);
-    if (!prev || m.ruleIndex < prev.ruleIndex) titleMatch.set(m.title, m);
-  }
-
-  const isManaged = (g: GroupSnap): boolean => ctx.managedTitles.has(g.title) || titleMatch.has(g.title);
-  const strictFor = (g: GroupSnap): boolean => {
+  const isManaged = (g: GroupSnap): boolean => managed.has(g.id);
+  /** The rule a managed group belongs to: one of its targeting tabs' rule, else the first whose template produces it. */
+  const ruleFor = (g: GroupSnap): { strict: boolean; ruleId?: string } => {
     const m = titleMatch.get(g.title);
-    if (m) return m.strict;
+    if (m) return { strict: m.strict, ruleId: m.ruleId };
     const rule = config.groupRules.find((r: GroupRule) => r.enabled && templateProduces(r.group.title, g.title));
-    return rule?.strict ?? true;
+    return rule ? { strict: rule.strict ?? true, ruleId: rule.id } : { strict: true };
   };
+  const strictFor = (g: GroupSnap): boolean => ruleFor(g).strict;
 
   const buckets = new Map<string, Bucket>();
-  const moveTabs = new Map<string, { from: number; to: GroupSnap; tabIds: number[] }>();
-  const ungroups = new Map<number, number[]>();
+  const moveTabs = new Map<string, { from: number; to: GroupSnap; tabIds: number[]; ruleId: string }>();
+  /** window → source group id → tabs to ungroup (one op per source group, so each names its rule). */
+  const ungroups = new Map<number, Map<number, number[]>>();
   const dirty = new Set<number>();
 
   for (const t of tabs) {
@@ -123,9 +201,11 @@ export function planGroups(snap: Snapshot, config: Config, ctx: PlanContext): Op
     const m = matches.get(t.id);
     if (!m) {
       if (cur && strictFor(cur)) {
-        const list = ungroups.get(t.windowId) ?? [];
+        const byGroup = ungroups.get(t.windowId) ?? new Map<number, number[]>();
+        const list = byGroup.get(cur.id) ?? [];
         list.push(t.id);
-        ungroups.set(t.windowId, list);
+        byGroup.set(cur.id, list);
+        ungroups.set(t.windowId, byGroup);
       }
       continue;
     }
@@ -134,12 +214,12 @@ export function planGroups(snap: Snapshot, config: Config, ctx: PlanContext): Op
     const candidates = byTitle.get(m.title) ?? [];
     let key: string;
     let home: GroupSnap | undefined;
-    if (m.merge) {
+    if (mergeTitles.has(m.title)) {
       const incog = t.incognito;
       home = candidates.find((g) => incognitoWindows.has(g.windowId) === incog);
       if (home && home.windowId !== t.windowId) {
         const k = `${t.windowId}|${home.id}`;
-        const mv = moveTabs.get(k) ?? { from: t.windowId, to: home, tabIds: [] };
+        const mv = moveTabs.get(k) ?? { from: t.windowId, to: home, tabIds: [], ruleId: m.ruleId };
         mv.tabIds.push(t.id);
         moveTabs.set(k, mv);
         continue;
@@ -168,10 +248,13 @@ export function planGroups(snap: Snapshot, config: Config, ctx: PlanContext): Op
   const order = bucketCompare(ctx);
   const ops: Op[] = [];
   for (const w of [...normal].sort((a, b) => a - b)) {
-    const ug = ungroups.get(w);
-    if (ug) ops.push({ kind: 'ungroup', tabIds: ug });
+    for (const [gid, tabIds] of ungroups.get(w) ?? []) {
+      const g = groupsById.get(gid);
+      const ruleId = g ? ruleFor(g).ruleId : undefined;
+      ops.push(ruleId !== undefined ? { kind: 'ungroup', tabIds, ruleId } : { kind: 'ungroup', tabIds });
+    }
     for (const mv of moveTabs.values()) {
-      if (mv.from === w) ops.push({ kind: 'moveTabs', tabIds: mv.tabIds, windowId: mv.to.windowId, groupId: mv.to.id });
+      if (mv.from === w) ops.push({ kind: 'moveTabs', tabIds: mv.tabIds, windowId: mv.to.windowId, groupId: mv.to.id, ruleId: mv.ruleId });
     }
     const mine = [...buckets.values()].filter((b) => b.windowId === w).sort(order);
     for (const b of mine) {
@@ -179,8 +262,8 @@ export function planGroups(snap: Snapshot, config: Config, ctx: PlanContext): Op
       const tabIds = b.join.map((t) => t.id);
       const base = { kind: 'group' as const, tabIds, windowId: w, title: b.title, color: b.match.color };
       ops.push(b.groupId !== undefined
-        ? { ...base, existingGroupId: b.groupId }
-        : { ...base, collapsed: b.match.collapsed });
+        ? { ...base, existingGroupId: b.groupId, ruleId: b.match.ruleId }
+        : { ...base, collapsed: b.match.collapsed, ruleId: b.match.ruleId });
     }
     for (const b of mine) {
       const g = b.groupId !== undefined ? groupsById.get(b.groupId) : undefined;

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compilePattern, PatternError } from '../../../src/core/match/pattern';
+import { compilePattern, PatternError, patternCaptures } from '../../../src/core/match/pattern';
 
 const m = (p: string, u: string) => compilePattern(p)(u);
 
@@ -65,5 +65,25 @@ describe('compilePattern', () => {
   });
   it('caches compiled patterns', () => {
     expect(compilePattern('cache.test/*')).toBe(compilePattern('cache.test/*'));
+  });
+});
+
+describe('compilePattern: *.host prefix stays in the host (T4)', () => {
+  it('does not match the host suffix inside the path, query or userinfo', () => {
+    expect(m('*.example.com/*', 'https://evil.com/x.example.com/')).toBeNull();
+    expect(m('https://*.example.com/*', 'https://evil.com/x.example.com/')).toBeNull();
+    expect(m('*.example.com/*', 'https://evil.com?x.example.com/')).toBeNull();
+    expect(m('*.example.com/*', 'https://evil.com#x.example.com/')).toBeNull();
+    expect(m('*.example.com/*', 'https://x@evil.com/.example.com/')).toBeNull();
+    expect(m('*.example.com/*', 'https://a.b.example.com/x')).toEqual({});
+  });
+});
+
+describe('patternCaptures', () => {
+  it('lists :params and regex named groups; null for invalid patterns', () => {
+    expect([...patternCaptures('github.com/:org/:repo/*')!].sort()).toEqual(['org', 'repo']);
+    expect([...patternCaptures('/github\\.com\\/(?<owner>[^/]+)/')!]).toEqual(['owner']);
+    expect([...patternCaptures('a.com/*')!]).toEqual([]);
+    expect(patternCaptures('/(/')).toBeNull();
   });
 });
