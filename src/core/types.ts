@@ -23,7 +23,9 @@ export interface DedupeSettings {
 export interface Config { version: 1; groupRules: GroupRule[]; dedupe: DedupeSettings; }
 export interface TabSnap { id: number; windowId: number; index: number; url: string; pendingUrl?: string;
   title: string; pinned: boolean; groupId: number; incognito: boolean; discarded: boolean; frozen?: boolean;
-  active: boolean; audible: boolean; lastAccessed?: number; }
+  active: boolean; audible: boolean; lastAccessed?: number;
+  /** http(s)/data: favicon only; never a chrome:// URL. */
+  favIconUrl?: string; }
 export interface GroupSnap { id: number; windowId: number; title: string; color: GroupColor; collapsed: boolean; }
 export interface WindowSnap { id: number; type: 'normal'|'popup'|'app'|'devtools'; focused: boolean; }
 export interface Snapshot { tabs: TabSnap[]; groups: GroupSnap[]; windows: WindowSnap[]; }

@@ -80,6 +80,8 @@ export type Request =
 export type Response<T = unknown> = { ok: true; data: T } | { ok: false; error: string; errors?: string[] };
 
 export interface DupeSet { key: string; tabs: TabSnap[] }
+/** A dupe set as listed to the UI: `closable` = extras the close button would actually close. */
+export interface DupeSetView extends DupeSet { closable: number }
 export interface SafetyStatus { paused: boolean }
 
 export interface ResponseData {
@@ -87,7 +89,7 @@ export interface ResponseData {
   'config.set': null;
   'config.backups': Backup[];
   'config.restore': null;
-  'dupes.list': { sets: DupeSet[]; pending: PendingAsk[] };
+  'dupes.list': { sets: DupeSetView[]; pending: PendingAsk[] };
   'dupes.closeExtras': number;
   'dupes.closeAll': number;
   'dupes.resolve': null;
@@ -229,7 +231,12 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
       }
       case 'config.backups': return ok(await deps.store.backups());
       case 'config.restore': await deps.store.restore(req.at); return ok(null);
-      case 'dupes.list': return ok({ sets: await sets(), pending: await deps.ask.listPending() });
+      case 'dupes.list': {
+        const views = (await sets()).map((s): DupeSetView => ({
+          ...s, closable: s.tabs.slice(1).filter((t) => !t.pinned && !deps.safety.isLocked(t.id)).length,
+        }));
+        return ok({ sets: views, pending: await deps.ask.listPending() });
+      }
       case 'dupes.closeExtras': {
         const set = (await sets()).find((s) => s.key === req.key);
         const n = set ? await closeSet(set) : 0;
