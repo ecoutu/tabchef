@@ -41,7 +41,13 @@ describe('evaluateGroupRules', () => {
   it('accepts an array of patterns; first matching pattern supplies captures', () => {
     const rules = [rule({ url: ['example.com/*', 'github.com/:org/:repo/*'], title: '{repo}' })];
     expect(evaluateGroupRules(tab(), rules)?.title).toBe('widgets');
-    expect(evaluateGroupRules(tab({ url: 'https://example.com/x' }), rules)?.title).toBe('');
+  });
+  it('a title that renders empty is no match; the next rule is tried (I1)', () => {
+    const rules = [rule({ id: 'gh', url: ['example.com/*', 'github.com/:org/:repo/*'], title: '{repo}' })];
+    expect(evaluateGroupRules(tab({ url: 'https://example.com/x' }), rules)).toBeNull();
+    const withFallback = [...rules, rule({ id: 'any', url: 'example.com/*', title: 'Ex' })];
+    expect(evaluateGroupRules(tab({ url: 'https://example.com/x' }), withFallback)).toMatchObject({ ruleId: 'any', title: 'Ex' });
+    expect(evaluateGroupRules(tab(), [rule({ title: '' })])).toBeNull();
   });
   it('uses pendingUrl when non-empty, else url', () => {
     const rules = [rule({ url: 'example.com/*' })];

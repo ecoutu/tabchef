@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { planGroups, type PlanContext } from '../../../src/core/group/plan';
+import { managedGroupIds, planGroups, syncCreationOrder, type PlanContext } from '../../../src/core/group/plan';
 import { defaultConfig } from '../../../src/core/config/defaults';
 import { FakeBrowserPort } from '../../../src/platform/fake-port';
 import type { Config, GroupColor, GroupRule, Op, Snapshot, TabSnap } from '../../../src/core/types';
@@ -94,8 +94,8 @@ describe('planGroups: config order', () => {
     f.addTab(tab(1, B));
     f.addTab(tab(2, A));
     expect(planGroups(snap(f), AB, ctx())).toEqual([
-      { kind: 'group', tabIds: [2], windowId: 1, title: 'A', color: 'blue', collapsed: false },
-      { kind: 'group', tabIds: [1], windowId: 1, title: 'B', color: 'red', collapsed: false },
+      { kind: 'group', tabIds: [2], windowId: 1, title: 'A', color: 'blue', collapsed: false, ruleId: 'a' },
+      { kind: 'group', tabIds: [1], windowId: 1, title: 'B', color: 'red', collapsed: false, ruleId: 'b' },
     ]);
   });
 
@@ -184,7 +184,7 @@ describe('planGroups: adoption by title + window', () => {
     f.addTab(tab(2, A));
     f.addGroup({ id: 999, windowId: 1, title: 'api', color: 'blue', collapsed: false });
     const ops = planGroups(snap(f), API, ctx());
-    expect(ops).toEqual([{ kind: 'group', tabIds: [2], windowId: 1, title: 'api', color: 'blue', existingGroupId: 999 }]);
+    expect(ops).toEqual([{ kind: 'group', tabIds: [2], windowId: 1, title: 'api', color: 'blue', existingGroupId: 999, ruleId: 'api' }]);
     expect(ops.some((o) => o.kind === 'group' && o.existingGroupId === undefined)).toBe(false);
   });
 
@@ -202,7 +202,7 @@ describe('planGroups: adoption by title + window', () => {
     f.addGroup({ id: 5, windowId: 1, title: 'api', color: 'blue', collapsed: false });
     f.addGroup({ id: 3, windowId: 1, title: 'api', color: 'blue', collapsed: false });
     const ops = planGroups(snap(f), API, ctx());
-    expect(ops).toEqual([{ kind: 'group', tabIds: [1], windowId: 1, title: 'api', color: 'blue', existingGroupId: 3 }]);
+    expect(ops).toEqual([{ kind: 'group', tabIds: [1], windowId: 1, title: 'api', color: 'blue', existingGroupId: 3, ruleId: 'api' }]);
     await apply(f, ops);
     expect(f.state.groups.filter((g) => g.title === 'api').map((g) => g.id)).toEqual([3]);
     expect(f.state.tabs.map((t) => t.groupId)).toEqual([3, 3]);
@@ -213,8 +213,8 @@ describe('planGroups: adoption by title + window', () => {
     f.addTab(tab(1, A));
     f.addTab(tab(2, A, { windowId: 2 }));
     expect(planGroups(snap(f), API, ctx())).toEqual([
-      { kind: 'group', tabIds: [1], windowId: 1, title: 'api', color: 'blue', collapsed: false },
-      { kind: 'group', tabIds: [2], windowId: 2, title: 'api', color: 'blue', collapsed: false },
+      { kind: 'group', tabIds: [1], windowId: 1, title: 'api', color: 'blue', collapsed: false, ruleId: 'api' },
+      { kind: 'group', tabIds: [2], windowId: 2, title: 'api', color: 'blue', collapsed: false, ruleId: 'api' },
     ]);
   });
 
@@ -224,7 +224,7 @@ describe('planGroups: adoption by title + window', () => {
     f.addTab(tab(2, A, { windowId: 2 }));
     f.addGroup({ id: 10, windowId: 1, title: 'api', color: 'blue', collapsed: false });
     expect(planGroups(snap(f), API, ctx())).toEqual([
-      { kind: 'group', tabIds: [2], windowId: 2, title: 'api', color: 'blue', collapsed: false },
+      { kind: 'group', tabIds: [2], windowId: 2, title: 'api', color: 'blue', collapsed: false, ruleId: 'api' },
     ]);
   });
 
@@ -344,7 +344,7 @@ describe('planGroups: strict', () => {
 
   it('strict unset → ungroup', () => {
     expect(planGroups(snap(setup()), cfg(rule('api', 'a.com/*', 'api')), managed()))
-      .toEqual([{ kind: 'ungroup', tabIds: [1] }]);
+      .toEqual([{ kind: 'ungroup', tabIds: [1], ruleId: 'api' }]);
   });
 
   it('strict-ungroup applies only to managed groups', () => {
@@ -355,7 +355,7 @@ describe('planGroups: strict', () => {
     const f = setup();
     f.addTab(tab(2, A, { groupId: 10 }));
     expect(planGroups(snap(f), cfg(rule('api', 'a.com/*', 'api')), ctx()))
-      .toEqual([{ kind: 'ungroup', tabIds: [1] }]);
+      .toEqual([{ kind: 'ungroup', tabIds: [1], ruleId: 'api' }]);
   });
 
   it('strict: false is taken from the rule of tabs still targeting the group', () => {
@@ -377,7 +377,7 @@ describe('planGroups: strict', () => {
     f.addTab(tab(1, B, { groupId: 10 }));
     f.addGroup({ id: 10, windowId: 1, title: 'A', color: 'blue', collapsed: false });
     expect(planGroups(snap(f), AB, ctx({ managedTitles: new Set(['A']) }))).toEqual([
-      { kind: 'group', tabIds: [1], windowId: 1, title: 'B', color: 'red', collapsed: false },
+      { kind: 'group', tabIds: [1], windowId: 1, title: 'B', color: 'red', collapsed: false, ruleId: 'b' },
     ]);
   });
 });
@@ -391,7 +391,7 @@ describe('planGroups: merge', () => {
     f.addTab(tab(2, A, { windowId: 2 }));
     f.addGroup({ id: 10, windowId: 1, title: 'api', color: 'blue', collapsed: false });
     const ops = planGroups(snap(f), merged, ctx());
-    expect(ops).toEqual([{ kind: 'moveTabs', tabIds: [2], windowId: 1, groupId: 10 }]);
+    expect(ops).toEqual([{ kind: 'moveTabs', tabIds: [2], windowId: 1, groupId: 10, ruleId: 'api' }]);
     await apply(f, ops);
     expect(f.state.tabs.find((t) => t.id === 2)).toMatchObject({ windowId: 1, groupId: 10 });
     expect(planGroups(snap(f), merged, ctx())).toEqual([]);
@@ -403,7 +403,7 @@ describe('planGroups: merge', () => {
     f.addTab(tab(2, A, { windowId: 2 }));
     f.addGroup({ id: 10, windowId: 1, title: 'api', color: 'blue', collapsed: false });
     expect(planGroups(snap(f), cfg(rule('api', 'a.com/*', 'api')), ctx())).toEqual([
-      { kind: 'group', tabIds: [2], windowId: 2, title: 'api', color: 'blue', collapsed: false },
+      { kind: 'group', tabIds: [2], windowId: 2, title: 'api', color: 'blue', collapsed: false, ruleId: 'api' },
     ]);
   });
 
@@ -415,8 +415,8 @@ describe('planGroups: merge', () => {
     f.addGroup({ id: 30, windowId: 1, title: 'api', color: 'blue', collapsed: false });
     f.addGroup({ id: 12, windowId: 2, title: 'api', color: 'blue', collapsed: false });
     expect(planGroups(snap(f), merged, ctx())).toEqual([
-      { kind: 'moveTabs', tabIds: [1], windowId: 2, groupId: 12 },
-      { kind: 'moveTabs', tabIds: [3], windowId: 2, groupId: 12 },
+      { kind: 'moveTabs', tabIds: [1], windowId: 2, groupId: 12, ruleId: 'api' },
+      { kind: 'moveTabs', tabIds: [3], windowId: 2, groupId: 12, ruleId: 'api' },
     ]);
   });
 
@@ -425,7 +425,7 @@ describe('planGroups: merge', () => {
     f.addTab(tab(1, A, { windowId: 2 }));
     f.addTab(tab(2, A));
     const ops = planGroups(snap(f), merged, ctx());
-    expect(ops).toEqual([{ kind: 'group', tabIds: [2, 1], windowId: 1, title: 'api', color: 'blue', collapsed: false }]);
+    expect(ops).toEqual([{ kind: 'group', tabIds: [2, 1], windowId: 1, title: 'api', color: 'blue', collapsed: false, ruleId: 'api' }]);
     const passes = await converge(f, merged);
     expect(passes.length).toBeLessThanOrEqual(3);
     expect(f.state.groups.filter((g) => g.title === 'api')).toHaveLength(1);
@@ -449,5 +449,150 @@ describe('planGroups: determinism', () => {
     const shuffled: Snapshot = { tabs: [...s.tabs].reverse(), groups: [...s.groups].reverse(), windows: [...s.windows].reverse() };
     expect(planGroups(shuffled, AB, c)).toEqual(first);
     expect(first.length).toBeGreaterThan(0);
+  });
+});
+
+describe('planGroups: merge disagreement (T8)', () => {
+  const mixed = cfg(rule('n', 'a.com/n*', 'api'), rule('m', 'a.com/m*', 'api', { merge: true }));
+  const N = 'https://a.com/n';
+  const M = 'https://a.com/m';
+
+  it('a non-merge and a merge rule with the same title never create two groups in one window', async () => {
+    for (const [first, second] of [[N, M], [M, N]] as const) {
+      const f = world();
+      f.addTab(tab(1, first));
+      f.addTab(tab(2, second));
+      const ops = planGroups(snap(f), mixed, ctx());
+      expect(ops).toEqual([{ kind: 'group', tabIds: [1, 2], windowId: 1, title: 'api', color: 'blue', collapsed: false, ruleId: 'n' }]);
+      await converge(f, mixed);
+      expect(f.state.groups.filter((g) => g.title === 'api')).toHaveLength(1);
+    }
+  });
+});
+
+describe('planGroups: empty titles (I1)', () => {
+  it('never adopts or rewrites an untitled user group, even if a rule renders an empty title', () => {
+    const f = world();
+    f.addTab(tab(1, 'https://a.com/', { groupId: 10 }));
+    f.addTab(tab(2, 'https://a.com/'));
+    f.addGroup({ id: 10, windowId: 1, title: '', color: 'grey', collapsed: false });
+    const config = cfg(rule('r', '/a\\.com\\/(?<x>z)?/', '{x}', {}, 'red'));
+    expect(planGroups(snap(f), config, ctx())).toEqual([]);
+    expect(planGroups(snap(f), config, ctx({ managedTitles: new Set(['']) }))).toEqual([]);
+  });
+
+  it('an untitled group is not managed even when managedTitles has ""', () => {
+    const f = world();
+    f.addTab(tab(1, OTHER, { groupId: 10 }));
+    f.addGroup({ id: 10, windowId: 1, title: '', color: 'grey', collapsed: false });
+    expect(planGroups(snap(f), AB, ctx({ managedTitles: new Set(['']) }))).toEqual([]);
+    expect([...managedGroupIds(snap(f), AB, ctx({ managedTitles: new Set(['']) }))]).toEqual([]);
+  });
+});
+
+describe('managedGroupIds (I2)', () => {
+  it('a group is managed when its title is in managedTitles or a tab targets it', () => {
+    const f = world();
+    f.addTab(tab(1, A, { groupId: 10 }));
+    f.addTab(tab(2, OTHER, { groupId: 11 }));
+    f.addTab(tab(3, OTHER, { groupId: 12 }));
+    f.addGroup({ id: 10, windowId: 1, title: 'A', color: 'blue', collapsed: false });
+    f.addGroup({ id: 11, windowId: 1, title: 'B', color: 'blue', collapsed: false });
+    f.addGroup({ id: 12, windowId: 1, title: 'mine', color: 'blue', collapsed: false });
+    expect([...managedGroupIds(snap(f), AB, ctx())]).toEqual([10]);
+    expect([...managedGroupIds(snap(f), AB, ctx({ managedTitles: new Set(['B']) }))].sort()).toEqual([10, 11]);
+  });
+});
+
+describe('syncCreationOrder (I3)', () => {
+  it('numbers managed groups lacking an order in tab-strip order, after known ones; drops vanished keys', () => {
+    const f = world([1, 2]);
+    f.addTab(tab(1, A, { groupId: 30 }));
+    f.addTab(tab(2, A, { groupId: 20 }));
+    f.addTab(tab(3, A, { windowId: 2, groupId: 40 }));
+    f.addGroup({ id: 30, windowId: 1, title: 'z', color: 'blue', collapsed: false });
+    f.addGroup({ id: 20, windowId: 1, title: 'y', color: 'blue', collapsed: false });
+    f.addGroup({ id: 40, windowId: 2, title: 'x', color: 'blue', collapsed: false });
+    const order = new Map([['1|y', 7], ['1|gone', 3]]);
+    syncCreationOrder(snap(f), new Set([20, 30, 40]), order);
+    expect([...order]).toEqual([['1|y', 7], ['1|z', 8], ['2|x', 9]]);
+  });
+});
+
+describe('planGroups: ops carry the rule (I7)', () => {
+  it('group, ungroup and moveTabs ops name the rule; ungroups are split per source group', () => {
+    const f = world([1, 2]);
+    f.addTab(tab(1, A));
+    f.addTab(tab(2, OTHER, { groupId: 10 }));
+    f.addTab(tab(3, OTHER, { groupId: 11 }));
+    f.addGroup({ id: 10, windowId: 1, title: 'api', color: 'blue', collapsed: false });
+    f.addGroup({ id: 11, windowId: 1, title: 'B', color: 'red', collapsed: false });
+    const config = cfg(rule('api', 'a.com/*', 'api', { merge: true }), rule('b', 'b.com/*', 'B', {}, 'red'));
+    f.addTab(tab(4, A, { windowId: 2 }));
+    const ops = planGroups(snap(f), config, ctx({ managedTitles: new Set(['api', 'B']) }));
+    expect(ops).toEqual([
+      { kind: 'ungroup', tabIds: [2], ruleId: 'api' },
+      { kind: 'ungroup', tabIds: [3], ruleId: 'b' },
+      { kind: 'group', tabIds: [1], windowId: 1, title: 'api', color: 'blue', existingGroupId: 10, ruleId: 'api' },
+      { kind: 'moveTabs', tabIds: [4], windowId: 1, groupId: 10, ruleId: 'api' },
+    ]);
+  });
+});
+
+describe('syncCreationOrder: delayed deletion (CR#6)', () => {
+  it('keeps numbers of titles still pending a retitle (the group is untitled meanwhile)', () => {
+    const f = world();
+    f.addTab(tab(1, A, { groupId: 10 }));
+    f.addGroup({ id: 10, windowId: 1, title: '', color: 'blue', collapsed: false });
+    const order = new Map([['1|A', 1]]);
+    const absent = new Map<string, number>();
+    for (let i = 0; i < 3; i++) syncCreationOrder(snap(f), new Set(), order, { pendingTitles: ['A'], absent, count: true });
+    expect([...order]).toEqual([['1|A', 1]]);
+    expect([...absent]).toEqual([]);
+  });
+  it('drops a key only after it was absent for 2 consecutive counted calls (flushes); a return resets it', () => {
+    const f = world();
+    const order = new Map([['1|gone', 3]]);
+    const absent = new Map<string, number>();
+    syncCreationOrder(snap(f), new Set(), order, { absent, count: true });
+    syncCreationOrder(snap(f), new Set(), order, { absent, count: false }); // later pass of the same flush
+    expect([...order]).toEqual([['1|gone', 3]]);
+    f.addTab(tab(1, A, { groupId: 10 }));
+    f.addGroup({ id: 10, windowId: 1, title: 'gone', color: 'blue', collapsed: false });
+    syncCreationOrder(snap(f), new Set([10]), order, { absent, count: true }); // back: tombstone cleared
+    expect([...absent]).toEqual([]);
+    const empty = world();
+    syncCreationOrder(snap(empty), new Set(), order, { absent, count: true });
+    expect([...order]).toEqual([['1|gone', 3]]);
+    syncCreationOrder(snap(empty), new Set(), order, { absent, count: true });
+    expect([...order]).toEqual([]);
+    expect([...absent]).toEqual([]);
+  });
+});
+
+describe('planGroups: a title claimed by a merge rule is global (CR#9)', () => {
+  const mixed = cfg(rule('m', 'a.com/m*', 'api', { merge: true }), rule('n', 'a.com/n*', 'api'));
+  const N = 'https://a.com/n';
+  const M = 'https://a.com/m';
+  it('merge rule in window 1, non-merge rule with the same title in window 2 → one group globally, ≤2 passes', async () => {
+    for (const [w1, w2] of [[M, N], [N, M]] as const) {
+      const f = world([1, 2]);
+      f.addTab(tab(1, w1));
+      f.addTab(tab(2, w2, { windowId: 2 }));
+      const passes = await converge(f, mixed);
+      expect(passes.length).toBeLessThanOrEqual(3); // ≤2 passes with ops, then []
+      expect(f.state.groups.filter((g) => g.title === 'api')).toHaveLength(1);
+      expect(new Set(f.state.tabs.map((t) => t.groupId)).size).toBe(1);
+    }
+  });
+  it('an existing non-merge group in window 2 is merged into the lowest-id group in window 1', async () => {
+    const f = world([1, 2]);
+    f.addTab(tab(1, M, { groupId: 10 }));
+    f.addGroup({ id: 10, windowId: 1, title: 'api', color: 'blue', collapsed: false });
+    f.addTab(tab(2, N, { windowId: 2, groupId: 20 }));
+    f.addGroup({ id: 20, windowId: 2, title: 'api', color: 'blue', collapsed: false });
+    const passes = await converge(f, mixed, ctx({ managedTitles: new Set(['api']) }));
+    expect(passes.length).toBeLessThanOrEqual(3);
+    expect(f.state.groups.filter((g) => g.title === 'api').map((g) => g.id)).toEqual([10]);
   });
 });

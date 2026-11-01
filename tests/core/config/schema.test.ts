@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { validateConfig, configJsonSchema } from '../../../src/core/config/schema';
+import { validateConfig, configJsonSchema, ruleTitleProblems, repairConfig } from '../../../src/core/config/schema';
 import { defaultConfig } from '../../../src/core/config/defaults';
 
 const rule = (over: Record<string, unknown> = {}) => ({
@@ -20,7 +20,7 @@ describe('config schema', () => {
       mode: 'always-switch', keep: 'existing', stripFragment: true, ignoreTrailingSlash: true,
       followFragment: true, includeIncognito: false, canonicalizers: ['githubPr'],
       stripParams: ['utm_*', 'fbclid', 'gclid', 'mc_cid', 'mc_eid'],
-      allowDuplicates: [], scope: 'all-windows', urlTransforms: [],
+      allowDuplicates: [], alwaysSwitchSites: [], scope: 'all-windows', urlTransforms: [],
     });
     expect(defaultConfig().version).toBe(1);
   });
@@ -74,5 +74,53 @@ describe('config schema', () => {
   });
   it('exports the JSON schema', () => {
     expect(configJsonSchema).toHaveProperty('properties.version');
+  });
+});
+
+describe('config schema: group titles (I1)', () => {
+  it('rejects an empty group title', () => {
+    const r = validateConfig(cfg([rule({ group: { title: '', color: 'blue' } })]));
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.errors.some((e) => e.startsWith('/groupRules/0/group/title '))).toBe(true);
+  });
+  it('rejects template variables the patterns do not capture', () => {
+    const r = validateConfig(cfg([rule({ match: { url: ['github.com/:org/:repo/*', 'example.com/*'] }, group: { title: '{repo}', color: 'blue' } })]));
+    expect(r).toEqual({ ok: false, errors: ['/groupRules/0/group/title uses {repo}, which pattern "example.com/*" does not capture'] });
+  });
+  it('accepts template variables captured by :params or regex named groups', () => {
+    expect(validateConfig(cfg([rule({ match: { url: 'github.com/:org/:repo/*' }, group: { title: '{org}/{repo|upper}', color: 'blue' } })])).ok).toBe(true);
+    expect(validateConfig(cfg([rule({ match: { url: '/github\\.com\\/(?<owner>[^/]+)/' }, group: { title: '{owner}', color: 'blue' } })])).ok).toBe(true);
+  });
+  it('ruleTitleProblems reports the same problems for a single rule', () => {
+    expect(ruleTitleProblems({ ...rule(), group: { title: '', color: 'blue' } } as never)).toEqual(['must not be empty']);
+    expect(ruleTitleProblems(rule() as never)).toEqual([]);
+  });
+});
+
+describe('config schema: repairing stored configs (CR#1)', () => {
+  const bad = (over: Record<string, unknown> = {}) =>
+    rule({ id: 'gh', name: 'GH repos', match: { url: ['github.com/:org/:repo/*', 'example.com/*'] }, group: { title: 'GH {repo}', color: 'blue' }, ...over });
+  it('a disabled rule with an empty title or an uncaptured {var} is valid stored data', () => {
+    expect(validateConfig(cfg([bad({ enabled: false })])).ok).toBe(true);
+    expect(validateConfig(cfg([rule({ enabled: false, group: { title: '', color: 'blue' } })])).ok).toBe(true);
+  });
+  it('enabled rules with those problems are still rejected (saves, imports)', () => {
+    expect(validateConfig(cfg([bad()])).ok).toBe(false);
+  });
+  it('repairConfig disables (does not drop) enabled rules with title problems and warns; other rules untouched', () => {
+    const ok = rule({ id: 'ok', name: 'Fine' });
+    const empty = rule({ id: 'e', name: 'Empty', group: { title: '', color: 'red' } });
+    const input = cfg([ok, bad(), empty]);
+    const r = repairConfig(input);
+    expect(r.warnings).toEqual(['2 rule(s) disabled: GH repos, Empty — fix them on the Rules page.']);
+    const out = r.config as { groupRules: { id: string; enabled: boolean }[] };
+    expect(out.groupRules.map((x) => [x.id, x.enabled])).toEqual([['ok', true], ['gh', false], ['e', false]]);
+    expect(validateConfig(r.config).ok).toBe(true);
+    expect((input.groupRules[1] as { enabled: boolean }).enabled).toBe(true); // input not mutated
+  });
+  it('repairConfig leaves valid and malformed input alone', () => {
+    expect(repairConfig(cfg([rule()]))).toEqual({ config: cfg([rule()]), warnings: [] });
+    expect(repairConfig(null)).toEqual({ config: null, warnings: [] });
+    expect(repairConfig({ groupRules: [null, { enabled: true }] }).warnings).toEqual([]);
   });
 });

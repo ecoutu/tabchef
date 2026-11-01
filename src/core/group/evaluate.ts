@@ -26,7 +26,7 @@ function firstCaptures(patterns: string[], url: string): Record<string, string> 
   return null;
 }
 
-/** First enabled rule (array order = priority) matching the tab, or null. Pure. */
+/** First enabled rule (array order = priority) matching the tab with a non-empty title, or null. Pure. */
 export function evaluateGroupRules(tab: TabSnap, rules: GroupRule[]): GroupMatch | null {
   if (tab.pinned) return null;
   const url = tab.pendingUrl ? tab.pendingUrl : tab.url;
@@ -37,10 +37,12 @@ export function evaluateGroupRules(tab: TabSnap, rules: GroupRule[]): GroupMatch
     const patterns = Array.isArray(rule.match.url) ? rule.match.url : [rule.match.url];
     const caps = firstCaptures(patterns, url);
     if (!caps) continue;
+    const title = renderTemplate(rule.group.title, caps);
+    if (title === '') continue; // an empty title would adopt the user's untitled groups: no match
     return {
       ruleId: rule.id,
       ruleIndex: i,
-      title: renderTemplate(rule.group.title, caps),
+      title,
       color: rule.group.color,
       collapsed: rule.group.collapsed ?? false,
       sortGroups: rule.sortGroups ?? 'creation',

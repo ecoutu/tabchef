@@ -18,6 +18,12 @@ export class FakeBrowserPort implements BrowserPort {
     this.failures.set(method, q);
   }
 
+  /** Test helper: drop queued failures for one method (or all). */
+  clearFailures(method?: string): void {
+    if (method === undefined) this.failures.clear();
+    else this.failures.delete(method);
+  }
+
   addWindow(id: number, over: Partial<Snapshot['windows'][number]> = {}): void {
     this.state.windows.push({ id, type: 'normal', focused: false, ...over });
   }
@@ -126,7 +132,19 @@ export class FakeBrowserPort implements BrowserPort {
 
   async ungroup(tabIds: number[]): Promise<void> {
     return this.rec('ungroup', [tabIds], () => {
-      for (const id of tabIds) this.tab(id).groupId = -1;
+      // Like Chrome: ungrouped tabs leave their group's block and land right after what remains of it.
+      const leaving = tabIds.map((id) => this.tab(id)).filter((t) => t.groupId !== -1);
+      for (const gid of new Set(leaving.map((t) => t.groupId))) {
+        const out = leaving.filter((t) => t.groupId === gid);
+        const set = new Set(out);
+        const rest = this.winTabs(out[0]!.windowId).filter((t) => !set.has(t));
+        let last = -1;
+        rest.forEach((t, i) => { if (t.groupId === gid) last = i; });
+        for (const t of out) t.groupId = -1;
+        if (last < 0) continue; // whole group ungrouped: tabs stay where they are
+        rest.splice(last + 1, 0, ...out.sort((a, b) => a.index - b.index));
+        this.reindex(rest);
+      }
       this.dropEmptyGroups();
     });
   }
