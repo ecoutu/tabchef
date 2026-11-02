@@ -1,6 +1,7 @@
 import { dryRunGroupTabs, planGroups, planTargets, syncCreationOrder, type PageLookup, type PlanContext, type Targets } from '../core/group/plan';
 import type { Op, Snapshot } from '../core/types';
 import type { Program } from '../core/lang/types';
+import type { PreviewContext } from '../core/lang/preview';
 import { hasDryRun, isDryRunRule, liveProgram } from '../core/lang/dry-run';
 import type { BrowserPort } from '../platform/browser-port';
 import { DragRetryExhausted, withDragRetry } from '../platform/retry';
@@ -144,6 +145,26 @@ export class Reconciler {
     return this.load();
   }
 
+  /**
+   * Read-only planner context for previews (M2 T13): copies of leave-alone (plus locked tabs and anchors at their URL,
+   * as each flush adds them), managed titles, creation order and dismissed anchor groups. R49's per-program dry-run
+   * leave-alone is not included: previewChange adds it for each Program it plans.
+   */
+  async planContext(snap: Snapshot, program: Program): Promise<PreviewContext> {
+    const st = await this.load();
+    return {
+      leaveAlone: new Set([...st.leaveAlone, ...this.extraLeaveAlone(st, snap, program)]),
+      managedTitles: new Set(st.managedTitles),
+      creationOrder: new Map(st.creationOrder),
+      anchorsDismissed: new Set(st.anchorsDismissed),
+    };
+  }
+
+  /** Locked tabs and anchors still at their anchor URL (R21: strict would ungroup an anchor outside the rule). */
+  private extraLeaveAlone(st: LiveState, snap: Snapshot, program: Program): number[] {
+    return [...(this.opts.extraLeaveAlone?.() ?? []), ...anchorLeaveAlone(st.anchors, snap, program)];
+  }
+
   private load(): Promise<LiveState> {
     this.state ??= loadState();
     return this.state;
@@ -167,9 +188,8 @@ export class Reconciler {
     try {
       const program = await this.getProgram();
       const ctxOf = (snap: Snapshot): PlanContext => {
-        // Locked tabs and anchors still at their anchor URL (R21: strict would ungroup an anchor outside the rule).
         // R49 (per-rule dry run only): a dry-run rule's existing group is left alone, by both passes.
-        const extra = [...(this.opts.extraLeaveAlone?.() ?? []), ...anchorLeaveAlone(st.anchors, snap, program),
+        const extra = [...this.extraLeaveAlone(st, snap, program),
           ...(program.dryRun ? [] : dryRunGroupTabs(snap, program, this.now(), this.opts.pageFacts))];
         return extra.length ? { ...st, leaveAlone: new Set([...st.leaveAlone, ...extra]) } : st;
       };

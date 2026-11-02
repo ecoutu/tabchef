@@ -11,6 +11,9 @@
   import History from './History.svelte';
   import Backups from './Backups.svelte';
   import Import from './Import.svelte';
+  import PreviewDialog from './PreviewDialog.svelte';
+  import { previewThenApply } from '../../ui/preview-flow';
+  import type { PreviewResult } from '../../core/lang/preview';
 
   /**
    * Route table. To add a page (e.g. '/import' in Task 17), add one entry here; the nav and hash routing pick it up.
@@ -41,6 +44,8 @@
   let baseRev = $state<string | undefined>(undefined);
   let conflict = $state(false);
   let syncWarning = $state('');
+  /** The open preview (M2 T13) and how to answer it (Apply → true, Cancel → false). */
+  let preview = $state<{ result: PreviewResult; answer: (apply: boolean) => void } | null>(null);
 
   const dirty = $derived(saved !== null && draft !== null && JSON.stringify(saved) !== JSON.stringify(draft));
   const summary = $derived(unclaimedErrors(saveErrors));
@@ -76,11 +81,19 @@
     if (r.ok) tabs = r.data;
   }
 
+  const confirmPreview = (result: PreviewResult): Promise<boolean> => new Promise((resolve) => {
+    preview = { result, answer: (apply) => { preview = null; resolve(apply); } };
+  });
+
+  /** Save → preview.change → [Apply] → config.set {baseRev}; a change with no effects saves straight away (R5, T13). */
   async function save(): Promise<void> {
     if (!draft) return;
     saving = true; saveErrors = []; saveMessage = '';
     const toSave = structuredClone($state.snapshot(draft));
-    const r = await send({ type: 'config.set', config: toSave, ...(baseRev !== undefined ? { baseRev } : {}) });
+    // baseRev is read when Apply is clicked: a remote change meanwhile still conflicts.
+    const r = await previewThenApply(toSave, confirmPreview,
+      () => send({ type: 'config.set', config: toSave, ...(baseRev !== undefined ? { baseRev } : {}) }));
+    if (!r) { saving = false; return; } // cancelled: the edits stay
     if (r.ok) {
       saved = toSave; saveMessage = 'Saved.';
       const g = await send({ type: 'config.get' });
@@ -138,6 +151,9 @@
     </div>
   {/if}
   {#if saveMessage}<p class="ok" role="status">{saveMessage}</p>{/if}
+  {#if preview}
+    <PreviewDialog result={preview.result} onApply={() => preview?.answer(true)} onCancel={() => preview?.answer(false)} />
+  {/if}
   {#if summary.length}
     <div class="err" role="alert"><strong>Could not save:</strong>
       <ul>{#each summary as m (m)}<li>{m}</li>{/each}</ul>

@@ -99,3 +99,51 @@ describe('App sync status (I5)', () => {
     expect(screen.queryByTestId('sync-warning')).toBeNull();
   });
 });
+
+describe('App: preview before Save (M2 T13)', () => {
+  const effects = { moves: [{ tabId: 1, title: 'A tab', to: 'A' }], closes: [], groupsCreated: ['A'], unchanged: 0, anchorsOpened: 0, dryRun: false };
+  const withPreview = (data: unknown) => {
+    const base = send.getMockImplementation()!;
+    send.mockImplementation(async (req: { type: string }) => (req.type === 'preview.change' ? { ok: true, data } : base(req)));
+  };
+  const types = () => send.mock.calls.map((c) => c[0].type);
+
+  it('a change with effects opens the dialog; Cancel sends no config.set and keeps the edits', async () => {
+    withPreview(effects);
+    render(App);
+    await edit();
+    await fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await screen.findByText('1 tabs would move, 0 would close.');
+    const prev = send.mock.calls.map((c) => c[0]).find((r) => r.type === 'preview.change');
+    expect(prev.config.rules[0].name).toBe('Edited');
+    await fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(types()).not.toContain('config.set');
+    expect(screen.getByText('Unsaved changes')).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('Apply sends config.set with baseRev', async () => {
+    withPreview(effects);
+    render(App);
+    await edit();
+    await fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await fireEvent.click(await screen.findByRole('button', { name: 'Apply' }));
+    await screen.findByText('Saved.');
+    const set = send.mock.calls.map((c) => c[0]).filter((r) => r.type === 'config.set');
+    expect(set).toHaveLength(1);
+    expect(set[0].baseRev).toBe('r1');
+    expect(types().indexOf('preview.change')).toBeLessThan(types().indexOf('config.set'));
+  });
+
+  it('a no-op change: no dialog, Save goes straight through', async () => {
+    withPreview({ moves: [], closes: [], groupsCreated: [], unchanged: 2, anchorsOpened: 0, dryRun: false });
+    render(App);
+    await edit();
+    await fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await screen.findByText('Saved.');
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(types()).toContain('preview.change');
+    expect(types()).toContain('config.set');
+  });
+});

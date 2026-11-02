@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, fireEvent, cleanup } from '@testing-library/svelte';
+const send = vi.fn();
+vi.mock('../../src/ui/send', () => ({ send: (r: unknown) => send(r) }));
 import GroupRules from '../../src/entrypoints/options/GroupRules.svelte';
 import { defaultConfig } from '../../src/core/config/defaults';
 import type { Config, GroupRule, TabSnap } from '../../src/core/types';
@@ -82,5 +84,27 @@ describe('GroupRules', () => {
   it('help text states order is priority', () => {
     render(GroupRules, props(cfg()));
     expect(screen.getByText(/Order is priority and tab-bar order/)).toBeTruthy();
+  });
+});
+
+describe('GroupRules: test against my open tabs (M2 T13)', () => {
+  it('sends preview.change for that rule alone and shows "N tabs would move · M would close" inline', async () => {
+    send.mockReset();
+    send.mockResolvedValue({ ok: true, data: {
+      moves: [{ tabId: 1, title: 'x', to: 'a' }, { tabId: 2, title: 'y', to: 'a' }], closes: [], groupsCreated: ['a'], unchanged: 0, anchorsOpened: 0, dryRun: false,
+    } });
+    const config = cfg(rule('a', 'a.com/*'), rule('b', 'b.com/*'));
+    render(GroupRules, props(config));
+    await fireEvent.click(screen.getAllByRole('button', { name: 'Test against my open tabs' })[0]!);
+    expect(await screen.findByText('2 tabs would move · 0 would close')).toBeTruthy();
+    expect(send).toHaveBeenCalledWith({ type: 'preview.change', config, only: 'user/a' });
+  });
+
+  it('shows the error when the preview fails', async () => {
+    send.mockReset();
+    send.mockResolvedValue({ ok: false, error: 'unknown rule' });
+    render(GroupRules, props(cfg(rule('a', 'a.com/*'))));
+    await fireEvent.click(screen.getByRole('button', { name: 'Test against my open tabs' }));
+    expect(await screen.findByText('Could not test: unknown rule')).toBeTruthy();
   });
 });

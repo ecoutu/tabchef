@@ -8,6 +8,7 @@ import { defaultConfig } from '../../src/core/config/defaults';
 import { FakeBrowserPort } from '../../src/platform/fake-port';
 import type { Config } from '../../src/core/types';
 import { programOf, withGroupRules } from '../helpers/config';
+import { builtinRecipes } from '../../src/recipes/load';
 
 type Loose = { ok: boolean; data: { sets: { key: string }[]; pending: unknown[] }; errors: string[] };
 const A = 'https://a.example/x';
@@ -479,5 +480,79 @@ describe('import.*', () => {
     const s = setup();
     const r = await s.handle({ type: 'import.preview', source: 'tab-deduper', data: { local: { urlExempts: 'x'.repeat(5 * 1024 * 1024 + 1) } } }, ui);
     expect(r).toMatchObject({ ok: false, error: 'Import data too large (max 5 MB)' });
+  });
+});
+
+describe('preview.change (M2 T13)', () => {
+  const MUTATING = new Set(['group', 'ungroup', 'moveTabs', 'moveGroup', 'updateGroup', 'closeTab', 'createTab', 'focusTab']);
+  const exRule = { id: 'ex', name: 'EX', enabled: true, match: { url: 'example.com/*' }, actions: [{ group: { title: 'ex', color: 'blue' } }] };
+  const otherRule = { id: 'ot', name: 'OT', enabled: true, match: { url: 'other.org/*' }, actions: [{ group: { title: 'ot', color: 'red' } }] };
+  const withRules = (rules: unknown[], o: Partial<Config> = {}): Config => ({
+    ...defaultConfig(), rules: rules as Config['rules'], order: (rules as { id: string }[]).map((r) => `user/${r.id}`), ...o,
+  });
+  type Prev = { ok: boolean; error?: string; data: { moves: { tabId: number; to?: string; dryRun?: true }[]; closes: { tabId: number }[] } };
+
+  function previewSetup(o: { leaveAlone?: number[]; check?: (n: { origins: string[] }) => boolean; facts?: Record<number, string[]> } = {}) {
+    const planContext = vi.fn(async () => ({
+      leaveAlone: new Set(o.leaveAlone ?? []), managedTitles: new Set<string>(), creationOrder: new Map<string, number>(), anchorsDismissed: new Set<string>(),
+    }));
+    const s = setup({
+      preview: {
+        builtins: builtinRecipes(),
+        getProgram: async () => programOf(s.getCfg()),
+        planContext,
+        facts: (id) => (o.facts?.[id] ? { page: { texts: o.facts[id]!, extracts: {}, formEdited: false } } : {}),
+        permissions: { check: async (n) => ({ ok: (o.check ?? (() => true))(n), missing: { origins: [], permissions: [] } }) },
+      },
+    });
+    return { ...s, planContext };
+  }
+
+  it('lists the tabs a draft config would move, from one snapshot and with no browser mutation', async () => {
+    const s = previewSetup();
+    s.mk(1, 'https://example.com/a'); s.mk(2, 'https://other.org/'); s.mk(3, 'https://example.com/b');
+    s.port.calls.length = 0;
+    const r = (await s.handle({ type: 'preview.change', config: withRules([exRule]) }, ui)) as Prev;
+    expect(r.ok).toBe(true);
+    expect(r.data.moves.map((m) => [m.tabId, m.to])).toEqual([[1, 'ex'], [3, 'ex']]);
+    expect(s.port.calls.filter((c) => MUTATING.has(c.method))).toEqual([]);
+    expect(s.port.calls.filter((c) => c.method === 'snapshot')).toHaveLength(1);
+    expect(s.planContext).toHaveBeenCalledOnce();
+    expect(s.set).not.toHaveBeenCalled();
+  });
+
+  it('uses the engine plan context (leave-alone tabs stay put)', async () => {
+    const s = previewSetup({ leaveAlone: [3] });
+    s.mk(1, 'https://example.com/a'); s.mk(3, 'https://example.com/b');
+    const r = (await s.handle({ type: 'preview.change', config: withRules([exRule]) }, ui)) as Prev;
+    expect(r.data.moves.map((m) => m.tabId)).toEqual([1]);
+  });
+
+  it('`only`: tests one rule alone against the open tabs (disabled and dry-run rules too)', async () => {
+    const s = previewSetup();
+    s.mk(1, 'https://example.com/a'); s.mk(2, 'https://other.org/');
+    const cfg = withRules([{ ...exRule, enabled: false, dryRun: true }, otherRule]);
+    const r = (await s.handle({ type: 'preview.change', config: cfg, only: 'user/ex' }, ui)) as Prev;
+    expect(r.data.moves).toEqual([expect.objectContaining({ tabId: 1, to: 'ex' })]);
+    expect(r.data.moves[0]!.dryRun).toBeUndefined();
+    expect(await s.handle({ type: 'preview.change', config: cfg, only: 'user/nope' }, ui)).toMatchObject({ ok: false, error: 'unknown rule' });
+  });
+
+  it('enabling a recipe: rules whose needs are not granted are paused in the preview, as in the engine', async () => {
+    const s = previewSetup({ check: (n) => n.origins.length === 0, facts: { 2: ['You left the meeting'] } });
+    s.mk(1, 'http://localhost:8080/cb/callback'); s.mk(2, 'https://meet.google.com/abc');
+    const on = { ...defaultConfig(), recipes: defaultConfig().recipes.map((x) => (x.id === 'finished' ? { ...x, enabled: true } : x)) };
+    const r = (await s.handle({ type: 'preview.change', config: on }, ui)) as Prev;
+    expect(r.data.closes.map((c) => c.tabId)).toEqual([1]);
+  });
+
+  it('invalid config, missing deps, malformed requests and foreign senders', async () => {
+    const s = previewSetup();
+    expect(await s.handle({ type: 'preview.change', config: { version: 2 } }, ui)).toMatchObject({ ok: false, error: 'invalid config' });
+    for (const bad of [{ type: 'preview.change' }, { type: 'preview.change', config: null }, { type: 'preview.change', config: defaultConfig(), only: 3 }]) {
+      expect(await s.handle(bad, ui)).toEqual({ ok: false, error: 'unknown request' });
+    }
+    expect(await s.handle({ type: 'preview.change', config: defaultConfig() }, content)).toEqual({ ok: false, error: 'forbidden' });
+    expect(await setup().handle({ type: 'preview.change', config: defaultConfig() }, ui)).toEqual({ ok: false, error: 'preview unavailable' });
   });
 });

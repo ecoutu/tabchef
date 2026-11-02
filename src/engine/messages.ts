@@ -1,4 +1,4 @@
-import type { Config, DedupeSettings, GroupRule, TabSnap } from '../core/types';
+import type { Config, DedupeSettings, GroupRule, Snapshot, TabSnap } from '../core/types';
 import { ruleTitleProblems, validateConfig } from '../core/config/schema';
 import { groupRuleToRule, sanitizeRuleId, userKey } from '../core/config/migrate';
 import { importAutoGroupTabs } from '../core/import/auto-group-tabs';
@@ -10,7 +10,8 @@ import type { WhyEntry, WhyLog } from '../core/safety/why-log';
 import type { BrowserPort } from '../platform/browser-port';
 import type { ConfigStore, Backup } from '../storage/config-store';
 import { compileProgram, paramProblem } from '../core/lang/compile';
-import type { Program, Recipe, RecipeRef } from '../core/lang/types';
+import type { Program, Recipe, RecipeRef, TabFacts } from '../core/lang/types';
+import { emptyProgram, previewChange, type PreviewContext, type PreviewResult } from '../core/lang/preview';
 import { effectiveNeeds, type Needs, type NeedStatus, type PermissionsManager } from './permissions';
 import type { PendingAsk } from './ask';
 import type { PageFacts, WatchSelector } from './page-facts';
@@ -132,7 +133,13 @@ export type Request =
   // The UI calls requestNeeds (src/ui/permissions.ts) first, in the click's user gesture, then recipes.enable.
   | { type: 'recipes.enable'; id: string; baseRev?: string }
   | { type: 'recipes.disable'; id: string; baseRev?: string }
-  | { type: 'recipes.setParams'; id: string; params: Record<string, unknown>; baseRev?: string };
+  | { type: 'recipes.setParams'; id: string; params: Record<string, unknown>; baseRev?: string }
+  /**
+   * What saving `config` would do to the open tabs (M2 T13): the UI sends it before config.set / recipes.enable and
+   * shows PreviewDialog when it has effects. `only` (a rule key) tests that one rule alone against the open tabs
+   * ("test against my open tabs"): enabled, live, against a Program with no rules.
+   */
+  | { type: 'preview.change'; config: unknown; only?: string };
 
 /**
  * One recipe as listed to the UI: its ref, header, effective needs (host needs add `scripting`) and their status.
@@ -198,6 +205,7 @@ export interface ResponseData {
   'recipes.enable': null;
   'recipes.disable': null;
   'recipes.setParams': null;
+  'preview.change': PreviewResult;
 }
 export type ResponseFor<R extends Request> = Response<ResponseData[R['type']]>;
 
@@ -243,6 +251,7 @@ export function isRequest(m: unknown): m is Request {
     case 'recipes.enable': case 'recipes.disable': return str(x.id) && optRev(x);
     case 'recipes.setParams':
       return str(x.id) && typeof x.params === 'object' && x.params !== null && !Array.isArray(x.params) && optRev(x);
+    case 'preview.change': return typeof x.config === 'object' && x.config !== null && (x.only === undefined || str(x.only));
     default: return false;
   }
 }
@@ -263,6 +272,18 @@ export interface HandlerDeps {
   ask: { listPending: () => Promise<PendingAsk[]>; resolvePending: (n: number, e: number, c: 'switch' | 'keep') => Promise<void> };
   /** recipes.* requests: built-in recipe bodies and the PermissionsManager. Without it they fail. */
   recipes?: { builtins: Record<string, Recipe>; permissions: Pick<PermissionsManager, 'check'> };
+  /** preview.change (M2 T13). Without it the request fails. Read-only: nothing here may change engine state. */
+  preview?: {
+    builtins: Record<string, Recipe>;
+    /** The Program the engine runs now (ProgramCache.get): the preview's "before". */
+    getProgram: () => Promise<Program>;
+    /** Reconciler.planContext: copies of the planner's leave-alone tabs, managed titles, group order and dismissed anchors. */
+    planContext: (snap: Snapshot, p: Program) => Promise<PreviewContext>;
+    /** Per-tab facts the snapshot lacks (page facts). Default: none. */
+    facts?: (tabId: number) => Partial<TabFacts>;
+    /** Needs that are not granted pause their recipe / rule in the draft, as ProgramCache does. Default: all granted. */
+    permissions?: Pick<PermissionsManager, 'check'>;
+  };
   now?: () => number;
 }
 
@@ -428,8 +449,38 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
     }
   }
 
+  /**
+   * `cfg` compiled as the engine would run it: needs that are not granted pause their recipe / rule (ProgramCache's
+   * paused set; for a recipe being enabled, requestNeeds has already run in the click).
+   */
+  async function compileDraft(cfg: Config, d: NonNullable<HandlerDeps['preview']>): Promise<Program> {
+    const first = compileProgram(cfg, d.builtins).program;
+    const paused = new Set<string>();
+    if (d.permissions) for (const [k, n] of Object.entries(first.needs)) if (!(await d.permissions.check(n)).ok) paused.add(k);
+    return paused.size ? compileProgram(cfg, d.builtins, { paused }).program : first;
+  }
+
+  async function runPreview(req: Extract<Request, { type: 'preview.change' }>, d: NonNullable<HandlerDeps['preview']>): Promise<Response> {
+    const v = validateConfig(req.config);
+    if (!v.ok) return fail('invalid config', v.errors);
+    const [snap, current] = await Promise.all([deps.port.snapshot(), d.getProgram()]);
+    const ctx = await d.planContext(snap, current);
+    const facts = d.facts ?? (() => ({}));
+    if (req.only === undefined) return ok(previewChange(snap, current, await compileDraft(v.config, d), facts, ctx, now()));
+    // Test one rule: enabled and live (R30 labels belong to Save previews), alone against no rules. No managed titles:
+    // only the rule's own groups count as managed, so other rules' groups are not torn down in "before".
+    const only = req.only;
+    const cfg: Config = { ...v.config, dryRun: false, rules: v.config.rules.map((r) => (userKey(r.id) === only ? { ...r, enabled: true, dryRun: false } : r)) };
+    const p = await compileDraft(cfg, d);
+    const rules = p.rules.filter((r) => r.key === only).map((r) => ({ ...r, dryRun: false }));
+    if (rules.length === 0) return fail('unknown rule');
+    const after: Program = { ...p, rules };
+    return ok(previewChange(snap, emptyProgram(after), after, facts, { ...ctx, managedTitles: new Set() }, now()));
+  }
+
   async function run(req: Request): Promise<Response> {
     switch (req.type) {
+      case 'preview.change': return deps.preview ? runPreview(req, deps.preview) : fail('preview unavailable');
       case 'recipes.list': case 'recipes.enable': case 'recipes.disable': case 'recipes.setParams':
         return deps.recipes ? runRecipes(req, deps.recipes) : fail('recipes unavailable');
       case 'config.get': { const config = await deps.store.get(); return ok({ config, rev: configRev(config) }); }

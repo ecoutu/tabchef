@@ -591,3 +591,25 @@ describe('Reconciler: compiled program (M2 T6)', () => {
     expect(entries).toContainEqual(expect.objectContaining({ ruleId: 'github-prs/group-by-repo', detail: 'Moved to widgets by rule Group GitHub tabs by repository' }));
   });
 });
+
+describe('Reconciler.planContext (M2 T13 preview)', () => {
+  beforeEach(() => { fakeBrowser.reset(); });
+
+  it('returns copies of the planner state plus locked tabs and anchors at their URL; changing them changes nothing', async () => {
+    const f = world();
+    f.addTab(tab(1, A)); f.addTab(tab(2, B)); f.addTab(tab(3, 'https://anchor.example/'));
+    const r = new Reconciler(f, async () => programOf(config), { extraLeaveAlone: () => [2] });
+    const st = await r.liveState();
+    st.leaveAlone.add(1); st.managedTitles.add('A'); st.creationOrder.set('1|A', 1); st.anchorsDismissed.add('1|B');
+    st.anchors.push({ tabId: 3, url: 'https://anchor.example/', windowId: 1, title: 'A' });
+    const snap = await f.snapshot();
+    const c = await r.planContext(snap, programOf(config));
+    expect([...c.leaveAlone].sort()).toEqual([1, 2, 3]);
+    expect([...c.managedTitles]).toEqual(['A']);
+    expect([...c.creationOrder]).toEqual([['1|A', 1]]);
+    expect([...c.anchorsDismissed!]).toEqual(['1|B']);
+    c.leaveAlone.add(9); c.managedTitles.add('Z'); c.creationOrder.set('1|Z', 2); c.anchorsDismissed!.add('x');
+    expect(st.leaveAlone.has(9) || st.managedTitles.has('Z') || st.creationOrder.has('1|Z') || st.anchorsDismissed.has('x')).toBe(false);
+    expect(mutations(f)).toEqual([]);
+  });
+});

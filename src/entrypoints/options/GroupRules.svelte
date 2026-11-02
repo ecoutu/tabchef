@@ -6,6 +6,8 @@
     reorderRules, ruleIndex, updateRule,
   } from '../../ui/rules-model';
   import LinesField from './LinesField.svelte';
+  import { send } from '../../ui/send';
+  import { previewCounts } from '../../core/lang/preview';
 
   let { config, tabs, dirty, saving, serverErrors, onChange, onSave }: {
     config: Config; tabs: TabSnap[]; dirty: boolean; saving: boolean; serverErrors: string[];
@@ -23,6 +25,18 @@
     const n = previewMatches(r, tabs).length;
     return `Matches ${n} open ${n === 1 ? 'tab' : 'tabs'}`;
   };
+  /**
+   * "Test against my open tabs" (M2 T13): the rule alone against the open tabs, via preview.change {only}. A result is
+   * shown while the rule is unchanged since the test (`rule` is its JSON then). The YAML editor gets the same in T15.
+   */
+  let tested = $state<Record<string, { rule: string; text: string }>>({});
+  async function test(r: Rule): Promise<void> {
+    const rule = JSON.stringify(r);
+    const res = await send({ type: 'preview.change', config: $state.snapshot(config), only: `user/${r.id}` });
+    const n = res.ok ? previewCounts(res.data) : undefined;
+    tested[r.id] = { rule, text: n ? `${n.moves} tabs would move · ${n.closes} would close` : `Could not test: ${res.ok ? '' : res.error}` };
+  }
+  const testText = (r: Rule): string | undefined => (tested[r.id]?.rule === JSON.stringify(r) ? tested[r.id]!.text : undefined);
   const patch = (id: string, p: Partial<GroupRule>): void => onChange(updateRule(config, id, p));
   const move = (from: number, to: number): void => onChange(reorderRules(config, from, to));
   /** Server errors for a form field: `sub` is an M1 field path (name, match/url, group/title, group/color, dedupe). */
@@ -49,6 +63,8 @@
           <label class="inline"><input type="checkbox" checked={r.enabled} onchange={(e) => patch(r.id, { enabled: e.currentTarget.checked })} /> Enabled</label>
           <input class="name" aria-label="Rule name" value={r.name} oninput={(e) => patch(r.id, { name: e.currentTarget.value })} />
           <span class="count">{count(r)}</span>
+          <button type="button" onclick={() => test(v2)}>Test against my open tabs</button>
+          {#if testText(v2)}<span class="count" role="status">{testText(v2)}</span>{/if}
         {:else}
           <span class="name">{v2.name}</span><span class="count">{v2.enabled ? 'Enabled' : 'Disabled'}</span>
         {/if}
