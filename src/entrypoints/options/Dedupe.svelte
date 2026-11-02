@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Config, DedupeMode, DedupeSettings } from '../../core/types';
   import { configPatternErrors, errorsForPath, patternError, patternHints } from '../../ui/rules-model';
-  import Help from './Help.svelte';
+  import Field from './Field.svelte';
   import LinesField from './LinesField.svelte';
   import Permissions from './Permissions.svelte';
 
@@ -48,33 +48,26 @@
 {/snippet}
 
 {#snippet check(field: 'stripFragment' | 'ignoreTrailingSlash' | 'followFragment' | 'includeIncognito' | 'matchTitle', text: string, name: string, help: string)}
-  <span class="row">
-    <label class="inline"><input type="checkbox" checked={d[field]} onchange={(e) => patch({ [field]: e.currentTarget.checked })} /> {text}</label>
-    <Help label={name} text={help} />
-  </span>
+  <Field label={text} helpLabel={name} {help} inline>
+    <input type="checkbox" checked={d[field]} onchange={(e) => patch({ [field]: e.currentTarget.checked })} />
+  </Field>
 {/snippet}
 
 <section>
   <p class="help">Duplicates are detected by a normalized URL. The new tab is always the one that closes; the existing tab is kept and focused.</p>
 
   <div class="grid">
-    <div class="field">
-      <label>Mode
-        <select value={d.mode} onchange={(e) => patch({ mode: e.currentTarget.value as DedupeMode })}>
-          <option value="always-switch">always-switch</option><option value="ask">ask</option><option value="off">off</option>
-        </select>
-      </label>
-      <Help label="Mode" text="What happens when a new tab opens a page that is already open. always-switch: the new tab closes and you are taken to the existing one. ask: you choose, in a banner on the page or a notification. off: duplicates are left alone." />
-    </div>
+    <Field label="Mode" help="What happens when a new tab opens a page that is already open. always-switch: the new tab closes and you are taken to the existing one. ask: you choose, in a banner on the page or a notification. off: duplicates are left alone.">
+      <select value={d.mode} onchange={(e) => patch({ mode: e.currentTarget.value as DedupeMode })}>
+        <option value="always-switch">always-switch</option><option value="ask">ask</option><option value="off">off</option>
+      </select>
+    </Field>
     {#each sErr('mode') as m (m)}<p class="err" role="alert">mode {m}</p>{/each}
-    <div class="field">
-      <label>Scope
-        <select value={d.scope} onchange={(e) => patch({ scope: e.currentTarget.value as DedupeSettings['scope'] })}>
-          <option value="all-windows">all windows</option><option value="same-window">same window</option>
-        </select>
-      </label>
-      <Help label="Scope" text="all windows: a tab is a duplicate of a matching tab in any window. same window: only tabs in the same window count, so each window can keep its own copy." />
-    </div>
+    <Field label="Scope" help="all windows: a tab is a duplicate of a matching tab in any window. same window: only tabs in the same window count, so each window can keep its own copy.">
+      <select value={d.scope} onchange={(e) => patch({ scope: e.currentTarget.value as DedupeSettings['scope'] })}>
+        <option value="all-windows">all windows</option><option value="same-window">same window</option>
+      </select>
+    </Field>
     {#each sErr('scope') as m (m)}<p class="err" role="alert">scope {m}</p>{/each}
   </div>
 
@@ -119,11 +112,7 @@
   section { display: flex; flex-direction: column; gap: 10px; max-width: 640px; }
   .help { color: var(--muted); margin: 0; }
   .grid { display: flex; gap: 12px; flex-wrap: wrap; }
-  .grid label { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--muted); }
   .checks { display: flex; flex-direction: column; gap: 4px; }
-  .row, .field { display: inline-flex; align-items: center; gap: 6px; }
-  .field { align-items: flex-end; }
-  .inline { display: inline-flex; align-items: center; gap: 6px; }
   .readonly { border: 1px dashed var(--border); border-radius: 8px; padding: 8px 10px; }
   .readonly h3 { margin: 0 0 4px; font-size: 13px; }
   .readonly p { margin: 2px 0; }
