@@ -1,5 +1,5 @@
 import { isMap, isScalar, isSeq, LineCounter, parseDocument, stringify, type Node as YamlNode } from 'yaml';
-import type { Config, DedupeMode, GroupRule, TabSnap } from '../core/types';
+import type { Config, DedupeMode, GroupColor, GroupRule, TabSnap } from '../core/types';
 import type { CloseMode, Cond, GroupAction, Recipe, RecipeRef, Rule } from '../core/lang/types';
 import { compilePattern, compileTextPattern } from '../core/match/pattern';
 import { asGroupRule, orderedUserRules } from '../core/config/group-view';
@@ -429,6 +429,45 @@ export function patternHints(p: string): string[] {
     out.push(`also matches look-alike hosts such as ${name}.evil.com${lit.endsWith('.') ? '' : `; use ${lit}/* to match only ${lit}`}`);
   }
   return out;
+}
+
+// ---- M2 T16: pre-filled rules (context menu) ----
+
+/** What the NewRule page saves: a group rule (new, or the pattern added to an existing one), a close rule, or a never-dedupe rule. */
+export type NewRuleSpec =
+  | { kind: 'group'; pattern: string; name: string; group: { existing: string } | { title: string; color: GroupColor } }
+  | { kind: 'close'; pattern: string; name: string; close: { after?: string; mode: CloseMode } }
+  | { kind: 'allowDup'; pattern: string; name: string };
+
+/** User rules the NewRule group picker can add a pattern to: form-editable, with a group action. */
+export function groupRuleChoices(c: Config): { id: string; name: string; title: string }[] {
+  return orderedUserRules(c).flatMap((r) => {
+    const g = ruleForm(r)?.group;
+    return g ? [{ id: r.id, name: r.name, title: g.title }] : [];
+  });
+}
+
+/**
+ * `c` with the rule of `spec`. A new rule goes first in priority (`order`): it was made from a concrete page, so it
+ * should win over broader rules. Into an existing group rule, the pattern is appended to its URL list (once).
+ */
+export function addNewRule(c: Config, spec: NewRuleSpec): Config {
+  let action: Rule['actions'][number];
+  if (spec.kind === 'group') {
+    if ('existing' in spec.group) return addPatternToRule(c, spec.group.existing, spec.pattern);
+    action = { group: { title: spec.group.title, color: spec.group.color } };
+  } else action = spec.kind === 'close' ? { close: spec.close } : { dedupe: { mode: 'off' } };
+  const id = sanitizeRuleId(`${spec.kind}-${spec.pattern}`, new Set(c.rules.map((r) => r.id)));
+  const rule: Rule = { id, name: spec.name, enabled: true, match: { url: spec.pattern }, actions: [action] };
+  return { ...c, rules: [...c.rules, rule], order: [userKey(id), ...c.order.filter((k) => k !== userKey(id))] };
+}
+
+function addPatternToRule(c: Config, id: string, pattern: string): Config {
+  const target = c.rules[ruleIndex(c, id)];
+  const f = target ? ruleForm(target) : null;
+  if (!f) return c;
+  const lines = Array.isArray(f.url) ? f.url : f.url === '' ? [] : [f.url];
+  return lines.includes(pattern) ? c : patchRuleForm(c, id, { url: [...lines, pattern] });
 }
 
 // ---- M2 T15: YAML view ----

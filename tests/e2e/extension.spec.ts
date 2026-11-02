@@ -158,4 +158,11 @@ test.describe('extension in Chromium', () => {
     expect(await groupOf(z2)).toBe(-1);
     expect(await groupOf(z1)).toBeGreaterThan(-1);
   });
+
+  test('(h) context menu items exist after install (M2 T16)', async () => {
+    // contextMenus.update rejects for an unknown id, so each resolving update proves onInstalled created the item.
+    const exists = (id: string) => h.sw.evaluate(async (x) => chrome.contextMenus.update(x, {}).then(() => true, () => false), id);
+    for (const id of ['tc-group', 'tc-close', 'tc-allowdup', 'tc-lock', 'tc-why']) await expect.poll(() => exists(id), { timeout: 5000 }).toBe(true);
+    expect(await exists('tc-nope')).toBe(false);
+  });
 });
