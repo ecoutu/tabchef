@@ -347,6 +347,26 @@
     "dryRun": {
       "type": "boolean"
     },
+    "needs": {
+      "$comment": "Rule-level needs (T10, R5): an unmet one pauses this rule key only. Recipe rules only; compileProgram rejects them on user rules (R44).",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "hosts": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "permissions": {
+          "type": "array",
+          "items": {
+            "$ref": "recipe.json#/$defs/permission"
+          }
+        }
+      }
+    },
     "trigger": {
       "type": "object",
       "required": [

@@ -1,0 +1,77 @@
+# Finished: closes tabs whose job is done: OAuth callback pages, landed redirects and Meet calls that have ended.
+# Needs are per rule (T10, R5): only meet-ended reads page text and needs meet.google.com. Without that grant it is
+# paused alone; the recipe still enables and the OAuth and redirect rules keep running.
+# `redirectPatterns` defaults to [], which leaves the redirect rule inert until the user adds patterns (R36).
+# The Finished view lists CloseExecutor.suggestions(); the popup renders it (T17).
+recipe: finished
+version: 1
+name: Finished
+description: Closes OAuth callback tabs, redirect tabs you listed, and Google Meet tabs once the call has ended.
+params:
+  delay:
+    type: duration
+    default: 3s
+    label: Close after
+  mode:
+    type: string
+    default: auto
+    enum: [auto, suggest]
+    label: Close automatically or suggest in the Finished list
+  callbackPatterns:
+    type: string[]
+    default:
+      - 'http://localhost:*/*callback*'
+      - 'http://127.0.0.1:*/*callback*'
+      - '*/oauth/*/success*'
+      - '*/oauth2/*/callback*'
+    label: OAuth callback URL patterns
+  meetEndedTexts:
+    type: string[]
+    default:
+      - You left the meeting
+      - You've left the call
+      - The call has ended
+    label: Page text that means a Meet call has ended
+  redirectPatterns:
+    type: string[]
+    default: []
+    label: Redirect landing URL patterns (none by default)
+rules:
+  - id: oauth-callback
+    name: Close OAuth callback tabs
+    enabled: true
+    match:
+      url: '{params.callbackPatterns}'
+    actions:
+      - close:
+          after: '{params.delay}'
+          mode: '{params.mode}'
+  - id: meet-ended
+    name: Close Meet tabs after the call ends
+    enabled: true
+    needs:
+      hosts: ['https://meet.google.com/*']
+    trigger:
+      on: [pageText]
+    match:
+      all:
+        - url: 'meet.google.com/*'
+        - pageText: '{params.meetEndedTexts}'
+    actions:
+      - close:
+          after: 2s
+          mode: '{params.mode}'
+  - id: redirect
+    name: Close redirect landing tabs
+    enabled: true
+    match:
+      url: '{params.redirectPatterns}'
+    actions:
+      - close:
+          after: '{params.delay}'
+          mode: '{params.mode}'
+views:
+  - id: finished
+    tab: Finished
+    kind: list
+    actions: [focus, close, keep]

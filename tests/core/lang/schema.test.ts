@@ -95,6 +95,12 @@ describe('validateRecipe: needs', () => {
     const r = validateRecipe(recipe({ needs: { hosts: ['https://ok.com/*', 'meet.google.com/*'] } }));
     expect(at(r, '/needs/hosts/1').length).toBe(1);
   });
+  it('a recipe rule may declare its own needs (T10): hosts must be match patterns, permissions optional ones', () => {
+    expect(validateRecipe(recipe({ rules: [rule({ needs: { hosts: ['https://meet.google.com/*'], permissions: ['scripting'] } })] })).ok).toBe(true);
+    expect(at(validateRecipe(recipe({ rules: [rule({ needs: { hosts: ['https://ok.com/*', 'meet.google.com/*'] } })] })), '/rules/0/needs/hosts/1').length).toBe(1);
+    expect(at(validateRecipe(recipe({ rules: [rule({ needs: { permissions: ['debugger'] } })] })), '/rules/0/needs/permissions/0').length).toBeGreaterThan(0);
+    expect(at(validateRecipe(recipe({ rules: [rule({ needs: { other: [] } })] })), '/rules/0/needs').length).toBeGreaterThan(0);
+  });
   it.each([
     'https://*/*', '*://*/*', 'http://*.example.com/', 'https://example.com/path/*', 'http://127.0.0.1/*', 'http://localhost:*/*',
     'https://a-b.example.co.uk:443/x?y',

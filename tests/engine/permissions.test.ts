@@ -6,7 +6,8 @@ import { createWatchScripting, WATCH_SCRIPT_ID, type WatchRegistrationApi } from
 import { ProgramCache } from '../../src/engine/program-cache';
 import { PageFacts } from '../../src/engine/page-facts';
 import { Reconciler } from '../../src/engine/reconciler';
-import { configRev, createHandler, type HandlerDeps } from '../../src/engine/messages';
+import { configRev, createHandler, type HandlerDeps, type RecipeListItem } from '../../src/engine/messages';
+import { builtinRecipes } from '../../src/recipes/load';
 import { defaultConfig } from '../../src/core/config/defaults';
 import { FakeBrowserPort } from '../../src/platform/fake-port';
 import type { Program, Recipe, RecipeRef, Rule } from '../../src/core/lang/types';
@@ -38,7 +39,7 @@ function scriptingFake() {
   return { s, registered: () => registered };
 }
 
-function setup(recipes: RecipeRef[] = [ref('meet', true), ref('gh', true)], rules: Rule[] = []) {
+function setup(recipes: RecipeRef[] = [ref('meet', true), ref('gh', true)], rules: Rule[] = [], builtins: Record<string, Recipe> = BUILTINS) {
   const port = new FakeBrowserPort();
   port.addWindow(1);
   let cfg: Config = { ...defaultConfig(), recipes, rules, order: rules.map((r) => `user/${r.id}`) };
@@ -52,7 +53,7 @@ function setup(recipes: RecipeRef[] = [ref('meet', true), ref('gh', true)], rule
   const onPausedChanged = vi.fn();
   // ProgramCache <-> manager: the cache compiles with the manager's paused set; the manager reads needs from it.
   const holder: { pm?: PermissionsManager } = {};
-  const programs = new ProgramCache(() => store.get(), { builtins: BUILTINS, paused: () => holder.pm?.paused() ?? [], warn: () => {} });
+  const programs = new ProgramCache(() => store.get(), { builtins, paused: () => holder.pm?.paused() ?? [], warn: () => {} });
   const getProgram = () => programs.get();
   const pm = new PermissionsManager(port, getProgram, scripting.s, { onPausedChanged });
   holder.pm = pm;
@@ -66,7 +67,7 @@ function setup(recipes: RecipeRef[] = [ref('meet', true), ref('gh', true)], rule
     recentlyClosed: { ready: Promise.resolve(), list: () => [], add: () => 'id' },
     whyLog: { ready: Promise.resolve(), all: () => [], forTab: () => [], add: () => {} },
     ask: { listPending: async () => [], resolvePending: vi.fn(async () => {}) },
-    recipes: { builtins: BUILTINS, permissions: pm },
+    recipes: { builtins, permissions: pm },
   };
   const grant = (...xs: string[]) => { for (const x of xs) port.granted.add(x); };
   const revoke = (...xs: string[]) => { for (const x of xs) port.granted.delete(x); };
@@ -269,6 +270,24 @@ describe('PermissionsManager', () => {
     expect(r.data.recipes.map((x) => [x.id, x.enabled, x.name])).toEqual([['meet', false, 'meet'], ['gh', true, 'gh']]);
     expect(r.data.recipes[0]!.needs).toEqual({ origins: [MEET], permissions: ['scripting'] });
     expect(r.data.recipes[0]!.status).toMatchObject({ ok: false, missing: { origins: [MEET], permissions: ['scripting'] } });
+  });
+
+  it('Finished enables with Meet denied (R5); recipes.list carries the meet rule\'s paused status (R45)', async () => {
+    const t = setup([ref('finished', false)], [], builtinRecipes());
+    const before = (await t.handle({ type: 'recipes.list' }, ui) as { ok: true; data: { recipes: RecipeListItem[] } }).data.recipes[0]!;
+    expect(before.needs).toEqual({ origins: [], permissions: [] });
+    expect(before.status.ok).toBe(true);
+    expect(before.rules).toEqual({
+      'finished/meet-ended': {
+        needs: { origins: [MEET], permissions: ['scripting'] },
+        status: { ok: false, missing: { origins: [MEET], permissions: ['scripting'] }, reason: 'Paused: needs access to meet.google.com' },
+      },
+    });
+    expect(await t.handle({ type: 'recipes.enable', id: 'finished' }, ui)).toEqual({ ok: true, data: null });
+    await t.pm.onChanged();
+    expect([...t.pm.paused()]).toEqual(['finished/meet-ended']);
+    const keys = (await t.getProgram()).rules.map((r) => r.key);
+    expect(keys).toEqual(['finished/oauth-callback', 'finished/redirect']);
   });
 
   it('recipes.setParams validates against ParamDef and names the param', async () => {

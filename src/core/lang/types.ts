@@ -23,8 +23,12 @@ export type Action =
   | { dedupe: DedupeAction }
   | { close: { after?: string; mode?: CloseMode } }
   | { showInView: { view: string } };
+/** Host match patterns and optional permissions a recipe (or one recipe rule, T10) needs to run. */
+export interface RecipeNeeds { hosts?: string[]; permissions?: string[] }
 export interface Rule {
   id: string; name: string; enabled: boolean; dryRun?: boolean;
+  /** Recipe rules only (R44): an unmet rule-level need pauses this rule key alone; the recipe still enables (R5). */
+  needs?: RecipeNeeds;
   trigger?: { on: TriggerKind[]; every?: string };     // default on: ['created','committed']
   match: Cond; extract?: Extract; actions: Action[];
 }
@@ -41,7 +45,7 @@ export interface ParamDef {
 }
 export interface Recipe {
   recipe: string; version: number; name: string; description: string;
-  params?: Record<string, ParamDef>; needs?: { hosts?: string[]; permissions?: string[] };
+  params?: Record<string, ParamDef>; needs?: RecipeNeeds;
   tables?: Record<string, Record<string, string>>;
   dedupe?: { urlTransforms?: DedupeSettings['urlTransforms'] };
   rules: Rule[]; views?: View[];
@@ -54,5 +58,5 @@ export interface TabFacts {
 export interface CompiledRule { key: string /* 'user/<id>' | '<recipeId>/<id>' */; rule: Rule; recipeId?: string; index: number; dryRun: boolean }
 export interface Program {
   rules: CompiledRule[]; views: (View & { recipeId: string })[]; tables: Record<string, Record<string, string>>;
-  dedupe: DedupeSettings; needs: Record<string /* recipeId | ruleKey (rule-level, T10) */, { origins: string[]; permissions: string[] }>;
+  dedupe: DedupeSettings; needs: Record<string /* recipeId | ruleKey (rule-level, T10; listed while paused too) */, { origins: string[]; permissions: string[] }>;
 }

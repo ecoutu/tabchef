@@ -9,9 +9,16 @@
 // Typed placeholders (R14): in a recipe, any leaf that is exactly the string `{params.<name>}` is replaced by the
 // param's value with its type (the user's value from RecipeRef.params, else the ParamDef default): a `string[]`
 // param in `match.url` becomes the whole pattern list, a boolean param in `collapsed` becomes a boolean. Inside an
-// array, an exact placeholder holding an array is spliced in (`url: ['a/*', '{params.more}']`). A placeholder inside
-// a larger string (`'PR {params.prefix}'`) is plain string interpolation. Substitution runs before anything
-// compiles; afterwards every rule goes through the same checks as a user rule (validateRule + ruleProblems).
+// array, an exact placeholder holding an array is spliced in (`url: ['a/*', '{params.more}']`). So a `string[]`
+// param fills an array-typed field (`url`, `pageText`, `anchors`, `needs.hosts`) as the whole array, never as one
+// element; an empty list stays empty (a `url: []` cond never matches). A placeholder inside a larger string
+// (`'PR {params.prefix}'`) is plain string interpolation. Substitution runs before anything compiles; afterwards
+// every rule goes through the same checks as a user rule (validateRule + ruleProblems).
+//
+// Needs (R5, T10): `Program.needs` has an entry per enabled recipe, keyed by recipe id (recipe-level needs, empty
+// lists when none), plus one per enabled recipe rule that declares `needs`, keyed by rule key. Paused recipes and
+// rules keep their entries (PermissionsManager reads needs from the program it pauses). User rules may not declare
+// needs (R44); one that does is reported and skipped.
 //
 // Errors: a broken recipe (unknown body, bad param, unknown placeholder, invalid rule, bad urlTransform) is reported
 // in `errors` and skipped as a whole (rules, tables, views, needs); a broken user rule is reported and skipped alone.
@@ -255,6 +262,7 @@ export function compileProgram(
     if (!isObj(r) || !r.enabled) continue;
     const key = `user/${String(r.id)}`;
     const es = ruleErrors(r, checkTables);
+    if (own(r, 'needs')) es.push('needs: only recipe rules declare needs (R44)');
     if (userIds.has(r.id)) es.push('duplicate rule id');
     userIds.add(r.id);
     if (es.length) errors.push({ key, error: es.join('; ') });
@@ -285,7 +293,11 @@ export function compileProgram(
     urlTransforms: [...(config.dedupe?.urlTransforms ?? []), ...survivors.flatMap((c) => c.body.dedupe?.urlTransforms ?? [])],
   };
   const needs: Program['needs'] = {};
-  for (const c of survivors) needs[c.id] = { origins: [...(c.body.needs?.hosts ?? [])], permissions: [...(c.body.needs?.permissions ?? [])] };
+  const needsOf = (n: Rule['needs']) => ({ origins: [...(n?.hosts ?? [])], permissions: [...(n?.permissions ?? [])] });
+  for (const { c, rules } of recipes) {
+    needs[c.id] = needsOf(c.body.needs);
+    for (const r of rules) if (r.needs) needs[`${c.id}/${r.id}`] = needsOf(r.needs); // paused rules too
+  }
 
   return {
     program: {
