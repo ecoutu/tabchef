@@ -687,3 +687,24 @@ describe('ConfigStore', () => {
     });
   });
 });
+
+// Regression guard (M3-R33): held before connections existed. Secrets live in storage.local under conn.*; nothing the
+// ConfigStore returns (the export source) or backs up may pick them up.
+describe('ConfigStore output never includes connection secrets (regression guard)', () => {
+  beforeEach(() => {
+    fakeBrowser.reset();
+    vi.useRealTimers();
+  });
+
+  it('get, backups and lastGood lack conn.* keys and token values', async () => {
+    await local().set({
+      'conn.secret.github': { token: 'gho_SECRETSECRETSECRET' },
+      'conn.secret.jira': { token: 'ATATTSECRETSECRETSECRET' },
+      connections: [{ id: 'github' }],
+    });
+    const s = mk();
+    await s.set(withSite('https://example.com'));
+    const out = JSON.stringify([await s.get(), await s.backups(), (await local().get('cfg:lastGood'))['cfg:lastGood']]);
+    expect(out).not.toMatch(/conn\.|SECRET|"connections"/);
+  });
+});

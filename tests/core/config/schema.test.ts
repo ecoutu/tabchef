@@ -373,3 +373,12 @@ describe('pageText needles and extract names are capped in TS (I2)', () => {
   });
 });
 
+
+// Regression guard (M3-R33): passes before M3 Task 3. Connection metadata and tokens must never fit in Config, so
+// they cannot reach storage.sync; config.schema.json's top-level additionalProperties:false enforces it.
+describe('connections stay out of Config (regression guard)', () => {
+  it('rejects a top-level connections key', () => {
+    const c = { ...defaultConfig(), connections: [{ id: 'github', token: 'ghu_ABCDEFGHIJKLMN' }] };
+    expect(validateConfig(c).ok).toBe(false);
+  });
+});

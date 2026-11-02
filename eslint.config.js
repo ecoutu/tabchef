@@ -38,4 +38,13 @@ export default tseslint.config(
       'no-restricted-syntax': ['error', ...UPWARD_DYNAMIC, ...FROM_CORE_DYNAMIC],
     },
   },
+  {
+    // Content scripts run in web pages; they never touch connection secrets or the code that reads them.
+    files: ['src/entrypoints/*.content.ts'],
+    rules: {
+      'no-restricted-imports': ['error', {
+        patterns: [{ group: ['**/engine/connections', '**/engine/connections/**'], message: 'Content scripts must not import engine/connections/ (secrets).' }],
+      }],
+    },
+  },
 );
