@@ -6,7 +6,7 @@
   import { isConfigChangedMessage } from '../../engine/messages';
   import { unclaimedErrors } from '../../ui/rules-model';
   import type { Config, TabSnap } from '../../core/types';
-  import GroupRules from './GroupRules.svelte';
+  import Rules from './Rules.svelte';
   import Dedupe from './Dedupe.svelte';
   import History from './History.svelte';
   import Explain from './Explain.svelte';
@@ -184,7 +184,7 @@
     {:else if current.page === 'import'}
       {#if saved}<Import {dirty} onApplied={loadConfig} />{/if}
     {:else if draft && current.page === 'rules'}
-      <GroupRules config={draft} {tabs} {dirty} {saving} serverErrors={saveErrors} onChange={edit} onSave={save} />
+      <Rules config={draft} {tabs} {dirty} {saving} serverErrors={saveErrors} onChange={edit} onSave={save} />
     {:else if draft && current.page === 'dedupe'}
       <Dedupe config={draft} {dirty} {saving} serverErrors={saveErrors} onChange={edit} onSave={save} />
     {:else if draft}
