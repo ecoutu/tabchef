@@ -50,7 +50,7 @@ export function isUndoChoiceMessage(m: unknown): m is UndoChoiceMessage {
 
 // ---- watch content script <-> worker (M2 T7, ruling R12: a content-script channel, never createHandler) ----
 
-/** Watch -> worker on load (and on a back/forward-cache restore): asks for its config, re-reports formEdited (D34). */
+/** Watch -> worker on load, back/forward-cache restore and same-document navigation: asks for its config, re-reports formEdited (D34). */
 export type WatchHelloMessage = { type: 'watch.hello'; formEdited: boolean };
 /** The worker's answer to watch.hello: what to look for on this page (PageFacts.watchConfigFor). */
 export type WatchConfigMessage = { type: 'watch.config'; needles: string[]; selectors: WatchSelector[] };
@@ -423,7 +423,7 @@ export interface ContentDeps {
   /** e.g. `chrome-extension://<id>` */
   extensionOrigin: string;
   getProgram: () => Promise<Program>;
-  pageFacts: Pick<PageFacts, 'set' | 'watchConfigFor'>;
+  pageFacts: Pick<PageFacts, 'set' | 'onCommitted' | 'watchConfigFor'>;
   safety: Pick<SafetyService, 'markFormEdited' | 'clearFormEdited'>;
   /** Reconciler.schedule. */
   schedule: (reason: string) => void;
@@ -449,9 +449,13 @@ export function createContentHandler(d: ContentDeps): (msg: unknown, sender: Mes
     if (!hello && !isPageFactsMessage(msg)) return undefined;
     if (!isTabContentScript(sender, d)) return Promise.resolve(forbidden);
     const tabId = sender.tab!.id!;
-    const url = sender.tab?.url ?? sender.url ?? '';
     if (hello) {
       const m = msg as WatchHelloMessage;
+      // A hello starts a new page state (load, back/forward-cache restore, same-document navigation, which fires no
+      // onCommitted): drop the facts of the previous one and hold until the fresh report that follows the answer.
+      d.pageFacts.onCommitted(tabId);
+      // The frame's URL at send time: after pushState the tab's URL may not have caught up yet.
+      const url = sender.url ?? sender.tab?.url ?? '';
       if (m.formEdited) d.safety.markFormEdited(tabId, sender.tab?.url);
       return d.getProgram().then((p): WatchConfigMessage => ({ type: 'watch.config', ...d.pageFacts.watchConfigFor(url, p) }));
     }

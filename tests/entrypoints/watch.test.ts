@@ -126,4 +126,81 @@ describe('page watch content script', () => {
     expect(sent.filter((m) => m.type === 'page.facts').at(-1)).toMatchObject({ formEdited: true, texts: [] });
     w.stop();
   });
+
+  describe('same-document navigation (SPA): fresh hello, new config, stale facts dropped', () => {
+    // jsdom pages are same-origin with http://localhost:3000; pushState may only change the path.
+    const REPO = 'http://localhost:3000/o/r';
+    const PR = 'http://localhost:3000/o/r/pull/1';
+    function spa(nav?: EventTarget) {
+      history.replaceState(null, '', REPO);
+      document.body.innerHTML = '<textarea id="t"></textarea><span class="repo">o/r</span>';
+      const sent: Sent[] = [];
+      const send = vi.fn(async (m: Sent) => {
+        sent.push(structuredClone(m));
+        if (m.type !== 'watch.hello') return undefined;
+        // The worker answers for the URL the page is on (watchConfigFor).
+        return location.href === PR
+          ? { type: 'watch.config', needles: [], selectors: [{ key: 'pr.branch', selector: '.head-ref' }] }
+          : { type: 'watch.config', needles: [], selectors: [{ key: 'repo.name', selector: '.repo' }] };
+      });
+      const w = startPageWatch({ doc: document, win: window, send, ...(nav && { nav }) });
+      const facts = () => sent.filter((m): m is Sent & PageFactsMessage => m.type === 'page.facts');
+      const hellos = () => sent.filter((m) => m.type === 'watch.hello');
+      return { sent, facts, hellos, w };
+    }
+    const toPr = () => {
+      history.pushState(null, '', PR);
+      document.body.innerHTML = '<textarea id="t"></textarea><span class="head-ref">feat/ABC-1</span>';
+    };
+    afterEach(() => { history.replaceState(null, '', 'http://localhost:3000/'); });
+
+    it('detected by the throttled scan: re-hello, PR config applies, repo extract and the old form edit are dropped', async () => {
+      const { facts, hellos, w } = spa();
+      await vi.advanceTimersByTimeAsync(0);
+      document.getElementById('t')!.dispatchEvent(new Event('input', { bubbles: true }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(facts().at(-1)).toMatchObject({ extracts: { 'repo.name': 'o/r' }, formEdited: true });
+      await vi.advanceTimersByTimeAsync(2000);
+      toPr();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(hellos()).toHaveLength(2);
+      expect(hellos()[1]).toEqual({ type: 'watch.hello', formEdited: false }); // edits belong to the old URL
+      expect(facts().at(-1)).toEqual({ type: 'page.facts', texts: [], extracts: { 'pr.branch': 'feat/ABC-1' }, formEdited: false });
+      w.stop();
+    });
+
+    it('detected at once by the Navigation API (currententrychange) and by popstate', async () => {
+      const nav = new EventTarget();
+      const { facts, hellos, w } = spa(nav);
+      await vi.advanceTimersByTimeAsync(0);
+      // No DOM mutation needed: the URL change alone re-hellos and reports fresh (empty) facts.
+      history.pushState(null, '', PR);
+      nav.dispatchEvent(new Event('currententrychange'));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(hellos()).toHaveLength(2);
+      expect(facts().at(-1)).toEqual({ type: 'page.facts', texts: [], extracts: {}, formEdited: false });
+      history.back(); // jsdom: async, fires popstate
+      await vi.waitFor(() => expect(location.href).toBe(REPO));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(hellos()).toHaveLength(3);
+      expect(facts().at(-1)).toMatchObject({ extracts: { 'repo.name': 'o/r' } });
+      w.stop();
+    });
+
+    it('no facts are reported between the new hello and its answer (the worker just cleared them)', async () => {
+      const { sent, w } = spa();
+      await vi.advanceTimersByTimeAsync(0);
+      const orig = sent.length;
+      toPr();
+      window.dispatchEvent(new PopStateEvent('popstate'));
+      document.getElementById('t')!.dispatchEvent(new Event('input', { bubbles: true }));
+      // The answer is async: until it lands, the edit is not reported on its own; it rides on the fresh facts.
+      expect(sent.slice(orig).map((m) => m.type)).toEqual(['watch.hello']);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sent.slice(orig).map((m) => m.type)).toEqual(['watch.hello', 'page.facts']);
+      expect(sent.at(-1)).toMatchObject({ formEdited: true, extracts: { 'pr.branch': 'feat/ABC-1' } });
+      w.stop();
+    });
+  });
 });
+

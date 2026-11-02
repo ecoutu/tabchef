@@ -303,6 +303,20 @@ describe('createContentHandler', () => {
     expect(safety.markFormEdited).toHaveBeenCalledTimes(1);
   });
 
+  it('watch.hello after a same-document navigation: config for the frame URL, stale facts cleared, hold restarted', async () => {
+    const { h, pageFacts } = mk();
+    await h(facts, tabSender);
+    expect(pageFacts.get(7)).toBeDefined();
+    // pushState: the hello's frame URL is the new one even if the tab's URL has not caught up yet.
+    const moved = { ...tabSender, url: 'https://meet.google.com/other', tab: { id: 7, url: 'https://elsewhere.example/' } };
+    expect(await h({ type: 'watch.hello', formEdited: false }, moved)).toEqual({ type: 'watch.config', needles: ['Call ended'], selectors: [] });
+    expect(pageFacts.get(7)).toBeUndefined();
+    expect(pageFacts.awaiting(7)).toBe(true);
+    await h(facts, moved);
+    expect(pageFacts.awaiting(7)).toBe(false);
+    expect(pageFacts.get(7)).toMatchObject({ texts: ['Call ended'] });
+  });
+
   it('page.facts: stores the facts, feeds SafetyService, schedules a reconcile and calls the onFacts hook', async () => {
     const { h, pageFacts, safety, schedule, onFacts } = mk();
     await h(facts, tabSender);

@@ -13,6 +13,8 @@ export interface PageWatchEnv {
   win: Window;
   /** runtime.sendMessage; resolves with the worker's answer. */
   send: (m: WatchHelloMessage | PageFactsMessage) => Promise<unknown>;
+  /** The Navigation API (`window.navigation`, Chrome 102+): `currententrychange` reports same-document navigations. */
+  nav?: EventTarget;
   now?: () => number;
 }
 
@@ -46,6 +48,11 @@ export function startPageWatch(env: PageWatchEnv): { stop(): void } {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let observer: MutationObserver | undefined;
   let stopped = false;
+  /** The URL the current config was asked for; a different location.href means a same-document navigation. */
+  let configHref = win.location.href;
+  /** Hellos sent; only the latest one's answer applies. While one is in flight, nothing is reported. */
+  let helloSeq = 0;
+  let helloPending = false;
 
   const facts = (): PageFactsMessage => {
     const text = (doc.body?.textContent ?? '').toLowerCase();
@@ -67,7 +74,7 @@ export function startPageWatch(env: PageWatchEnv): { stop(): void } {
   };
 
   const report = (force = false) => {
-    if (stopped) return;
+    if (stopped || helloPending) return; // the fresh report follows the hello's answer
     const m = facts();
     const key = JSON.stringify(m);
     if (!force && key === lastSent) return;
@@ -78,7 +85,7 @@ export function startPageWatch(env: PageWatchEnv): { stop(): void } {
   const scan = () => {
     timer = undefined;
     lastScan = now();
-    report();
+    if (!checkHref()) report();
   };
 
   /** Throttled: a burst of mutations yields one scan, at most one per WATCH_SCAN_MS. */
@@ -97,26 +104,41 @@ export function startPageWatch(env: PageWatchEnv): { stop(): void } {
     });
   };
 
-  const hello = async (force: boolean) => {
-    const edited = formEdited && editedHref === win.location.href;
+  // The worker clears this tab's facts on every hello and answers with the config for the URL it came from.
+  async function hello(force: boolean): Promise<void> {
+    const seq = ++helloSeq;
+    helloPending = true;
+    configHref = win.location.href;
+    const edited = formEdited && editedHref === configHref;
     let r: unknown;
     try {
       r = await env.send({ type: 'watch.hello', formEdited: edited });
     } catch {
       r = undefined; // worker unreachable: still report form edits
     }
-    if (stopped) return;
+    if (stopped || seq !== helloSeq) return;
+    helloPending = false;
     config = asConfig(r);
     observe();
     lastScan = now();
     report(force);
-  };
+  }
+
+  /**
+   * A same-document navigation (pushState, popstate, Navigation API): the config was filtered by the old URL, so ask
+   * again; the old texts/extracts are dropped (the next report is built from the new config). True when it re-helloed.
+   */
+  function checkHref(): boolean {
+    if (stopped || win.location.href === configHref) return false;
+    void hello(true);
+    return true;
+  }
 
   const onInput = (e: Event) => {
     if (!editable(e.target)) return;
     formEdited = true;
     editedHref = win.location.href;
-    report();
+    if (!checkHref()) report();
   };
   const onSubmit = () => {
     formEdited = false;
@@ -129,6 +151,10 @@ export function startPageWatch(env: PageWatchEnv): { stop(): void } {
   win.addEventListener('input', onInput, true);
   win.addEventListener('submit', onSubmit, true);
   win.addEventListener('pageshow', onPageShow);
+  const onUrlMaybeChanged = () => { checkHref(); };
+  win.addEventListener('popstate', onUrlMaybeChanged);
+  const nav = env.nav ?? (win as unknown as { navigation?: EventTarget }).navigation;
+  nav?.addEventListener('currententrychange', onUrlMaybeChanged);
   void hello(true);
 
   return {
@@ -139,6 +165,8 @@ export function startPageWatch(env: PageWatchEnv): { stop(): void } {
       win.removeEventListener('input', onInput, true);
       win.removeEventListener('submit', onSubmit, true);
       win.removeEventListener('pageshow', onPageShow);
+      win.removeEventListener('popstate', onUrlMaybeChanged);
+      nav?.removeEventListener('currententrychange', onUrlMaybeChanged);
     },
   };
 }
