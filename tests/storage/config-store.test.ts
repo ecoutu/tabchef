@@ -536,6 +536,16 @@ describe('ConfigStore', () => {
     });
   });
 
+  it('restore() of an old backup with an over-long urlTransform (T18 cap) succeeds: the entry is removed with a warning', async () => {
+    const s = mk();
+    await s.get();
+    const old = { ...defaultConfig(), dedupe: { ...defaultConfig().dedupe, urlTransforms: [{ pattern: 'a'.repeat(600), replacement: '' }, { pattern: 'ok', replacement: '' }] } };
+    await local().set({ 'cfg:backups': [{ at: 5, config: old }] });
+    await s.restore(5);
+    expect((await s.get()).dedupe.urlTransforms).toEqual([{ pattern: 'ok', replacement: '' }]);
+    expect((await s.status()).warning).toMatch(/1 dedupe setting\(s\) removed: urlTransforms\/0 \(regex too long/);
+  });
+
   describe('adopt-remote only on a genuinely fresh device (CR#2, CR#3)', () => {
     it('upgraded device with a PENDING local edit and no synced sha: local wins over sync', async () => {
       const mine = withSite('mine.com');

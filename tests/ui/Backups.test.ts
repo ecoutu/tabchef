@@ -68,6 +68,30 @@ describe('Backups', () => {
     await screen.findByText(/changes 1 item compared with your current config/);
   });
 
+  it('an imported file that only needs load-path repairs (over-long urlTransform) previews, shows the removal and applies repaired', async () => {
+    const saved = cfgWith('a');
+    const old = { ...saved, dedupe: { ...saved.dedupe, urlTransforms: [{ pattern: 'a'.repeat(600), replacement: '' }] } };
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    render(Backups, props({ saved }));
+    await pick(file(JSON.stringify(old)));
+    await screen.findByText(/1 dedupe setting\(s\) removed: urlTransforms\/0/);
+    await fireEvent.click(await screen.findByRole('button', { name: 'Apply import' }));
+    const set = send.mock.calls.map((c) => c[0] as { type: string; config?: Config }).find((r) => r.type === 'config.set');
+    expect(set?.config?.dedupe.urlTransforms).toEqual([]);
+  });
+
+  it('a restore that needed repairs shows the repair warning', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    send.mockImplementation(async (req: { type: string }) => {
+      if (req.type === 'config.backups') return { ok: true, data: [{ at: 1000, config: cfgWith('x') }] };
+      if (req.type === 'config.status') return { ok: true, data: { syncing: false, warning: '1 dedupe setting(s) removed: urlTransforms/0 (regex too long (max 500 characters))' } };
+      return { ok: true, data: null };
+    });
+    render(Backups, props());
+    await fireEvent.click(await screen.findByRole('button', { name: /Restore backup/ }));
+    await screen.findByText(/Restored .*1 dedupe setting\(s\) removed/);
+  });
+
   it('rejects files over 5 MB before reading them', async () => {
     render(Backups, props());
     const f = file('{}', 5 * 1024 * 1024 + 1);

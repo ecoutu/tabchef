@@ -79,10 +79,11 @@ export function findDuplicate(
 /**
  * All sets of 2+ tabs that are duplicates; tabs within a set sorted by id ascending (index 0 = oldest), sets by size
  * descending (then oldest tab). `overrideOf` (M2 T17) is each tab's winning dedupe action (R25), as the engine decides
- * it. A set links each tab to the oldest OLDER tab it duplicates by the engine's own pairwise test (findDuplicate's,
- * with that tab as the candidate and its override applied to both tabs), so a listed extra is exactly a tab the engine
- * would treat as a duplicate if it were new. A tab whose override mode is 'off' is never an extra (it can still be the
- * kept tab of another). Unlike findDuplicate, the global mode and pinned/protected tabs are not filtered here (callers
+ * it. Every extra (tabs[1..]) duplicates the set's KEPT tab (tabs[0]) by the engine's own pairwise test (findDuplicate's,
+ * with the extra as the candidate and its override applied to both tabs): each tab joins the oldest older tab it
+ * duplicates that is not already an extra. A tab that only duplicates an extra is left out (with mixed per-rule
+ * overrides the relation is not transitive), although the engine, seeing it as new, would close it in favour of that
+ * extra. A tab whose override mode is 'off' is never an extra (it can still be the kept tab of another). Unlike findDuplicate, the global mode and pinned/protected tabs are not filtered here (callers
  * skip them when closing). `key` is unique per set.
  */
 export function findDuplicateSets(
@@ -108,43 +109,29 @@ export function findDuplicateSets(
     }
     return m;
   };
-  const parent = new Map<number, number>();
-  const root = (id: number): number => {
-    let r = id;
-    while (parent.has(r)) r = parent.get(r) as number;
-    return r;
-  };
-  const keyOfRoot = new Map<number, string>();
+  // Each tab joins the set of the oldest older tab it duplicates that is not itself an extra (so that tab is the set's
+  // kept tab). Duplicates under mixed per-rule overrides are not transitive: linking to an extra could put a tab in a
+  // set whose kept tab it does not duplicate, and close-all would then close it (fix round 1).
+  const extraOf = new Map<number, number>(); // extra tab id -> kept tab id
+  const byRoot = new Map<number, { key: string; tabs: TabSnap[] }>();
   for (const t of sorted) {
     const o = overrideOf?.(t);
     if (o?.mode === 'off') continue;
     const mine = keyOf(tabUrl(t), t.incognito, s, o);
     if (!mine) continue;
     const titled = matchTitleFor(tabUrl(t), s, o);
-    const older = (index(o).get(bucketOf(t, mine.key)) ?? []).find((x) => x.id < t.id && pairOk(t, titled, x, s)); // same bucket: same key
-    if (!older) continue;
-    const a = root(older.id);
-    const b = root(t.id);
-    if (a === b) continue;
-    const [keep, join] = a < b ? [a, b] : [b, a];
-    parent.set(join, keep);
-    if (!keyOfRoot.has(keep)) keyOfRoot.set(keep, titled ? `${mine.key}\u0000${t.title}` : mine.key);
-    keyOfRoot.delete(join);
-  }
-  const byRoot = new Map<number, TabSnap[]>();
-  for (const t of sorted) {
-    if (!parent.has(t.id) && !keyOfRoot.has(t.id)) continue;
-    const r = root(t.id);
-    const list = byRoot.get(r);
-    if (list) list.push(t);
-    else byRoot.set(r, [t]);
+    const kept = (index(o).get(bucketOf(t, mine.key)) ?? []).find((x) => x.id < t.id && !extraOf.has(x.id) && pairOk(t, titled, x, s)); // same bucket: same key
+    if (!kept) continue;
+    extraOf.set(t.id, kept.id);
+    const set = byRoot.get(kept.id);
+    if (set) set.tabs.push(t);
+    else byRoot.set(kept.id, { key: titled ? `${mine.key}\u0000${t.title}` : mine.key, tabs: [kept, t] });
   }
   const used = new Set<string>();
-  const sets = [...byRoot.entries()].map(([r, members]) => {
-    let key = keyOfRoot.get(r) ?? String(r);
-    if (used.has(key)) key = `${key}\n${r}`;
+  const sets = [...byRoot.entries()].map(([r, set]) => {
+    const key = used.has(set.key) ? `${set.key}\n${r}` : set.key;
     used.add(key);
-    return { key, tabs: members };
+    return { key, tabs: set.tabs };
   });
   return sets.sort((a, b) => b.tabs.length - a.tabs.length || (a.tabs[0] as TabSnap).id - (b.tabs[0] as TabSnap).id);
 }

@@ -291,7 +291,7 @@ export class DedupeHandler {
     if (this.inFlight.has(flight)) return;
     this.inFlight.add(flight);
     this.queued.set(tabId, (this.queued.get(tabId) ?? 0) + 1);
-    const run = this.chain.then(() => this.handle(tabId, url, key, program));
+    const run = this.chain.then(() => this.handle(tabId, url, key, program, source));
     this.chain = run.catch(() => {});
     try {
       await run;
@@ -305,9 +305,10 @@ export class DedupeHandler {
 
   /**
    * `key` (settings-only key of `url`) identifies the candidate for the handled/exempt memos; the duplicate itself is
-   * decided with the winning rule's dedupe override (R25), whose key can differ (keepFragment).
+   * decided with the winning rule's dedupe override (R25), whose key can differ (keepFragment). With title matching, a
+   * 'pending' candidate is only recorded as awaiting its title (R63).
    */
-  private async handle(tabId: number, url: string, key: string, p: Program): Promise<void> {
+  private async handle(tabId: number, url: string, key: string, p: Program, source: CandidateSource | 'title'): Promise<void> {
     if (this.handled.get(tabId) === key || this.isExempt(tabId, key)) return;
     const s = p.dedupe;
     const snap = await this.port.snapshot();
@@ -321,6 +322,9 @@ export class DedupeHandler {
     // Another new tab may be "existing" only if it is older (lower id): of two new duplicates, the newer one closes.
     const pool = snap.tabs.filter((t) => t.id < tabId || !this.isCandidateLike(t.id));
     const outcome = (d: { o?: DedupeOverride }) => {
+      // R63: a pending navigation still shows the previous page's title, so it never matches by title; it waits for
+      // the new title (handle records it as awaiting-title; onTitleChanged decides).
+      if (source === 'pending' && matchTitleFor(url, s, d.o)) return undefined;
       const dup = findDuplicate(newTab, pool, s, d.o, locked);
       if (!dup) return undefined;
       const mode = d.o?.mode ?? s.mode;

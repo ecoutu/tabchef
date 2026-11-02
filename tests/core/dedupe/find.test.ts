@@ -159,7 +159,14 @@ describe('findDuplicateSets', () => {
     expect(findDuplicateSets(tabs, s(), () => ({ matchTitle: true })).map((x) => x.tabs.map((t) => t.id))).toEqual([[1, 3], [2, 4]]);
   });
 
-  it('agrees with findDuplicate pairwise: every listed extra is a findDuplicate of an older tab in its set, with its own override', () => {
+  /** Every extra of every set is a findDuplicate of the set's KEPT tab (tabs[0]) under the extra's own override. */
+  const expectExtrasMatchKept = (sets: { tabs: TabSnap[] }[], st: DedupeSettings, ov: (t: TabSnap) => { keepFragment?: boolean; matchTitle?: boolean } | undefined) => {
+    for (const x of sets) {
+      for (const t of x.tabs.slice(1)) expect([t.id, findDuplicate(t, [x.tabs[0]!], st, ov(t))?.existing.id]).toEqual([t.id, x.tabs[0]!.id]);
+    }
+  };
+
+  it('agrees with findDuplicate pairwise: every extra is a findDuplicate of the kept tab, with its own override', () => {
     const u = 'https://a.com/x';
     const tabs = [
       tab(1, `${u}#a`, { title: 'A' }), tab(2, `${u}#b`, { title: 'A' }), tab(3, `${u}#a`, { title: 'A' }),
@@ -168,13 +175,34 @@ describe('findDuplicateSets', () => {
     const st = s({ titleOverrides: [{ pattern: 'a.com/*', matchTitle: true }] });
     const ov = (t: TabSnap) => (t.id % 2 === 0 ? { keepFragment: true } : undefined);
     const sets = findDuplicateSets(tabs, st, ov);
-    const listed = new Set(sets.flatMap((x) => x.tabs.slice(1).map((t) => t.id)));
-    for (const t of tabs) {
-      const older = tabs.filter((x) => x.id < t.id);
-      const dup = findDuplicate(t, older, st, ov(t));
-      expect([t.id, dup !== null && sets.some((x) => x.tabs.includes(t) && x.tabs.includes(dup.existing))]).toEqual([t.id, listed.has(t.id)]);
-    }
+    expectExtrasMatchKept(sets, st, ov);
     expect(sets.map((x) => x.tabs.map((t) => t.id))).toEqual([[1, 3, 5]]);
+  });
+
+  it('mixed overrides are not transitive (fix round 1): a tab matching only an extra is not put in that set', () => {
+    // Fragment: C (keepFragment) duplicates B but not A; B (no override) duplicates A.
+    const frag = [tab(1, 'https://a.com/x#1'), tab(2, 'https://a.com/x#2'), tab(3, 'https://a.com/x#2')];
+    const fov = (t: TabSnap) => (t.id === 3 ? { keepFragment: true } : undefined);
+    expect(findDuplicate(frag[2]!, [frag[0]!], s(), fov(frag[2]!))).toBeNull();
+    const fs = findDuplicateSets(frag, s(), fov);
+    expectExtrasMatchKept(fs, s(), fov);
+    expect(fs.map((x) => x.tabs.map((t) => t.id))).toEqual([[1, 2]]);
+    // Title: C (matchTitle rule, global off) duplicates B ("Two") but not A ("One"); B (no title check) duplicates A.
+    const u = 'https://a.com/y';
+    const titled = [tab(1, u, { title: 'One' }), tab(2, u, { title: 'Two' }), tab(3, u, { title: 'Two' })];
+    const tov = (t: TabSnap) => (t.id === 3 ? { matchTitle: true } : undefined);
+    const ts = findDuplicateSets(titled, s(), tov);
+    expectExtrasMatchKept(ts, s(), tov);
+    expect(ts.map((x) => x.tabs.map((t) => t.id))).toEqual([[1, 2]]);
+  });
+
+  it('an unlinked tab can still keep its own set for later tabs', () => {
+    const u = 'https://a.com/y';
+    const tabs = [tab(1, u, { title: 'One' }), tab(2, u, { title: 'Two' }), tab(3, u, { title: 'Two' }), tab(4, u, { title: 'Two' })];
+    const ov = (t: TabSnap) => (t.id >= 2 ? { matchTitle: true } : undefined);
+    const sets = findDuplicateSets(tabs, s(), ov);
+    expectExtrasMatchKept(sets, s(), ov);
+    expect(sets.map((x) => x.tabs.map((t) => t.id))).toEqual([[2, 3, 4]]);
   });
 
   it('same-window scope: sets with the same URL in two windows get distinct keys', () => {

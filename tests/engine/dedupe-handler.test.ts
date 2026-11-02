@@ -849,6 +849,43 @@ describe('DedupeHandler: title-aware dedupe (T18, R18 amended)', () => {
     expect(w.h.awaitingTitleSize).toBe(1);
   });
 
+  it('R63: a pending navigation never matches on the previous page\'s title; it waits for the new title', async () => {
+    const w = setup(titled());
+    w.port.addTab(tab(1, U, { title: 'Doc' }));
+    // Young tab still showing its previous page (also titled "Doc") while navigating to U.
+    w.port.addTab(tab(2, 'https://prev.com/', { title: 'Doc', pendingUrl: U }));
+    w.h.recordCreated(2);
+    await w.h.onCandidate(2, U, 'pending');
+    expect(w.calls('closeTab')).toEqual([]);
+    expect(w.h.awaitingTitleSize).toBe(1);
+    // The new page's title arrives and matches: closed.
+    const t2 = w.port.state.tabs.find((x) => x.id === 2)!;
+    t2.url = U; delete t2.pendingUrl;
+    await w.h.onTitleChanged(2, U);
+    expect(w.calls('closeTab')).toEqual([[2]]);
+  });
+
+  it('R63: a pending navigation whose new title differs is not closed', async () => {
+    const w = setup(titled());
+    w.port.addTab(tab(1, U, { title: 'Doc' }));
+    w.port.addTab(tab(2, 'https://prev.com/', { title: 'Doc', pendingUrl: U }));
+    w.h.recordCreated(2);
+    await w.h.onCandidate(2, U, 'pending');
+    const t2 = w.port.state.tabs.find((x) => x.id === 2)!;
+    t2.url = U; delete t2.pendingUrl; t2.title = 'Another doc';
+    await w.h.onTitleChanged(2, U);
+    expect(w.calls('closeTab')).toEqual([]);
+  });
+
+  it('R63: without title matching a pending candidate still closes immediately', async () => {
+    const w = setup();
+    w.port.addTab(tab(1, U, { title: 'Doc' }));
+    w.port.addTab(tab(2, 'https://prev.com/', { title: 'Doc', pendingUrl: U }));
+    w.h.recordCreated(2);
+    await w.h.onCandidate(2, U, 'pending');
+    expect(w.calls('closeTab')).toEqual([[2]]);
+  });
+
   it('race guard: the titles must still match at close time', async () => {
     const w = setup(titled());
     w.port.addTab(tab(1, U, { title: 'Doc' }));
