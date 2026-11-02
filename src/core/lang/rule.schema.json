@@ -1,6 +1,6 @@
 {
   "$id": "https://schemas.tabchef.invalid/rule.json",
-  "$comment": "M2 rule language (src/core/lang/types.ts). Regex/pattern/template/duration/color checks are TS post-validation (src/core/config/schema.ts). No discard/notify actions (ruling R26).",
+  "$comment": "M2 rule language (src/core/lang/types.ts). Regex/pattern/template/duration/color checks are TS post-validation (src/core/config/schema.ts; rule regexes capped at 500 characters there, enabled rules only, so stored data from laxer versions still loads). No discard/notify actions (ruling R26). Recipe rules use the derived recipe-rule.schema.generated.json: typed leaves may be {params.x} placeholders (R14), and strings are capped in the schema (2048 characters; patterns and regexes 500).",
   "$defs": {
     "pattern": {
       "type": "string"
@@ -13,6 +13,9 @@
       "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
     },
     "cond": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 1,
       "oneOf": [
         {
           "type": "object",
@@ -190,6 +193,9 @@
       ]
     },
     "action": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 1,
       "oneOf": [
         {
           "type": "object",
@@ -351,7 +357,7 @@
         "on": {
           "type": "array",
           "minItems": 1,
-                    "items": {
+          "items": {
             "enum": [
               "created",
               "committed",

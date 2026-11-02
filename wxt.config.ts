@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { parse as parseYaml } from 'yaml';
 import { defineConfig, type UserManifest } from 'wxt';
 
 export const manifestConfig: UserManifest = {
@@ -26,10 +28,25 @@ const lzmaDecoderFix = {
   },
 };
 
+/**
+ * Built-in recipes are YAML in the repo but JSON in the bundle (D30): `import x from './a.yaml'` (and
+ * `import.meta.glob('*.yaml')`) yields the parsed data, so the `yaml` library stays out of the service worker.
+ * `?raw` and other queried imports are left to Vite. Shared with vitest.config.ts so tests see the same modules.
+ */
+export const yamlJson = {
+  name: 'tabchef:yaml-json',
+  enforce: 'pre' as const,
+  load(id: string) {
+    if (id.includes('?') || !/\.ya?ml$/.test(id)) return null;
+    const data: unknown = parseYaml(readFileSync(id, 'utf8'), { prettyErrors: true });
+    return { code: `export default ${JSON.stringify(data)};`, map: null };
+  },
+};
+
 // See https://wxt.dev/api/reference/wxt/interfaces/inlineconfig.html
 export default defineConfig({
   manifest: manifestConfig,
   modules: ['@wxt-dev/module-svelte'],
   srcDir: 'src',
-  vite: () => ({ plugins: [lzmaDecoderFix] }),
+  vite: () => ({ plugins: [lzmaDecoderFix, yamlJson] }),
 });

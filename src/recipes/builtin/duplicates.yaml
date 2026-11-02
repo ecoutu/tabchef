@@ -1,0 +1,12 @@
+# Duplicates: the popup's Duplicates tab (M1 duplicate sets and pending asks).
+# Views only for now; T6 moves the default de-duplication rule here.
+recipe: duplicates
+version: 1
+name: Duplicates
+description: Lists duplicate tabs so you can focus or close them.
+rules: []
+views:
+  - id: duplicates
+    tab: Duplicates
+    kind: duplicates
+    actions: [focus, close, close-all]

@@ -196,13 +196,19 @@ export function repairConfig(input: unknown): { config: unknown; warnings: strin
   };
 }
 
-/** "<instancePath> <message>", with the offending property or allowed values when ajv names them. */
-export function formatSchemaError(e: ValidateError): string {
+/** An ajv error as a Problem: its JSON pointer, and its message with the offending property or allowed values. */
+export function schemaProblem(e: ValidateError): Problem {
   const p = e.params ?? {};
   let detail = '';
   if (typeof p.additionalProperty === 'string') detail = `: ${p.additionalProperty}`;
   else if (Array.isArray(p.allowedValues)) detail = `: ${p.allowedValues.map(String).join(', ')}`;
-  return `${e.instancePath || '/'} ${e.message ?? 'invalid'}${detail}`;
+  return { path: e.instancePath || '/', message: `${e.message ?? 'invalid'}${detail}` };
+}
+
+/** "<instancePath> <message>", with the offending property or allowed values when ajv names them. */
+export function formatSchemaError(e: ValidateError): string {
+  const { path, message } = schemaProblem(e);
+  return `${path} ${message}`;
 }
 
 /**
