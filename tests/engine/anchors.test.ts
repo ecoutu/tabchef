@@ -224,3 +224,34 @@ describe('AnchorService', () => {
     expect(w.port.state.tabs.some((t) => t.id === id)).toBe(true);
   });
 });
+
+describe('AnchorService: the dedupe exemption is disarmed once the anchor is recorded', () => {
+  beforeEach(() => { fakeBrowser.reset(); });
+
+  it("a user's own duplicate of the anchor URL within 15 s is not exempted (it is closed as a duplicate)", async () => {
+    const port = new FakeBrowserPort();
+    port.addWindow(1);
+    const getProgram = async () => programOf(cfgOf());
+    // eslint-disable-next-line prefer-const
+    let anchors: AnchorService;
+    const r = new Reconciler(port, getProgram, { log: { add: () => {} }, anchors: { onGroupCreated: (...a) => anchors.onGroupCreated(...a) } });
+    const dedupe = new DedupeHandler(port, getProgram, {
+      recentlyClosed: { add: () => 'rc' }, log: { add: () => {} }, ask: vi.fn(async () => {}),
+      isPaused: () => false, isLocked: () => false, isAnchor: (t) => anchors.isAnchor(t),
+    });
+    anchors = new AnchorService(port, { state: () => r.liveState(), log: { add: () => {} }, armExemption: (u, w) => dedupe.armExemption(u, w) });
+    port.addTab(tab(1, PR));
+    await r.flush();
+    const [anchor] = port.state.tabs.filter((t) => t.url === HOME).map((t) => t.id);
+    expect(anchors.isAnchor(anchor!)).toBe(true);
+    // The anchor itself is never closed by dedupe (isAnchor), with or without the exemption.
+    dedupe.recordCreated(anchor!);
+    await dedupe.onCandidate(anchor!, HOME, 'committed');
+    // The user opens the same URL a moment later: a plain new duplicate, closed in favor of the anchor.
+    port.addTab(tab(5000, HOME));
+    dedupe.recordCreated(5000);
+    await dedupe.onCandidate(5000, HOME, 'committed');
+    expect(port.calls.filter((c) => c.method === 'closeTab').map((c) => c.args)).toEqual([[5000]]);
+    expect(port.state.tabs.some((t) => t.id === anchor)).toBe(true);
+  });
+});

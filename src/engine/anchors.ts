@@ -110,11 +110,12 @@ export class AnchorService {
       const existing = snap.tabs.find((t) => t.windowId === g.windowId && !t.pinned && !used.has(t.id)
         && (t.groupId === -1 || inGroup.has(t.id)) && key(urlOf(t)) === key(url));
       let tabId: number;
+      let disarm: (() => void) | undefined;
       if (existing) {
         tabId = existing.id;
         if (!inGroup.has(tabId)) join.push(tabId);
       } else {
-        const disarm = this.deps.armExemption?.(url, g.windowId);
+        disarm = this.deps.armExemption?.(url, g.windowId);
         try {
           tabId = await this.port.createTab({ url, windowId: g.windowId, active: false });
         } catch (e) {
@@ -127,6 +128,9 @@ export class AnchorService {
       }
       used.add(tabId);
       st.anchors.push({ tabId, windowId: g.windowId, title: g.title, url });
+      // Recorded: isAnchor now keeps it from dedupe, so an unconsumed exemption would only exempt the user's own
+      // duplicate of this URL opened in the next 15 s.
+      disarm?.();
     }
     if (join.length === 0) return [];
     return [{
