@@ -1,0 +1,5 @@
+{
+  "_comment": "Hand-written (M3-R26) from Atlassian's documented GET /rest/api/3/project/search shape. First of two pages.",
+  "startAt": 0, "maxResults": 2, "total": 3, "isLast": false,
+  "values": [ { "id": "1", "key": "ABC", "name": "Alpha" }, { "id": "2", "key": "DEF", "name": "Delta" } ]
+}

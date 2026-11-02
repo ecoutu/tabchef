@@ -1,0 +1,8 @@
+{
+  "_comment": "Hand-written (M3-R26) from Atlassian's documented GET /rest/api/3/search/jql shape. ABC-3 has an unknown statusCategory key.",
+  "issues": [
+    { "id": "10001", "key": "ABC-1", "fields": { "summary": "Fix the login redirect", "status": { "name": "Done", "statusCategory": { "key": "done", "name": "Done" } } } },
+    { "id": "10002", "key": "ABC-2", "fields": { "summary": "Add retry to sync", "status": { "name": "In Progress", "statusCategory": { "key": "indeterminate", "name": "In Progress" } } } },
+    { "id": "10003", "key": "ABC-3", "fields": { "summary": "Odd status", "status": { "name": "Weird", "statusCategory": { "key": "undefined", "name": "No Category" } } } }
+  ]
+}
