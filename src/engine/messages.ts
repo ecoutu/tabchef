@@ -21,7 +21,8 @@ export type BannerShowMessage = {
   type: 'banner.show';
   payload:
     | { kind: 'duplicate'; existingTitle: string; groupTitle?: string; tabId: number; existingTabId: number }
-    | { kind: 'undo'; entryId: string; text: string };
+    | { kind: 'undo'; entryId: string; text: string }
+    | { kind: 'protected-close'; text: string };
 };
 export type BannerChoice = 'switch' | 'keep' | 'always-switch-site';
 export type BannerChoiceMessage = { type: 'banner.choice'; choice: BannerChoice; tabId: number; existingTabId: number };
@@ -79,6 +80,20 @@ export function isPageFactsMessage(m: unknown): m is PageFactsMessage {
   const vals = Object.entries(x.extracts as Record<string, unknown>);
   return vals.length <= MAX_FACT_ITEMS
     && vals.every(([k, v]) => k.length <= MAX_FACT_TEXT && typeof v === 'string' && v.length <= MAX_EXTRACT_VALUE);
+}
+
+/** Protected-close banner copy (D22): "Close this tab? [Close] [Keep]". Keep is the default: no answer keeps the tab. */
+export const PROTECTED_CLOSE_TEXT = 'Close this tab?';
+
+/**
+ * Protected-close banner -> worker (D22, ruling R12): the answer for the sending tab. A content-script message on the
+ * sender-checked createContentHandler channel; the existing banner.choice guards are untouched.
+ */
+export type CloseChoiceMessage = { type: 'banner.closeChoice'; choice: 'close' | 'keep' };
+export function isCloseChoiceMessage(m: unknown): m is CloseChoiceMessage {
+  if (typeof m !== 'object' || m === null) return false;
+  const x = m as Record<string, unknown>;
+  return x.type === 'banner.closeChoice' && (x.choice === 'close' || x.choice === 'keep');
 }
 
 /** Undo toast copy. */
@@ -519,8 +534,10 @@ export interface ContentDeps {
   safety: Pick<SafetyService, 'markFormEdited' | 'clearFormEdited'>;
   /** Reconciler.schedule. */
   schedule: (reason: string) => void;
-  /** New facts for a tab (CloseExecutor.onFacts, M2 T9); a no-op until then. */
+  /** New facts for a tab (CloseExecutor.onFacts, M2 T9). */
   onFacts?: (tabId: number) => void;
+  /** The protected-close banner's answer for the sending tab (CloseExecutor.onCloseChoice, D22). */
+  onCloseChoice?: (tabId: number, choice: CloseChoiceMessage['choice']) => void;
 }
 
 /** A content script in a real tab's top frame: never an extension page (those use createHandler). */
@@ -532,11 +549,17 @@ export function isTabContentScript(sender: MessageSender, d: Pick<ContentDeps, '
 
 /**
  * The worker side of the watch content script (ruling R12): `watch.hello` is answered with the pulled watch config,
- * `page.facts` stores the facts and re-plans. Returns undefined for any other message.
+ * `page.facts` stores the facts and re-plans. Also the protected-close banner's `banner.closeChoice` (D22). Returns
+ * undefined for any other message.
  */
 export function createContentHandler(d: ContentDeps): (msg: unknown, sender: MessageSender) => Promise<unknown> | undefined {
   const forbidden = { ok: false, error: 'forbidden' };
   return (msg, sender) => {
+    if (isCloseChoiceMessage(msg)) {
+      if (!isTabContentScript(sender, d)) return Promise.resolve(forbidden);
+      d.onCloseChoice?.(sender.tab!.id!, msg.choice);
+      return Promise.resolve({ ok: true });
+    }
     const hello = isWatchHello(msg);
     if (!hello && !isPageFactsMessage(msg)) return undefined;
     if (!isTabContentScript(sender, d)) return Promise.resolve(forbidden);

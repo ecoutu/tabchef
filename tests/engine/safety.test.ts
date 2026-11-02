@@ -480,5 +480,54 @@ describe('SafetyService', () => {
       w.api.createNotification.mockRejectedValue(new Error('y'));
       await expect(w.svc.toast('rc1', closedEntry, focused())).resolves.toBeUndefined();
     });
+
+    it('without a target tab (the window closed): straight to the notification (D39 / R29)', async () => {
+      const w = setup();
+      vi.spyOn(w.port, 'hasPermission').mockResolvedValue(true);
+      await w.svc.toast('rc1', closedEntry, undefined);
+      expect(w.api.executeScript).not.toHaveBeenCalled();
+      expect(w.api.createNotification).toHaveBeenCalledWith('undo:rc1', expect.anything());
+    });
+  });
+
+  describe('protected-close support (M2 T9)', () => {
+    const snap = (o: Partial<TabSnap> = {}): TabSnap => ({ ...tab(1, PR), groupId: -1, index: 0, ...o }) as TabSnap;
+
+    it('isActiveFocused: the active tab of the focused window only', () => {
+      const w = setup();
+      const windows = [{ id: 1, type: 'normal' as const, focused: true }, { id: 2, type: 'normal' as const, focused: false }];
+      expect(w.svc.isActiveFocused(snap({ active: true }), windows)).toBe(true);
+      expect(w.svc.isActiveFocused(snap({ active: false }), windows)).toBe(false);
+      expect(w.svc.isActiveFocused(snap({ active: true, windowId: 2 }), windows)).toBe(false);
+    });
+
+    it('protectedCloseBanner: shows "Close this tab?" when eligible and acked; false otherwise', async () => {
+      const w = setup();
+      vi.spyOn(w.port, 'hasPermission').mockResolvedValue(true);
+      expect(await w.svc.protectedCloseBanner(snap())).toBe(true);
+      expect(w.api.sendMessage).toHaveBeenCalledWith(1, { type: 'banner.show', payload: { kind: 'protected-close', text: 'Close this tab?' } });
+      w.api.sendMessage.mockResolvedValueOnce(undefined as never);
+      expect(await w.svc.protectedCloseBanner(snap())).toBe(false);
+      w.api.executeScript.mockRejectedValueOnce(new Error('x'));
+      expect(await w.svc.protectedCloseBanner(snap())).toBe(false);
+      vi.spyOn(w.port, 'hasPermission').mockResolvedValue(false);
+      expect(await w.svc.protectedCloseBanner(snap())).toBe(false);
+      expect(w.api.executeScript).toHaveBeenCalledTimes(3);
+    });
+
+    it('resume calls onResume (pending closes re-fire, D37)', () => {
+      const onResume = vi.fn();
+      const w = setup({ onResume });
+      w.svc.pause('15m');
+      w.svc.resume();
+      expect(onResume).toHaveBeenCalledTimes(1);
+    });
+
+    it('undo calls onUndone with the reopened tab and URL (auto-close exemption, D38)', async () => {
+      const onUndone = vi.fn();
+      const w = setup({ onUndone });
+      await w.svc.undo(w.recentlyClosed.add(closedEntry));
+      expect(onUndone).toHaveBeenCalledWith(w.port.state.tabs.at(-1)!.id, PR);
+    });
   });
 });

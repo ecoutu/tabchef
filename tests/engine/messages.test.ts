@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  configRev, badgeCount, createContentHandler, createDebounce, createHandler, createOnMessage, isPageFactsMessage, isWatchHello,
+  configRev, badgeCount, createContentHandler, createDebounce, createHandler, createOnMessage, isCloseChoiceMessage, isPageFactsMessage, isWatchHello,
   type ContentDeps, type HandlerDeps,
 } from '../../src/engine/messages';
 import { PageFacts } from '../../src/engine/page-facts';
@@ -276,8 +276,11 @@ describe('createContentHandler', () => {
     const safety = { markFormEdited: vi.fn(), clearFormEdited: vi.fn() };
     const schedule = vi.fn();
     const onFacts = vi.fn();
-    const d: ContentDeps = { runtimeId: 'ext', extensionOrigin: 'chrome-extension://ext', getProgram: async () => program, pageFacts, safety, schedule, onFacts };
-    return { h: createContentHandler(d), pageFacts, safety, schedule, onFacts };
+    const onCloseChoice = vi.fn();
+    const d: ContentDeps = {
+      runtimeId: 'ext', extensionOrigin: 'chrome-extension://ext', getProgram: async () => program, pageFacts, safety, schedule, onFacts, onCloseChoice,
+    };
+    return { h: createContentHandler(d), pageFacts, safety, schedule, onFacts, onCloseChoice };
   }
   const facts = { type: 'page.facts', texts: ['Call ended'], extracts: { 'user/m.x': 'v' }, formEdited: true };
 
@@ -336,6 +339,20 @@ describe('createContentHandler', () => {
     }
     expect(pageFacts.get(7)).toBeUndefined();
     expect(schedule).not.toHaveBeenCalled();
+  });
+
+  it('banner.closeChoice (D22): guarded, sender-checked, passed on for the sending tab', async () => {
+    expect(isCloseChoiceMessage({ type: 'banner.closeChoice', choice: 'close' })).toBe(true);
+    expect(isCloseChoiceMessage({ type: 'banner.closeChoice', choice: 'keep' })).toBe(true);
+    expect(isCloseChoiceMessage({ type: 'banner.closeChoice', choice: 'switch' })).toBe(false);
+    expect(isCloseChoiceMessage({ type: 'banner.choice', choice: 'close' })).toBe(false);
+    const { h, onCloseChoice } = mk();
+    for (const s of [ui, { ...tabSender, frameId: 3 }, { id: 'ext', url: PAGE }]) {
+      expect(await h({ type: 'banner.closeChoice', choice: 'close' }, s)).toEqual({ ok: false, error: 'forbidden' });
+    }
+    expect(onCloseChoice).not.toHaveBeenCalled();
+    expect(await h({ type: 'banner.closeChoice', choice: 'keep' }, tabSender)).toEqual({ ok: true });
+    expect(onCloseChoice).toHaveBeenCalledWith(7, 'keep');
   });
 
   it('page.facts and watch.hello never go through createHandler (extension pages only)', async () => {

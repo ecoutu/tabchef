@@ -8,6 +8,7 @@ import {
   UNDO_NOTIFICATION_PREFIX,
 } from '../engine/messages';
 import { listPendingAsks } from '../engine/ask';
+import { CLOSE_ALARM_PREFIX, CloseExecutor } from '../engine/close-executor';
 import { DedupeHandler } from '../engine/dedupe-handler';
 import { PageFacts } from '../engine/page-facts';
 import { createWatchScripting, WATCH_FILE, WATCH_SCRIPT_ID } from '../engine/watch-registration';
@@ -44,7 +45,12 @@ export default defineBackground(() => {
       unregister: (ids) => s.unregisterContentScripts({ ids }),
       inject: async (tabId) => { await s.executeScript({ target: { tabId }, files: [WATCH_FILE as never] }); },
     };
-  }), { onPausedChanged: () => reconciler.schedule('permissions') });
+  }), {
+    onPausedChanged: () => {
+      reconciler.schedule('permissions');
+      void closeExecutor.rearm(); // closes kept pending while their recipe waited for a permission
+    },
+  });
   // Page facts from the watch content script (M2 T7), mirrored to storage.session.
   const pageFacts = new PageFacts({
     session: {
@@ -148,7 +154,34 @@ export default defineBackground(() => {
     },
     bannerFile: 'content-scripts/banner.js',
     pageFormEdited: (id) => pageFacts.get(id)?.formEdited === true,
+    onResume: () => { void closeExecutor.rearm(); },
+    onUndone: (id, url) => { void closeExecutor.exempt(id, url); },
   });
+  // Delayed / suggested closes (M2 T9), persisted in storage.session.
+  const closeExecutor: CloseExecutor = new CloseExecutor(port, getProgram, {
+    safety,
+    recentlyClosed,
+    log: whyLog,
+    facts: pageFacts,
+    banner: async (tabId) => {
+      const t = (await port.snapshot()).tabs.find((x) => x.id === tabId);
+      return t ? safety.protectedCloseBanner(t) : false;
+    },
+    alarms: {
+      create: (name, when) => browser.alarms.create(name, { when }),
+      clear: (name) => browser.alarms.clear(name),
+    },
+    session: {
+      get: async (k) => (await browser.storage.session.get(k))[k],
+      set: (k, v) => browser.storage.session.set({ [k]: v }),
+    },
+    isRulePaused: (key) => permissions.paused().has(key),
+    observesForm: (url) => permissions.covers(url),
+    beforeRun: async () => { await Promise.all([safety.ready, pageFacts.ready]); },
+    // isAnchor: AnchorService arrives with M2 T11.
+  });
+  // A restarted worker re-arms its stored pending closes (timers die with the worker; overdue ones fire now).
+  void closeExecutor.rearm();
   const candidate = (...a: Parameters<DedupeHandler['onCandidate']>) => {
     dedupe.onCandidate(...a).catch((e: unknown) => console.warn('[tabchef] dedupe failed', e));
   };
@@ -170,13 +203,17 @@ export default defineBackground(() => {
     if (d.frameId !== 0) return;
     pageFacts.onCommitted(d.tabId, d.url);
     candidate(d.tabId, d.url, 'committed');
+    void closeExecutor.onCommitted(d.tabId);
+    void closeExecutor.evaluate(d.tabId);
   });
+  browser.tabs.onActivated.addListener((info) => { void closeExecutor.onActivated(info.tabId); });
   browser.tabs.onUpdated.addListener((tabId, info, tab) => {
     const dedupeUrl = info.url ?? (info.status === 'loading' ? tab.pendingUrl : undefined);
     if (dedupeUrl) candidate(tabId, dedupeUrl, 'pending');
     if (info.url !== undefined) {
       safety.onTabSeen({ id: tabId, url: info.url, windowId: tab.windowId });
       void reconciler.onTabUrlChanged(tabId, info.url);
+      void closeExecutor.evaluate(tabId); // also same-document navigations, which fire no onCommitted
     }
     if (info.groupId !== undefined) void reconciler.onTabGroupChanged(tabId, info.groupId, tab.url);
     if (info.url !== undefined || info.groupId !== undefined || info.pinned !== undefined) {
@@ -192,12 +229,14 @@ export default defineBackground(() => {
   browser.tabs.onRemoved.addListener((tabId, info) => {
     safety.onTabRemoved(tabId, info.isWindowClosing);
     pageFacts.clear(tabId);
+    void closeExecutor.onTabRemoved(tabId);
     dedupe.onRemoved(tabId);
     askController.onTabRemoved(tabId).catch((e: unknown) => console.warn('[tabchef] pending ask cleanup failed', e));
     reconciler.schedule('tab-removed');
   });
   browser.tabs.onReplaced.addListener((added, removed) => {
     pageFacts.clear(removed);
+    void closeExecutor.onTabRemoved(removed);
     dedupe.onReplaced(added, removed);
   });
   browser.tabGroups.onUpdated.addListener(schedule('group-updated'));
@@ -206,6 +245,7 @@ export default defineBackground(() => {
   browser.runtime.onStartup.addListener(() => {
     dedupe.noteStartup();
     reconciler.schedule('startup');
+    void closeExecutor.evaluateAll(); // storage.session (pending closes) is empty after a browser start
   });
   const session = { get: async (k: string) => (await browser.storage.session.get(k))[k] };
   const badgeDeps = {
@@ -241,7 +281,8 @@ export default defineBackground(() => {
     pageFacts,
     safety,
     schedule: (r) => reconciler.schedule(r),
-    // onFacts: closeExecutor.onFacts arrives with M2 T9.
+    onFacts: (id) => { void closeExecutor.onFacts(id); },
+    onCloseChoice: (id, choice) => { void closeExecutor.onCloseChoice(id, choice); },
   });
   // UI requests (popup / options), banner choices (content script in the duplicate tab) and the watch script.
   browser.runtime.onMessage.addListener(createOnMessage({
@@ -260,7 +301,11 @@ export default defineBackground(() => {
       return true;
     },
   }));
-  browser.alarms.onAlarm.addListener((alarm) => safety.onAlarm(alarm));
+  // Alarms are routed by name prefix: `close:<tabId>` to the CloseExecutor, the rest (resume) to SafetyService.
+  browser.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name.startsWith(CLOSE_ALARM_PREFIX)) void closeExecutor.onAlarm(alarm.name);
+    else safety.onAlarm(alarm);
+  });
   // notifications is an optional permission: its events exist only once granted, so (re)register on grant as well.
   let notificationsWired = false;
   const wireNotifications = () => {

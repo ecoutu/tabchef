@@ -1,5 +1,5 @@
 import { browser } from 'wxt/browser';
-import { bannerText, type BannerAck, type BannerChoice, type BannerShowMessage } from '../engine/messages';
+import { bannerText, type BannerAck, type BannerChoice, type BannerShowMessage, type CloseChoiceMessage } from '../engine/messages';
 
 const HOST_ID = 'tabchef-dedupe-banner';
 
@@ -16,6 +16,7 @@ export default defineContentScript({
       const m = msg as Partial<BannerShowMessage> | null;
       if (m?.type !== 'banner.show' || !m.payload) return;
       if (m.payload.kind === 'undo') showUndo(m.payload.entryId, m.payload.text);
+      else if (m.payload.kind === 'protected-close') showProtectedClose(m.payload.text);
       else show(m.payload.tabId, m.payload.existingTabId, m.payload.groupTitle);
       sendResponse({ ok: true } satisfies BannerAck); // after rendering: lets the worker drop its pending entry
     });
@@ -57,6 +58,28 @@ function showUndo(entryId: string, message: string): void {
   box.append(text, b);
   mount();
   setTimeout(() => host.remove(), UNDO_TOAST_MS);
+}
+
+/**
+ * "Close this tab? [Close] [Keep]" for a tab a close rule matched while it was protected or in use (D22). Keep is the
+ * default: the banner stays until answered, nothing gets focus (it must not steal a form's focus) and no answer keeps
+ * the tab.
+ */
+function showProtectedClose(message: string): void {
+  const { host, box, mount } = build();
+  const text = document.createElement('span');
+  text.textContent = message;
+  box.append(text);
+  for (const [label, choice] of [['Close', 'close'], ['Keep', 'keep']] as const) {
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.addEventListener('click', () => {
+      void browser.runtime.sendMessage({ type: 'banner.closeChoice', choice } satisfies CloseChoiceMessage);
+      host.remove();
+    });
+    box.append(b);
+  }
+  mount();
 }
 
 function show(tabId: number, existingTabId: number, groupTitle: string | undefined): void {
