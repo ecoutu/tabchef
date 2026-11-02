@@ -225,6 +225,67 @@ describe('AnchorService', () => {
   });
 });
 
+describe('AnchorService: failures, renames and user decisions (M2 polish P1)', () => {
+  beforeEach(() => { fakeBrowser.reset(); });
+
+  it('a tab the user chose to leave alone is not reused as the anchor; a new one is opened', async () => {
+    const w = setup();
+    w.port.addTab(tab(1, HOME));
+    w.port.addTab(tab(2, PR));
+    (await w.r.liveState()).leaveAlone.add(1);
+    await w.r.flush();
+    expect(w.calls('createTab')).toEqual([[{ url: HOME, windowId: 1, active: false }]]);
+    expect(w.anchors.isAnchor(1)).toBe(false);
+    expect(w.groupOf(1)).toBeUndefined();
+  });
+
+  it('a failed anchor tab open is logged; the group is still created', async () => {
+    const w = setup();
+    w.port.addTab(tab(1, PR));
+    w.port.failNext('createTab', 'no window');
+    await w.r.flush();
+    expect(w.groupOf(1)).toBe('api');
+    expect(w.idOf(HOME)).toEqual([]);
+    expect(w.logs).toContainEqual(expect.objectContaining({ action: 'anchor-failed' }));
+  });
+
+  it('an anchor whose join into the group failed is not kept as an anchor (it would be stranded ungrouped)', async () => {
+    const w = setup();
+    w.port.addTab(tab(1, PR));
+    const group = w.port.group.bind(w.port);
+    vi.spyOn(w.port, 'group').mockImplementation(async (ids, o) => {
+      if (o.groupId !== undefined) throw new Error('join failed');
+      return group(ids, o);
+    });
+    await w.r.flush();
+    const [id] = w.idOf(HOME);
+    expect(w.groupOf(1)).toBe('api');
+    expect(w.anchors.isAnchor(id!)).toBe(false);
+    expect(w.logs).toContainEqual(expect.objectContaining({ action: 'anchor-failed', detail: expect.stringContaining('join failed') }));
+  });
+
+  it('a group whose title could not be set logs that its anchors were not opened', async () => {
+    const w = setup();
+    w.port.addTab(tab(1, PR));
+    w.port.failNext('updateGroup', 'title failed');
+    await w.r.flush().catch(() => {});
+    expect(w.calls('createTab')).toEqual([]);
+    expect(w.logs).toContainEqual(expect.objectContaining({ action: 'anchor-skipped', detail: expect.stringContaining('could not be titled') }));
+  });
+
+  it('a renamed group keeps its anchors: removing it by its new title drops them', async () => {
+    const w = setup();
+    w.port.addTab(tab(1, PR));
+    await w.r.flush();
+    const [id] = w.idOf(HOME);
+    const g = w.port.state.groups.find((x) => x.title === 'api')!;
+    g.title = 'API work';
+    await w.anchors.onGroupUpdated({ id: g.id, windowId: 1, title: 'API work' });
+    await w.anchors.onGroupRemoved({ windowId: 1, title: 'API work' });
+    expect(w.anchors.isAnchor(id!)).toBe(false);
+  });
+});
+
 describe('AnchorService: the dedupe exemption is disarmed once the anchor is recorded', () => {
   beforeEach(() => { fakeBrowser.reset(); });
 

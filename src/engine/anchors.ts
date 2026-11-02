@@ -75,7 +75,7 @@ export class AnchorService {
   private readonly now: () => number;
 
   constructor(
-    private readonly port: Pick<BrowserPort, 'createTab'>,
+    private readonly port: Pick<BrowserPort, 'createTab' | 'snapshot'>,
     private readonly deps: AnchorDeps,
   ) {
     this.now = deps.now ?? Date.now;
@@ -106,8 +106,9 @@ export class AnchorService {
         this.log({ action: 'anchor-skipped', detail: `Anchor "${url}" of ${g.title} skipped: only http(s) URLs open` }, g.ruleId);
         continue;
       }
-      // An open tab at that URL in the window (ungrouped, or already in the new group) becomes the anchor.
-      const existing = snap.tabs.find((t) => t.windowId === g.windowId && !t.pinned && !used.has(t.id)
+      // An open tab at that URL in the window (ungrouped, or already in the new group) becomes the anchor; not one the
+      // user chose to leave alone (e.g. dragged out of a group): moving it would undo that choice.
+      const existing = snap.tabs.find((t) => t.windowId === g.windowId && !t.pinned && !used.has(t.id) && !st.leaveAlone.has(t.id)
         && (t.groupId === -1 || inGroup.has(t.id)) && key(urlOf(t)) === key(url));
       let tabId: number;
       let disarm: (() => void) | undefined;
@@ -156,6 +157,21 @@ export class AnchorService {
     if (!a) return;
     a.tabId = added;
     await saveState(st);
+  }
+
+  /**
+   * tabGroups.onUpdated: a renamed group keeps its anchors. Their entries take the new title, so removing the group (by
+   * its new title) drops them and a user close dismisses the right group.
+   */
+  async onGroupUpdated(g: { id: number; windowId: number; title?: string }): Promise<void> {
+    if (g.title === undefined) return;
+    const st = await this.state();
+    const stale = st.anchors.filter((a) => a.windowId === g.windowId && a.title !== g.title);
+    if (stale.length === 0) return;
+    const members = new Set((await this.port.snapshot()).tabs.filter((t) => t.groupId === g.id).map((t) => t.id));
+    let changed = false;
+    for (const a of stale) if (members.has(a.tabId)) { a.title = g.title; changed = true; }
+    if (changed) await saveState(st);
   }
 
   /** tabGroups.onRemoved: the group may be created again with its anchors; tabs that outlived it are anchors no more. */

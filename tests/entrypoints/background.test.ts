@@ -184,7 +184,7 @@ describe('background wiring', () => {
   it('a created tab is seen by safety and dedupe (its pending URL is a candidate), re-planned and recounted', async () => {
     await vi.advanceTimersByTimeAsync(3000); // the startup badge refresh
     vi.mocked(refreshBadge).mockClear();
-    await fire('tabs.onCreated', { id: 3, pendingUrl: 'https://b.test/', windowId: 1, discarded: false, status: 'loading' });
+    await fire('tabs.onCreated', { id: 3, url: '', pendingUrl: 'https://b.test/', windowId: 1, discarded: false, status: 'loading' });
     expect(I('safety').onTabSeen).toHaveBeenCalledWith({ id: 3, url: 'https://b.test/', windowId: 1 });
     expect(I('dedupe').recordCreated).toHaveBeenCalledWith(3, { discarded: false, status: 'loading' });
     expect(I('dedupe').onCandidate).toHaveBeenCalledWith(3, 'https://b.test/', 'pending');
@@ -222,7 +222,8 @@ describe('background wiring', () => {
   });
 
   it('group and window events re-plan; a removed group drops its anchors', async () => {
-    await fire('tabGroups.onUpdated', { id: 2 });
+    await fire('tabGroups.onUpdated', { id: 2, windowId: 1, title: 'API' });
+    expect(I('anchors').onGroupUpdated).toHaveBeenCalledWith({ id: 2, windowId: 1, title: 'API' });
     expect(I('reconciler').schedule).toHaveBeenCalledWith('group-updated');
     await fire('tabGroups.onRemoved', { id: 2 });
     expect(I('anchors').onGroupRemoved).toHaveBeenCalledWith({ id: 2 });

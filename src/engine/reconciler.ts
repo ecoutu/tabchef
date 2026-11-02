@@ -417,15 +417,34 @@ export class Reconciler {
 
   /** A group was just created (not adopted): open its anchors (rendered by the rule for the tabs that formed it). */
   private async openAnchors(op: Extract<Op, { kind: 'group' }>, gid: number, snap: Snapshot, st: LiveState, program: Program, pre: Targets): Promise<void> {
-    if (!this.opts.anchors) return;
-    const m = op.tabIds.map((id) => pre.matches.get(id))
-      .find((x) => x !== undefined && x.title === op.title && (op.ruleId === undefined || x.ruleId === op.ruleId));
-    if (!m || m.anchors.length === 0) return;
+    const urls = this.anchorUrls(op, pre);
+    if (!this.opts.anchors || urls.length === 0) return;
     const more = await this.opts.anchors.onGroupCreated(st, {
-      groupId: gid, windowId: op.windowId, title: op.title, color: op.color, tabIds: op.tabIds, urls: m.anchors,
+      groupId: gid, windowId: op.windowId, title: op.title, color: op.color, tabIds: op.tabIds, urls,
       ...(op.ruleId !== undefined && { ruleId: op.ruleId }),
     }, snap, program);
-    for (const o of more) await this.apply(o, snap, st, program, pre);
+    for (const o of more) {
+      try {
+        await this.apply(o, snap, st, program, pre);
+      } catch (e) {
+        // Not in the group, an anchor would stay ungrouped for good (the planner leaves anchors alone, R21): it is
+        // a plain tab again. A drag lock still aborts the flush.
+        const failed = new Set(o.kind === 'group' ? o.tabIds : []);
+        st.anchors = st.anchors.filter((a) => !failed.has(a.tabId));
+        this.log({
+          ...(op.ruleId !== undefined && { ruleId: op.ruleId }), action: 'anchor-failed',
+          detail: `Could not move anchors into ${op.title} (${e instanceof Error ? e.message : String(e)})`,
+        });
+        if (e instanceof DragRetryExhausted) throw e;
+      }
+    }
+  }
+
+  /** The anchors the rule rendered for the tabs that formed a new group. */
+  private anchorUrls(op: Extract<Op, { kind: 'group' }>, pre: Targets): string[] {
+    const m = op.tabIds.map((id) => pre.matches.get(id))
+      .find((x) => x !== undefined && x.title === op.title && (op.ruleId === undefined || x.ruleId === op.ruleId));
+    return m?.anchors ?? [];
   }
 
   private async apply(op: Op, snap: Snapshot, st: LiveState, program: Program, pre: Targets): Promise<void> {
@@ -447,7 +466,18 @@ export class Reconciler {
           if (!st.creationOrder.has(key)) st.creationOrder.set(key, Math.max(0, ...st.creationOrder.values()) + 1);
           // Until the title lands the group is untitled (never managed); remember it so the next flush can title it.
           st.pendingTitles.set(gid, p);
-          await this.call(() => this.port.updateGroup(gid, p));
+          try {
+            await this.call(() => this.port.updateGroup(gid, p));
+          } catch (e) {
+            // The next flush titles it (pendingTitles) and adopts it then; anchors open only for a group created now.
+            if (this.opts.anchors && this.anchorUrls(op, pre).length > 0) {
+              this.log({
+                ...(op.ruleId !== undefined && { ruleId: op.ruleId }), action: 'anchor-skipped',
+                detail: `Anchors of ${title} not opened: the group could not be titled`,
+              });
+            }
+            throw e;
+          }
           st.pendingTitles.delete(gid);
         }
         this.adopt(st, gid, title, op.tabIds);

@@ -214,7 +214,8 @@ export default defineBackground(() => {
   // MV3: every listener is registered synchronously at the top level so a restarted worker receives the event.
   browser.tabs.onCreated.addListener((tab) => {
     if (tab.id !== undefined) {
-      safety.onTabSeen({ id: tab.id, url: tab.url ?? tab.pendingUrl ?? '', windowId: tab.windowId });
+      // A new tab's url is '' until its navigation commits: use the pending URL, so a parked lock reattaches now.
+      safety.onTabSeen({ id: tab.id, url: tab.url || tab.pendingUrl || '', windowId: tab.windowId });
       dedupe.recordCreated(tab.id, { discarded: tab.discarded, status: tab.status });
       const url = tab.pendingUrl || tab.url;
       if (url) candidate(tab.id, url, 'pending');
@@ -273,7 +274,10 @@ export default defineBackground(() => {
     dedupe.onReplaced(added, removed);
     anchors.onTabReplaced(added, removed).catch(warn('anchor replace'));
   });
-  browser.tabGroups.onUpdated.addListener(schedule('group-updated'));
+  browser.tabGroups.onUpdated.addListener((g) => {
+    anchors.onGroupUpdated(g).catch(warn('anchor group rename')); // a renamed group keeps its anchors
+    reconciler.schedule('group-updated');
+  });
   browser.tabGroups.onRemoved.addListener((g) => {
     anchors.onGroupRemoved(g).catch(warn('anchor group cleanup')); // the group may be created again with its anchors
     reconciler.schedule('group-removed');
