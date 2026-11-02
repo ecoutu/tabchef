@@ -22,9 +22,40 @@ describe('importTabDeduper', () => {
       { pattern: '\\?.*$', replacement: '' },
       { pattern: '(github\\.com/[^/]+/[^/]+/pull/\\d+).*', replacement: '$1' },
     ]);
-    expect(r.warnings).toContain('Tab Deduper compared page titles too; Tabchef compares URLs only.');
-    expect(r.warnings.join('\n')).toMatch(/github\.com\/acme/);
-    expect(r.warnings.join('\n')).toMatch(/app\.example\.com/);
+    expect(r.dedupe.matchTitle).toBe(true);
+    expect(r.dedupe.titleOverrides).toEqual([{ pattern: 'github.com/acme*', matchTitle: false }]);
+    expect(r.dedupe.fragmentOverrides).toEqual([{ pattern: 'app.example.com/#/*', keepFragment: true }]);
+    expect(r.dedupe).toEqual({
+      scope: 'same-window', stripFragment: true, matchTitle: true,
+      titleOverrides: [{ pattern: 'github.com/acme*', matchTitle: false }],
+      fragmentOverrides: [{ pattern: 'app.example.com/#/*', keepFragment: true }],
+      allowDuplicates: r.dedupe.allowDuplicates, urlTransforms: r.dedupe.urlTransforms,
+    });
+    expect(r.warnings).toEqual([]);
+    for (const p of [...r.dedupe.titleOverrides!, ...r.dedupe.fragmentOverrides!]) expect(() => compilePattern(p.pattern)).not.toThrow();
+    const frag = compilePattern(r.dedupe.fragmentOverrides![0]!.pattern);
+    expect(frag('https://app.example.com/#/inbox')).not.toBeNull();
+    expect(compilePattern('github.com/acme*')('https://github.com/acme/api/pull/1')).not.toBeNull();
+  });
+
+  it('override lines (TD semantics): a plain line turns the feature on for that prefix, a `-` line turns it off; /regex/ kept', () => {
+    const r = importTabDeduper({ local: {
+      useTitleDefault: false, ignoreFragmentDefault: false,
+      titleOverrides: 'news.example.com\n-quiet.example.com\n/^x\\.com\\/t/\n/(/',
+      fragmentOverrides: 'strip.example.com/\n-keep.example.com/\n-/^y\\.com/i',
+    } });
+    expect(r.dedupe.matchTitle).toBe(false);
+    expect(r.dedupe.titleOverrides).toEqual([
+      { pattern: 'news.example.com*', matchTitle: true },
+      { pattern: 'quiet.example.com*', matchTitle: false },
+      { pattern: '/^[a-z][a-z0-9+.-]*:\\/\\/x\\.com\\/t/', matchTitle: true },
+    ]);
+    expect(r.dedupe.fragmentOverrides).toEqual([
+      { pattern: 'strip.example.com/*', keepFragment: false },
+      { pattern: 'keep.example.com/*', keepFragment: true },
+      { pattern: '/^[a-z][a-z0-9+.-]*:\\/\\/y\\.com/i', keepFragment: true },
+    ]);
+    expect(r.warnings.join('\n')).toMatch(/\/\(\//);
   });
 
   it('maps explicit booleans, flags, and warns on negated exempts and bad transforms', () => {
@@ -34,7 +65,7 @@ describe('importTabDeduper', () => {
       urlTranforms: 'a`b`gi\nbroken\n(`x`',
     } });
     expect(r.dedupe).toEqual({
-      scope: 'all-windows', stripFragment: false, allowDuplicates: ['ok.example.com*'],
+      scope: 'all-windows', stripFragment: false, matchTitle: false, allowDuplicates: ['ok.example.com*'],
       urlTransforms: [{ pattern: 'a', replacement: 'b', flags: 'gi' }],
     });
     const w = r.warnings.join('\n');

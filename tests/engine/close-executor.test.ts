@@ -4,6 +4,7 @@ import {
   afterConfigChange, CLOSE_ALARM_PREFIX, CLOSE_SUGGESTIONS_KEY, CloseExecutor, PENDING_CLOSES_KEY, type CloseExecutorDeps,
 } from '../../src/engine/close-executor';
 import { SafetyService } from '../../src/engine/safety';
+import { PermissionsManager } from '../../src/engine/permissions';
 import { RecentlyClosed } from '../../src/core/safety/recently-closed';
 import { defaultConfig } from '../../src/core/config/defaults';
 import { FakeBrowserPort } from '../../src/platform/fake-port';
@@ -335,6 +336,33 @@ describe('CloseExecutor', () => {
     expect(w.ex.suggestions().map((s) => s.tabId)).toEqual([2]);
   });
 
+  it('I1: the watch is registered for the URL but never reported for this tab: form state unobservable, a used tab is not closed', async () => {
+    const e = env();
+    e.port.addTab(tab(2, CB));
+    const w = worker(e, { observesForm: () => true }); // registered, but no page facts for tab 2
+    w.banner.mockResolvedValue(false);
+    await w.ex.onCommitted(2);
+    await w.ex.evaluate(2);
+    await w.ex.onActivated(2);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(w.closes()).toEqual([]);
+    expect(w.ex.suggestions().map((s) => s.tabId)).toEqual([2]);
+  });
+
+  it('I1: an unknown registration (before the first permission sync) is unobservable even with page facts', async () => {
+    const e = env();
+    e.port.addTab(tab(2, CB));
+    const pm = new PermissionsManager(e.port, async () => { throw new Error('not yet'); }, { register: async () => [], unregister: async () => [] }, { warn: () => {} });
+    const w = worker(e, { observesForm: (u) => pm.coversKnown(u) });
+    w.facts.set(2, { texts: [], extracts: {}, formEdited: false });
+    w.banner.mockResolvedValue(false);
+    await w.ex.onCommitted(2);
+    await w.ex.evaluate(2);
+    await w.ex.onActivated(2);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(w.closes()).toEqual([]);
+  });
+
   it('form state unobservable: a recommit of the same page restarts the activity baseline', async () => {
     const e = env();
     e.port.addTab(tab(2, CB));
@@ -353,6 +381,7 @@ describe('CloseExecutor', () => {
     const e = env();
     e.port.addTab(tab(2, CB));
     const w = worker(e, { observesForm: () => true });
+    w.facts.set(2, { texts: [], extracts: {}, formEdited: false }); // the watch reported for this document
     await w.ex.onCommitted(2);
     await w.ex.evaluate(2);
     await w.ex.onActivated(2);
@@ -476,9 +505,87 @@ describe('CloseExecutor', () => {
     e.port.addTab(tab(2, CB));
     e.port.addTab(tab(3, 'https://other.test/'));
     const w = worker(e, { observesForm: () => true }); // no commit seen yet: closes only where form state is known (R46)
+    w.facts.set(2, { texts: [], extracts: {}, formEdited: false });
     await w.ex.evaluateAll();
     await vi.advanceTimersByTimeAsync(3_000);
     expect(w.closes()).toEqual([2]);
+  });
+});
+
+describe('CloseExecutor robustness (M2 polish P1)', () => {
+  beforeEach(() => {
+    fakeBrowser.reset();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    vi.setSystemTime(1_000_000);
+  });
+  afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
+
+  it('an alarm that arrives before the entry\'s fire time re-arms instead of closing early', async () => {
+    const e = env([closeRule({ after: '2m' })]);
+    e.port.addTab(tab(2, CB));
+    const w = worker(e);
+    await w.ex.onCommitted(2);
+    await w.ex.evaluate(2);
+    await vi.advanceTimersByTimeAsync(10_000);
+    await w.ex.onAlarm(`${CLOSE_ALARM_PREFIX}2`); // a stale alarm of an earlier entry
+    expect(w.closes()).toEqual([]);
+    expect(e.store.get(PENDING_CLOSES_KEY)).toEqual([expect.objectContaining({ tabId: 2, fireAt: 1_120_000 })]);
+    expect(w.alarms.get(`${CLOSE_ALARM_PREFIX}2`)).toBe(1_120_000);
+    await vi.advanceTimersByTimeAsync(110_000);
+    await w.ex.onAlarm(`${CLOSE_ALARM_PREFIX}2`);
+    expect(w.closes()).toEqual([2]);
+  });
+
+  it('a close fired by a timer after a restart also clears the alarm an earlier worker armed', async () => {
+    const e = env([closeRule({ after: '2m' })]);
+    e.port.addTab(tab(2, CB));
+    const alarms = new Map<string, number>();
+    const shared = { create: (n: string, when: number) => { alarms.set(n, when); }, clear: (n: string) => { alarms.delete(n); } };
+    const w1 = worker(e, { alarms: shared });
+    await w1.ex.onCommitted(2);
+    await w1.ex.evaluate(2);
+    expect(alarms.has(`${CLOSE_ALARM_PREFIX}2`)).toBe(true);
+    vi.setSystemTime(1_100_000); // the worker was torn down; a new one starts 20 s before the fire time
+    const w2 = worker(e, { alarms: shared });
+    await w2.ex.rearm();
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(w2.closes()).toEqual([2]);
+    expect(alarms.size).toBe(0);
+  });
+
+  it('a failed load never lets a save overwrite the stored state; the next step loads it again', async () => {
+    const e = env();
+    const other = 'https://example.com/cb?code=other';
+    e.store.set(PENDING_CLOSES_KEY, [{ tabId: 3, url: other, ruleKey: 'user/cb', fireAt: 9_000_000, committedAt: 0, activated: true }]);
+    e.store.set(CLOSE_SUGGESTIONS_KEY, [{ tabId: 4, url: other, ruleKey: 'user/cb', reason: 'Callback' }]);
+    e.port.addTab(tab(2, CB));
+    e.port.addTab(tab(3, other));
+    e.port.addTab(tab(4, other));
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let fail = 3; // the three gets of the first load
+    const w = worker(e, {
+      session: {
+        get: async (k) => { if (fail > 0) { fail--; throw new Error('session unavailable'); } return structuredClone(e.store.get(k)); },
+        set: async (k, v) => { e.store.set(k, structuredClone(v)); },
+      },
+    });
+    await w.ex.onCommitted(2);
+    await w.ex.evaluate(2);
+    expect(e.store.get(PENDING_CLOSES_KEY)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ tabId: 3 }), expect.objectContaining({ tabId: 2 }),
+    ]));
+    expect(w.ex.suggestions()).toEqual([expect.objectContaining({ tabId: 4 })]);
+  });
+
+  it('a failed alarm create is reported, not swallowed', async () => {
+    const e = env([closeRule({ after: '2m' })]);
+    e.port.addTab(tab(2, CB));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const w = worker(e, { alarms: { create: async () => { throw new Error('quota'); }, clear: async () => {} } });
+    await w.ex.onCommitted(2);
+    await w.ex.evaluate(2);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('close alarm'), expect.any(Error));
   });
 });
 
@@ -501,6 +608,7 @@ describe('config change re-evaluates open tabs (ruling R51)', () => {
     e.cfg.c = finished(false);
     e.port.addTab(tab(1, CALLBACK));
     const w = worker(e, { observesForm: () => true });
+    w.facts.set(1, { texts: [], extracts: {}, formEdited: false });
     await w.ex.evaluateAll();
     expect(pending(e) ?? []).toEqual([]);
     e.cfg.c = finished(true);
@@ -515,6 +623,7 @@ describe('config change re-evaluates open tabs (ruling R51)', () => {
     e.cfg.c = finished(true);
     e.port.addTab(tab(1, CALLBACK));
     const w = worker(e, { observesForm: () => true });
+    w.facts.set(1, { texts: [], extracts: {}, formEdited: false });
     await afterConfigChange(async () => {}, w.ex);
     await vi.advanceTimersByTimeAsync(2_000);
     e.cfg.c = { ...finished(true), dryRun: false, tables: { x: { a: 'b' } } }; // an unrelated change
@@ -531,6 +640,7 @@ describe('config change re-evaluates open tabs (ruling R51)', () => {
     e.cfg.c = finished(true);
     e.port.addTab(tab(1, CALLBACK));
     const w = worker(e, { observesForm: () => true });
+    w.facts.set(1, { texts: [], extracts: {}, formEdited: false });
     await afterConfigChange(async () => {}, w.ex);
     e.cfg.c = finished(false);
     await afterConfigChange(async () => {}, w.ex);

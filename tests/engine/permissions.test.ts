@@ -262,6 +262,32 @@ describe('PermissionsManager', () => {
     expect(pm.covers('chrome://newtab/')).toBe(false);
   });
 
+  it('coversKnown() is evidence-only (I1): false while the registration is unknown or after a failed sync', async () => {
+    const t = setup();
+    t.grant(MEET, 'scripting');
+    const fresh = new PermissionsManager(t.port, t.getProgram, t.scripting.s, { warn: () => {} });
+    expect(fresh.coversKnown('https://meet.google.com/x')).toBe(false); // before the first sync
+    expect(fresh.covers('https://meet.google.com/x')).toBe(true); // the hold stays optimistic
+    await fresh.onChanged();
+    expect(fresh.coversKnown('https://meet.google.com/x')).toBe(true);
+    expect(fresh.coversKnown('https://github.com/x')).toBe(false);
+    // A failed register: what is registered is unknown again.
+    t.scripting.s.register.mockRejectedValueOnce(new Error('Duplicate script ID'));
+    t.grant('https://other.example/*');
+    await fresh.onChanged();
+    expect(fresh.coversKnown('https://meet.google.com/x')).toBe(false);
+    await fresh.onChanged();
+    expect(fresh.coversKnown('https://meet.google.com/x')).toBe(true);
+    // A failed evaluation: unknown too.
+    let fail = false;
+    const flaky = new PermissionsManager(t.port, async () => { if (fail) throw new Error('boom'); return t.getProgram(); }, t.scripting.s, { warn: () => {} });
+    await flaky.onChanged();
+    expect(flaky.coversKnown('https://meet.google.com/x')).toBe(true);
+    fail = true;
+    await flaky.onChanged();
+    expect(flaky.coversKnown('https://meet.google.com/x')).toBe(false);
+  });
+
   it('recipes.list returns refs with their needs and status', async () => {
     const t = setup([ref('meet', false), ref('gh', true)]);
     const r = await t.handle({ type: 'recipes.list' }, ui) as { ok: true; data: { rev: string; recipes: { id: string; enabled: boolean; name: string; needs: unknown; status: unknown }[] } };

@@ -204,6 +204,21 @@ describe('Rules: recipe rules as locked rows (M2 T15)', () => {
     expect(c.order.indexOf('user/finished-oauth-callback')).toBe(c.order.indexOf('finished/oauth-callback') - 1);
   });
 
+  it('once customized, the button reads Edit copy: it adds nothing and moves focus to the copy', async () => {
+    const { customizeRule } = await import('../../src/ui/rules-model');
+    const { builtinRecipes } = await import('../../src/recipes/load');
+    const once = customizeRule(withFinished(cfg(rule('a', 'a.com/*'))), 'finished/oauth-callback', builtinRecipes());
+    const p = props(once);
+    render(Rules, p);
+    const row = screen.getByRole('group', { name: /Close OAuth callback tabs$/ });
+    const btn = row.querySelector('button.customize') as HTMLButtonElement;
+    expect(btn.textContent).toBe('Edit copy');
+    await fireEvent.click(btn);
+    expect(p.onChange).not.toHaveBeenCalled();
+    const copy = screen.getByRole('group', { name: /Close OAuth callback tabs \(custom\)$/ });
+    expect(document.activeElement).toBe(copy.querySelector('input.name'));
+  });
+
   it('Test on a recipe row passes a config that enables its recipe (only mode, R53)', async () => {
     send.mockReset();
     send.mockResolvedValue({ ok: true, data: { moves: [], closes: [{ tabId: 1, title: 'cb', ruleKey: 'finished/oauth-callback', afterMs: 3000 }], groupsCreated: [], unchanged: 0, anchorsOpened: 0, dryRun: false } });

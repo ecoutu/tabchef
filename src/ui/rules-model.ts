@@ -109,6 +109,12 @@ export function configPatternErrors(c: Config): PathError[] {
   c.rules.forEach((r, i) => walk(r.match, `/rules/${i}/match`));
   c.dedupe.allowDuplicates.forEach((p, i) => check(`/dedupe/allowDuplicates/${i}`, p));
   c.dedupe.alwaysSwitchSites.forEach((p, i) => check(`/dedupe/alwaysSwitchSites/${i}`, p));
+  for (const field of ['fragmentOverrides', 'titleOverrides'] as const) {
+    c.dedupe[field].forEach((e, i) => {
+      if (e.pattern === '') out.push({ path: `/dedupe/${field}/${i}/pattern`, message: 'must not be empty' });
+      else check(`/dedupe/${field}/${i}/pattern`, e.pattern);
+    });
+  }
   return out;
 }
 
@@ -131,7 +137,8 @@ export function errorsForPath(errors: string[], path: string): string[] {
 const FIELD_PATH = new RegExp(
   '^/(rules/\\d+/(name|enabled|dryRun|match/(all/0/)?url(/\\d+)?|match/(all/1/)?title|actions/\\d+/group/(title|color|collapsed|sortGroups|strict|merge)'
   + '|actions/\\d+/dedupe(/mode)?|actions/\\d+/close(/(after|mode))?)'
-  + '|dedupe/(mode|scope|stripFragment|ignoreTrailingSlash|followFragment|includeIncognito|(stripParams|allowDuplicates|alwaysSwitchSites)(/\\d+)?))$',
+  + '|dedupe/(mode|scope|stripFragment|ignoreTrailingSlash|followFragment|includeIncognito|matchTitle|(stripParams|allowDuplicates|alwaysSwitchSites)(/\\d+)?'
+  + '|(fragmentOverrides|titleOverrides)(/\\d+(/(pattern|keepFragment|matchTitle))?)?))$',
 );
 
 /** Server errors that no form field displays inline (shown in the summary instead). */
@@ -232,11 +239,25 @@ function trimDefaultTail(c: Config, shown: string[], order: string[]): string[] 
 }
 
 /**
+ * The user rule "Customize" made from recipe rule `key`: id `<recipeId>-<ruleId>` (sanitized), or that id with a `-N`
+ * suffix (copies made before Customize became idempotent). Undefined for user keys or when there is none.
+ */
+export function customizedCopy(c: Config, key: string): Rule | undefined {
+  const slash = key.indexOf('/');
+  if (slash <= 0 || key.startsWith('user/')) return undefined;
+  const base = sanitizeRuleId(`${key.slice(0, slash)}-${key.slice(slash + 1)}`, new Set());
+  const suffixed = new RegExp(`^${base.replace(/[-_]/g, '\\$&')}-\\d+$`);
+  return c.rules.find((r) => r.id === base) ?? c.rules.find((r) => suffixed.test(r.id));
+}
+
+/**
  * "Customize": copies a recipe rule (params substituted) into a new user rule placed just above it, so the copy wins.
  * The id is `<recipeId>-<ruleId>` made unique (R38 pattern, sanitizeRuleId); `needs` is dropped (user rules declare
- * none, R44). Unknown keys, user keys and rows whose params fail → `c`.
+ * none, R44). One copy per recipe rule: when customizedCopy finds one, nothing is added. Unknown keys, user keys and
+ * rows whose params fail → `c`.
  */
 export function customizeRule(c: Config, key: string, builtins: Record<string, Recipe> = builtinRecipes()): Config {
+  if (customizedCopy(c, key)) return c;
   const rows = ruleRows(c, builtins);
   const row = rows.find((r) => r.key === key);
   if (!row || row.kind !== 'recipe' || row.error) return c;

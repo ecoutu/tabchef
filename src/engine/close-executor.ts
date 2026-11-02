@@ -76,7 +76,10 @@ export interface CloseExecutorDeps {
   isRulePaused?: (ruleKey: string) => boolean;
   /** Anchor tabs are never auto-closed (R11; anchors are M2 T11). Default: none. */
   isAnchor?: (tabId: number) => boolean;
-  /** The watch content script runs at `url`, so form edits there are known (PermissionsManager.covers). Default: no. */
+  /**
+   * The watch content script is known to run at `url` (PermissionsManager.coversKnown, never the optimistic covers()).
+   * Form state counts as observed only when this holds AND `facts` has the tab's page facts (I1). Default: no.
+   */
   observesForm?: (url: string) => boolean;
   /**
    * Awaited before every step (background: SafetyService and PageFacts ready), so a restarted worker never decides on
@@ -121,6 +124,8 @@ export class CloseExecutor {
   private readonly timers = new Map<number, ReturnType<typeof setTimeout>>();
   private readonly commits = new Map<number, number>();
   private readonly activations = new Map<number, number>();
+  /** The stored state loaded. Until then nothing is saved (it would replace the stored state) and each step retries. */
+  private loaded = false;
   private chain: Promise<void>;
   readonly ready: Promise<void>;
 
@@ -139,17 +144,26 @@ export class CloseExecutor {
       const [p, s, x] = await Promise.all([
         this.deps.session.get(PENDING_CLOSES_KEY), this.deps.session.get(CLOSE_SUGGESTIONS_KEY), this.deps.session.get(CLOSE_EXEMPT_KEY),
       ]);
-      if (Array.isArray(p)) for (const e of p) if (isEntry(e)) this.pending.set(e.tabId, { committedAt: 0, activated: true, ...e });
-      if (Array.isArray(s)) for (const e of s) if (isSuggestion(e)) this.suggested.set(e.tabId, e);
-      if (Array.isArray(x)) for (const e of x) if (Array.isArray(e) && typeof e[0] === 'number' && typeof e[1] === 'string') this.exempted.set(e[0], e[1]);
-    } catch {
-      /* start empty */
+      // A retried load merges: what this worker decided since (the live state) wins over the stored state.
+      if (Array.isArray(p)) {
+        for (const e of p) if (isEntry(e) && !this.pending.has(e.tabId)) this.pending.set(e.tabId, { committedAt: 0, activated: true, ...e });
+      }
+      if (Array.isArray(s)) for (const e of s) if (isSuggestion(e) && !this.suggested.has(e.tabId)) this.suggested.set(e.tabId, e);
+      if (Array.isArray(x)) {
+        for (const e of x) {
+          if (Array.isArray(e) && typeof e[0] === 'number' && typeof e[1] === 'string' && !this.exempted.has(e[0])) this.exempted.set(e[0], e[1]);
+        }
+      }
+      this.loaded = true;
+    } catch (e) {
+      console.warn('[tabchef] close state load failed; retrying on the next step', e);
     }
   }
 
   /** Serializes every state change (one worker), after the stored state loaded. Never rejects. */
   private run(fn: () => Promise<void>): Promise<void> {
     const next = this.chain.then(async () => {
+      if (!this.loaded) await this.load();
       await this.deps.beforeRun?.();
       await fn();
     }).catch((e: unknown) => { console.warn('[tabchef] close executor failed', e); });
@@ -158,6 +172,7 @@ export class CloseExecutor {
   }
 
   private async save(): Promise<void> {
+    if (!this.loaded) return; // the stored state is still unknown: writing would replace it with a partial one
     await Promise.all([
       this.deps.session.set(PENDING_CLOSES_KEY, [...this.pending.values()]),
       this.deps.session.set(CLOSE_SUGGESTIONS_KEY, [...this.suggested.values()]),
@@ -386,7 +401,8 @@ export class CloseExecutor {
     } else if (delay <= TIMER_MAX_MS) {
       this.timers.set(e.tabId, setTimeout(() => { this.timers.delete(e.tabId); void this.fire(e.tabId); }, delay));
     } else {
-      void Promise.resolve(this.deps.alarms.create(`${CLOSE_ALARM_PREFIX}${e.tabId}`, e.fireAt)).catch(() => {});
+      void Promise.resolve(this.deps.alarms.create(`${CLOSE_ALARM_PREFIX}${e.tabId}`, e.fireAt))
+        .catch((err: unknown) => { console.warn('[tabchef] close alarm create failed', err); });
     }
   }
 
@@ -421,13 +437,16 @@ export class CloseExecutor {
   private async fireNow(tabId: number): Promise<void> {
     const e = this.pending.get(tabId);
     if (!e) return; // fired or cancelled already
+    // Early: a stale alarm (an earlier entry's) or one Chrome fired ahead of time. Wait for this entry's time.
+    if (e.fireAt > this.now()) { this.arm(e); return; }
     this.clearTimer(tabId);
     // 1. Paused: keep it pending, unarmed; resume / a permission grant rearms it.
     if (this.deps.safety.isPaused() || this.rulePaused(e.ruleKey)) return;
     const [snap, p] = await Promise.all([this.port.snapshot(), this.getProgram()]);
     const tab = snap.tabs.find((t) => t.id === tabId);
-    // Deleted (and stored) before anything else happens to the tab: it never fires twice.
-    this.pending.delete(tabId);
+    // Deleted (and stored) before anything else happens to the tab: it never fires twice. The alarm goes too, whichever
+    // worker armed it: left behind, it could fire a later entry of the tab early.
+    this.cancel(tabId);
     await this.save();
     // 2. Gone, navigated or no longer the winning close rule.
     if (!tab) return;
@@ -463,7 +482,9 @@ export class CloseExecutor {
     const s = this.deps.safety;
     if (s.isProtected(tab)) return 'protected';
     if (s.isActiveFocused(tab, snap.windows)) return 'active';
-    if (!(this.deps.observesForm?.(tab.url) ?? false) && (e.activated || tab.active)) return 'used since it loaded; form state unknown';
+    // I1: observable only on evidence: the watch is known to run at this URL AND it reported for this tab's document.
+    const observed = (this.deps.observesForm?.(tab.url) ?? false) && this.deps.facts.get(tab.id) !== undefined;
+    if (!observed && (e.activated || tab.active)) return 'used since it loaded; form state unknown';
     return undefined;
   }
 

@@ -4,10 +4,11 @@
   // or as YAML (RuleYaml), toggled per rule; one the form cannot show is a read-only summary with "Edit in YAML".
   // Recipe rules are locked rows: reorder, turn on/off (RecipeRef.ruleEnabled overrides, R56; saved through Save),
   // test and Customize (copy into a user rule), never edit.
+  import { tick } from 'svelte';
   import type { Config, TabSnap } from '../../core/types';
   import type { Rule } from '../../core/lang/types';
   import {
-    addRule, configPatternErrors, customizeRule, errorsForPath, patchRuleForm, removeRule, reorder, replaceRule, ruleForm, ruleIndex,
+    addRule, configPatternErrors, customizeRule, customizedCopy, errorsForPath, patchRuleForm, removeRule, reorder, replaceRule, ruleForm, ruleIndex,
     ruleRows, ruleSummary, setRecipeRuleOn, type RuleForm, type RuleRow,
   } from '../../ui/rules-model';
   import { withRecipe } from '../../ui/recipes-model';
@@ -48,6 +49,20 @@
     return undefined;
   }
   function showForm(id: string): void { delete yaml[id]; delete yamlInvalid[id]; }
+  /** Scrolls the rule row `key` into view and focuses its name field (or the row itself when it has none). */
+  function focusRule(key: string): void {
+    const el = document.querySelector<HTMLElement>(`.rule[data-key="${CSS.escape(key)}"]`);
+    if (!el) return;
+    el.scrollIntoView?.({ block: 'center' });
+    (el.querySelector<HTMLElement>('input.name') ?? el).focus();
+  }
+  /** Customize (one copy per recipe rule), then take the user to the new copy. */
+  async function customize(key: string): Promise<void> {
+    onChange(customizeRule(config, key, builtins));
+    await tick();
+    const copy = customizedCopy(config, key);
+    if (copy) focusRule(`user/${copy.id}`);
+  }
   function remove(id: string): void { delete yaml[id]; delete yamlInvalid[id]; onChange(removeRule(config, id)); }
 
   /**
@@ -90,7 +105,7 @@
   {#each rows as row, i (row.key)}
     {@const form = row.kind === 'user' ? ruleForm(row.rule) : null}
     {@const asYaml = row.kind === 'user' && (yaml[row.rule.id] ?? false)}
-    <div class="rule" class:dragging={dragFrom === row.key} class:locked={row.kind === 'recipe'} role="group" aria-label={`Rule ${i + 1}: ${row.rule.name}`}
+    <div class="rule" data-key={row.key} tabindex="-1" class:dragging={dragFrom === row.key} class:locked={row.kind === 'recipe'} role="group" aria-label={`Rule ${i + 1}: ${row.rule.name}`}
       ondragover={(e) => { if (dragFrom !== null) e.preventDefault(); }}
       ondrop={(e) => { e.preventDefault(); if (dragFrom !== null) move(dragFrom, i); dragFrom = null; }}>
       <div class="bar">
@@ -120,7 +135,12 @@
             <button type="button" onclick={() => (yaml[row.rule.id] = true)}>{form ? 'YAML' : 'Edit in YAML'}</button>
           {/if}
         {:else}
-          <button type="button" class="customize" disabled={row.error !== undefined} onclick={() => onChange(customizeRule(config, row.key, builtins))}>Customize</button>
+          {@const copy = customizedCopy(config, row.key)}
+          {#if copy}
+            <button type="button" class="customize" title="This rule already has a customized copy: go to it" onclick={() => focusRule(`user/${copy.id}`)}>Edit copy</button>
+          {:else}
+            <button type="button" class="customize" disabled={row.error !== undefined} onclick={() => customize(row.key)}>Customize</button>
+          {/if}
         {/if}
         <button type="button" aria-label="Move up" disabled={i === 0} onclick={() => move(row.key, i - 1)}>↑</button>
         <button type="button" aria-label="Move down" disabled={i === rows.length - 1} onclick={() => move(row.key, i + 1)}>↓</button>

@@ -85,6 +85,8 @@ export class PermissionsManager {
   private pausedSet: ReadonlySet<string> = new Set();
   /** Origins the watch is registered for; undefined until the first sync (the persisted registration is unknown). */
   private registered?: string[];
+  /** `registered` is what is actually registered now: false before the first sync and after a failed sync (I1). */
+  private registrationKnown = false;
   private chain: Promise<void> = Promise.resolve();
   private markReady!: () => void;
   /**
@@ -147,6 +149,14 @@ export class PermissionsManager {
   }
 
   /**
+   * Like covers(), but evidence-only (I1): false while the registration is unknown (before the first sync, after a
+   * failed register or evaluation). For safety decisions (CloseExecutor's form observability), never the hold.
+   */
+  coversKnown(url: string): boolean {
+    return this.registrationKnown && this.registered !== undefined && this.registered.some((o) => matchesPattern(o, url));
+  }
+
+  /**
    * Recompute the status, the paused set and the watch registration. Wire to permissions.onAdded / onRemoved, config
    * changes and worker start. Serialized; never rejects (problems are reported through `warn`).
    */
@@ -169,6 +179,7 @@ export class PermissionsManager {
       all = r.all;
       extra = await this.userRuleOrigins(r.program);
     } catch (e) {
+      this.registrationKnown = false;
       this.warn('[tabchef] permission status failed', e);
       return;
     }
@@ -190,9 +201,11 @@ export class PermissionsManager {
     try {
       prev = origins.length ? await this.scripting.register(origins) : await this.scripting.unregister();
     } catch (e) {
+      this.registrationKnown = false;
       this.warn('[tabchef] watch registration failed', e);
       return;
     }
+    this.registrationKnown = true;
     if (prev === false) {
       this.registered = []; // scripting not granted: nothing runs anywhere
       return;

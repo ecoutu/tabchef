@@ -138,6 +138,19 @@ describe('view.data', () => {
     expect(await badgeCount({ ...s.deps, isLocked: () => false })).toBe(1);
   });
 
+  it('dupes.closeAll and the badge only count/close extras that duplicate the kept tab (T18 fix round 1: mixed keepFragment)', async () => {
+    const s = setup();
+    const keep: Rule = { id: 'k', name: 'Keep frag', enabled: true, match: { title: 'R3' }, actions: [{ dedupe: { keepFragment: true } }] };
+    await s.setCfg({ ...defaultConfig(), rules: [keep], order: ['user/k'] });
+    // Tab 3 has the rule: it duplicates tab 2 (#2) but not tab 1 (#1); tab 2 (no rule, fragment stripped) duplicates tab 1.
+    s.mk(1, 'https://a.example/x#1'); s.mk(2, 'https://a.example/x#2'); s.mk(3, 'https://a.example/x#2', { title: 'R3' });
+    const sets = ((await s.handle({ type: 'dupes.list' }, ui)) as Loose).data.sets;
+    expect(sets.map((x: { tabs: { id: number }[] }) => x.tabs.map((t) => t.id))).toEqual([[1, 2]]);
+    expect(await badgeCount({ ...s.deps, isLocked: () => false })).toBe(1);
+    expect(((await s.handle({ type: 'dupes.closeAll' }, ui)) as Loose).data).toBe(1);
+    expect(s.port.state.tabs.map((t) => t.id)).toEqual([1, 3]);
+  });
+
   it('read-only: views.list and view.data never act or write', async () => {
     const s = setup({ suggestions: [oauth] });
     await s.setCfg(enable(defaultConfig(), 'finished'));

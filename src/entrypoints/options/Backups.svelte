@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { send } from '../../ui/send';
-  import { validateConfig } from '../../core/config/schema';
+  import { repairConfig, validateConfig } from '../../core/config/schema';
   import { fillConfigDefaults, migrateConfig } from '../../core/config/migrate';
   import type { Config, ConfigV1 } from '../../core/types';
   import type { Backup } from '../../storage/config-store';
@@ -16,7 +16,7 @@
   let backups = $state<Backup[]>([]);
   let error = $state('');
   let notice = $state('');
-  let pendingImport = $state<{ config: Config; changes: number } | null>(null);
+  let pendingImport = $state<{ config: Config; changes: number; warnings: string[] } | null>(null);
 
   const time = (at: number): string => new Date(at).toLocaleString();
 
@@ -29,7 +29,13 @@
     if (!window.confirm(warn(`Restore the config from ${time(b.at)}? Your current config is backed up first.`))) return;
     const r = await send({ type: 'config.restore', at: b.at });
     error = r.ok ? '' : r.error;
-    if (r.ok) { notice = `Restored ${time(b.at)}.`; onApplied(); }
+    if (r.ok) {
+      // The store repairs a backup as it loads one (repairConfig); show what that changed.
+      const st = await send({ type: 'config.status' });
+      const w = st.ok ? st.data?.warning : undefined;
+      notice = `Restored ${time(b.at)}.${w ? ` ${w}` : ''}`;
+      onApplied();
+    }
     await load();
   }
 
@@ -69,9 +75,11 @@
     // An exported M1 (v1) file is migrated first, as stored configs are.
     const m = migrateConfig(parsed);
     if (!m.ok) { error = `Invalid config: ${m.errors.join('; ')}`; return; }
-    const v = validateConfig(fillConfigDefaults(m.config));
+    // Same load path as stored configs: fill defaults, repair (disable/remove what older versions allowed), validate.
+    const repaired = repairConfig(fillConfigDefaults(m.config));
+    const v = validateConfig(repaired.config);
     if (!v.ok) { error = `Invalid config: ${v.errors.join('; ')}`; return; }
-    pendingImport = { config: v.config, changes: diffCount(saved, v.config) };
+    pendingImport = { config: v.config, changes: diffCount(saved, v.config), warnings: repaired.warnings };
   }
 
   async function applyImport(): Promise<void> {
@@ -96,6 +104,7 @@
   </div>
   {#if pendingImport}
     <p>This import changes {pendingImport.changes} {pendingImport.changes === 1 ? 'item' : 'items'} compared with your current config.</p>
+    {#each pendingImport.warnings as w (w)}<p class="warn" role="status">{w}</p>{/each}
     <div class="row">
       <button type="button" class="primary" onclick={applyImport}>Apply import</button>
       <button type="button" onclick={() => (pendingImport = null)}>Cancel</button>
@@ -122,4 +131,5 @@
   .empty { color: var(--muted); }
   .err { color: var(--danger); }
   .ok { color: var(--accent); }
+  .warn { color: var(--danger); }
 </style>

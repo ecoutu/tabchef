@@ -1,4 +1,5 @@
 import type { DedupeOverride, DedupeSettings } from '../types';
+import { compilePattern, PatternError } from '../match/pattern';
 import { canonicalizers } from './canonicalizers';
 
 const EXEMPT_PROTOCOLS = new Set([
@@ -23,13 +24,32 @@ export function isExemptUrl(url: string | undefined): boolean {
 type NormSettings = Pick<
   DedupeSettings,
   'stripParams' | 'stripFragment' | 'ignoreTrailingSlash' | 'canonicalizers' | 'urlTransforms' | 'fragmentOverrides'
->; // fragmentOverrides: carried for M2 T18 (per-pattern keepFragment); not applied yet
+>;
+
+/**
+ * The first entry whose url pattern matches `url` (invalid patterns are skipped), or undefined. Shared by
+ * fragmentOverrides (here) and titleOverrides (find.ts); both match the ORIGINAL url (T18↔T6).
+ */
+export function firstOverride<E extends { pattern: string }>(url: string, entries: readonly E[]): E | undefined {
+  for (const e of entries) {
+    try {
+      if (compilePattern(e.pattern)(url)) return e;
+    } catch (err) {
+      if (!(err instanceof PatternError)) throw err;
+    }
+  }
+  return undefined;
+}
 
 function shouldStrip(name: string, patterns: string[]): boolean {
   return patterns.some((p) => (p.endsWith('*') ? name.startsWith(p.slice(0, -1)) : name === p));
 }
 
-/** Dedupe key of `url` and its #fragment, or null for exempt/unparseable URLs. `o.keepFragment` wins over s.stripFragment. */
+/**
+ * Dedupe key of `url` and its #fragment, or null for exempt/unparseable URLs. Whether the fragment stays in the key
+ * (T18↔T6), decided on the original `url` before canonicalizers and urlTransforms: the per-rule `o.keepFragment`
+ * (R25), else the first matching `s.fragmentOverrides` entry, else `!s.stripFragment`.
+ */
 export function normalizeUrl(
   url: string,
   s: NormSettings,
@@ -38,6 +58,7 @@ export function normalizeUrl(
   try {
     let u = parse(url);
     if (!u || EXEMPT_PROTOCOLS.has(u.protocol)) return null;
+    const keepFragment = o?.keepFragment ?? firstOverride(url, s.fragmentOverrides)?.keepFragment ?? !s.stripFragment;
 
     for (const id of s.canonicalizers) {
       const fn = Object.hasOwn(canonicalizers, id) ? canonicalizers[id] : undefined;
@@ -56,7 +77,7 @@ export function normalizeUrl(
       u.pathname = u.pathname.replace(/\/+$/, '') || '/';
     }
 
-    if (o?.keepFragment !== undefined ? !o.keepFragment : s.stripFragment) u.hash = '';
+    if (!keepFragment) u.hash = '';
 
     let key = u.href;
     for (const t of s.urlTransforms) {
