@@ -5,12 +5,18 @@
 // Fire-time order (ruling R13, Review Focus #1):
 //  1. pause-all (safety.isPaused) or the rule / its recipe is paused (PermissionsManager) -> keep pending (rearm on resume)
 //  2. the tab is gone, its normalized URL changed or the rule no longer wins -> drop
-//  3. dry-run rule -> log "Would close (dry run)" only (R43)
+//  3. (dry-run rules never win here: they fall through, R48; see below)
 //  4. anchor (T11 seam) or undo-exempt (R24) -> skip
 //  5. isProtected or isActiveFocused -> protected-close banner if eligible, else a suggestion; never close
 //  6. form state unobservable (no watch at that URL) -> close only if the tab was not active since its commit
 // An entry is deleted (and the deletion stored) before the tab is closed or bannered, so it never fires twice.
+//
+// Dry run (M2 T12, rulings R10 / R48): the live close is decided as if dry-run rules did not exist, so the next live
+// close rule wins. A dry-run close rule that would have won (every rule under global dry run) is logged once per page
+// as `would-close` (flagged dryRun) when the tab is evaluated, and never scheduled.
+// Global dry run (R50) blocks only these engine-initiated closes: a protected-close banner answer still closes.
 import { evaluateTab, type CloseResult } from '../core/lang/evaluate';
+import { liveProgram } from '../core/lang/dry-run';
 import type { Program } from '../core/lang/types';
 import type { RecentlyClosed, RecentlyClosedInput } from '../core/safety/recently-closed';
 import type { WhyEntry } from '../core/safety/why-log';
@@ -97,9 +103,11 @@ export class CloseExecutor {
   private readonly exempted = new Map<number, string>();
   /**
    * Tab -> {normalized URL, rule} already dealt with for its current page and not to be re-armed by re-evaluation:
-   * dry-run logged, a protected-close banner shown or answered. Cleared on navigation. Memory only.
+   * a protected-close banner shown or answered. Cleared on navigation. Memory only.
    */
   private readonly settled = new Map<number, { url: string; ruleKey: string }>();
+  /** Tab -> {normalized URL, dry-run rule} whose would-close was logged for its current page. Memory only. */
+  private readonly wouldLogged = new Map<number, { url: string; ruleKey: string }>();
   /** Protected-close banners awaiting an answer: tab -> {normalized URL, rule}. Memory only (lost = Keep). */
   private readonly asking = new Map<number, { url: string; ruleKey: string }>();
   private readonly timers = new Map<number, ReturnType<typeof setTimeout>>();
@@ -281,7 +289,9 @@ export class CloseExecutor {
     if (this.exempted.has(tabId) && this.exempted.get(tabId) !== url) { this.exempted.delete(tabId); changed = true; }
     if (this.settled.get(tabId)?.url !== url) this.settled.delete(tabId);
     if (this.asking.get(tabId)?.url !== url) this.asking.delete(tabId);
+    if (this.wouldLogged.get(tabId)?.url !== url) this.wouldLogged.delete(tabId);
     if (this.exempted.has(tabId)) return changed;
+    this.logDryRun(snap, p, tab, url);
 
     const kept = this.pending.get(tabId);
     // A paused rule is left out of the Program: its entry stays pending until resumed (R13).
@@ -300,11 +310,6 @@ export class CloseExecutor {
     if (sug) { this.suggested.delete(tabId); changed = true; }
     if (this.deps.isAnchor?.(tabId)) return changed;
     if (r.mode === 'suggest') {
-      if (r.dryRun) {
-        this.settled.set(tabId, { url, ruleKey: r.key });
-        this.deps.log.add({ tabId, ruleId: r.key, action: 'would-close', detail: 'Would suggest closing (dry run)', at: this.now() });
-        return changed;
-      }
       this.suggest(p, tab, r.key, `Suggested by "${this.nameOf(p, r.key)}"`);
       return true;
     }
@@ -322,11 +327,28 @@ export class CloseExecutor {
     return true;
   }
 
-  private closeOf(snap: Snapshot, p: Program, tab: TabSnap): CloseResult | undefined {
+  /**
+   * A winning dry-run close rule: logged once per page (normalized URL) and rule, never scheduled. Not for anchors
+   * (never closed) or while everything is paused.
+   */
+  private logDryRun(snap: Snapshot, p: Program, tab: TabSnap, url: string): void {
+    const r = this.closeOf(snap, p, tab, true);
+    if (!r?.dryRun || this.deps.isAnchor?.(tab.id) || this.deps.safety.isPaused()) return;
+    const memo = this.wouldLogged.get(tab.id);
+    if (memo?.url === url && memo.ruleKey === r.key) return;
+    this.wouldLogged.set(tab.id, { url, ruleKey: r.key });
+    this.deps.log.add({
+      tabId: tab.id, ruleId: r.key, action: 'would-close', dryRun: true, at: this.now(),
+      detail: r.mode === 'suggest' ? 'Would suggest closing (dry run)' : 'Would close (dry run)',
+    });
+  }
+
+  /** The winning close action: the live one (dry-run rules fall through, R48), or with `withDryRun` any rule's. */
+  private closeOf(snap: Snapshot, p: Program, tab: TabSnap, withDryRun = false): CloseResult | undefined {
     const opener = tab.openerTabId !== undefined ? snap.tabs.find((t) => t.id === tab.openerTabId) : undefined;
     const groupTitle = tab.groupId !== -1 ? snap.groups.find((g) => g.id === tab.groupId)?.title : undefined;
     const page = this.deps.facts.get(tab.id);
-    return evaluateTab(p, {
+    return evaluateTab(withDryRun ? p : liveProgram(p), {
       tab, ...(opener && { opener }), ...(groupTitle !== undefined && { groupTitle }), ...(page && { page }),
     }, this.now()).close;
   }
@@ -381,6 +403,7 @@ export class CloseExecutor {
     this.exempted.delete(tabId);
     this.settled.delete(tabId);
     this.asking.delete(tabId);
+    this.wouldLogged.delete(tabId);
   }
 
   private fire(tabId: number): Promise<void> {
@@ -404,12 +427,6 @@ export class CloseExecutor {
     if (url !== normOf(e.url, p)) return;
     const r = this.closeOf(snap, p, tab);
     if (r?.key !== e.ruleKey) return;
-    // 3. Dry run.
-    if (r.dryRun) {
-      this.settled.set(tabId, { url, ruleKey: r.key });
-      this.deps.log.add({ tabId, ruleId: r.key, action: 'would-close', detail: 'Would close (dry run)', at: this.now() });
-      return;
-    }
     // 4. Anchor or undo-exempt.
     if (this.deps.isAnchor?.(tabId) || this.exempted.get(tabId) === url) return;
     if (r.mode === 'suggest') { // the rule changed to suggest since it was scheduled

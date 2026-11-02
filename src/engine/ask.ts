@@ -1,5 +1,4 @@
 import { findDuplicate, tabUrl } from '../core/dedupe/find';
-import { evaluateTab } from '../core/lang/evaluate';
 import { normalizeUrl } from '../core/url/normalize';
 import type { Config, TabSnap } from '../core/types';
 import type { Program } from '../core/lang/types';
@@ -201,7 +200,7 @@ export function createAskController(port: BrowserPort, deps: AskDeps) {
     delete cur.pendingUrl;
     const isLocked = deps.isLocked ?? (() => false);
     // The winning rule's dedupe override (R25), decided as in DedupeHandler.
-    const { o, ruleId } = dedupeDecision(program, evaluateTab(program, { tab: cur, ...openerOf(snap, cur) }, now()));
+    const { o, ruleId } = dedupeDecision(program, { tab: cur, ...openerOf(snap, cur) }, now());
     const dup = findDuplicate(cur, [existing], s, o, new Set(isLocked(newTabId) ? [newTabId] : []));
     if (!dup) return;
     const at = now();

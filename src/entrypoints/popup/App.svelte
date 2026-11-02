@@ -14,6 +14,8 @@
   let locked = $state<number[]>([]);
   let currentTabId = $state<number | undefined>(undefined);
   let syncWarning = $state('');
+  /** Global dry run (config.dryRun, M2 T12): the engine only logs. T17's popup rewrite keeps this header chip. */
+  let dryRun = $state(false);
   let recentCount = $state(0);
   let lastTab = $state<string | undefined>(undefined);
   let error = $state('');
@@ -22,14 +24,16 @@
   const model = $derived(buildPopupModel({ dupes: sets, pending, paused, recentCount, lastTab }, TAB_REGISTRY));
 
   async function refresh(): Promise<void> {
-    const [d, s, r, c] = await Promise.all([
+    const [d, s, r, c, g] = await Promise.all([
       send({ type: 'dupes.list' }), send({ type: 'safety.status' }), send({ type: 'recent.list' }), send({ type: 'config.status' }),
+      send({ type: 'config.get' }),
     ]);
     const errs: string[] = [];
     if (d.ok) { sets = d.data.sets; pending = d.data.pending; } else errs.push(d.error);
     if (s.ok) { paused = s.data.paused; locked = s.data.locked ?? []; } else errs.push(s.error);
     if (r.ok) recentCount = r.data.length; else errs.push(r.error);
     if (c.ok) syncWarning = c.data?.warning ?? ''; else errs.push(c.error);
+    if (g.ok) dryRun = g.data?.config.dryRun === true; else errs.push(g.error);
     error = errs[0] ?? '';
   }
 
@@ -78,6 +82,7 @@
 <main>
   <header>
     <h1>Tabchef</h1>
+    {#if dryRun}<span class="chip" role="status" title="Dry run: Tabchef only logs what it would do">Dry run</span>{/if}
     <span class="total" aria-label="{model.header.total} items">{model.header.total}</span>
     {#if currentTabId !== undefined}
       <button type="button" class="lock" aria-pressed={currentLocked} onclick={toggleCurrentLock}>
@@ -138,6 +143,7 @@
   header { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
   h1 { font-size: 15px; margin: 0; flex: 1; }
   .total { color: var(--muted); }
+  .chip { border: 1px solid var(--border); background: var(--hover); color: var(--muted); border-radius: 8px; padding: 0 6px; font-size: 11px; }
   .pause { position: relative; }
   .menu { position: absolute; right: 0; top: 100%; z-index: 1; display: flex; flex-direction: column; min-width: 130px;
     background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 4px; }

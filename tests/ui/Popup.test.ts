@@ -10,11 +10,13 @@ import Popup from '../../src/entrypoints/popup/App.svelte';
 
 let locked: number[];
 let warning: string | undefined;
+let dryRun: boolean;
 
 beforeEach(() => {
   fakeBrowser.reset();
   locked = [];
   warning = undefined;
+  dryRun = false;
   (vi.spyOn(browser.tabs, 'query') as unknown as { mockResolvedValue: (v: unknown) => void }).mockResolvedValue([{ id: 5 }]);
   send.mockReset();
   send.mockImplementation(async (req: { type: string; tabId?: number }) => {
@@ -22,6 +24,7 @@ beforeEach(() => {
       case 'dupes.list': return { ok: true, data: { sets: [], pending: [] } };
       case 'safety.status': return { ok: true, data: { paused: false, locked } };
       case 'recent.list': return { ok: true, data: [] };
+      case 'config.get': return { ok: true, data: { config: { dryRun }, rev: 'r' } };
       case 'config.status': return { ok: true, data: warning ? { syncing: false, warning } : { syncing: false } };
       case 'tab.lock': locked = [...locked, req.tabId!]; return { ok: true, data: null };
       case 'tab.unlock': locked = locked.filter((x) => x !== req.tabId); return { ok: true, data: null };
@@ -42,6 +45,16 @@ describe('Popup', () => {
     render(Popup);
     await waitFor(() => expect(send.mock.calls.some((c) => c[0].type === 'config.status')).toBe(true));
     expect(screen.queryByTestId('sync-warning')).toBeNull();
+  });
+
+  it('header shows a "Dry run" chip only while global dry run is on (M2 T12)', async () => {
+    render(Popup);
+    await waitFor(() => expect(send.mock.calls.some((c) => c[0].type === 'config.get')).toBe(true));
+    expect(screen.queryByText('Dry run')).toBeNull();
+    cleanup();
+    dryRun = true;
+    render(Popup);
+    expect(await screen.findByText('Dry run')).toBeTruthy();
   });
 
   it('header Lock current tab locks the active tab, then offers Unlock', async () => {

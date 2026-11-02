@@ -1,6 +1,7 @@
-import { planGroups, planTargets, syncCreationOrder, type PageLookup, type PlanContext, type Targets } from '../core/group/plan';
+import { dryRunGroupTabs, planGroups, planTargets, syncCreationOrder, type PageLookup, type PlanContext, type Targets } from '../core/group/plan';
 import type { Op, Snapshot } from '../core/types';
 import type { Program } from '../core/lang/types';
+import { hasDryRun, isDryRunRule, liveProgram } from '../core/lang/dry-run';
 import type { BrowserPort } from '../platform/browser-port';
 import { DragRetryExhausted, withDragRetry } from '../platform/retry';
 import { anchorLeaveAlone, type AnchorService } from './anchors';
@@ -8,7 +9,7 @@ import { EXPECTATION_TTL_MS, loadState, saveState, type LiveState } from './stat
 
 /** Structural why-log (Task 12 provides the real ring buffer). */
 export interface WhyLog {
-  add(e: { tabId?: number; ruleId?: string; action: string; detail: string; at: number }): void;
+  add(e: { tabId?: number; ruleId?: string; action: string; detail: string; at: number; dryRun?: true }): void;
 }
 
 export interface ReconcilerOptions {
@@ -55,6 +56,11 @@ export class Reconciler {
   private readonly now: () => number;
   /** Rule keys already warned about an invalid rendered color (once per key, not per tab). */
   private readonly warnedColor = new Set<string>();
+  /**
+   * would-* entries planned by the last dry-run pass, by (tab, rule, target): logged once while they stay planned
+   * (unapplied ops never converge, so every flush plans them again). Memory only.
+   */
+  private wouldSeen = new Set<string>();
 
   constructor(
     private readonly port: BrowserPort,
@@ -143,7 +149,7 @@ export class Reconciler {
     return this.state;
   }
 
-  private log(e: { tabId?: number; ruleId?: string; action: string; detail: string }): void {
+  private log(e: { tabId?: number; ruleId?: string; action: string; detail: string; dryRun?: true }): void {
     this.opts.log?.add({ ...e, at: Date.now() });
   }
 
@@ -160,22 +166,36 @@ export class Reconciler {
     this.clearPendingDrag();
     try {
       const program = await this.getProgram();
+      const ctxOf = (snap: Snapshot): PlanContext => {
+        // Locked tabs and anchors still at their anchor URL (R21: strict would ungroup an anchor outside the rule).
+        // R49 (per-rule dry run only): a dry-run rule's existing group is left alone, by both passes.
+        const extra = [...(this.opts.extraLeaveAlone?.() ?? []), ...anchorLeaveAlone(st.anchors, snap, program),
+          ...(program.dryRun ? [] : dryRunGroupTabs(snap, program, this.now(), this.opts.pageFacts))];
+        return extra.length ? { ...st, leaveAlone: new Set([...st.leaveAlone, ...extra]) } : st;
+      };
+      // Global dry run (R50): engine-initiated changes are only logged. User-initiated actions (popup close / close-all,
+      // banner choices, undo) still apply: they go through their own handlers, not this loop.
+      if (program.dryRun) {
+        const snap = await this.port.snapshot();
+        this.dryRunPass(snap, program, ctxOf(snap));
+        return;
+      }
+      // Dry-run rules fall through (R48): the live pass plans as if they did not exist.
+      const live = liveProgram(program);
       await this.retitlePending(st);
       for (let pass = 0; ; pass++) {
         const snap = await this.port.snapshot();
-        // Locked tabs and anchors still at their anchor URL (R21: strict would ungroup an anchor outside the rule).
-        const extra = [...(this.opts.extraLeaveAlone?.() ?? []), ...anchorLeaveAlone(st.anchors, snap, program)];
-        const ctx: PlanContext = extra.length ? { ...st, leaveAlone: new Set([...st.leaveAlone, ...extra]) } : st;
-        const pre = planTargets(snap, program, ctx, this.now(), this.opts.pageFacts); // once per pass, shared by tracking and planning
+        const ctx = ctxOf(snap);
+        const pre = planTargets(snap, live, ctx, this.now(), this.opts.pageFacts); // once per pass, shared by tracking and planning
         this.warnInvalidColors(pre);
         this.track(snap, st, pre, pass === 0);
-        const ops = planGroups(snap, program, ctx, pre);
-        if (ops.length === 0) break;
-        if (pass === MAX_PASSES) {
-          this.log({ action: 'reconcile-not-converged', detail: `${ops.length} op(s) still planned after ${MAX_PASSES} passes` });
+        const ops = planGroups(snap, live, ctx, pre);
+        if (ops.length === 0 || pass === MAX_PASSES) {
+          if (ops.length) this.log({ action: 'reconcile-not-converged', detail: `${ops.length} op(s) still planned after ${MAX_PASSES} passes` });
+          this.dryRunPass(snap, program, ctx);
           break;
         }
-        for (const op of ops) await this.apply(op, snap, st, program, pre);
+        for (const op of ops) await this.apply(op, snap, st, live, pre);
       }
     } catch (e) {
       if (e instanceof DragRetryExhausted) {
@@ -194,6 +214,72 @@ export class Reconciler {
       this.pruneExpectations(st);
       await saveState(st);
     }
+  }
+
+  /**
+   * R10: what dry-run rules would do, planned over the full Program on the same snapshot as the live pass, and logged
+   * (never applied) as would-group / would-ungroup, once per (tab, rule, target) while it stays planned. Per-rule dry
+   * run reports only ops of dry-run rules; global dry run (`program.dryRun`) reports every op. Anchors a dry-run group
+   * would open are skipped (not logged). Changes no state: dry-run titles are never adopted or tracked.
+   */
+  private dryRunPass(snap: Snapshot, program: Program, ctx: PlanContext): void {
+    if (!hasDryRun(program)) { this.wouldSeen.clear(); return; }
+    const global = program.dryRun === true;
+    const pre = planTargets(snap, program, ctx, this.now(), this.opts.pageFacts);
+    const ops = planGroups(snap, program, ctx, pre);
+    const reported = (ruleId: string | undefined): boolean => global || isDryRunRule(program, ruleId);
+    const titleOf = (gid: number) => snap.groups.find((g) => g.id === gid)?.title;
+    const seen = new Set<string>();
+    const would = (k: string, e: { tabId?: number; ruleId?: string; action: string; detail: string }): void => {
+      seen.add(k);
+      if (!this.wouldSeen.has(k)) this.log({ ...e, dryRun: true });
+    };
+    const joined = (tabIds: number[], windowId: number, title: string, ruleId: string | undefined): void => {
+      const name = this.ruleName(program, ruleId);
+      for (const tabId of tabIds) {
+        const from = snap.tabs.find((t) => t.id === tabId)?.groupId ?? -1;
+        if (from !== -1 && titleOf(from) === title) continue;
+        would(`${tabId}|${ruleId ?? ''}|group|${windowId}|${title}`, {
+          tabId, ...(ruleId !== undefined && { ruleId }), action: 'would-group',
+          detail: `Would move to ${title}${name ? ` by rule ${name}` : ''} (dry run)`,
+        });
+      }
+    };
+    for (const op of ops) {
+      switch (op.kind) {
+        case 'group':
+          if (reported(op.ruleId)) joined(op.tabIds, op.windowId, op.title, op.ruleId);
+          break;
+        case 'moveTabs': {
+          const title = titleOf(op.groupId);
+          if (reported(op.ruleId) && title !== undefined) joined(op.tabIds, op.windowId, title, op.ruleId);
+          break;
+        }
+        case 'ungroup': {
+          if (!reported(op.ruleId)) break;
+          const name = this.ruleName(program, op.ruleId);
+          for (const tabId of op.tabIds) {
+            const gid = snap.tabs.find((t) => t.id === tabId)?.groupId ?? -1;
+            const from = gid === -1 ? undefined : titleOf(gid);
+            would(`${tabId}|${op.ruleId ?? ''}|ungroup|${gid}`, {
+              tabId, ...(op.ruleId !== undefined && { ruleId: op.ruleId }), action: 'would-ungroup',
+              detail: `Would remove from ${from ?? 'group'} (no longer matches ${name ?? 'any rule'}) (dry run)`,
+            });
+          }
+          break;
+        }
+        // Order and color carry no rule: reported under global dry run only.
+        case 'moveGroup':
+          if (global) would(`g${op.groupId}|move|${op.index}`, { action: 'would-group', detail: `Would move group ${titleOf(op.groupId) ?? op.groupId} to position ${op.index} (dry run)` });
+          break;
+        case 'updateGroup':
+          if (global && op.color !== undefined) would(`g${op.groupId}|color|${op.color}`, { action: 'would-group', detail: `Would recolor group ${titleOf(op.groupId) ?? op.groupId} ${op.color} (dry run)` });
+          break;
+        default:
+          break;
+      }
+    }
+    this.wouldSeen = seen;
   }
 
   /** evaluateTab flags a color that rendered outside Chrome's colors (grey is used); warn once per rule key. */

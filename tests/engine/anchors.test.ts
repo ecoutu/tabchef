@@ -185,7 +185,7 @@ describe('AnchorService', () => {
     expect(w.logs.filter((l) => l.action === 'anchor-skipped')).toHaveLength(2);
   });
 
-  it('a dry-run group rule opens no anchors (R43)', async () => {
+  it('a dry-run group rule opens no anchors (R48: it falls through, its group is never created)', async () => {
     const w = setup(cfgOf({}, { dryRun: true }));
     w.port.addTab(tab(1, PR));
     await w.r.flush();
