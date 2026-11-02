@@ -8,6 +8,7 @@
 // title that renders to '' skips that rule for the group kind (an empty title would adopt the user's untitled
 // groups); evaluation continues to the next matching rule with a group action.
 import { COLORS } from '../config/schema';
+import { extractJiraKeys } from '../keys/jira-key';
 import { MAX_MATCH_INPUT } from '../match/pattern';
 import { renderTemplate } from '../match/template';
 import { isExemptUrl } from '../url/normalize';
@@ -67,10 +68,23 @@ function regex(source: string): RegExp | null {
   return re;
 }
 
+/** A source field's text for the rule `ruleKey`, or '' when missing or not a string. */
+function sourceText(f: TabFacts, ruleKey: string, name: string): string {
+  const data = f.source && Object.prototype.hasOwnProperty.call(f.source, ruleKey) ? f.source[ruleKey]?.data : undefined;
+  const v = data && Object.prototype.hasOwnProperty.call(data, name) ? data[name] : undefined;
+  return typeof v === 'string' ? v : '';
+}
+
 /** One extract value, or undefined. A selector value comes from the page facts under `<ruleKey>.<name>`. */
 function extractValue(key: string, name: string, x: ExtractSpec, f: TabFacts): string | undefined {
   if ('selector' in x) return f.page?.extracts[`${key}.${name}`];
-  if ('jiraKey' in x) return undefined; // T2 implements key extraction (M3-R21)
+  if ('jiraKey' in x) {
+    // A `source.<name>` text is the rule's source field; a headRefName one is a branch name (case-insensitive, `_` separates).
+    const text = x.from === 'url' ? (f.tab.pendingUrl ?? f.tab.url)
+      : x.from === 'title' ? f.tab.title
+      : sourceText(f, key, x.from.slice('source.'.length));
+    return extractJiraKeys(text, { ...x.jiraKey, branch: x.from.endsWith('headRefName') })[0]; // first key = prefer order (M3-R21)
+  }
   const re = regex(x.regex);
   if (!re) return undefined;
   const input = (x.from === 'url' ? (f.tab.pendingUrl ?? f.tab.url) : f.tab.title).slice(0, MAX_MATCH_INPUT);

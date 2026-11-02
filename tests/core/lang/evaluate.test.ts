@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { compileProgram } from '../../../src/core/lang/compile';
 import { evaluateTab } from '../../../src/core/lang/evaluate';
 import { defaultConfig } from '../../../src/core/config/defaults';
-import type { Action, Recipe, RecipeRef, Rule, TabFacts } from '../../../src/core/lang/types';
+import type { Action, ExtractFrom, Recipe, RecipeRef, Rule, TabFacts } from '../../../src/core/lang/types';
 import type { Config, TabSnap } from '../../../src/core/types';
 
 const NOW = 1_800_000_000_000;
@@ -259,8 +259,13 @@ describe('evaluateTab: M3 T1 fields and projects', () => {
     expect(ev(c)).toMatchObject({ matched: ['user/x'], needsPage: true });
     expect(ev(c, facts({}, { page: { texts: [], extracts: { 'user/s.h': 'Done' }, formEdited: false } }))).toMatchObject({ matched: ['user/x', 'user/s'], needsPage: false });
   });
-  it('a jiraKey extract yields no value yet (T2 implements it)', () => {
-    const b = { p: recipe('p', [rule('a', { url: 'github.com/*' }, [assign('{k}')], { extract: { k: { from: 'title', jiraKey: {} } } })], { project }) };
-    expect(ev(config({ recipes: [ref('p')] }), facts(), b).project).toBeUndefined();
+  it('a jiraKey extract yields the first key (prefer order), from title, url or a source field (M3-R21)', () => {
+    const run = (from: ExtractFrom, f: TabFacts) => {
+      const b = { p: recipe('p', [rule('a', { url: 'github.com/*' }, [assign('{k}')], { source: { connection: 'gh', query: 'github.pull_request', args: {}, fields: { headRefName: 'headRefName' } }, extract: { k: { from, jiraKey: {} } } })], { project }) };
+      return ev(config({ recipes: [ref('p')] }), f, b).project;
+    };
+    expect(run('title', facts({ title: 'no key' }))).toBeUndefined();
+    expect(run('title', facts({ title: 'ABC-12 DEF-3 fix' }))).toMatchObject([{ key: 'ABC-12' }]);
+    expect(run('source.headRefName', facts({}, { source: { 'p/a': { data: { headRefName: 'feature/def-3_x' } } } }))).toMatchObject([{ key: 'DEF-3' }]);
   });
 });
