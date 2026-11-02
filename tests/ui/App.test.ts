@@ -146,4 +146,14 @@ describe('App: preview before Save (M2 T13)', () => {
     expect(types()).toContain('preview.change');
     expect(types()).toContain('config.set');
   });
+
+  it('a change with only dry-run entries saves without opening the dialog (R52)', async () => {
+    withPreview({ moves: [{ tabId: 1, title: 'A tab', to: 'A', dryRun: true }], closes: [], groupsCreated: [], unchanged: 0, anchorsOpened: 0, dryRun: false });
+    render(App);
+    await edit();
+    await fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await screen.findByText('Saved.');
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(types()).toContain('config.set');
+  });
 });

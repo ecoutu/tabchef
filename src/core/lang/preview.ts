@@ -8,7 +8,8 @@
 //    dry run (`Program.dryRun`) nothing is applied at all.
 //  - Dry-run effects (R30, listed with `dryRun: true`, never counted): what the dry-run rules would do on top of the
 //    live outcome (the engine's would-* pass: the full Program planned over the live result). Only would-effects this
-//    change adds or alters are listed, so an unchanged dry-run rule does not reappear on every Save.
+//    change adds or alters are listed, so an unchanged dry-run rule does not reappear on every Save. They are shown
+//    in the dialog when it opens, but never open it on their own (R52).
 // Closes come from evaluateTab(...).close (auto mode only; a `suggest` close only lists the tab): a tab is listed when
 // `after` closes it and `before` did not. Page-text closes are only as exact as the page facts passed in (R5).
 import { dryRunGroupTabs, planGroups, planTargets, type PageLookup, type PlanContext } from '../group/plan';
@@ -67,9 +68,15 @@ export function previewText(r: PreviewResult): string {
   return `${n.moves} tabs would move, ${n.closes} would close.`;
 }
 
-/** True when the preview has anything to show (else Save / Enable goes straight through). Tolerates a malformed result. */
+/**
+ * True when the change has real effects: a counted move or close, or anchor tabs that would open (ruling R52). Only
+ * then does the dialog open; a change whose only entries are dry-run ones saves / enables straight through. Tolerates
+ * a malformed result.
+ */
 export function hasEffects(r: Partial<PreviewResult> | null | undefined): boolean {
-  return !!r && ((r.moves?.length ?? 0) > 0 || (r.closes?.length ?? 0) > 0 || (r.anchorsOpened ?? 0) > 0);
+  if (!r) return false;
+  const n = previewCounts({ moves: Array.isArray(r.moves) ? r.moves : [], closes: Array.isArray(r.closes) ? r.closes : [] } as PreviewResult);
+  return n.moves > 0 || n.closes > 0 || (r.anchorsOpened ?? 0) > 0;
 }
 
 interface Placement { title?: string; windowId: number }

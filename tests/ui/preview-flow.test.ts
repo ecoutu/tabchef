@@ -31,8 +31,9 @@ describe('previewThenApply', () => {
     expect(apply).not.toHaveBeenCalled();
   });
 
-  it('no effects, or a failed preview: applies straight away without asking', async () => {
-    for (const r of [{ ok: true, data: none }, { ok: false, error: 'invalid config' }]) {
+  it('no effects, only dry-run entries (R52), or a failed preview: applies straight away without asking', async () => {
+    const dryOnly: PreviewResult = { ...none, moves: [{ tabId: 1, title: 't', to: 'ex', dryRun: true }], closes: [{ tabId: 2, title: 'c', ruleKey: 'user/c', afterMs: 1, dryRun: true }] };
+    for (const r of [{ ok: true, data: none }, { ok: true, data: dryOnly }, { ok: false, error: 'invalid config' }]) {
       send.mockResolvedValue(r);
       const confirm = vi.fn();
       const apply = vi.fn(async () => 1);

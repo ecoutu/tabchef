@@ -4,7 +4,8 @@ import { send } from './send';
 
 /**
  * Preview then apply (M2 T13, ruling R5): sends `preview.change` for `config`, the config the change would store, and
- * when the preview has anything to show asks `confirm` (PreviewDialog: Apply → true, Cancel → false) before `apply`.
+ * when the change has real effects (hasEffects, R52: dry-run entries alone do not count) asks `confirm`
+ * (PreviewDialog: Apply → true, Cancel → false) before `apply`.
  * Resolves to apply's result, or undefined when cancelled. With no effects, or when the preview itself fails (the
  * apply request reports invalid configs), it applies straight away.
  *

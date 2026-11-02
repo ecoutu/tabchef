@@ -140,7 +140,7 @@ describe('previewChange: dry run (R30, R48)', () => {
     expect(previewCounts(r)).toEqual({ moves: 0, closes: 0 });
     expect(previewText(r)).toBe('0 tabs would move, 0 would close.');
     expect(r.groupsCreated).toEqual([]);
-    expect(hasEffects(r)).toBe(true); // shown, so the user sees what the dry-run rule would do
+    expect(hasEffects(r)).toBe(false); // R52: dry-run entries alone do not open the dialog
   });
 
   it('a dry-run close is labelled, not counted', () => {
