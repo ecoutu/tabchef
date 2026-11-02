@@ -1,5 +1,6 @@
 import { evaluateGroupRules, type GroupMatch } from './evaluate';
 import { groupView } from '../config/group-view';
+import { parseTemplateLenient } from '../match/template';
 import { isExemptUrl } from '../url/normalize';
 import type { Config, GroupRule, GroupSnap, Op, Snapshot, TabSnap } from '../types';
 
@@ -25,11 +26,10 @@ const byPos = (a: TabSnap, b: TabSnap): number => a.windowId - b.windowId || a.i
 const cmp = (a: number, b: number): number => (a < b ? -1 : a > b ? 1 : 0);
 const urlOf = (t: TabSnap): string => (t.pendingUrl ? t.pendingUrl : t.url);
 
-const TOKEN = /\{\w+(?:\|\w+)?\}/g;
 const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 /** True if `title` could have been rendered from the rule's title template. */
 function templateProduces(template: string, title: string): boolean {
-  const re = new RegExp(`^${template.split(TOKEN).map(escapeRe).join('[\\s\\S]*')}$`);
+  const re = new RegExp(`^${parseTemplateLenient(template).map((p) => ('lit' in p ? escapeRe(p.lit) : '[\\s\\S]*')).join('')}$`);
   return re.test(title);
 }
 
