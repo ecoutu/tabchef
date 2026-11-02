@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fakeBrowser } from 'wxt/testing/fake-browser';
 import {
-  CLOSE_ALARM_PREFIX, CLOSE_SUGGESTIONS_KEY, CloseExecutor, PENDING_CLOSES_KEY, type CloseExecutorDeps,
+  afterConfigChange, CLOSE_ALARM_PREFIX, CLOSE_SUGGESTIONS_KEY, CloseExecutor, PENDING_CLOSES_KEY, type CloseExecutorDeps,
 } from '../../src/engine/close-executor';
 import { SafetyService } from '../../src/engine/safety';
 import { RecentlyClosed } from '../../src/core/safety/recently-closed';
@@ -479,5 +479,69 @@ describe('CloseExecutor', () => {
     await w.ex.evaluateAll();
     await vi.advanceTimersByTimeAsync(3_000);
     expect(w.closes()).toEqual([2]);
+  });
+});
+
+describe('config change re-evaluates open tabs (ruling R51)', () => {
+  beforeEach(() => {
+    fakeBrowser.reset();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    vi.setSystemTime(1_000_000);
+  });
+  afterEach(() => { vi.useRealTimers(); });
+
+  const CALLBACK = 'http://localhost:8080/auth/callback?code=x';
+  const finished = (on: boolean, params: Record<string, unknown> = {}): Config => ({
+    ...defaultConfig(), recipes: defaultConfig().recipes.map((r) => (r.id === 'finished' ? { ...r, enabled: on, params } : r)),
+  });
+  const pending = (e: ReturnType<typeof env>) => e.store.get(PENDING_CLOSES_KEY) as { tabId: number; ruleKey: string; fireAt: number }[] | undefined;
+
+  it('enabling `finished` with a localhost callback tab already open schedules its close', async () => {
+    const e = env();
+    e.cfg.c = finished(false);
+    e.port.addTab(tab(1, CALLBACK));
+    const w = worker(e, { observesForm: () => true });
+    await w.ex.evaluateAll();
+    expect(pending(e) ?? []).toEqual([]);
+    e.cfg.c = finished(true);
+    await afterConfigChange(async () => {}, w.ex);
+    expect(pending(e)).toEqual([expect.objectContaining({ tabId: 1, ruleKey: 'finished/oauth-callback', fireAt: 1_003_000 })]);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(w.closes()).toEqual([1]);
+  });
+
+  it('a second config change does not reset fireAt or schedule twice', async () => {
+    const e = env();
+    e.cfg.c = finished(true);
+    e.port.addTab(tab(1, CALLBACK));
+    const w = worker(e, { observesForm: () => true });
+    await afterConfigChange(async () => {}, w.ex);
+    await vi.advanceTimersByTimeAsync(2_000);
+    e.cfg.c = { ...finished(true), dryRun: false, tables: { x: { a: 'b' } } }; // an unrelated change
+    await afterConfigChange(async () => {}, w.ex);
+    expect(pending(e)).toEqual([expect.objectContaining({ tabId: 1, fireAt: 1_003_000 })]);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(w.closes()).toEqual([1]);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(w.closes()).toEqual([1]);
+  });
+
+  it('disabling the rule cancels the pending close', async () => {
+    const e = env();
+    e.cfg.c = finished(true);
+    e.port.addTab(tab(1, CALLBACK));
+    const w = worker(e, { observesForm: () => true });
+    await afterConfigChange(async () => {}, w.ex);
+    e.cfg.c = finished(false);
+    await afterConfigChange(async () => {}, w.ex);
+    expect(pending(e) ?? []).toEqual([]);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(w.closes()).toEqual([]);
+  });
+
+  it('re-evaluates only after the permission sync (the paused set is current)', async () => {
+    const order: string[] = [];
+    await afterConfigChange(async () => { await Promise.resolve(); order.push('sync'); }, { evaluateAll: async () => { order.push('evaluate'); } });
+    expect(order).toEqual(['sync', 'evaluate']);
   });
 });

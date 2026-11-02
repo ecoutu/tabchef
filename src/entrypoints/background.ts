@@ -9,7 +9,7 @@ import {
   UNDO_NOTIFICATION_PREFIX,
 } from '../engine/messages';
 import { listPendingAsks } from '../engine/ask';
-import { CLOSE_ALARM_PREFIX, CloseExecutor } from '../engine/close-executor';
+import { afterConfigChange, CLOSE_ALARM_PREFIX, CloseExecutor } from '../engine/close-executor';
 import { DedupeHandler } from '../engine/dedupe-handler';
 import { PageFacts } from '../engine/page-facts';
 import { createWatchScripting, WATCH_FILE, WATCH_SCRIPT_ID } from '../engine/watch-registration';
@@ -50,6 +50,7 @@ export default defineBackground(() => {
     onPausedChanged: () => {
       reconciler.schedule('permissions');
       void closeExecutor.rearm(); // closes kept pending while their recipe waited for a permission
+      void closeExecutor.evaluateAll(); // the Program changed (R51): a resumed close rule applies to open tabs
     },
   });
   // Page facts from the watch content script (M2 T7), mirrored to storage.session.
@@ -80,7 +81,9 @@ export default defineBackground(() => {
   const schedule = (reason: string) => () => reconciler.schedule(reason);
   store.onChange((c) => {
     reconciler.schedule('config');
-    void permissions.onChanged(); // enabled recipes changed: their needs, the paused set and the watch origins
+    // Enabled recipes changed: their needs, the paused set and the watch origins. Then every open tab is re-evaluated
+    // for close rules against the new Program (R51), so a newly enabled close rule applies to tabs already open.
+    void afterConfigChange(() => permissions.onChanged(), closeExecutor).catch(warn('close re-evaluation'));
     // Tell open extension pages (options) the config changed; "no receiver" rejections are expected.
     Promise.resolve(browser.runtime.sendMessage({ type: 'config.changed', rev: configRev(c) })).catch(() => {});
   });
