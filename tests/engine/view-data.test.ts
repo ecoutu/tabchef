@@ -413,6 +413,16 @@ describe('M3 T13: source / params fields and close-all (view.close with tabs, M3
     expect(all.data.rows.map((x: { tabId: number }) => x.tabId)).toEqual([1, 2]);
   });
 
+  it('M3-R95b: facts are asked with the snapshot tab\'s URL (a navigated tab never shows the previous PR\'s data)', async () => {
+    const s = setup();
+    const facts = vi.fn<(id: number, url?: string) => Record<string, never>>(() => ({}));
+    s.deps.views!.facts = facts;
+    await s.setCfg({ ...defaultConfig(), recipes: [mine(true)] });
+    s.mk(1, 'https://github.com/a/b/pull/1');
+    await s.handle({ type: 'view.data', viewId: 'prs' }, ui);
+    expect(facts).toHaveBeenCalledWith(1, 'https://github.com/a/b/pull/1');
+  });
+
   it('close-all needs the close-all action; tabs outside the view are skipped; malformed tabs are refused', async () => {
     const s = setup({ suggestions: [oauth] });
     await s.setCfg(enable(defaultConfig(), 'finished'));

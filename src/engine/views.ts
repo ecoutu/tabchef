@@ -69,8 +69,11 @@ export interface ViewsDeps {
   builtins: Record<string, Recipe>;
   /** The Program the engine runs (ProgramCache.get). */
   getProgram: () => Promise<Program>;
-  /** Per-tab facts the snapshot lacks (page facts). Default: none. */
-  facts?: (tabId: number) => Partial<TabFacts>;
+  /**
+   * Per-tab facts the snapshot lacks (page facts, source data). `url` is the snapshot tab's URL, so source data
+   * looked up for the tab's previous page is not used (SourceService.factsFor's URL guard). Default: none.
+   */
+  facts?: (tabId: number, url?: string) => Partial<TabFacts>;
   /** Needs that are not granted pause their view (R45). Default: all granted. */
   permissions?: Pick<PermissionsManager, 'check'>;
   /** CloseExecutor: its persisted suggestions (storage.session `closeSuggestions`) and the undo exemption (keep). */
@@ -265,7 +268,7 @@ export async function readViews(d: ViewsDeps, input: ViewsInput): Promise<Comput
   const extras = new Map<number, Partial<TabFacts>>();
   const extraOf = (t: TabSnap): Partial<TabFacts> => {
     let x = extras.get(t.id);
-    if (!x) extras.set(t.id, (x = d.facts?.(t.id) ?? {}));
+    if (!x) extras.set(t.id, (x = d.facts?.(t.id, t.pendingUrl || t.url) ?? {}));
     return x;
   };
   const evalOf = (t: TabSnap): EvalResult => {

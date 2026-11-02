@@ -383,7 +383,9 @@ export class CloseExecutor {
    * (never closed) or while everything is paused.
    */
   private logDryRun(snap: Snapshot, p: Program, tab: TabSnap, url: string): void {
-    const r = this.closeOf(snap, p, tab, true);
+    // The same stale fall-through as the live path, over every rule: a dry run previews what live would do, so a
+    // close on stale data is not a "Would close", and a dry-run rule after a stale winner is (M3-R95).
+    const { r } = this.liveClose(snap, p, tab, true);
     if (!r?.dryRun || this.deps.isAnchor?.(tab.id) || this.deps.safety.isPaused()) return;
     const memo = this.wouldLogged.get(tab.id);
     if (memo?.url === url && memo.ruleKey === r.key) return;
@@ -418,13 +420,14 @@ export class CloseExecutor {
 
   /**
    * The winning live close whose source data may be acted on (M3-R90), and the closes skipped on the way: a rule on
-   * stale or unknown source data falls through to the next live close rule (M3-R92), as dry-run rules do (R48).
+   * stale or unknown source data falls through to the next live close rule (M3-R92), as dry-run rules do (R48). With
+   * `withDryRun`, dry-run rules compete too (the dry-run preview).
    */
-  private liveClose(snap: Snapshot, p: Program, tab: TabSnap): { r?: CloseResult; skipped: { key: string; why: string }[] } {
+  private liveClose(snap: Snapshot, p: Program, tab: TabSnap, withDryRun = false): { r?: CloseResult; skipped: { key: string; why: string }[] } {
     const skipped: { key: string; why: string }[] = [];
     let prog = p;
     for (;;) {
-      const r = this.closeOf(snap, prog, tab);
+      const r = this.closeOf(snap, prog, tab, withDryRun);
       const why = r && this.staleSource(p, tab, r.key);
       if (!r || !why) return { ...(r && { r }), skipped };
       skipped.push({ key: r.key, why });

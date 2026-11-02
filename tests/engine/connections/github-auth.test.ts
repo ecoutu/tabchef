@@ -200,6 +200,28 @@ describe('GitHubDeviceAuth', () => {
       expect(await everything()).not.toContain(TOKEN.access_token);
     });
 
+    it('M3-R95e: a Disconnect during the GET /user read is not overwritten by the completing sign-in', async () => {
+      let answer!: (res: Response) => void;
+      const r = rig({ user: () => undefined as never });
+      r.fetch.mockImplementation(async (u) => {
+        const url = urlOf(u);
+        if (url === GITHUB_DEVICE_CODE_URL) return json(200, CODE);
+        if (url === GITHUB_TOKEN_URL) return json(200, TOKEN);
+        if (url === 'https://api.github.com/user') return new Promise<Response>((res) => { answer = res; });
+        return json(200, { ok: 1 });
+      });
+      await r.device.start(def());
+      const p = r.device.poll(def());
+      await vi.waitFor(() => expect(r.calls('https://api.github.com/user')).toHaveLength(1));
+      await r.device.cancel(); // the Connections page's Disconnect cancels the flow ...
+      await r.manager.disconnect('github'); // ... and signs out
+      answer(json(200, { login: 'octo' }));
+      expect(await p).toEqual({ state: 'error', message: 'GitHub sign-in was cancelled; start again' });
+      expect(await r.secrets.getSecret('github')).toBeUndefined();
+      expect(await everything()).not.toContain(TOKEN.access_token);
+      expect((await r.manager.defs()).find((d) => d.id === 'github')?.login).toBeUndefined();
+    });
+
     it('authorization_pending → pending; the flow is kept', async () => {
       const r = rig({ token: () => json(200, ERRORS.authorization_pending) });
       await r.device.start(def());

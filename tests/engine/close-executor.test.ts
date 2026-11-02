@@ -235,6 +235,42 @@ describe('CloseExecutor', () => {
       }
     });
 
+    it('M3-R95a: under (global) dry run a stale source close logs no "Would close" (live would skip it)', async () => {
+      const e = env();
+      e.port.addTab(tab(1, 'https://other.test/', { active: true }));
+      e.port.addTab(tab(2, url));
+      const base = sourceProgram(mergedMatch);
+      const src: { entry: { data?: Record<string, unknown>; stale?: boolean } } = { entry: { data: { state: 'merged' }, stale: true } };
+      const factsFor = (id: number) => (id === 2 ? { 'rec/merged': src.entry } : undefined);
+      const w = worker(e, { sources: { factsFor } }, { ...base, rules: base.rules.map((r) => ({ ...r, dryRun: true })) });
+      await w.ex.onCommitted(2);
+      await w.ex.evaluate(2);
+      expect(w.logs.filter((l) => l.action === 'would-close')).toEqual([]);
+      src.entry = { data: { state: 'merged' } }; // fresh: now the dry run previews the close
+      await w.ex.evaluate(2);
+      expect(w.logs.filter((l) => l.action === 'would-close')).toEqual([expect.objectContaining({ tabId: 2, ruleId: 'rec/merged', detail: 'Would close (dry run)' })]);
+      expect(w.closes()).toEqual([]);
+    });
+
+    it('M3-R95a: a dry-run close rule ranked after a stale live winner gets its "Would close" logged', async () => {
+      const e = env();
+      e.port.addTab(tab(1, 'https://other.test/', { active: true }));
+      e.port.addTab(tab(2, url));
+      const base = sourceProgram(mergedMatch);
+      const lower: Program['rules'][number] = {
+        key: 'user/all-prs', index: 1, dryRun: true,
+        rule: { id: 'all-prs', name: 'All PRs', enabled: true, match: { url: 'github.com/*/pull/*' }, actions: [{ close: { after: '2s' } }] },
+      };
+      const factsFor = (id: number) => (id === 2 ? { 'rec/merged': { data: { state: 'merged' }, stale: true } } : undefined);
+      const w = worker(e, { sources: { factsFor } }, { ...base, rules: [...base.rules, lower] });
+      await w.ex.onCommitted(2);
+      await w.ex.evaluate(2);
+      expect(w.logs.filter((l) => l.action === 'close-skipped')).toEqual([expect.objectContaining({ ruleId: 'rec/merged' })]);
+      expect(w.logs.filter((l) => l.action === 'would-close')).toEqual([expect.objectContaining({ tabId: 2, ruleId: 'user/all-prs', detail: 'Would close (dry run)' })]);
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(w.closes()).toEqual([]);
+    });
+
     it('a stale entry is not suggested either, and an earlier suggestion of that rule goes away', async () => {
       const t = setupStale(mergedMatch, 'suggest');
       t.src.entry = { data: { state: 'merged' } };

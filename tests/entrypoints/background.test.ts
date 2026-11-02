@@ -189,6 +189,8 @@ const deferred = () => {
 
 /** A compiled-Program stand-in: only `rules[].rule.match` is read by the age.tick gate. */
 const programWith = (...matches: unknown[]) => ({ rules: matches.map((match, i) => ({ key: `user/r${i}`, rule: { id: `r${i}`, match, actions: [] } })) });
+/** A Program with one rule that has a `source` (the only thing that makes sources.refresh requests). */
+const withSource = () => ({ rules: [{ key: 'rec/pr', rule: { id: 'pr', match: { url: 'github.com/*' }, actions: [], source: { connection: 'github', query: 'github.pull_request', args: {}, fields: {} } } }] });
 const alarmCalls = () => h.calls.filter(([p]) => p.startsWith('alarms.'));
 /** Alarm calls about one alarm name. */
 const alarmCallsOf = (name: string) => alarmCalls().filter(([, a]) => (a as unknown[])[0] === name);
@@ -403,7 +405,7 @@ describe('background wiring', () => {
     await vi.advanceTimersByTimeAsync(0);
     const onChange = I('store').onChange!.mock.calls[0]![0] as (c: unknown) => void;
     h.calls.length = 0;
-    h.state.program = { ...programWith({ url: 'a.com/*' }), refreshEvery: { a: '10m', b: '2m' } };
+    h.state.program = { ...withSource(), refreshEvery: { a: '10m', b: '2m' } };
     h.returns['alarms.get'] = (name: unknown) => Promise.resolve(name === 'sources.refresh' ? { name, periodInMinutes: 5 } : undefined);
     onChange({ version: 2, rules: [] });
     await vi.advanceTimersByTimeAsync(0);
@@ -415,12 +417,37 @@ describe('background wiring', () => {
     expect(alarmCallsOf('sources.refresh')).toEqual([['alarms.get', ['sources.refresh']]]); // unchanged: left alone
   });
 
-  it('install and browser startup create the 5-minute sources.refresh alarm', async () => {
+  it('install and browser startup create the 5-minute sources.refresh alarm when a rule has a source', async () => {
+    h.state.program = withSource();
     for (const ev of ['runtime.onInstalled', 'runtime.onStartup']) {
       h.calls.length = 0;
       await fire(ev, { reason: 'install' });
       expect(alarmCalls()).toContainEqual(['alarms.create', ['sources.refresh', { periodInMinutes: 5 }]]);
     }
+  });
+
+  it('M3-R95c: with no source rule, install, startup and config changes clear sources.refresh instead of creating it', async () => {
+    const onChange = I('store').onChange!.mock.calls[0]![0] as (c: unknown) => void;
+    for (const run of [() => fire('runtime.onInstalled', { reason: 'install' }), () => fire('runtime.onStartup'), async () => { onChange({ version: 2, rules: [] }); await vi.advanceTimersByTimeAsync(0); }]) {
+      h.calls.length = 0;
+      await run();
+      expect(alarmCallsOf('sources.refresh')).toEqual([['alarms.clear', ['sources.refresh']]]);
+    }
+  });
+
+  it('M3-R95c: a paused-set change re-checks the sources.refresh alarm', async () => {
+    await vi.advanceTimersByTimeAsync(0);
+    h.calls.length = 0;
+    h.state.program = withSource();
+    const { onPausedChanged } = I('permissions').args[3] as { onPausedChanged: () => void };
+    onPausedChanged();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(alarmCallsOf('sources.refresh')).toContainEqual(['alarms.create', ['sources.refresh', { periodInMinutes: 5 }]]);
+    h.calls.length = 0;
+    h.state.program = programWith({ url: 'a.com/*' });
+    onPausedChanged();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(alarmCallsOf('sources.refresh')).toEqual([['alarms.clear', ['sources.refresh']]]);
   });
 
   it('changed source data re-plans, re-evaluates closes of the changed tabs and recounts the badge', async () => {
@@ -459,8 +486,10 @@ describe('background wiring', () => {
     const c = I('closeExecutor').args[2] as { sources: { factsFor: (id: number, url?: string) => unknown } };
     expect(c.sources.factsFor(4, 'https://y.test/')).toBe(src);
     expect(await settled(r.beforeRun())).toBe(true);
-    const views = (vi.mocked(createHandler).mock.calls[0]![0] as unknown as { views: { facts: (id: number) => unknown } }).views;
-    expect(views.facts(5)).toEqual({ source: src });
+    const views = (vi.mocked(createHandler).mock.calls[0]![0] as unknown as { views: { facts: (id: number, url?: string) => unknown } }).views;
+    expect(views.facts(5, 'https://z.test/')).toEqual({ source: src });
+    // M3-R95b: the snapshot tab's URL reaches the URL guard (a just-navigated tab gets no previous-page data).
+    expect(I('sources').factsFor).toHaveBeenLastCalledWith(5, 'https://z.test/');
   });
 
   it('a created tab, a URL change and new page facts look up sources (debounced, one refresh)', async () => {
@@ -662,6 +691,11 @@ describe('background wiring', () => {
       expect(g.port).toBe(I('port'));
       expect(g.fetch).toBe(d.fetch);
       expect((g.manager as () => unknown)()).toBe(I('connManager'));
+    });
+
+    it('M3-R95d: worker start restricts storage.local to trusted contexts (SecretStore.init) once, before any write', () => {
+      expect(I('secrets').init).toHaveBeenCalledTimes(1);
+      expect(I('secrets').setSecret).not.toHaveBeenCalled();
     });
 
     it('M3-R35: a production build (no WXT_E2E_LOCALHOST) has allowLocalhost false', () => {

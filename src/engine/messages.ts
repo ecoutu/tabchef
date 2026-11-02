@@ -491,16 +491,16 @@ export interface HandlerDeps {
      * enables, disables or reorders a project recipe is previewed with its own. Default: the current ones for both.
      */
     projectOverrides?: (snap: Snapshot, p: Program) => Promise<PlanContext['overrides']>;
-    /** Per-tab facts the snapshot lacks (page facts). Default: none. */
-    facts?: (tabId: number) => Partial<TabFacts>;
+    /** Per-tab facts the snapshot lacks (page facts, source data); `url` is the snapshot tab's. Default: none. */
+    facts?: (tabId: number, url?: string) => Partial<TabFacts>;
     /** Needs that are not granted pause their recipe / rule in the draft, as ProgramCache does. Default: all granted. */
     permissions?: Pick<PermissionsManager, 'check'>;
   };
   /** explain.tab and rules.shadowed (M2 T14). Without it they fail. Read-only: nothing here may change engine state. */
   explain?: {
     builtins: Record<string, Recipe>;
-    /** Per-tab facts the snapshot lacks (page facts). Default: none. */
-    facts?: (tabId: number) => Partial<TabFacts>;
+    /** Per-tab facts the snapshot lacks (page facts, source data); `url` is the snapshot tab's. Default: none. */
+    facts?: (tabId: number, url?: string) => Partial<TabFacts>;
     /** Needs that are not granted pause their recipe / rule (R45): shown with the reason. Default: all granted. */
     permissions?: Pick<PermissionsManager, 'check'>;
   };
@@ -863,7 +863,9 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
     if (!v.ok) return fail('invalid config', v.errors);
     const [snap, current] = await Promise.all([deps.port.snapshot(), d.getProgram()]);
     const ctx = await d.planContext(snap, current);
-    const facts = d.facts ?? (() => ({}));
+    // Facts for the snapshot tab's URL: source data of a tab's previous page is not used (M3-R95).
+    const urls = new Map(snap.tabs.map((t) => [t.id, t.pendingUrl || t.url]));
+    const facts = (id: number): Partial<TabFacts> => d.facts?.(id, urls.get(id)) ?? {};
     /** The context with each side's own project overrides. */
     const sides = async (before: Program, after: Program, base: PreviewContext): Promise<PreviewContext> => {
       if (!d.projectOverrides) return base;
@@ -904,7 +906,7 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
     }
     const opener = tab.openerTabId !== undefined ? snap.tabs.find((t) => t.id === tab.openerTabId) : undefined;
     const groupTitle = tab.groupId !== -1 ? snap.groups.find((g) => g.id === tab.groupId)?.title : undefined;
-    const extra = d.facts?.(tabId) ?? {};
+    const extra = d.facts?.(tabId, tab.pendingUrl || tab.url) ?? {};
     const facts: TabFacts = { ...extra, tab, ...(opener && { opener }), ...(groupTitle !== undefined && { groupTitle }) };
     const view: ExplainView = {
       tab: { id: tab.id, title: tab.title, url: tab.pendingUrl || tab.url, ...(groupTitle !== undefined && { groupTitle }) },

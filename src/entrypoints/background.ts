@@ -69,6 +69,7 @@ export default defineBackground(() => {
     onPausedChanged: () => {
       reconciler.schedule('permissions');
       syncAgeTick(); // a paused or resumed rule may use age
+      startSourcesAlarm(); // ... or have a source
       void closeExecutor.rearm(); // closes kept pending while their recipe waited for a permission
       void closeExecutor.evaluateAll(); // the Program changed (R51): a resumed close rule applies to open tabs
     },
@@ -256,6 +257,9 @@ export default defineBackground(() => {
   const localArea = browser.storage.local as unknown as KeyValueArea;
   const sessionArea = browser.storage.session as unknown as KeyValueArea;
   const secrets = new SecretStore({ local: localArea, session: sessionArea });
+  // Restrict storage.local to trusted contexts at every worker start, not only before a write (M3-R46): a token stored
+  // in an earlier session is protected before anything else runs. Idempotent; it warns once where unsupported.
+  secrets.init().catch(warn('secret store init'));
   const limiter = new RateLimiter(sessionArea);
   const connFetch: typeof fetch = (input, init) => fetch(input, init);
   const githubAuth: GitHubDeviceAuth = new GitHubDeviceAuth({
@@ -304,19 +308,28 @@ export default defineBackground(() => {
   // Tabs and page facts changed: look up what new or navigated tabs need (cache first; at most every few seconds).
   const scheduleSources = createDebounce(() => { sources.refresh('tabs').catch(warn('source refresh')); }, 1000, 5000);
   // M3-R75: the period is the smallest `refreshEvery` of the enabled recipes (default 5 min); the alarm is re-created
-  // only when it is missing or its period differs, so config changes never postpone its next tick.
+  // only when it is missing or its period differs, so config changes never postpone its next tick. Without a rule that
+  // has a `source` (enabled and not paused) nothing can make a request: the alarm is cleared (as syncAgeTick does).
   const startSourcesAlarm = () => {
     (async () => {
-      const period = refreshPeriodMinutes(await getProgram());
+      const p = await getProgram();
+      if (!p.rules.some((r) => r.rule.source)) {
+        await browser.alarms.clear(SOURCES_ALARM);
+        return;
+      }
+      const period = refreshPeriodMinutes(p);
       if ((await browser.alarms.get(SOURCES_ALARM))?.periodInMinutes !== period) {
         await browser.alarms.create(SOURCES_ALARM, { periodInMinutes: period });
       }
     })().catch(warn('source alarm'));
   };
-  /** Tab facts for read-only views (popup views, preview, explain): page facts and source data. */
-  const tabFacts = (id: number) => {
+  /**
+   * Tab facts for read-only views (popup views, preview, explain): page facts and source data. `url` is the snapshot
+   * tab's: SourceService drops data looked up for a previous page, so a just-navigated tab shows no stale pill.
+   */
+  const tabFacts = (id: number, url?: string) => {
     const page = pageFacts.get(id);
-    const source = sources.factsFor(id);
+    const source = sources.factsFor(id, url);
     return { ...(page && { page }), ...(source && { source }) };
   };
   const openOptions = async (hash: string) => { await browser.tabs.create({ url: `${browser.runtime.getURL('/options.html')}${hash}` }); };

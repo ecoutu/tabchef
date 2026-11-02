@@ -772,6 +772,16 @@ describe('preview.change (M2 T13)', () => {
     expect(r.data.closes.map((c) => c.tabId)).toEqual([1]);
   });
 
+  it('M3-R95b: preview asks facts with each snapshot tab\'s URL', async () => {
+    const s = previewSetup();
+    const facts = vi.fn<(id: number, url?: string) => Record<string, never>>(() => ({}));
+    s.deps.preview!.facts = facts;
+    s.mk(1, 'https://example.com/a');
+    await s.handle({ type: 'preview.change', config: withRules([exRule]) }, ui);
+    expect(facts).toHaveBeenCalledWith(1, 'https://example.com/a');
+    expect(facts.mock.calls.every(([, url]) => url === 'https://example.com/a')).toBe(true);
+  });
+
   it('invalid config, missing deps, malformed requests and foreign senders', async () => {
     const s = previewSetup();
     expect(await s.handle({ type: 'preview.change', config: { version: 2 } }, ui)).toMatchObject({ ok: false, error: 'invalid config' });
@@ -838,6 +848,15 @@ describe('explain.tab / rules.shadowed (M2 T14)', () => {
     expect(paused.length).toBeGreaterThan(0);
     for (const e of paused) expect(e.paused).toMatch(/^Paused: needs access to /);
     expect(paused.every((e) => e.won.length === 0)).toBe(true);
+  });
+
+  it('M3-R95b: explain.tab asks facts with the snapshot tab\'s URL', async () => {
+    const s = explainSetup();
+    const facts = vi.fn<(id: number, url?: string) => Record<string, never>>(() => ({}));
+    s.deps.explain!.facts = facts;
+    s.mk(1, 'https://x.com/1');
+    await s.handle({ type: 'explain.tab', tabId: 1 }, ui);
+    expect(facts).toHaveBeenCalledWith(1, 'https://x.com/1');
   });
 
   it('explain.tab: unknown tab, malformed requests, foreign senders, missing deps', async () => {

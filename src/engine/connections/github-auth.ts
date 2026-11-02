@@ -162,7 +162,9 @@ export class GitHubDeviceAuth implements AuthProvider {
     // Cancelled (Disconnect) or replaced by a newer start while the POST was out: these tokens are not stored.
     if ((await this.pending())?.deviceCode !== flow.deviceCode) return { state: 'error', message: 'GitHub sign-in was cancelled; start again' };
     try {
-      await this.storeDeviceTokens(access, b);
+      if (!(await this.storeDeviceTokens(access, b, flow.deviceCode))) {
+        return { state: 'error', message: 'GitHub sign-in was cancelled; start again' };
+      }
     } catch (e) {
       await this.clearFlow(flow.deviceCode);
       return {
@@ -174,8 +176,11 @@ export class GitHubDeviceAuth implements AuthProvider {
     return { state: 'done' };
   }
 
-  /** Reads login + scopes with the new token, then switches the github connection to it (shared rollback helper). */
-  private async storeDeviceTokens(access: string, b: Record<string, unknown>): Promise<void> {
+  /**
+   * Reads login + scopes with the new token, then switches the github connection to it (shared rollback helper).
+   * False (nothing stored) when the flow was cancelled (Disconnect) or replaced during the up-to-15 s GET /user.
+   */
+  private async storeDeviceTokens(access: string, b: Record<string, unknown>, deviceCode: string): Promise<boolean> {
     const now = this.now();
     const expiresIn = posNum(b.expires_in);
     const refreshToken = str(b.refresh_token);
@@ -190,10 +195,12 @@ export class GitHubDeviceAuth implements AuthProvider {
       secret = { token: access };
     }
     const { login, scopes } = await this.whoAmI(access);
+    if ((await this.pending())?.deviceCode !== deviceCode) return false;
     const base = builtinConnectionDefs().github;
     const def: ConnectionDef = { ...base, auth: 'device-code', scopes, ...(login !== undefined && { login }) };
     await replaceCredentials({ manager: this.deps.manager(), secrets: this.deps.secrets }, def, secret, accessToken);
     this.failedRefresh.delete(def.id);
+    return true;
   }
 
   /** GET /user with the new token. Best effort: a failure saves the connection without a login. */

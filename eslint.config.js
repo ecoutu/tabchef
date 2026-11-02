@@ -40,7 +40,7 @@ export default tseslint.config(
   },
   {
     // Content scripts run in web pages; they never touch connection secrets or the code that reads them.
-    files: ['src/entrypoints/*.content.ts'],
+    files: ['src/entrypoints/*.content.{ts,tsx}', 'src/entrypoints/*.content/**/*.{ts,tsx}'],
     rules: {
       'no-restricted-imports': ['error', {
         patterns: [{ group: ['**/engine/connections', '**/engine/connections/**'], message: 'Content scripts must not import engine/connections/ (secrets).' }],
