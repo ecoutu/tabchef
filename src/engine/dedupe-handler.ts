@@ -18,6 +18,8 @@ export interface DedupeDeps {
   ask: (newTab: TabSnap, existing: TabSnap) => Promise<void>;
   isPaused: () => boolean;
   isLocked: (tabId: number) => boolean;
+  /** Anchor tabs (M2 T11) are never closed or asked about as the new tab; as the existing tab they are kept. Default: none. */
+  isAnchor?: (tabId: number) => boolean;
   /** Awaited before the pause/lock checks (e.g. SafetyService.ready) so state loaded after a worker wake is honoured. */
   beforeDecide?: () => Promise<void>;
   /** Called (fire-and-forget) after an automatic close, with the focused existing tab; used for the undo toast. */
@@ -93,6 +95,11 @@ export class DedupeHandler {
     if (this.graceStart === undefined || this.graceEnd === undefined || at >= this.graceEnd) this.graceStart = at;
     else this.graceStart = Math.min(this.graceStart, at);
     this.graceEnd = Math.max(this.graceEnd ?? 0, at + STARTUP_GRACE_MS);
+  }
+
+  /** Never closed as the new tab: locked and anchor tabs. */
+  private kept(tabId: number): boolean {
+    return this.deps.isLocked(tabId) || (this.deps.isAnchor?.(tabId) ?? false);
   }
 
   private inStartupGrace(): boolean {
@@ -219,7 +226,7 @@ export class DedupeHandler {
     await this.deps.beforeDecide?.();
     if (this.inStartupGrace() || this.deps.isPaused()) return;
     const isNew = this.isYoung(tabId) || (wasFresh && !this.createdInGrace(tabId));
-    if (!isNew || this.deps.isLocked(tabId)) return;
+    if (!isNew || this.kept(tabId)) return;
     const program = await this.getProgram();
     const key = normalizeUrl(url, program.dedupe)?.key;
     if (key === undefined || this.handled.get(tabId) === key) return;
@@ -253,7 +260,7 @@ export class DedupeHandler {
     const newTab: TabSnap = { ...live, url };
     delete newTab.pendingUrl;
     const { o, ruleId } = dedupeDecision(p, evaluateTab(p, { tab: newTab, ...openerOf(snap, newTab) }, this.now()));
-    const locked = new Set(snap.tabs.filter((t) => this.deps.isLocked(t.id)).map((t) => t.id));
+    const locked = new Set(snap.tabs.filter((t) => this.kept(t.id)).map((t) => t.id));
     // Another new tab may be "existing" only if it is older (lower id): of two new duplicates, the newer one closes.
     const pool = snap.tabs.filter((t) => t.id < tabId || !this.isCandidateLike(t.id));
     const dup = findDuplicate(newTab, pool, s, o, locked);
@@ -272,7 +279,7 @@ export class DedupeHandler {
     const fresh = await this.port.snapshot();
     const cand = fresh.tabs.find((t) => t.id === tabId);
     const existing = fresh.tabs.find((t) => t.id === dup.existing.id);
-    if (!cand || !existing || cand.pinned || this.deps.isLocked(tabId) || this.exemptNow(tabId, key, cand.windowId, p)) return;
+    if (!cand || !existing || cand.pinned || this.kept(tabId) || this.exemptNow(tabId, key, cand.windowId, p)) return;
     const keyOf = (u: string | undefined) => (u ? normalizeUrl(u, s, o)?.key : undefined);
     const dupKey = keyOf(url);
     if (dupKey === undefined || (keyOf(cand.pendingUrl) !== dupKey && keyOf(cand.url) !== dupKey)) return;

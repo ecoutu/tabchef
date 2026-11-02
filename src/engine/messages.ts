@@ -256,6 +256,8 @@ export interface HandlerDeps {
   /** Effective dedupe settings: the compiled Program's `dedupe` (config + recipe urlTransforms, ruling R4). */
   getSettings: () => Promise<DedupeSettings>;
   safety: Pick<SafetyService, 'pause' | 'resume' | 'isPaused' | 'lock' | 'unlock' | 'isLocked' | 'lockedTabIds' | 'undo'>;
+  /** Anchor tabs (M2 T11) are never closed by dupes.close* (R11). Default: none. */
+  isAnchor?: (tabId: number) => boolean;
   recentlyClosed: Pick<RecentlyClosed, 'list' | 'add' | 'ready'>;
   whyLog: Pick<WhyLog, 'all' | 'forTab' | 'add' | 'ready'>;
   ask: { listPending: () => Promise<PendingAsk[]>; resolvePending: (n: number, e: number, c: 'switch' | 'keep') => Promise<void> };
@@ -334,12 +336,14 @@ export function createOnMessage(d: OnMessageDeps) {
 
 export function createHandler(deps: HandlerDeps): (req: unknown, sender: MessageSender) => Promise<Response> {
   const now = deps.now ?? Date.now;
+  /** Never closed from the popup: locked and anchor tabs (pinned are checked per tab). */
+  const kept = (id: number): boolean => deps.safety.isLocked(id) || (deps.isAnchor?.(id) ?? false);
 
-  /** Closes everything but the oldest tab; pinned and locked tabs are never closed. */
+  /** Closes everything but the oldest tab; pinned, locked and anchor tabs are never closed. */
   async function closeSet(set: DupeSet): Promise<number> {
     let closed = 0;
     for (const t of set.tabs.slice(1)) {
-      if (t.pinned || deps.safety.isLocked(t.id)) continue;
+      if (t.pinned || kept(t.id)) continue;
       const url = tabUrl(t);
       await deps.port.closeTab(t.id);
       deps.recentlyClosed.add({ url, title: t.title, windowId: t.windowId, reason: 'duplicate', at: now() });
@@ -484,25 +488,25 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
       case 'tabs.list': return ok((await deps.port.snapshot()).tabs);
       case 'dupes.list': {
         const views = (await sets()).map((s): DupeSetView => ({
-          ...s, closable: s.tabs.slice(1).filter((t) => !t.pinned && !deps.safety.isLocked(t.id)).length,
+          ...s, closable: s.tabs.slice(1).filter((t) => !t.pinned && !kept(t.id)).length,
         }));
         return ok({ sets: views, pending: await deps.ask.listPending() });
       }
       case 'dupes.closeExtras': {
         const set = (await sets()).find((s) => s.key === req.key);
         const n = set ? await closeSet(set) : 0;
-        await refreshBadge({ ...deps, isLocked: (id) => deps.safety.isLocked(id) });
+        await refreshBadge({ ...deps, isLocked: kept });
         return ok(n);
       }
       case 'dupes.closeAll': {
         let n = 0;
         for (const s of await sets()) n += await closeSet(s);
-        await refreshBadge({ ...deps, isLocked: (id) => deps.safety.isLocked(id) });
+        await refreshBadge({ ...deps, isLocked: kept });
         return ok(n);
       }
       case 'dupes.resolve':
         await deps.ask.resolvePending(req.newTabId, req.existingTabId, req.choice);
-        await refreshBadge({ ...deps, isLocked: (id) => deps.safety.isLocked(id) });
+        await refreshBadge({ ...deps, isLocked: kept });
         return ok(null);
       case 'recent.list': await deps.recentlyClosed.ready; return ok(deps.recentlyClosed.list());
       case 'recent.undo': await deps.safety.undo(req.id); return ok(null);

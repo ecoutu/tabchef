@@ -14,7 +14,7 @@ const A = 'https://a.example/x';
 const ui = { id: 'ext', url: 'chrome-extension://ext/popup.html' };
 const content = { id: 'ext', tab: { id: 9 }, url: 'https://evil.example/' };
 
-function setup() {
+function setup(over: Partial<HandlerDeps> = {}) {
   const port = new FakeBrowserPort();
   port.addWindow(1, { focused: true });
   port.addWindow(2);
@@ -43,6 +43,7 @@ function setup() {
     whyLog: { ready: Promise.resolve(), all: () => [], forTab: () => [], add: () => {} },
     ask: { listPending: async () => [{ newTabId: 5, existingTabId: 1, key: 'k', at: 1 }], resolvePending: vi.fn(async () => {}) },
     now: () => 42,
+    ...over,
   };
   return { port, mk, deps, handle: createHandler(deps), set, added, locked, getCfg: () => cfg };
 }
@@ -67,6 +68,16 @@ describe('messages', () => {
     const r = await s.handle({ type: 'dupes.closeAll' }, ui);
     expect(r).toEqual({ ok: true, data: 1 });
     expect((await s.port.snapshot()).tabs.map((t) => t.id)).toEqual([1, 2, 3]);
+  });
+
+  it('never closes anchor tabs (R11)', async () => {
+    const s = setup({ isAnchor: (id) => id === 2 });
+    s.mk(1, A); s.mk(2, A); s.mk(3, A);
+    const r = await s.handle({ type: 'dupes.closeAll' }, ui);
+    expect(r).toEqual({ ok: true, data: 1 });
+    expect((await s.port.snapshot()).tabs.map((t) => t.id)).toEqual([1, 2]);
+    const sets = ((await s.handle({ type: 'dupes.list' }, ui)) as Loose).data.sets;
+    expect((sets[0] as unknown as { closable: number }).closable).toBe(0);
   });
 
   it('tabs.list returns the snapshot tabs for extension pages only', async () => {

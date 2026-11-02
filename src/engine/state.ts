@@ -18,7 +18,13 @@ export interface RuntimeState {
   retitleFailures?: [number, number][];
   /** ["<windowId>|<title>", consecutive flushes absent]: creation numbers are dropped only after 2 (tombstones). */
   creationAbsent?: [string, number][];
+  /** Tabs Tabchef opened (or moved) into a group it created as that group's anchors (M2 T11). */
+  anchors?: AnchorEntry[];
+  /** `"<windowId>|<title>"` of groups whose anchor the user closed: not reopened until the group is removed (T11). */
+  anchorsDismissed?: string[];
 }
+
+export interface AnchorEntry { tabId: number; windowId: number; title: string; url: string }
 
 export interface PendingTitle { title: string; color: GroupColor; collapsed?: boolean }
 
@@ -36,6 +42,8 @@ export interface LiveState {
   leaveAloneUrls: Map<number, string>;
   retitleFailures: Map<number, number>;
   creationAbsent: Map<string, number>;
+  anchors: AnchorEntry[];
+  anchorsDismissed: Set<string>;
 }
 
 export const RT_KEY = 'rt';
@@ -51,6 +59,8 @@ export function toLive(rt: Partial<RuntimeState> | undefined): LiveState {
     leaveAloneUrls: new Map(rt?.leaveAloneUrls ?? []),
     retitleFailures: new Map(rt?.retitleFailures ?? []),
     creationAbsent: new Map(rt?.creationAbsent ?? []),
+    anchors: (rt?.anchors ?? []).map((a) => ({ ...a })),
+    anchorsDismissed: new Set(rt?.anchorsDismissed ?? []),
   };
 }
 
@@ -65,6 +75,8 @@ export function toRuntime(s: LiveState): RuntimeState {
     leaveAloneUrls: [...s.leaveAloneUrls],
     retitleFailures: [...s.retitleFailures],
     creationAbsent: [...s.creationAbsent],
+    anchors: s.anchors.map((a) => ({ ...a })),
+    anchorsDismissed: [...s.anchorsDismissed],
   };
 }
 

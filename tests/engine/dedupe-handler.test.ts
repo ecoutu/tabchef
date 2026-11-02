@@ -521,6 +521,28 @@ describe('DedupeHandler', () => {
     expect(w.calls('closeTab')).toEqual([[2]]);
   });
 
+  it('anchor candidate -> no action, in every mode (R11)', async () => {
+    for (const mode of ['always-switch', 'ask'] as const) {
+      const cfg = defaultConfig();
+      const w = setup({ ...cfg, dedupe: { ...cfg.dedupe, mode } }, { isAnchor: (id) => id === 2 });
+      w.port.addTab(tab(1, PR));
+      w.port.addTab(tab(2, PR));
+      w.h.recordCreated(2);
+      await w.h.onCandidate(2, PR, 'pending');
+      expect(w.calls('closeTab')).toEqual([]);
+      expect(w.ask).not.toHaveBeenCalled();
+    }
+  });
+
+  it('an anchor existing tab is kept and focused (being the target is harmless)', async () => {
+    const w = setup(defaultConfig(), { isAnchor: (id) => id === 1 });
+    w.port.addTab(tab(1, PR));
+    w.port.addTab(tab(2, PR));
+    w.h.recordCreated(2);
+    await w.h.onCandidate(2, PR, 'pending');
+    expect(w.calls('closeTab')).toEqual([[2]]);
+  });
+
   it('exempt URLs -> no action', async () => {
     const w = setup();
     w.port.addTab(tab(1, 'chrome://newtab'));

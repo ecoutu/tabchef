@@ -136,6 +136,10 @@ describe('evaluateTab: templates, tables and colors', () => {
     const more = { collapsed: true, sortGroups: 'alphabetical', strict: false, merge: true, anchors: ['https://a.com/'] };
     expect(ev(config({ rules: [rule('g', { url: '*' }, [group('G', 'red', more)])] })).group).toMatchObject(more);
   });
+  it('anchors are rendered with the tab vars', () => {
+    const rs = [rule('g', { url: 'github.com/acme/:repo/*' }, [group('{repo}', 'blue', { anchors: ['https://github.com/acme/{repo}', 'https://x.com/'] })])];
+    expect(ev(config({ rules: rs })).group?.anchors).toEqual(['https://github.com/acme/api', 'https://x.com/']);
+  });
   it('title-regex named groups are template vars', () => {
     const rs = [rule('g', { all: [{ url: 'github.com/*' }, { title: '/^(?<num>\\d+)/' }] }, [group('#{num}')])];
     expect(ev(config({ rules: rs })).group?.title).toBe('#42');
