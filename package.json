@@ -16,6 +16,7 @@
     "prepare": "husky",
     "gen:validator": "node scripts/gen-validator.mjs",
     "check:csp": "node scripts/check-no-eval.mjs",
+    "check:cycles": "node scripts/check-cycles.mjs",
     "validate:recipes": "node scripts/run-ts.mjs scripts/validate-recipes.ts"
   },
   "devDependencies": {
