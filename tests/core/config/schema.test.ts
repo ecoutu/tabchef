@@ -250,7 +250,7 @@ describe('config schema: stored user recipe bodies (R41)', () => {
 });
 
 describe('RecipeRef.ruleEnabled (R56)', () => {
-  it('an old config without the field validates; the field takes a list of rule ids', () => {
+  it('an old config without the field validates; the field is a map of rule id → boolean', () => {
     expect(validateConfig(defaultConfig()).ok).toBe(true);
     const c = defaultConfig();
     c.recipes = c.recipes.map((r) => (r.id === 'finished' ? { ...r, ruleEnabled: { 'meet-ended': false } } : r));

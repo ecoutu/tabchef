@@ -359,6 +359,30 @@ describe('compileProgram: ruleEnabled overrides (R56)', () => {
     expect(res.program.rules.map((r) => r.key)).toContain('github-prs/group-by-repo');
   });
 
+  it('R57: no override fill-in: a body rule without `enabled` still fails validateRule (as before R56)', () => {
+    const noEnabled = { id: 'x', name: 'x', match: { url: 'a.com/*' }, actions: [{ group: { title: 'X', color: 'blue' } }] } as unknown as Rule;
+    const res = compileProgram(config({ recipes: [ref('n')] }), { n: recipe('n', [rule('a'), noEnabled]) });
+    expect(res.errors.map((e) => e.key)).toEqual(['n/x']);
+    expect(res.program.rules).toEqual([]); // an invalid body rule (author's error) still skips its recipe
+  });
+
+  it('R57: a body-off rule turned on that fails to compile is reported for its key; the rest of the recipe runs', () => {
+    const broken = recipe('u', [rule('ok'), rule('bad', { enabled: false, match: { url: '/(/' } })]);
+    const res = compileProgram(config({ recipes: [ref('u', { ruleEnabled: { bad: true } })] }), { u: broken });
+    expect(res.errors).toEqual([{ key: 'u/bad', error: expect.stringMatching(/invalid regex/) }]);
+    expect(res.program.rules.map((r) => r.key)).toEqual(['u/ok']);
+  });
+
+  it('R57: ruleOn is the one effective-state rule (override, else the body: on unless enabled === false)', async () => {
+    const { ruleOn } = await import('../../../src/core/lang/compile');
+    expect(ruleOn(ref('m'), rule('a'))).toBe(true);
+    expect(ruleOn(ref('m'), rule('a', { enabled: false }))).toBe(false);
+    expect(ruleOn(ref('m'), { id: 'a' } as Rule)).toBe(true);
+    expect(ruleOn(ref('m', { ruleEnabled: { a: true } }), rule('a', { enabled: false }))).toBe(true);
+    expect(ruleOn(ref('m', { ruleEnabled: { a: false } }), rule('a'))).toBe(false);
+    expect(ruleOn(ref('m', { ruleEnabled: { a: 'x' as unknown as boolean } }), rule('a'))).toBe(true);
+  });
+
   it('needs follow the effective state; unknown ids are ignored', () => {
     expect(Object.keys(compileProgram(config({ recipes: [ref('m')] }), { m: meet }).program.needs)).toEqual(['m', 'm/b']);
     const flipped = compileProgram(config({ recipes: [ref('m', { ruleEnabled: { b: false, c: true, nope: true } })] }), { m: meet });

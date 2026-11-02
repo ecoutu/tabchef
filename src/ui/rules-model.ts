@@ -6,7 +6,7 @@ import { asGroupRule, orderedUserRules } from '../core/config/group-view';
 import { groupRuleToRule, sanitizeRuleId, userKey } from '../core/config/migrate';
 import { COLORS } from '../core/config/schema';
 import { validateRule } from '../core/lang/schema';
-import { substitute } from '../core/lang/compile';
+import { ruleOn, substitute } from '../core/lang/compile';
 import { builtinRecipes } from '../recipes/load';
 
 // The Rules page (M2 T15) lists user rules and the rules of enabled recipes in one priority order (`order`). User
@@ -148,7 +148,7 @@ export function unclaimedErrors(errors: string[]): string[] {
 export type RuleRow =
   | { key: string; kind: 'user'; rule: Rule }
   | { key: string; kind: 'recipe'; recipeId: string; recipeName: string; rule: Rule; error?: string;
-      /** Effective state (R56): RecipeRef.ruleEnabled[ruleId], else the body's `enabled`. */
+      /** Effective state: ruleOn (R56/R57), the same rule compileProgram uses. */
       on: boolean };
 
 const own = (o: object, k: string): boolean => Object.prototype.hasOwnProperty.call(o, k);
@@ -173,7 +173,7 @@ export function ruleRows(c: Config, builtins: Record<string, Recipe> = builtinRe
     if (!body) continue;
     const values = paramValues(body, ref.params);
     for (const raw of body.rules) {
-      const on = ref.ruleEnabled?.[raw.id] ?? raw.enabled !== false;
+      const on = ruleOn(ref, raw);
       const row: RuleRow = { key: `${ref.id}/${raw.id}`, kind: 'recipe', recipeId: ref.id, recipeName: body.name, rule: raw, on };
       try {
         row.rule = substitute(raw, values) as Rule;
@@ -263,7 +263,7 @@ export function setRecipeRuleOn(c: Config, key: string, on: boolean, builtins: R
   const raw = ref ? recipeBody(ref, builtins)?.rules.find((r) => r.id === ruleId) : undefined;
   if (!ref || !raw) return c;
   const map = { ...ref.ruleEnabled };
-  if (on === (raw.enabled !== false)) delete map[ruleId];
+  if (on === ruleOn({}, raw)) delete map[ruleId]; // back to the body default
   else map[ruleId] = on;
   const next: RecipeRef = { ...ref };
   delete next.ruleEnabled;

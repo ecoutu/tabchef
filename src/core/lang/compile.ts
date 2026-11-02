@@ -154,7 +154,17 @@ function ruleErrors(rule: unknown, tables: Tables): string[] {
   return ruleProblems(rule as Rule, tables).map((p) => `${p.path} ${p.message}`);
 }
 
-interface Candidate { id: string; source: RecipeRef['source']; body: Recipe; overrides: Map<string, boolean> }
+interface Candidate { id: string; source: RecipeRef['source']; body: Recipe; ref: RecipeRef }
+
+/**
+ * Whether a recipe rule runs (R56/R57): the user's boolean override `ref.ruleEnabled[rule.id]`, else the body's
+ * `enabled`, which counts as on unless it is `false` (a body rule without `enabled` is "on" and then fails
+ * validation, as before R56). The one effective-state rule: compileProgram, the Rules page and the Recipes page use it.
+ */
+export function ruleOn(ref: Pick<RecipeRef, 'ruleEnabled'>, rule: Pick<Rule, 'id' | 'enabled'>): boolean {
+  const o: unknown = isObj(ref.ruleEnabled) && own(ref.ruleEnabled, rule.id) ? ref.ruleEnabled[rule.id] : undefined;
+  return typeof o === 'boolean' ? o : rule.enabled !== false;
+}
 
 /** Enabled recipes with their params substituted; failures go to `errors`. */
 function resolveRecipes(config: Config, builtins: Record<string, Recipe>, errors: CompileError[]): Candidate[] {
@@ -199,8 +209,7 @@ function resolveRecipes(config: Config, builtins: Record<string, Recipe>, errors
       continue;
     }
     if (body.views !== undefined && !(Array.isArray(body.views) && body.views.every(isObj))) { errors.push({ key: id, error: 'malformed views' }); continue; }
-    const overrides = new Map(isObj(ref.ruleEnabled) ? Object.entries(ref.ruleEnabled).filter((e): e is [string, boolean] => typeof e[1] === 'boolean') : []);
-    out.push({ id, source: ref.source, body, overrides });
+    out.push({ id, source: ref.source, body, ref });
   }
   return out;
 }
@@ -246,14 +255,17 @@ export function compileProgram(
     const rules: Rule[] = [];
     c.body.rules.forEach((raw, i) => {
       const key = `${c.id}/${isObj(raw) && typeof raw.id === 'string' ? raw.id : `#${i}`}`;
-      if (!isObj(raw)) return;
-      // R56: the user's override, else the body default. An effectively-off rule is skipped (no needs, never compiled).
-      if (!(c.overrides.get(raw.id) ?? raw.enabled !== false)) return;
-      const r: Rule = raw.enabled === true ? raw : { ...raw, enabled: true };
+      if (!isObj(raw) || !ruleOn(c.ref, raw)) return; // effectively off (R56): no needs, never compiled
+      // R57: the body is validated as written; only a rule the user turned on against its body (`enabled: false`) is
+      // compiled as a copy with `enabled: true`. Nothing is filled in (a body rule without `enabled` stays invalid).
+      const turnedOn = raw.enabled === false;
+      const r: Rule = turnedOn ? { ...raw, enabled: true } : raw;
       const es = ruleErrors(r, checkTables);
       if (ids.has(r.id)) es.push('duplicate rule id');
       ids.add(r.id);
-      if (es.length) errs.push({ key, error: es.join('; ') });
+      // An invalid body rule is the author's error and skips the recipe; a rule only the user turned on that does not
+      // compile is reported for its key and skipped alone (R57), so the toggle cannot break the rest of the recipe.
+      if (es.length) (turnedOn ? errors : errs).push({ key, error: es.join('; ') });
       else rules.push(r);
     });
     if (errs.length) errors.push(...errs);

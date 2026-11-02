@@ -8,7 +8,8 @@
   // there; denied rule-level needs (Finished / Meet) still enable, and that rule shows paused.
   import { onMount } from 'svelte';
   import type { Config } from '../../core/types';
-  import type { ParamDef } from '../../core/lang/types';
+  import type { ParamDef, Rule } from '../../core/lang/types';
+  import { ruleOn } from '../../core/lang/compile';
   import type { RecipeListItem } from '../../engine/messages';
   import type { NeedStatus } from '../../engine/permissions';
   import type { PreviewResult } from '../../core/lang/preview';
@@ -29,6 +30,8 @@
   let loadError = $state('');
   /** Params form values per recipe: always the complete object (setParams / enable replace it whole, T8). */
   let values = $state<Record<string, Record<string, unknown>>>({});
+  /** JSON of each recipe's stored params at the last load: a change there resets that card's form. */
+  const storedParams: Record<string, string> = {};
   let messages = $state<Record<string, { text: string; error: boolean }>>({});
   let busy = $state<string | null>(null);
   let preview = $state<{ result: PreviewResult; answer: (apply: boolean) => void } | null>(null);
@@ -46,7 +49,16 @@
     loadError = '';
     items = r.data.recipes;
     listRev = r.data.rev;
-    values = Object.fromEntries(items.map((i) => [i.id, completeParams(i.paramDefs, i.params)]));
+    // Keep a card's unsaved param edits across reloads (another card's action, a permission change, a config change)
+    // unless that recipe's stored params changed: then the stored values win (fix round 1).
+    const next: Record<string, Record<string, unknown>> = {};
+    for (const i of items) {
+      const json = JSON.stringify(i.params);
+      const kept = values[i.id];
+      next[i.id] = kept && storedParams[i.id] === json ? kept : completeParams(i.paramDefs, i.params);
+      storedParams[i.id] = json;
+    }
+    values = next;
   }
 
   $effect(() => { void saved; void load(); });
@@ -64,10 +76,10 @@
     return parts.join('. ');
   }
   const recipeStatus = (i: RecipeListItem): string => (!i.enabled ? 'Off' : i.status.ok ? 'On' : (i.status.reason ?? 'Paused'));
-  function ruleStatus(i: RecipeListItem, ruleId: string, enabledInBody: boolean): string {
-    // Effective state (R56): the #/rules override, else the body default.
-    const on = saved.recipes.find((r) => r.id === i.id)?.ruleEnabled?.[ruleId] ?? enabledInBody;
-    if (!i.enabled || !on) return 'Off';
+  function ruleStatus(i: RecipeListItem, rule: Rule): string {
+    const ruleId = rule.id;
+    // Effective state: ruleOn, the rule compileProgram uses (the #/rules override, else the body default).
+    if (!i.enabled || !ruleOn(saved.recipes.find((r) => r.id === i.id) ?? {}, rule)) return 'Off';
     if (!i.status.ok) return i.status.reason ?? 'Paused';
     const st = i.rules[`${i.id}/${ruleId}`]?.status;
     return st && !st.ok ? (st.reason ?? 'Paused') : 'Active';
@@ -159,7 +171,7 @@
       {#if body?.rules.length}
         <ul class="rules">
           {#each body.rules as r (r.id)}
-            <li data-rule={`${item.id}/${r.id}`}>{r.name}: <span class:paused={ruleStatus(item, r.id, r.enabled).startsWith('Paused')}>{ruleStatus(item, r.id, r.enabled)}</span></li>
+            <li data-rule={`${item.id}/${r.id}`}>{r.name}: <span class:paused={ruleStatus(item, r).startsWith('Paused')}>{ruleStatus(item, r)}</span></li>
           {/each}
         </ul>
       {/if}
