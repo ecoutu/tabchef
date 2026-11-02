@@ -499,7 +499,7 @@ function scrub<T>(v: T, secrets: string[]): T {
   return v;
 }
 
-export interface MessageSender { id?: string; url?: string; tab?: { id?: number; url?: string }; frameId?: number; documentId?: string }
+export interface MessageSender { id?: string; url?: string; tab?: { id?: number; url?: string; discarded?: boolean; frozen?: boolean }; frameId?: number; documentId?: string }
 
 /** True for the extension's own pages (popup, options, side panel); false for content scripts and other extensions. */
 export function isExtensionPage(sender: MessageSender, d: Pick<HandlerDeps, 'runtimeId' | 'extensionOrigin'>): boolean {
@@ -1079,7 +1079,7 @@ export function createContentHandler(d: ContentDeps): (msg: unknown, sender: Mes
       } else {
         d.pageFacts.buffer(tabId, sender.documentId!, { formEdited: m.formEdited, url });
       }
-      return d.getProgram().then((p): WatchConfigMessage => ({ type: 'watch.config', ...d.pageFacts.watchConfigFor(url, p) }));
+      return d.getProgram().then((p): WatchConfigMessage => ({ type: 'watch.config', ...d.pageFacts.watchConfigFor(url, p, sender.tab) }));
     }
     const m = pf!;
     const pageFacts = { texts: [...m.texts], extracts: { ...m.extracts }, formEdited: m.formEdited };

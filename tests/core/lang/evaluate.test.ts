@@ -263,6 +263,20 @@ describe('evaluateTab: M3 T1 fields and projects', () => {
     expect(ev(c)).toMatchObject({ matched: ['user/x'], needsPage: true });
     expect(ev(c, facts({}, { page: { texts: [], extracts: { 'user/s.h': 'Done' }, formEdited: false } }))).toMatchObject({ matched: ['user/x', 'user/s'], needsPage: false });
   });
+  it('an {adapter, field} extract reads its page.facts key through the adapter parser (T10)', () => {
+    const c = config({ rules: [
+      rule('g', { url: 'github.com/*' }, [group('{state} {branch}')], { extract: { state: { adapter: 'github.prPage', field: 'state' }, branch: { adapter: 'github.prPage', field: 'branch' } } }),
+      rule('m', { all: [{ url: '*' }, { field: { field: 'extract.st', op: '!=', value: 'merged' } }] }, [{ dedupe: {} }], { extract: { st: { adapter: 'github.prPage', field: 'state' } } }),
+    ] });
+    const page = (state: string) => ({ texts: [], extracts: { 'adapter:github.prPage.state': state, 'adapter:github.prPage.branch': 'acme/api:feat/x' }, formEdited: false });
+    expect(ev(c)).toMatchObject({ needsPage: true, groupNeedsPage: true, matched: ['user/g'] });
+    expect(ev(c, facts({}, { page: page('Status: Open') }))).toMatchObject({ group: { title: 'open feat/x' }, matched: ['user/g', 'user/m'], needsPage: false });
+    expect(ev(c, facts({}, { page: page('Merged') })).matched).toEqual(['user/g']);
+    // Unrecognized state text is unknown, never a value (M3-R45): `!= merged` is unknown, not true.
+    const unknown = ev(c, facts({}, { page: page('Queued') }));
+    expect(unknown.matched).toEqual(['user/g']);
+    expect(unknown.group?.title).toBe(' feat/x');
+  });
   it('a jiraKey extract yields the first key (prefer order), from title, url or a source field (M3-R21)', () => {
     const run = (from: ExtractFrom, f: TabFacts) => {
       const b = { p: recipe('p', [rule('a', { url: 'github.com/*' }, [assign('{k}')], { source: { connection: 'gh', query: 'github.pull_request', args: {}, fields: { headRefName: 'headRefName' } }, extract: { k: { from, jiraKey: {} } } })], { project }) };

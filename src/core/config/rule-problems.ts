@@ -5,6 +5,7 @@ import type { Comparison, Cond, Rule } from '../lang/types';
 import { compilePattern, MAX_REGEX_LEN, PatternError, patternCaptures } from '../match/pattern';
 import { slowRegexProblem } from '../match/regex-safety';
 import { DURATION } from '../lang/duration';
+import { adapterOf } from '../adapters';
 import { parseTemplate, TemplateError, templateTables, templateVars } from '../match/template';
 import type { ValidateError } from './validate-config.generated.js';
 
@@ -193,6 +194,10 @@ export function ruleProblems(rule: Rule, tables?: Tables): Problem[] {
   for (const [name, x] of Object.entries(rule.extract ?? {})) {
     if (name.length > MAX_EXTRACT_NAME) out.push({ path: `/extract/${name}`, message: `extract name too long (max ${MAX_EXTRACT_NAME} characters)` });
     if ('regex' in x) { const m = regexProblem(x.regex, undefined, true); if (m) out.push({ path: `/extract/${name}/regex`, message: m }); }
+    if ('adapter' in x) {
+      const fields = Object.keys(adapterOf(x.adapter)?.selectors ?? {});
+      if (!fields.includes(x.field)) out.push({ path: `/extract/${name}/field`, message: `${x.adapter} has no field "${x.field}" (${fields.join(', ')})` });
+    }
     if ('jiraKey' in x) {
       if (x.from.startsWith('source.') && !Object.prototype.hasOwnProperty.call(rule.source?.fields ?? {}, x.from.slice(7))) {
         out.push({ path: `/extract/${name}/from`, message: `rule has no source field "${x.from.slice(7)}"` });

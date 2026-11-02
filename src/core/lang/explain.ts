@@ -15,7 +15,7 @@
 // tabs that no sample stands for).
 import { evalCond } from './cond';
 import { liveProgram } from './dry-run';
-import { condScope, evaluateTab, type EvalResult } from './evaluate';
+import { condScope, evaluateTab, isPageExtract, type EvalResult } from './evaluate';
 import type { Cond, Program, Rule, TabFacts } from './types';
 import type { TabSnap } from '../types';
 
@@ -84,8 +84,8 @@ export function explainTab(p: Program, f: TabFacts, now: number, paused: Record<
     const reason = reasonOf(r.key, r.recipeId);
     if (reason !== undefined) e.paused = reason;
     if (r.dryRun) e.dryRun = true;
-    const selectorExtract = Object.values(r.rule.extract ?? {}).some((x) => 'selector' in x);
-    if (!f.page && (c.needsPage || (c.ok && selectorExtract))) e.needsPage = true;
+    const pageExtract = Object.values(r.rule.extract ?? {}).some(isPageExtract);
+    if (!f.page && (c.needsPage || (c.ok && pageExtract))) e.needsPage = true;
     if (c.ok && reason === undefined) {
       const outcome = r.dryRun ? full : live;
       for (const k of actions) {

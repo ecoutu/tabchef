@@ -85,6 +85,14 @@ describe('explainTab', () => {
     expect(x).toMatchObject({ key: 'r/x', name: 'Rule x', paused: 'Paused: needs access to https://x.com/*' });
   });
 
+  it('a matched rule with a selector or {adapter, field} extract needs the page while the facts are missing', () => {
+    const p = program(config([
+      rule('sel', { url: 'x.com/*' }, [group('{h}')], { extract: { h: { selector: 'h1' } } }),
+      rule('ad', { url: 'x.com/*' }, [group('{s}')], { extract: { s: { adapter: 'github.prPage', field: 'state' } } }),
+    ]));
+    expect(explainTab(p, facts('https://x.com/1'), NOW).map((e) => [e.key, e.needsPage])).toEqual([['user/sel', true], ['user/ad', true]]);
+  });
+
   it('relevance: a rule that needs page facts is listed with needsPage while the facts are missing', () => {
     const p = program(config([
       rule('pt', { all: [{ url: 'x.com/*' }, { pageText: 'hello' }] }, [{ close: {} }]),

@@ -425,7 +425,7 @@
       }
     },
     "source": {
-      "$comment": "M3, recipe rules only (M3-R15): query (= T8's SOURCE_QUERIES keys, M3-R29) run on a connection; args are templates; fields map a name (read as source.<name>) to a dot path into the result. No page fallback adapter until T10 (M3-R18).",
+      "$comment": "M3, recipe rules only (M3-R15): query (= T8's SOURCE_QUERIES keys, M3-R29) run on a connection; args are templates; fields map a name (read as source.<name>) to a dot path into the result. No page fallback adapter until T11 (M3-R58).",
       "type": "object",
       "required": [
         "connection",
@@ -610,6 +610,27 @@
                     }
                   }
                 }
+              }
+            }
+          },
+          {
+            "$comment": "M3 T10 (M3-R58): one field of a page adapter (src/core/adapters). Its fields per adapter are checked in TS (ruleProblems).",
+            "type": "object",
+            "required": [
+              "adapter",
+              "field"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "adapter": {
+                "enum": [
+                  "github.prPage",
+                  "jira.issuePage"
+                ]
+              },
+              "field": {
+                "type": "string",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
               }
             }
           }

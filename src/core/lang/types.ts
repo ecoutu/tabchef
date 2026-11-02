@@ -2,6 +2,7 @@
 // `discard` and `notify` actions are deliberately absent until the milestone that implements them (ruling R26).
 import type { DedupeMode, DedupeSettings, TabSnap } from '../types';
 import type { ProjectDef } from '../projects/types';
+import type { AdapterId } from '../adapters/types';
 
 export type Pattern = string;                         // glob | /regex/flags | :param, as M1 compilePattern
 export type Cond =
@@ -18,7 +19,9 @@ export interface JiraKeySpec { pattern?: string; allow?: string[]; ignore?: stri
 export type ExtractSpec =
   | { from: 'url' | 'title'; regex: string; group?: string }
   | { selector: string; attr?: string }
-  | { from: ExtractFrom; jiraKey: JiraKeySpec };
+  | { from: ExtractFrom; jiraKey: JiraKeySpec }
+  /** M3 T10: one field of a page adapter (core/adapters), read from the page facts and parsed by the adapter. */
+  | { adapter: AdapterId; field: string };
 export type Extract = Record<string, ExtractSpec>;
 export type TriggerKind = 'created' | 'committed' | 'pageText' | 'schedule' | 'groupChanged' | 'sourceUpdated';
 export type CloseMode = 'auto' | 'suggest';
@@ -45,7 +48,7 @@ export type SourceQueryKind = 'github.pull_request' | 'github.search_prs_by_key'
 /**
  * A recipe rule's data source (M3, recipe rules only, M3-R15): `query` run on `connection` with `args` (templates
  * rendered with the rule's vars); `fields` maps a field name (read as `source.<name>`) to a dot path into the result.
- * The page `fallback` adapter is deferred to T10 (M3-R18).
+ * The page `fallback` adapter is deferred to T11, its consumer (M3-R58).
  */
 export interface SourceSpec { connection: string; query: SourceQueryKind; args: Record<string, string>; fields: Record<string, string> }
 export interface Rule {

@@ -3,6 +3,9 @@ import { PAGE_FACTS_KEY, PAGE_HOLD_MS, PageFacts, usesPageFacts } from '../../sr
 import { defaultConfig } from '../../src/core/config/defaults';
 import type { Rule } from '../../src/core/lang/types';
 import { programOf } from '../helpers/config';
+import { createContentHandler } from '../../src/engine/messages';
+import { GITHUB_PR_PAGE } from '../../src/core/adapters/github-pr-page';
+import { fakeBrowser } from 'wxt/testing/fake-browser';
 
 const facts = (o: Partial<{ texts: string[]; extracts: Record<string, string>; formEdited: boolean }> = {}) =>
   ({ texts: [], extracts: {}, formEdited: false, ...o });
@@ -138,6 +141,7 @@ describe('usesPageFacts (R44)', () => {
     expect(usesPageFacts(rule('c', { url: 'a.com/*' }, { extract: { v: { selector: 'h1' } } }))).toBe(true);
     expect(usesPageFacts(rule('d', { url: 'a.com/*' }, { extract: { v: { from: 'url', regex: '(x)' } } }))).toBe(false);
     expect(usesPageFacts(rule('e', { opener: { pageText: 'x' } }))).toBe(false); // an opener's page is never watched
+    expect(usesPageFacts(rule('f', { url: 'a.com/*' }, { extract: { v: { adapter: 'github.prPage', field: 'state' } } }))).toBe(true);
   });
 });
 
@@ -219,5 +223,45 @@ describe('PageFacts.watchConfigFor', () => {
   it('dedupes needles across rules', () => {
     const p2 = prog(rule('a', { pageText: 'x' }), rule('b', { any: [{ pageText: ['x', 'y'] }] }));
     expect(pf.watchConfigFor('https://e.com/', p2).needles).toEqual(['x', 'y']);
+  });
+
+  it('adds the adapter selectors of matching rules only where the adapter URL matches, once per field, best fallback last', () => {
+    const a = rule('a', { url: 'github.com/*' }, { extract: { s: { adapter: 'github.prPage', field: 'state' }, b: { adapter: 'github.prPage', field: 'branch' } } });
+    const b = rule('b', { url: '*' }, { extract: { st: { adapter: 'github.prPage', field: 'state' }, j: { adapter: 'jira.issuePage', field: 'status' } } });
+    const p2 = prog(a, b);
+    const key = (s: { key: string }) => s.key;
+    const sel = (s: { selector: string; attr?: string }) => ({ selector: s.selector, ...(s.attr !== undefined && { attr: s.attr }) });
+    const cfg = pf.watchConfigFor('https://github.com/acme/api/pull/7/files', p2);
+    // The watch keeps the last value it finds per key, so the first-listed fallback goes last.
+    expect(cfg.selectors.filter((s) => s.key === 'adapter:github.prPage.state').map(sel)).toEqual([...GITHUB_PR_PAGE.selectors.state].reverse());
+    expect(cfg.selectors.filter((s) => s.key === 'adapter:github.prPage.branch').map(sel)).toEqual([...GITHUB_PR_PAGE.selectors.branch].reverse());
+    expect(new Set(cfg.selectors.map(key))).toEqual(new Set(['adapter:github.prPage.state', 'adapter:github.prPage.branch']));
+    expect(pf.watchConfigFor('https://github.com/acme/api/issues/7', p2).selectors).toEqual([]);
+    expect(new Set(pf.watchConfigFor('https://acme.atlassian.net/browse/ABC-1', p2).selectors.map(key))).toEqual(new Set(['adapter:jira.issuePage.status']));
+  });
+
+  it('a discarded or frozen tab gets an empty config (Review Focus #4)', () => {
+    const url = 'https://github.com/acme/api/pull/7';
+    expect(pf.watchConfigFor(url, p, { discarded: false, frozen: false }).selectors.length).toBeGreaterThan(0);
+    expect(pf.watchConfigFor(url, p, { discarded: true })).toEqual({ needles: [], selectors: [] });
+    expect(pf.watchConfigFor(url, p, { frozen: true })).toEqual({ needles: [], selectors: [] });
+  });
+
+  it('a hello from a discarded or frozen tab is answered with an empty config and nothing is pushed to the tab', async () => {
+    fakeBrowser.reset();
+    const send = vi.spyOn(fakeBrowser.tabs, 'sendMessage');
+    const exec = vi.spyOn(fakeBrowser.scripting, 'executeScript');
+    const pageFacts = new PageFacts({ session: memSession() });
+    const h = createContentHandler({
+      runtimeId: 'ext', extensionOrigin: 'chrome-extension://ext', getProgram: async () => p, pageFacts,
+      safety: { markFormEdited: vi.fn(), clearFormEdited: vi.fn() }, schedule: vi.fn(),
+    });
+    const url = 'https://github.com/acme/api/pull/7';
+    for (const t of [{ discarded: true }, { frozen: true }]) {
+      const sender = { id: 'ext', url, frameId: 0, tab: { id: 7, url, ...t } };
+      expect(await h({ type: 'watch.hello', formEdited: false }, sender)).toEqual({ type: 'watch.config', needles: [], selectors: [] });
+    }
+    expect(send).not.toHaveBeenCalled();
+    expect(exec).not.toHaveBeenCalled();
   });
 });

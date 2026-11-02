@@ -265,7 +265,7 @@ describe('M3 T1: sources, fields, keys and projects', () => {
     expect(at(validateRecipe(recipe({ rules: [rule({ source: src({ fields: { x: 'a[0]()' } }) })] })), '/rules/0/source/fields/x').length).toBeGreaterThan(0);
     expect(validateRecipe(recipe({ rules: [rule({ source: src({ fields: { x: 'head.repo.name' } }) })] })).ok).toBe(true);
   });
-  it('rejects a source fallback adapter (deferred, M3-R18)', () => {
+  it('rejects a source fallback adapter (deferred to T11, M3-R58)', () => {
     expect(validateRecipe(recipe({ rules: [rule({ source: src({ fallback: { adapter: 'github.prPage' } }) })] })).ok).toBe(false);
   });
   it('a field path may come from a string param ({params.x} placeholder)', () => {
@@ -306,8 +306,13 @@ describe('M3 T1: sources, fields, keys and projects', () => {
     expect(validateRule(rule({ extract: { a: { from: 'page', jiraKey: {} } } })).ok).toBe(false);
     expect(at(validateRule(rule({ extract: { a: { from: 'url', jiraKey: { pattern: '((' } } } })), '/extract/a/jiraKey/pattern').length).toBe(1);
   });
-  it('rejects an {adapter, field} extract (deferred to T10, M3-R18)', () => {
-    expect(validateRule(rule({ extract: { a: { adapter: 'github.prPage', field: 'state' } } })).ok).toBe(false);
+  it('accepts an {adapter, field} extract (T10, M3-R58); the adapter must exist and have that field', () => {
+    expect(errorsOf(validateRule(rule({ extract: { a: { adapter: 'github.prPage', field: 'state' }, b: { adapter: 'jira.issuePage', field: 'summary' } } })))).toEqual([]);
+    expect(errorsOf(validateRecipe(recipe({ rules: [rule({ extract: { a: { adapter: 'github.prPage', field: 'branch' } } })] })))).toEqual([]);
+    expect(validateRule(rule({ extract: { a: { adapter: 'gitlab.mrPage', field: 'state' } } })).ok).toBe(false);
+    expect(validateRule(rule({ extract: { a: { adapter: 'github.prPage', field: 'state', attr: 'x' } } })).ok).toBe(false);
+    expect(at(validateRule(rule({ extract: { a: { adapter: 'github.prPage', field: 'status' } } })), '/extract/a/field').map((e) => e.message))
+      .toEqual(['github.prPage has no field "status" (state, branch)']);
   });
   it('accepts an assignProject action; its key template vars must be provided', () => {
     const ok = rule({ extract: { k: { from: 'url', jiraKey: {} } }, actions: [{ assignProject: { key: '{k}', create: true } }] });

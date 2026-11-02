@@ -2,12 +2,16 @@
 // values and whether a form was edited. Held in memory, mirrored to storage.session (key `pageFacts`) so a restarted
 // worker keeps them; cleared on a top-frame navigation (onCommitted) and when the tab is removed.
 import { compilePattern } from '../core/match/pattern';
+import { adapterKey, adapterOf } from '../core/adapters';
+import { isPageExtract } from '../core/lang/evaluate';
 import type { Cond, Program, Rule, TabFacts } from '../core/lang/types';
 import type { PageLookup } from '../core/group/plan';
 
 export type PageFactsData = NonNullable<TabFacts['page']>;
 export interface WatchSelector { key: string; selector: string; attr?: string }
 export interface WatchConfig { needles: string[]; selectors: WatchSelector[] }
+/** What watchConfigFor needs of the asking tab: a discarded or frozen tab runs no page script. */
+export interface WatchTab { discarded?: boolean; frozen?: boolean }
 
 export const PAGE_FACTS_KEY = 'pageFacts';
 /** How long after a navigation the planner holds a tab whose group outcome waits on its page facts. */
@@ -94,14 +98,22 @@ function needlesOf(c: Cond, out: string[]): void {
 }
 
 /**
- * Whether a rule reads page facts the watch reports: a pageText condition (not under `opener`) or a selector extract,
- * the same parts watchConfigFor collects. (formEdited is a safety fact, not a rule condition.) Ruling R44.
+ * Whether a rule reads page facts the watch reports: a pageText condition (not under `opener`), a selector or an
+ * adapter extract, the same parts watchConfigFor collects. (formEdited is a safety fact, not a rule condition.) R44.
  */
 export function usesPageFacts(r: Rule): boolean {
   const needles: string[] = [];
   needlesOf(r.match, needles);
-  return needles.length > 0 || Object.values(r.extract ?? {}).some((x) => 'selector' in x);
+  return needles.length > 0 || Object.values(r.extract ?? {}).some(isPageExtract);
 }
+
+const urlMatches = (pattern: string, url: string): boolean => {
+  try {
+    return compilePattern(pattern)(url) !== null;
+  } catch {
+    return false;
+  }
+};
 
 export class PageFacts implements PageLookup {
   private readonly facts = new Map<number, PageFactsData>();
@@ -259,18 +271,30 @@ export class PageFacts implements PageLookup {
   }
 
   /**
-   * What the watch content script at `url` should look for: the pageText needles and selector extracts of every
-   * program rule whose URL condition can match `url` (a rule without one counts as matching). Selector keys are
-   * `<ruleKey>.<name>`, the names evaluateTab reads back from `page.extracts`.
+   * What the watch content script at `url` should look for: the pageText needles, selector extracts and adapter
+   * fields of every program rule whose URL condition can match `url` (a rule without one counts as matching). Selector
+   * keys are `<ruleKey>.<name>`, the names evaluateTab reads back from `page.extracts`. An adapter field's selectors
+   * are sent only where the adapter's urlPattern matches, once per field, under `adapter:<id>.<field>`. Nothing for a
+   * discarded or frozen `tab` (Review Focus #4): it runs no page script, so it is never sent one either.
    */
-  watchConfigFor(url: string, p: Program): WatchConfig {
+  watchConfigFor(url: string, p: Program, tab?: WatchTab): WatchConfig {
     const needles: string[] = [];
     const selectors: WatchSelector[] = [];
+    if (tab?.discarded || tab?.frozen) return { needles, selectors };
+    const adapterFields = new Set<string>();
     for (const r of p.rules) {
       if (urlMay(r.rule.match, url) === false) continue;
       needlesOf(r.rule.match, needles);
       for (const [name, x] of Object.entries(r.rule.extract ?? {})) {
         if ('selector' in x) selectors.push({ key: `${r.key}.${name}`, selector: x.selector, ...(x.attr !== undefined && { attr: x.attr }) });
+        else if ('adapter' in x) {
+          const a = adapterOf(x.adapter);
+          const key = adapterKey(x.adapter, x.field);
+          if (!a || adapterFields.has(key) || !urlMatches(a.urlPattern, url)) continue;
+          adapterFields.add(key);
+          // The watch keeps the last value it finds per key: the first-listed fallback goes last, so the best one wins.
+          for (const s of [...(a.selectors[x.field] ?? [])].reverse()) selectors.push({ key, ...s });
+        }
       }
     }
     return { needles: [...new Set(needles)], selectors };

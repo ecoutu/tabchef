@@ -8,6 +8,7 @@
 // title that renders to '' skips that rule for the group kind (an empty title would adopt the user's untitled
 // groups); evaluation continues to the next matching rule with a group action.
 import { COLORS } from '../config/schema';
+import { adapterValue } from '../adapters';
 import { extractJiraKeys } from '../keys/jira-key';
 import { MAX_MATCH_INPUT } from '../match/pattern';
 import { renderTemplate } from '../match/template';
@@ -47,7 +48,7 @@ export interface EvalResult {
   project?: ProjectCandidate[];
   /** Every matching rule key, in priority order (the conflict view). */
   matched: string[];
-  /** Some rule's outcome depends on page facts (pageText or a selector extract) that `f.page` does not have yet. */
+  /** Some rule's outcome depends on page facts (pageText, a selector or adapter extract) that `f.page` does not have yet. */
   needsPage: boolean;
   /**
    * The group outcome itself may change once page facts arrive: the winning group rule rendered without a selector
@@ -78,9 +79,16 @@ function sourceText(f: TabFacts, ruleKey: string, name: string): string {
   return typeof v === 'string' ? v : '';
 }
 
-/** One extract value, or undefined. A selector value comes from the page facts under `<ruleKey>.<name>`. */
+/** A selector or `{adapter, field}` extract: its value comes from the page facts. */
+export const isPageExtract = (x: ExtractSpec): boolean => 'selector' in x || 'adapter' in x;
+
+/**
+ * One extract value, or undefined. A selector value comes from the page facts under `<ruleKey>.<name>`; an adapter
+ * field is parsed by the adapter from its `adapter:<id>.<field>` page facts (core/adapters).
+ */
 function extractValue(key: string, name: string, x: ExtractSpec, f: TabFacts): string | undefined {
   if ('selector' in x) return f.page?.extracts[`${key}.${name}`];
+  if ('adapter' in x) return f.page ? adapterValue(x.adapter, x.field, f.page.extracts) : undefined;
   if ('jiraKey' in x) {
     // A `source.<name>` text is the rule's source field; a headRefName one is a branch name (case-insensitive, `_` separates).
     const text = x.from === 'url' ? (f.tab.pendingUrl ?? f.tab.url)
@@ -108,7 +116,7 @@ function extractsOf(r: CompiledRule, f: TabFacts): Record<string, string> {
 }
 
 function varsOf(r: CompiledRule, captures: Record<string, string>, f: TabFacts): { vars: Record<string, string>; needsPage: boolean } {
-  const needsPage = !f.page && Object.values(r.rule.extract ?? {}).some((x) => 'selector' in x);
+  const needsPage = !f.page && Object.values(r.rule.extract ?? {}).some(isPageExtract);
   return { vars: { ...captures, ...extractsOf(r, f) }, needsPage };
 }
 
@@ -125,13 +133,13 @@ const readsExtracts = new WeakMap<CompiledRule['rule'], boolean>();
 
 /**
  * The evalCond scope of rule `r` for facts `f` (M3-R10): its key and, when its match reads `extract.<name>` fields,
- * the extract values computed before the match (selector ones from page facts, named in `pageVars`).
+ * the extract values computed before the match (selector and adapter ones from page facts, named in `pageVars`).
  */
 export function condScope(r: CompiledRule, f: TabFacts): CondScope {
   let reads = readsExtracts.get(r.rule);
   if (reads === undefined) readsExtracts.set(r.rule, (reads = condReadsExtracts(r.rule.match)));
   if (!reads) return { ruleKey: r.key };
-  const pageVars = new Set(Object.entries(r.rule.extract ?? {}).filter(([, x]) => 'selector' in x).map(([n]) => n));
+  const pageVars = new Set(Object.entries(r.rule.extract ?? {}).filter(([, x]) => isPageExtract(x)).map(([n]) => n));
   return { ruleKey: r.key, vars: extractsOf(r, f), pageVars };
 }
 
