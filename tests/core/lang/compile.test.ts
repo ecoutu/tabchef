@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileProgram } from '../../../src/core/lang/compile';
+import { compileProgram, indexByKey } from '../../../src/core/lang/compile';
 import { defaultConfig } from '../../../src/core/config/defaults';
 import type { Recipe, RecipeRef, Rule } from '../../../src/core/lang/types';
 import type { Config } from '../../../src/core/types';
@@ -253,5 +253,48 @@ describe('compileProgram: malformed recipe parts never throw', () => {
     const b = { g: recipe('g', [rule('x')], over as unknown as Partial<Recipe>) };
     expect(() => compileProgram(c, b)).not.toThrow();
     expect(compileProgram(c, b).errors.map((e) => e.key)).toEqual(['g']);
+  });
+});
+
+describe('compileProgram: fix round 1 (R37, reserved user id)', () => {
+  const BRACES = 'param p: braces are not allowed in values used in templates';
+  const tpl = (title: string, color = 'blue', p: unknown = undefined) => {
+    const r = recipe('r', [rule('x', { match: { url: 'github.com/:org/*' }, actions: [{ group: { title, color } }] })], {
+      params: { p: { type: 'string', default: '{org|upper}', label: 'p' } },
+    });
+    return compileProgram(config({ recipes: [ref('r', { params: p === undefined ? {} : { p } })] }), { r });
+  };
+  it('rejects a default with template syntax interpolated into a title', () => {
+    const { program, errors } = tpl('A {params.p}');
+    expect(errors).toEqual([{ key: 'r', error: BRACES }]);
+    expect(program.rules).toEqual([]);
+  });
+  it('rejects a user value with braces interpolated into a title', () => {
+    expect(tpl('A {params.p}', 'blue', 'a{b}').errors).toEqual([{ key: 'r', error: BRACES }]);
+  });
+  it('rejects braces in a whole-value title placeholder and in a color', () => {
+    expect(tpl('{params.p}', 'blue', 'a}').errors).toEqual([{ key: 'r', error: BRACES }]);
+    expect(tpl('A', '{params.p}', '{org}').errors).toEqual([{ key: 'r', error: BRACES }]);
+  });
+  it('a brace-free value still interpolates', () => {
+    const { program, errors } = tpl('A {params.p}', 'blue', 'acme');
+    expect(errors).toEqual([]);
+    expect(program.rules[0]?.rule.actions).toEqual([{ group: { title: 'A acme', color: 'blue' } }]);
+  });
+  it('braces in a param used outside template fields are fine', () => {
+    const r = recipe('r', [rule('x', { match: { url: '{params.p}' } })], { params: { p: { type: 'pattern', default: '/a{2}/', label: 'p' } } });
+    expect(compileProgram(config({ recipes: [ref('r')] }), { r }).errors).toEqual([]);
+  });
+  it('a rule key collision is reported, never silently overwritten (first wins)', () => {
+    const errors: { key: string; error: string }[] = [];
+    const m = indexByKey([{ key: 'user/a', n: 1 }, { key: 'user/a', n: 2 }, { key: 'r/b', n: 3 }], errors);
+    expect([...m.values()].map((e) => e.n)).toEqual([1, 3]);
+    expect(errors).toEqual([{ key: 'user/a', error: 'duplicate rule key' }]);
+  });
+  it('reserves the recipe id "user"', () => {
+    const c = config({ rules: [rule('a')], recipes: [ref('user', { source: 'user', body: recipe('user', [rule('a', { actions: [{ group: { title: 'X', color: 'red' } }] })]) })] });
+    const { program, errors } = compileProgram(c, {});
+    expect(errors).toEqual([{ key: 'user', error: 'recipe id "user" is reserved' }]);
+    expect(program.rules.map((r) => [r.key, r.recipeId])).toEqual([['user/a', undefined]]);
   });
 });

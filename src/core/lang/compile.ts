@@ -89,11 +89,21 @@ function resolveParams(body: Recipe, given: Record<string, unknown>): { values: 
   return { values, errors };
 }
 
-/** Deep copy of `x` with `{params.<name>}` placeholders substituted (see the header). Throws ParamError. */
-function substitute(x: unknown, values: Record<string, unknown>): unknown {
+/** Fields that renderTemplate renders (evaluate.ts): a group action's title and color. `path` ends at the field. */
+const isTemplateField = (path: string[]) => path.length >= 2 && path[path.length - 2] === 'group'
+  && (path[path.length - 1] === 'title' || path[path.length - 1] === 'color');
+
+/**
+ * Deep copy of `x` with `{params.<name>}` placeholders substituted (see the header). Throws ParamError.
+ * R37: a string value landing in a template field must not contain `{` or `}` (it would become template structure,
+ * and the template language has no escape), so it is a param error.
+ */
+function substitute(x: unknown, values: Record<string, unknown>, path: string[] = []): unknown {
   const lookup = (name: string): unknown => {
     if (!own(values, name)) throw new ParamError(`unknown param: {params.${name}}`);
-    return values[name];
+    const v = values[name];
+    if (typeof v === 'string' && /[{}]/.test(v) && isTemplateField(path)) throw new ParamError(`param ${name}: braces are not allowed in values used in templates`);
+    return v;
   };
   if (typeof x === 'string') {
     const m = EXACT.exec(x);
@@ -114,12 +124,12 @@ function substitute(x: unknown, values: Record<string, unknown>): unknown {
         const v = lookup(m[1] as string);
         return Array.isArray(v) ? [...v] : [v];
       }
-      return [substitute(el, values)];
+      return [substitute(el, values, path)];
     });
   }
   if (isObj(x)) {
     const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(x)) out[k] = substitute(v, values);
+    for (const [k, v] of Object.entries(x)) out[k] = substitute(v, values, [...path, k]);
     return out;
   }
   return x;
@@ -142,6 +152,7 @@ function resolveRecipes(config: Config, builtins: Record<string, Recipe>, errors
   for (const ref of Array.isArray(config.recipes) ? config.recipes : []) {
     if (!isObj(ref) || !ref.enabled) continue;
     const id = String(ref.id);
+    if (id === 'user') { errors.push({ key: id, error: 'recipe id "user" is reserved' }); continue; } // user rule keys are user/<id> (R19)
     if (seen.has(id)) { errors.push({ key: id, error: 'duplicate recipe id' }); continue; }
     seen.add(id);
     const raw = ref.source === 'builtin' ? (own(builtins, id) ? builtins[id] : undefined) : ref.body;
@@ -193,6 +204,19 @@ function mergeTables(recipes: Candidate[], config: Config): Tables {
   return out;
 }
 
+/**
+ * Entries by key; a key collision (not reachable through compileProgram's own checks; defense in depth) keeps the
+ * first entry and reports the later one instead of silently replacing it. Exported for tests.
+ */
+export function indexByKey<E extends { key: string }>(entries: E[], errors: CompileError[]): Map<string, E> {
+  const out = new Map<string, E>();
+  for (const e of entries) {
+    if (out.has(e.key)) errors.push({ key: e.key, error: 'duplicate rule key' });
+    else out.set(e.key, e);
+  }
+  return out;
+}
+
 /** Compile `config` (+ built-in recipe bodies) into a prioritized Program. Pure; never throws on bad data. */
 export function compileProgram(
   config: Config, builtins: Record<string, Recipe>, opts: CompileOptions = {},
@@ -240,7 +264,7 @@ export function compileProgram(
   const dry = (r: Rule) => r.dryRun === true || config.dryRun === true;
   for (const r of userRules) entries.push({ key: `user/${r.id}`, rule: r, dryRun: dry(r) });
   for (const { c, rules } of recipes) for (const r of rules) entries.push({ key: `${c.id}/${r.id}`, rule: r, recipeId: c.id, dryRun: dry(r) });
-  const byKey = new Map(entries.filter((e) => !paused.has(e.key) && !(e.recipeId && paused.has(e.recipeId))).map((e) => [e.key, e]));
+  const byKey = indexByKey(entries.filter((e) => !paused.has(e.key) && !(e.recipeId && paused.has(e.recipeId))), errors);
   const ordered: Entry[] = [];
   const placed = new Set<string>();
   const place = (k: string) => {
