@@ -87,7 +87,8 @@ export function startPageWatch(env: PageWatchEnv): { stop(): void } {
     const key = JSON.stringify(m);
     if (!force && key === lastSent) return;
     lastSent = key;
-    void env.send(m).catch(() => {});
+    // A failed send (e.g. the worker restarting) is not a report: the next scan sends the same facts again.
+    void env.send(m).catch(() => { if (lastSent === key) lastSent = undefined; });
   };
 
   const scan = () => {

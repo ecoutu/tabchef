@@ -51,6 +51,25 @@ describe('page watch content script', () => {
     w.stop();
   });
 
+  it('a report whose send failed is sent again on the next scan, even when the facts are unchanged', async () => {
+    document.body.innerHTML = '<div id="app">Call ended</div>';
+    const sent: Sent[] = [];
+    let failNext = true;
+    const send = vi.fn(async (m: Sent) => {
+      if (m.type === 'watch.hello') return { type: 'watch.config', needles: ['call ended'], selectors: [] } satisfies WatchConfigMessage;
+      if (failNext) { failNext = false; throw new Error('worker restarting'); }
+      sent.push(structuredClone(m));
+      return undefined;
+    });
+    const w = startPageWatch({ doc: document, win: window, send });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sent).toEqual([]);
+    document.getElementById('app')!.append(document.createElement('span')); // same text, so the same facts
+    await vi.advanceTimersByTimeAsync(WATCH_SCAN_MS);
+    expect(sent).toEqual([expect.objectContaining({ type: 'page.facts', texts: ['call ended'] })]);
+    w.stop();
+  });
+
   it('never reports more than the worker guard accepts: needles over MAX_FACT_TEXT, more than MAX_FACT_ITEMS items, long keys (I2)', async () => {
     const long = 'y'.repeat(MAX_FACT_TEXT + 1);
     const many = Array.from({ length: MAX_FACT_ITEMS + 20 }, (_, i) => `n${i}`);

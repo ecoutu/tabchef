@@ -356,6 +356,27 @@ describe('createContentHandler', () => {
     expect(pageFacts.get(7)).toMatchObject({ texts: ['Call ended'] });
   });
 
+  it('page.facts from a document that is no longer the tab\'s current one are dropped (sender.documentId)', async () => {
+    const { h, pageFacts, safety, onFacts } = mk();
+    await h({ type: 'watch.hello', formEdited: false }, { ...tabSender, documentId: 'doc-a' });
+    pageFacts.onCommitted(7, PAGE, 'doc-b'); // the tab navigated; the old document's report is still in flight
+    expect(await h(facts, { ...tabSender, documentId: 'doc-a' })).toEqual({ ok: false, error: 'stale document' });
+    expect(pageFacts.get(7)).toBeUndefined();
+    expect(onFacts).not.toHaveBeenCalled();
+    expect(safety.markFormEdited).not.toHaveBeenCalled();
+    await h(facts, { ...tabSender, documentId: 'doc-b' });
+    expect(pageFacts.get(7)).toMatchObject({ texts: ['Call ended'] });
+  });
+
+  it('form edits are recorded for the frame URL the report came from, as the watch config is', async () => {
+    const { h, safety } = mk();
+    const moved = { ...tabSender, url: 'https://meet.google.com/other', tab: { id: 7, url: PAGE } }; // pushState race
+    await h(facts, moved);
+    expect(safety.markFormEdited).toHaveBeenCalledWith(7, 'https://meet.google.com/other');
+    await h({ type: 'watch.hello', formEdited: true }, moved);
+    expect(safety.markFormEdited).toHaveBeenLastCalledWith(7, 'https://meet.google.com/other');
+  });
+
   it('page.facts: stores the facts, feeds SafetyService, schedules a reconcile and calls the onFacts hook', async () => {
     const { h, pageFacts, safety, schedule, onFacts } = mk();
     await h(facts, tabSender);

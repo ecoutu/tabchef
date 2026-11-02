@@ -95,6 +95,8 @@ export class PageFacts implements PageLookup {
   /** Top-frame commit time per tab, while its facts are outstanding (this worker's lifetime only). */
   private readonly committedAt = new Map<number, number>();
   private readonly holdTimers = new Map<number, ReturnType<typeof setTimeout>>();
+  /** The tab's current top-frame document (webNavigation / sender documentId), where known. */
+  private readonly docs = new Map<number, string>();
   private loaded = false;
   private chain: Promise<void> = Promise.resolve();
   private readonly now: () => number;
@@ -135,18 +137,27 @@ export class PageFacts implements PageLookup {
   /** Wire to tabs.onRemoved (and the replaced tab of tabs.onReplaced). */
   clear(tabId: number): void {
     this.endHold(tabId);
+    this.docs.delete(tabId);
     if (this.facts.delete(tabId) || !this.loaded) this.save(tabId);
   }
 
   /**
    * Wire to webNavigation.onCommitted (frameId 0) with the committed URL: the new document's facts are not known until
    * its watch reports, so the planner holds the tab, but only where the watch runs (`covers`). Without a URL (a
-   * watch.hello: the watch is evidently running) the hold is always armed.
+   * watch.hello: the watch is evidently running) the hold is always armed. `documentId` is the new document's, so
+   * a late report from the previous one can be told apart (isCurrentDocument).
    */
-  onCommitted(tabId: number, url?: string): void {
+  onCommitted(tabId: number, url?: string, documentId?: string): void {
     this.clear(tabId);
+    if (documentId !== undefined) this.docs.set(tabId, documentId);
     if (url !== undefined && this.deps.covers && !this.deps.covers(url)) return;
     this.committedAt.set(tabId, this.now());
+  }
+
+  /** False only when both ids are known and differ: a report from a document the tab has since navigated away from. */
+  isCurrentDocument(tabId: number, documentId: string | undefined): boolean {
+    const current = this.docs.get(tabId);
+    return documentId === undefined || current === undefined || current === documentId;
   }
 
   /** No facts yet for the tab's current document, which committed less than PAGE_HOLD_MS ago (PageLookup). */

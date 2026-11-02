@@ -416,7 +416,7 @@ export interface HandlerDeps {
   now?: () => number;
 }
 
-export interface MessageSender { id?: string; url?: string; tab?: { id?: number; url?: string }; frameId?: number }
+export interface MessageSender { id?: string; url?: string; tab?: { id?: number; url?: string }; frameId?: number; documentId?: string }
 
 /** True for the extension's own pages (popup, options, side panel); false for content scripts and other extensions. */
 export function isExtensionPage(sender: MessageSender, d: Pick<HandlerDeps, 'runtimeId' | 'extensionOrigin'>): boolean {
@@ -867,7 +867,7 @@ export interface ContentDeps {
   /** e.g. `chrome-extension://<id>` */
   extensionOrigin: string;
   getProgram: () => Promise<Program>;
-  pageFacts: Pick<PageFacts, 'set' | 'onCommitted' | 'watchConfigFor'>;
+  pageFacts: Pick<PageFacts, 'set' | 'onCommitted' | 'watchConfigFor' | 'isCurrentDocument'>;
   safety: Pick<SafetyService, 'markFormEdited' | 'clearFormEdited'>;
   /** Reconciler.schedule. */
   schedule: (reason: string) => void;
@@ -902,19 +902,21 @@ export function createContentHandler(d: ContentDeps): (msg: unknown, sender: Mes
     if (!hello && !pf) return undefined;
     if (!isTabContentScript(sender, d)) return Promise.resolve(forbidden);
     const tabId = sender.tab!.id!;
+    // The frame's URL at send time: after pushState the tab's URL may not have caught up yet.
+    const url = sender.url ?? sender.tab?.url ?? '';
     if (hello) {
       const m = msg as WatchHelloMessage;
       // A hello starts a new page state (load, back/forward-cache restore, same-document navigation, which fires no
       // onCommitted): drop the facts of the previous one and hold until the fresh report that follows the answer.
-      d.pageFacts.onCommitted(tabId);
-      // The frame's URL at send time: after pushState the tab's URL may not have caught up yet.
-      const url = sender.url ?? sender.tab?.url ?? '';
-      if (m.formEdited) d.safety.markFormEdited(tabId, sender.tab?.url);
+      d.pageFacts.onCommitted(tabId, undefined, sender.documentId);
+      if (m.formEdited) d.safety.markFormEdited(tabId, url);
       return d.getProgram().then((p): WatchConfigMessage => ({ type: 'watch.config', ...d.pageFacts.watchConfigFor(url, p) }));
     }
     const m = pf!;
+    // Sent by the tab's previous document after the navigation committed: not this page's facts.
+    if (!d.pageFacts.isCurrentDocument(tabId, sender.documentId)) return Promise.resolve({ ok: false, error: 'stale document' });
     d.pageFacts.set(tabId, { texts: [...m.texts], extracts: { ...m.extracts }, formEdited: m.formEdited });
-    if (m.formEdited) d.safety.markFormEdited(tabId, sender.tab?.url);
+    if (m.formEdited) d.safety.markFormEdited(tabId, url);
     else d.safety.clearFormEdited(tabId);
     d.schedule('pageFacts');
     d.onFacts?.(tabId);

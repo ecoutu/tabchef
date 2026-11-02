@@ -231,7 +231,7 @@ export default defineBackground(() => {
   // onUpdated(url) arrives ~4 ms before onCommitted and both carry the final post-redirect URL: act on whichever is first.
   browser.webNavigation.onCommitted.addListener((d) => {
     if (d.frameId !== 0) return;
-    pageFacts.onCommitted(d.tabId, d.url);
+    pageFacts.onCommitted(d.tabId, d.url, d.documentId);
     candidate(d.tabId, d.url, 'committed');
     void closeExecutor.onCommitted(d.tabId);
     void closeExecutor.evaluate(d.tabId);
