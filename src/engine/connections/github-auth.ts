@@ -106,6 +106,14 @@ export class GitHubDeviceAuth implements AuthProvider {
   }
 
   /**
+   * Abandons the pending flow (Disconnect): removes it from storage.session, so no later poll can finish it, and a
+   * poll already in flight discards its tokens (pollOnce re-checks the flow before storing). Throws if storage fails.
+   */
+  async cancel(): Promise<void> {
+    await this.deps.session.remove(DEVICE_KEY);
+  }
+
+  /**
    * One poll of the pending flow. Overlapping calls share one request. expired/denied/error clear the flow; a
    * transient failure (network, timeout, 5xx, malformed body) is `pending` and keeps it — `expiresAt` bounds retries.
    */
@@ -151,6 +159,8 @@ export class GitHubDeviceAuth implements AuthProvider {
     if (!access) return end('error', `GitHub returned an unexpected response (${res.status})`);
     const refreshToken = str(b.refresh_token);
     const tokens = [flow.deviceCode, access, ...(refreshToken ? [refreshToken] : [])];
+    // Cancelled (Disconnect) or replaced by a newer start while the POST was out: these tokens are not stored.
+    if ((await this.pending())?.deviceCode !== flow.deviceCode) return { state: 'error', message: 'GitHub sign-in was cancelled; start again' };
     try {
       await this.storeDeviceTokens(access, b);
     } catch (e) {

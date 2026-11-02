@@ -23,6 +23,12 @@ import { SafetyService } from '../engine/safety';
 import { ChromePort } from '../platform/chrome-port';
 import { ConfigStore } from '../storage/config-store';
 import { installMenus, onMenuClick, refreshMenus, type MenuApi, type MenuTab } from '../engine/context-menu';
+import { ConnectionManager } from '../engine/connections/manager';
+import { SecretStore, type KeyValueArea } from '../engine/connections/secret-store';
+import { RateLimiter } from '../engine/connections/rate-limiter';
+import { GitHubDeviceAuth } from '../engine/connections/github-auth';
+import { TokenAuth, setGitHubToken } from '../engine/connections/token-auth';
+import type { ConnectionsChangedMessage } from '../engine/messages';
 
 export default defineBackground(() => {
   const store = new ConfigStore();
@@ -226,6 +232,30 @@ export default defineBackground(() => {
   const refreshActiveMenu = () => {
     browser.tabs.query({ active: true, lastFocusedWindow: true }).then(([t]) => refreshMenu(t), warn('menu refresh'));
   };
+  // Connections (M3): one ConnectionManager, SecretStore and limiter shared by every consumer (Task 4). The e2e-only
+  // build flag allows http://localhost APIs (M3-R35); it is read here only, never in core or the engine.
+  const allowLocalhost = import.meta.env.WXT_E2E_LOCALHOST === '1';
+  const localArea = browser.storage.local as unknown as KeyValueArea;
+  const sessionArea = browser.storage.session as unknown as KeyValueArea;
+  const secrets = new SecretStore({ local: localArea, session: sessionArea });
+  const connFetch: typeof fetch = (input, init) => fetch(input, init);
+  const githubAuth: GitHubDeviceAuth = new GitHubDeviceAuth({
+    fetch: connFetch, secrets, session: sessionArea, port,
+    // Lazy: the manager is built below with this provider in its auth map (Task 5b).
+    manager: () => connections,
+  });
+  const tokenAuth = new TokenAuth();
+  const connections: ConnectionManager = new ConnectionManager({
+    local: localArea, session: sessionArea, secrets, limiter: new RateLimiter(sessionArea), port, fetch: connFetch, log: whyLog,
+    // session / oauth-* sign-in is not implemented yet (Task 6 / later): their defs never reach the manager.
+    auth: { 'device-code': githubAuth, token: tokenAuth, session: tokenAuth, 'oauth-pkce': tokenAuth, 'oauth-proxy': tokenAuth },
+    allowLocalhost,
+  });
+  // Tell open extension pages (Connections) a status changed; they re-list. "No receiver" rejections are expected.
+  connections.onStatusChange((s) => {
+    const m: ConnectionsChangedMessage = { type: 'connections.changed', id: s.id };
+    Promise.resolve(browser.runtime.sendMessage(m)).catch(() => {});
+  });
   const openOptions = async (hash: string) => { await browser.tabs.create({ url: `${browser.runtime.getURL('/options.html')}${hash}` }); };
 
   // MV3: every listener is registered synchronously at the top level so a restarted worker receives the event.
@@ -371,6 +401,13 @@ export default defineBackground(() => {
       planContext: (snap, p) => reconciler.planContext(snap, p),
       facts: (id) => { const page = pageFacts.get(id); return page ? { page } : {}; },
       permissions,
+    },
+    // connections.* (M3 T7): the shared instances; setToken validates and stores a GitHub PAT (Task 5a).
+    connections: {
+      manager: connections,
+      github: githubAuth,
+      setGitHubToken: (token) => setGitHubToken({ manager: connections, secrets, port, fetch: connFetch, allowLocalhost }, token),
+      knownSecrets: () => secrets.knownSecrets(),
     },
     // explain.tab / rules.shadowed (M2 T14): read-only, like preview.
     explain: {

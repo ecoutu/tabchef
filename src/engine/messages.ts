@@ -21,6 +21,13 @@ import type { EarlyReport, PageFacts, WatchSelector } from './page-facts';
 import type { PauseDuration, SafetyService } from './safety';
 import { dedupeDecision, openerOf } from './dedupe-handler';
 import { readViews, samePage, type ViewData, type ViewsDeps, type ViewSummary } from './views';
+import { builtinConnectionDefs } from '../core/connections/builtin';
+import { redact } from '../core/connections/redact';
+import type { ConnectionDef, ConnectionStatus } from '../core/connections/types';
+// Types only: the banner content script imports this module and must never bundle engine/connections (secrets).
+import type { ConnectionManager } from './connections/manager';
+import type { DevicePollResult, GitHubDeviceAuth } from './connections/github-auth';
+import type { SetTokenResult } from './connections/token-auth';
 
 /** Messages between the background worker and the dedupe banner content script. */
 export type BannerShowMessage = {
@@ -180,7 +187,20 @@ export type Request =
    */
   | { type: 'view.close'; viewId: string; tabId: number; url?: string }
   /** Dismisses a Finished suggestion: CloseExecutor.exempt, so the tab is not suggested again at that URL. `url` as above. */
-  | { type: 'view.keep'; viewId: string; tabId: number; url?: string };
+  | { type: 'view.keep'; viewId: string; tabId: number; url?: string }
+  // ---- Connections page (M3 T7). No response ever carries a token or the device_code. ----
+  /** Every connection (GitHub's built-in def until it is saved) and its status: metadata only. */
+  | { type: 'connections.list' }
+  /** Starts GitHub's device flow. The page requests def.hosts in the click handler first, then polls on `interval`. */
+  | { type: 'connections.github.start' }
+  /** One poll of the pending device flow (the open Connections page drives polling). */
+  | { type: 'connections.github.poll' }
+  /** Validates and stores a personal access token. `jira` (site, email, token kind, expiry) lands with Task 6. */
+  | { type: 'connections.setToken'; id: 'github' | 'jira'; token: string }
+  /** A test call through the ConnectionManager (GitHub: GET /user). */
+  | { type: 'connections.test'; id: string }
+  /** Clears the secrets and runtime status; the def stays, not-configured. */
+  | { type: 'connections.disconnect'; id: string };
 
 /** explain.tab's answer: the tab and its relevant rules in priority order (src/core/lang/explain.ts). */
 export interface ExplainView {
@@ -221,6 +241,12 @@ export function configRev(c: Config): string {
   let h = 0x811c9dc5;
   for (let i = 0; i < j.length; i++) { h ^= j.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
   return `${h.toString(16)}-${j.length}`;
+}
+
+/** Broadcast to extension pages when a connection's status changes (ConnectionManager.onStatusChange). Id only. */
+export type ConnectionsChangedMessage = { type: 'connections.changed'; id: string };
+export function isConnectionsChangedMessage(m: unknown): m is ConnectionsChangedMessage {
+  return typeof m === 'object' && m !== null && (m as Record<string, unknown>).type === 'connections.changed' && typeof (m as Record<string, unknown>).id === 'string';
 }
 
 /** Broadcast to extension pages when the stored config changes. */
@@ -269,16 +295,24 @@ export interface ResponseData {
   'view.data': ViewData;
   'view.close': null;
   'view.keep': null;
+  'connections.list': { defs: ConnectionDef[]; status: ConnectionStatus[] };
+  'connections.github.start': { userCode: string; verificationUri: string; expiresAt: number; interval: number };
+  'connections.github.poll': DevicePollResult;
+  'connections.setToken': ConnectionStatus;
+  'connections.test': { login?: string };
+  'connections.disconnect': null;
 }
 export type ResponseFor<R extends Request> = Response<ResponseData[R['type']]>;
 
 const num = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
 const str = (v: unknown): v is string => typeof v === 'string';
 const NO_ARGS = new Set(['config.get', 'config.backups', 'config.status', 'tabs.list', 'dupes.list', 'dupes.closeAll', 'recent.list', 'why.all',
-  'safety.resume', 'safety.status', 'recipes.list', 'views.list']);
+  'safety.resume', 'safety.status', 'recipes.list', 'views.list', 'connections.list', 'connections.github.start', 'connections.github.poll']);
 const optRev = (x: Record<string, unknown>) => x.baseRev === undefined || str(x.baseRev);
 const isParams = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
+/** The connection ids requests may name: the built-ins (custom connections come later). */
+const CONNECTION_IDS = new Set<unknown>(['github', 'jira']);
 const isImportSource = (v: unknown): v is ImportSource => v === 'auto-group-tabs' || v === 'tab-deduper';
 const isCollapse = (v: unknown): boolean => v === undefined || (Array.isArray(v) && v.every((i) => Number.isInteger(i) && (i as number) >= 0));
 
@@ -362,6 +396,8 @@ export function isRequest(m: unknown): m is Request {
     case 'rules.shadowed': return x.config === undefined || (typeof x.config === 'object' && x.config !== null);
     case 'view.data': return str(x.viewId);
     case 'view.close': case 'view.keep': return str(x.viewId) && num(x.tabId) && (x.url === undefined || str(x.url));
+    case 'connections.setToken': return (x.id === 'github' || x.id === 'jira') && str(x.token);
+    case 'connections.test': case 'connections.disconnect': return CONNECTION_IDS.has(x.id as string);
     default: return false;
   }
 }
@@ -414,7 +450,53 @@ export interface HandlerDeps {
     /** Needs that are not granted pause their recipe / rule (R45): shown with the reason. Default: all granted. */
     permissions?: Pick<PermissionsManager, 'check'>;
   };
+  /** connections.* (M3 T7, the Connections page). Without it they fail. */
+  connections?: ConnectionsDeps;
   now?: () => number;
+}
+
+/** The background's shared connection instances (one ConnectionManager, SecretStore and GitHubDeviceAuth). */
+export interface ConnectionsDeps {
+  manager: Pick<ConnectionManager, 'defs' | 'status' | 'fetch' | 'disconnect'>;
+  /** `cancel`: Disconnect abandons a pending device flow, so no later poll stores credentials. */
+  github: Pick<GitHubDeviceAuth, 'start' | 'poll' | 'cancel'>;
+  /** setGitHubToken with the shared manager, secret store, port and fetch (Task 5a). */
+  setGitHubToken: (token: string) => Promise<SetTokenResult>;
+  /** Every stored token: a last redact pass over every connections.* response (SecretStore.knownSecrets). */
+  knownSecrets: () => Promise<string[]>;
+}
+
+/** The test call per connection kind: a cheap authenticated GET. Task 6 adds Jira. */
+const TEST_PATHS: Partial<Record<ConnectionDef['kind'], string>> = { github: '/user' };
+const GITHUB_LOGIN = /^[A-Za-z0-9-]{1,100}$/;
+/** Shortest setToken candidate used as a redaction needle (as the manager's header values). */
+const MIN_NEEDLE = 8;
+
+/** A def as the UI sees it: the ConnectionDef fields only, so a stray field in storage never leaves the worker. */
+function publicDef(d: ConnectionDef): ConnectionDef {
+  const strs = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
+  const opt = <K extends 'revokeUrl' | 'login'>(k: K) => (typeof d[k] === 'string' ? { [k]: d[k] } : {});
+  const j = d.jira;
+  return {
+    id: d.id, kind: d.kind, label: d.label, baseUrl: d.baseUrl, apiBaseUrl: d.apiBaseUrl, hosts: strs(d.hosts), auth: d.auth,
+    scopes: strs(d.scopes), ...opt('revokeUrl'), ...opt('login'),
+    ...(j && typeof j === 'object' && {
+      jira: {
+        site: j.site, tokenKind: j.tokenKind,
+        ...(typeof j.email === 'string' && { email: j.email }),
+        ...(typeof j.cloudId === 'string' && { cloudId: j.cloudId }),
+        ...(typeof j.tokenExpiresAt === 'number' && { tokenExpiresAt: j.tokenExpiresAt }),
+      },
+    }),
+  };
+}
+
+/** Redacts every string in `v` (deep) against the stored tokens: the last guard on what a connections.* answer carries. */
+function scrub<T>(v: T, secrets: string[]): T {
+  if (typeof v === 'string') return redact(v, secrets) as T;
+  if (Array.isArray(v)) return v.map((x) => scrub(x, secrets)) as T;
+  if (typeof v === 'object' && v !== null) return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, scrub(x, secrets)])) as T;
+  return v;
 }
 
 export interface MessageSender { id?: string; url?: string; tab?: { id?: number; url?: string }; frameId?: number; documentId?: string }
@@ -746,8 +828,64 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
     return ok(findShadowed(p).map((x): ShadowedRule => ({ ...x, name: names.get(x.shadowedBy) ?? x.shadowedBy })));
   }
 
+  async function runConnections(req: Extract<Request, { type: `connections.${string}` }>, c: ConnectionsDeps): Promise<Response> {
+    switch (req.type) {
+      case 'connections.list': {
+        const stored = await c.manager.defs();
+        const github = builtinConnectionDefs().github;
+        const defs = (stored.some((d) => d.id === github.id) ? stored : [github, ...stored]).map(publicDef);
+        const status = (await Promise.all(defs.map((d) => c.manager.status(d.id)))).flat();
+        return ok({ defs, status });
+      }
+      case 'connections.github.start': {
+        const r = await c.github.start(builtinConnectionDefs().github);
+        if (!r.ok) return fail(r.error);
+        return ok({ userCode: r.userCode, verificationUri: r.verificationUri, expiresAt: r.expiresAt, interval: r.interval });
+      }
+      case 'connections.github.poll': {
+        const r = await c.github.poll(builtinConnectionDefs().github);
+        return ok({ state: r.state, ...(r.interval !== undefined && { interval: r.interval }), ...(r.message !== undefined && { message: r.message }) });
+      }
+      case 'connections.setToken': {
+        if (req.id !== 'github') return fail('Jira connections are not available yet');
+        const r = await c.setGitHubToken(req.token);
+        return r.ok ? ok(r.status) : fail(r.error);
+      }
+      case 'connections.test': {
+        const def = (await c.manager.defs()).find((d) => d.id === req.id);
+        const path = def && TEST_PATHS[def.kind];
+        if (!path) return fail(`Testing ${req.id} is not supported`);
+        const r = await c.manager.fetch(req.id, { method: 'GET', path });
+        if (!r.ok) return fail(r.message);
+        const login = typeof r.data === 'object' && r.data !== null ? (r.data as Record<string, unknown>).login : undefined;
+        return ok(typeof login === 'string' && GITHUB_LOGIN.test(login) ? { login } : {});
+      }
+      case 'connections.disconnect':
+        // The device flow is GitHub's own state (not the manager's): cancel it first, so a poll from this or another
+        // options tab cannot store fresh credentials right after the user disconnected.
+        if (req.id === 'github') await c.github.cancel();
+        await c.manager.disconnect(req.id);
+        return ok(null);
+    }
+  }
+
   async function run(req: Request): Promise<Response> {
     switch (req.type) {
+      case 'connections.list': case 'connections.github.start': case 'connections.github.poll': case 'connections.setToken':
+      case 'connections.test': case 'connections.disconnect': {
+        const c = deps.connections;
+        if (!c) return fail('connections unavailable');
+        let r: Response;
+        try {
+          r = await runConnections(req, c);
+        } catch (e) {
+          r = fail(e instanceof Error ? e.message : String(e));
+        }
+        // The candidate token of a setToken is not stored yet when it fails: redact it too, unless it is too short to
+        // be a token (a 1-character needle would mangle the error text; token shapes are redacted anyway).
+        const candidate = req.type === 'connections.setToken' ? req.token.trim() : '';
+        return scrub(r, [...(candidate.length >= MIN_NEEDLE ? [candidate] : []), ...(await c.knownSecrets())]);
+      }
       case 'explain.tab': return deps.explain ? runExplain(req.tabId, deps.explain) : fail('explain unavailable');
       case 'rules.shadowed': return deps.explain ? runShadowed(req.config, deps.explain) : fail('explain unavailable');
       case 'preview.change': return deps.preview ? runPreview(req, deps.preview) : fail('preview unavailable');

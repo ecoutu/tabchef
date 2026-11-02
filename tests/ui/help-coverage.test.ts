@@ -14,6 +14,7 @@ vi.mock('../../src/ui/permissions', async (orig) => ({
 }));
 const send = vi.fn();
 vi.mock('../../src/ui/send', () => ({ send: (r: unknown) => send(r) }));
+import Connections from '../../src/entrypoints/options/Connections.svelte';
 import Dedupe from '../../src/entrypoints/options/Dedupe.svelte';
 import Recipes from '../../src/entrypoints/options/Recipes.svelte';
 import RuleFields from '../../src/entrypoints/options/RuleFields.svelte';
@@ -29,7 +30,7 @@ afterEach(cleanup);
 
 const OPTIONS_DIR = resolve(import.meta.dirname, '../../src/entrypoints/options');
 /** Options components whose labels the cases below render. */
-const COVERED = ['Dedupe', 'Permissions', 'Recipes', 'RuleFields', 'Rules', 'Field', 'LinesField'];
+const COVERED = ['Connections', 'Dedupe', 'Permissions', 'Recipes', 'RuleFields', 'Rules', 'Field', 'LinesField'];
 /** Options components with labels that are not settings, and why. */
 const EXCLUDED: Record<string, string> = {
   History: 'filters over the log, not settings',
@@ -71,6 +72,18 @@ describe('every options setting has a help tip', () => {
     render(Dedupe, { config: defaultConfig(), dirty: false, saving: false, serverErrors: [], onChange: vi.fn(), onSave: vi.fn() });
     const a = audit();
     expect(a.count).toBeGreaterThanOrEqual(11);
+    expect(a.unhelped).toEqual([]);
+  });
+
+  it('Connections page (M3 T7): the personal access token field', async () => {
+    send.mockResolvedValue({ ok: true, data: {
+      defs: [{ id: 'github', kind: 'github', label: 'GitHub', baseUrl: 'https://github.com', apiBaseUrl: 'https://api.github.com', hosts: [], auth: 'device-code', scopes: [] }],
+      status: [{ id: 'github', state: 'not-configured', ssoRequired: [], scopes: [] }],
+    } });
+    render(Connections);
+    expect(await screen.findByRole('button', { name: 'About Personal access token' })).toBeTruthy();
+    const a = audit();
+    expect(a.count).toBeGreaterThanOrEqual(1);
     expect(a.unhelped).toEqual([]);
   });
 

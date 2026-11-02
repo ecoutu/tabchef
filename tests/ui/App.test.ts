@@ -225,6 +225,19 @@ describe('App routing (R28, M2 T14)', () => {
   });
 });
 
+describe('App: #/connections (M3 T7)', () => {
+  it('opens the Connections page from the nav', async () => {
+    const base = send.getMockImplementation()!;
+    send.mockImplementation(async (req: { type: string }) => (req.type === 'connections.list'
+      ? { ok: true, data: { defs: [{ id: 'github', kind: 'github', label: 'GitHub', baseUrl: 'https://github.com', apiBaseUrl: 'https://api.github.com', hosts: [], auth: 'device-code', scopes: [] }], status: [{ id: 'github', state: 'not-configured', ssoRequired: [], scopes: [] }] } }
+      : base(req)));
+    window.location.hash = '#/connections';
+    render(App);
+    expect((screen.getByRole('link', { name: 'Connections' }) as HTMLAnchorElement).getAttribute('aria-current')).toBe('page');
+    expect(await screen.findByRole('button', { name: 'Connect GitHub' })).toBeTruthy();
+  });
+});
+
 describe('App: #/rules/new (M2 T16, R28)', () => {
   const effects = { moves: [{ tabId: 1, title: 'A tab', to: 'API' }], closes: [], groupsCreated: ['API'], unchanged: 0, anchorsOpened: 0, dryRun: false };
   const NEW = `#/rules/new?url=${encodeURIComponent('https://github.com/acme/api/pull/1')}&kind=group`;

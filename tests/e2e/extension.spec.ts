@@ -181,4 +181,17 @@ test.describe('extension in Chromium', () => {
     await expect(tip).toBeVisible();
     await page.close();
   });
+
+  test('(j) the Connections page lists GitHub as not connected, from the worker (M3 T7; no network)', async () => {
+    const page = await h.context.newPage();
+    await page.goto(`chrome-extension://${h.extensionId}/options.html#/connections`);
+    const card = page.getByRole('region', { name: 'GitHub' });
+    await expect(card.getByText('Not connected')).toBeVisible();
+    await expect(card.getByRole('button', { name: 'Connect GitHub' })).toBeVisible();
+    await expect(page.getByLabel('Personal access token', { exact: true })).toHaveAttribute('type', 'password');
+    const list = await send<{ defs: { id: string }[]; status: { state: string }[] }>(h, { type: 'connections.list' });
+    expect(list.defs.map((d) => d.id)).toEqual(['github']);
+    expect(list.status.map((x) => x.state)).toEqual(['not-configured']);
+    await page.close();
+  });
 });

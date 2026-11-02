@@ -176,6 +176,30 @@ describe('GitHubDeviceAuth', () => {
       expect(body.has('client_secret')).toBe(false);
     });
 
+    it('T7 fix: cancel() removes the pending flow; the next poll is "No GitHub sign-in in progress" and stores nothing', async () => {
+      const r = rig();
+      await r.device.start(def());
+      await r.device.cancel();
+      expect((await session())[DEVICE_KEY]).toBeUndefined();
+      expect(await r.device.poll(def())).toEqual({ state: 'error', message: 'No GitHub sign-in in progress; start again' });
+      expect(r.calls(GITHUB_TOKEN_URL)).toHaveLength(0);
+      expect(await r.secrets.getSecret('github')).toBeUndefined();
+    });
+
+    it('T7 fix: a poll in flight when cancel() runs does not store its tokens', async () => {
+      let answer!: (res: Response) => void;
+      const r = rig({ token: () => new Promise<Response>((res) => { answer = res; }) });
+      await r.device.start(def());
+      const p = r.device.poll(def());
+      await vi.waitFor(() => expect(r.calls(GITHUB_TOKEN_URL)).toHaveLength(1));
+      await r.device.cancel();
+      answer(json(200, TOKEN));
+      expect(await p).toEqual({ state: 'error', message: 'GitHub sign-in was cancelled; start again' });
+      expect(await r.secrets.getSecret('github')).toBeUndefined();
+      expect(await r.manager.defs()).toEqual([]);
+      expect(await everything()).not.toContain(TOKEN.access_token);
+    });
+
     it('authorization_pending → pending; the flow is kept', async () => {
       const r = rig({ token: () => json(200, ERRORS.authorization_pending) });
       await r.device.start(def());

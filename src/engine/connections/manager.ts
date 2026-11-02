@@ -63,6 +63,8 @@ interface Runtime {
   lastUsedAt?: number;
   lastError?: string;
   lastKind?: ConnErrorKind;
+  /** The last rate-limited result's retryAt: only so an extended block changes the signature and emits. */
+  retryAt?: number;
   ssoRequired?: { org: string; url: string }[];
 }
 type RuntimeMap = Record<string, Runtime>;
@@ -96,6 +98,7 @@ function sanitizeRuntime(raw: unknown): RuntimeMap {
     if (typeof v.lastUsedAt === 'number') r.lastUsedAt = v.lastUsedAt;
     if (typeof v.lastError === 'string') r.lastError = v.lastError;
     if (typeof v.lastKind === 'string') r.lastKind = v.lastKind as ConnErrorKind;
+    if (typeof v.retryAt === 'number') r.retryAt = v.retryAt;
     if (Array.isArray(v.ssoRequired)) {
       r.ssoRequired = v.ssoRequired.filter((s): s is { org: string; url: string } => isObj(s) && typeof s.org === 'string' && typeof s.url === 'string');
     }
@@ -104,7 +107,7 @@ function sanitizeRuntime(raw: unknown): RuntimeMap {
   return out;
 }
 
-const signature = (r: Runtime | undefined) => JSON.stringify([r?.needsReauth, r?.lastError, r?.lastKind, r?.ssoRequired]);
+const signature = (r: Runtime | undefined) => JSON.stringify([r?.needsReauth, r?.lastError, r?.lastKind, r?.retryAt, r?.ssoRequired]);
 
 function graphqlRate(body: unknown): { remaining: number; limit?: number; resetAt: string } | undefined {
   const rl = isObj(body) && isObj(body.data) ? body.data.rateLimit : undefined;
@@ -189,6 +192,26 @@ export class ConnectionManager {
     await this.emit(id);
   }
 
+  /**
+   * Signs out (Connections page): clears the secrets (storage.local and the session access token) and the runtime
+   * status, and keeps the def, without the account's login and scopes, so it lists as not-configured.
+   */
+  async disconnect(id: string): Promise<void> {
+    await this.deps.secrets.clear(id);
+    this.bumpGeneration(id);
+    await this.serialDefs(async () => {
+      const defs = await this.defs();
+      const i = defs.findIndex((d) => d.id === id);
+      if (i < 0) return;
+      const next: ConnectionDef = { ...defs[i]!, scopes: [] };
+      delete next.login;
+      defs[i] = next;
+      await this.deps.local.set({ [CONNECTIONS_KEY]: defs });
+    });
+    await this.updateRuntime(id, () => undefined);
+    await this.emit(id);
+  }
+
   /** Snapshot of a connection's runtime status, taken before a credential switch that may need rolling back. */
   async snapshotStatus(id: string): Promise<StatusSnapshot> {
     const rt = await this.runtime(id);
@@ -220,9 +243,10 @@ export class ConnectionManager {
     if (!def) return { id, state: 'not-configured', ssoRequired: [], scopes: [] };
     const gate = await this.deps.limiter.canSend(id, false);
     let state: ConnectionState;
+    // A disconnected connection is not-configured even while an earlier rate-limit block lasts.
     if (rt?.needsReauth) state = 'needs-reauth';
-    else if (!gate.ok) state = 'rate-limited';
     else if (!(await this.configured(def))) state = 'not-configured';
+    else if (!gate.ok) state = 'rate-limited';
     else if (rt?.lastKind && ERROR_KINDS.has(rt.lastKind)) state = 'error';
     else state = 'ok';
     return {
@@ -391,6 +415,7 @@ export class ConnectionManager {
         next.lastUsedAt = now;
         delete next.lastError;
         delete next.lastKind;
+        delete next.retryAt;
         return next;
       }
       if (reauth) {
@@ -403,12 +428,14 @@ export class ConnectionManager {
         next.lastUsedAt = now;
         return next;
       } else if (r.kind === 'rate-limited') {
+        if (r.retryAt !== undefined) next.retryAt = r.retryAt;
         logDetail = `${def.id}: rate limited${r.retryAt !== undefined ? ` until ${new Date(r.retryAt).toISOString()}` : ''}`;
       } else if (!ERROR_KINDS.has(r.kind)) {
         // not-found / bad-request / not-configured: the request failed, the connection did not.
         if (r.status !== undefined) next.lastUsedAt = now;
         return next;
       }
+      if (r.kind !== 'rate-limited') delete next.retryAt;
       next.lastError = message;
       next.lastKind = r.kind;
       return next;

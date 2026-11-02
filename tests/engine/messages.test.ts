@@ -9,6 +9,9 @@ import { FakeBrowserPort } from '../../src/platform/fake-port';
 import type { Config } from '../../src/core/types';
 import { programOf, withGroupRules } from '../helpers/config';
 import { builtinRecipes } from '../../src/recipes/load';
+import { builtinConnectionDefs } from '../../src/core/connections/builtin';
+import { fakeBrowser } from 'wxt/testing/fake-browser';
+import { browser } from 'wxt/browser';
 
 type Loose = { ok: boolean; data: { sets: { key: string }[]; pending: unknown[] }; errors: string[] };
 const A = 'https://a.example/x';
@@ -852,5 +855,217 @@ describe('explain.tab / rules.shadowed (M2 T14)', () => {
     expect(await s.handle({ type: 'rules.shadowed', config: 3 }, ui)).toEqual({ ok: false, error: 'unknown request' });
     expect(await s.handle({ type: 'rules.shadowed' }, content)).toEqual({ ok: false, error: 'forbidden' });
     expect(await setup().handle({ type: 'rules.shadowed' }, ui)).toEqual({ ok: false, error: 'explain unavailable' });
+  });
+});
+
+describe('connections.* (M3 T7)', () => {
+  const PAT = 'ghp_abcdefghijklmnopqrstuvwxyz0123456789';
+  const DEVICE_CODE = 'dc_3584d83530557fdd1f46af8289938c8ef79f9dc5';
+  const ACCESS = 'ghu_16C7e42F292c6912E7710c838347Ae178B4a';
+  const SECRET_KEYS = /^(token|device_code|deviceCode|access_token|refresh_token|refreshToken)$/;
+  type FetchFn = typeof fetch;
+  const json = (status: number, body: unknown, headers: Record<string, string> = {}) =>
+    new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...headers } });
+  const urlOf = (u: Parameters<FetchFn>[0]) => (typeof u === 'string' ? u : u instanceof URL ? u.href : u.url);
+
+  /** Fails when `v` holds a secret value or a key that names one, at any depth. */
+  function deepScan(v: unknown, secrets: string[], path = '$'): void {
+    if (typeof v === 'string') {
+      for (const s of secrets) expect(v.includes(s), `${path} contains a secret`).toBe(false);
+    } else if (Array.isArray(v)) v.forEach((x, i) => deepScan(x, secrets, `${path}[${i}]`));
+    else if (typeof v === 'object' && v !== null) {
+      for (const [k, x] of Object.entries(v)) {
+        expect(SECRET_KEYS.test(k), `${path}.${k} is a secret field`).toBe(false);
+        deepScan(x, secrets, `${path}.${k}`);
+      }
+    }
+  }
+
+  async function connRig(opts: { token?: () => Response; user?: () => Response } = {}) {
+    fakeBrowser.reset();
+    const { SecretStore } = await import('../../src/engine/connections/secret-store');
+    const { RateLimiter } = await import('../../src/engine/connections/rate-limiter');
+    const { ConnectionManager } = await import('../../src/engine/connections/manager');
+    const { GitHubDeviceAuth, GITHUB_DEVICE_CODE_URL, GITHUB_TOKEN_URL } = await import('../../src/engine/connections/github-auth');
+    const { TokenAuth, setGitHubToken } = await import('../../src/engine/connections/token-auth');
+    const secrets = new SecretStore({ local: browser.storage.local, session: browser.storage.session });
+    const f = vi.fn<FetchFn>(async (u) => {
+      const url = urlOf(u);
+      if (url === GITHUB_DEVICE_CODE_URL) {
+        return json(200, { device_code: DEVICE_CODE, user_code: 'WDJB-MJHT', verification_uri: 'https://github.com/login/device', expires_in: 900, interval: 5 });
+      }
+      if (url === GITHUB_TOKEN_URL) return (opts.token ?? (() => json(200, { error: 'authorization_pending' })))();
+      if (url === 'https://api.github.com/user') return (opts.user ?? (() => json(200, { login: 'octo' })))();
+      return json(404, {});
+    });
+    const port = { hasPermission: vi.fn(async () => true) };
+    const holder: { manager?: InstanceType<typeof ConnectionManager> } = {};
+    const device = new GitHubDeviceAuth({ fetch: f, secrets, session: browser.storage.session, port, manager: () => holder.manager! });
+    const token = new TokenAuth();
+    const manager = new ConnectionManager({
+      local: browser.storage.local, session: browser.storage.session, secrets, limiter: new RateLimiter(browser.storage.session),
+      port, fetch: f, auth: { 'device-code': device, token, session: token, 'oauth-pkce': token, 'oauth-proxy': token },
+    });
+    holder.manager = manager;
+    const connections: NonNullable<HandlerDeps['connections']> = {
+      manager, github: device, knownSecrets: () => secrets.knownSecrets(),
+      setGitHubToken: (t) => setGitHubToken({ manager, secrets, port, fetch: f }, t),
+    };
+    return { ...setup({ connections }), manager, secrets, device, fetch: f, connections };
+  }
+  const all = async () => [PAT, DEVICE_CODE, ACCESS];
+
+  it('connections.list: the GitHub def (built in until saved) and its status, never a token (deep scan)', async () => {
+    const s = await connRig();
+    const empty = await s.handle({ type: 'connections.list' }, ui);
+    expect(empty).toMatchObject({ ok: true, data: { defs: [{ id: 'github', label: 'GitHub' }], status: [{ id: 'github', state: 'not-configured' }] } });
+    // A token stored, a stray `token` field in the stored def, and a raw token in the stored last error.
+    await s.secrets.setSecret('github', { token: PAT });
+    await browser.storage.local.set({ connections: [{ ...builtinConnectionDefs().github, auth: 'token', login: 'octo', token: PAT, extra: { refresh_token: PAT } }] });
+    await browser.storage.session.set({ 'conn.status': { github: { lastError: `boom ${PAT}`, lastKind: 'server' } } });
+    const r = await s.handle({ type: 'connections.list' }, ui);
+    expect(r).toMatchObject({ ok: true, data: { defs: [{ id: 'github', auth: 'token', login: 'octo' }], status: [{ id: 'github', state: 'error' }] } });
+    deepScan(r, await all());
+  });
+
+  it('every connections.* request from a content script (or another extension) is forbidden; nothing runs', async () => {
+    const s = await connRig();
+    const spies = [vi.spyOn(s.connections, 'setGitHubToken'), vi.spyOn(s.manager, 'disconnect'), vi.spyOn(s.device, 'start'), vi.spyOn(s.device, 'poll')];
+    const reqs = [
+      { type: 'connections.list' }, { type: 'connections.github.start' }, { type: 'connections.github.poll' },
+      { type: 'connections.setToken', id: 'github', token: PAT }, { type: 'connections.test', id: 'github' },
+      { type: 'connections.disconnect', id: 'github' },
+    ];
+    for (const sender of [content, { id: 'other' }]) {
+      for (const req of reqs) expect(await s.handle(req, sender)).toEqual({ ok: false, error: 'forbidden' });
+    }
+    for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+    expect(s.fetch).not.toHaveBeenCalled();
+  });
+
+  it('isRequest: argument shapes', () => {
+    expect(isRequest({ type: 'connections.list' })).toBe(true);
+    expect(isRequest({ type: 'connections.github.start' })).toBe(true);
+    expect(isRequest({ type: 'connections.github.poll' })).toBe(true);
+    expect(isRequest({ type: 'connections.setToken', id: 'github', token: 'x' })).toBe(true);
+    expect(isRequest({ type: 'connections.setToken', id: 'other', token: 'x' })).toBe(false);
+    expect(isRequest({ type: 'connections.setToken', id: 'github' })).toBe(false);
+    expect(isRequest({ type: 'connections.setToken', id: 'github', token: 1 })).toBe(false);
+    expect(isRequest({ type: 'connections.test', id: 'github' })).toBe(true);
+    expect(isRequest({ type: 'connections.test' })).toBe(false);
+    expect(isRequest({ type: 'connections.disconnect', id: 'github' })).toBe(true);
+    expect(isRequest({ type: 'connections.disconnect', id: 3 })).toBe(false);
+    // T7 fix (M3-R55): only the known connection ids.
+    expect(isRequest({ type: 'connections.disconnect', id: 'jira' })).toBe(true);
+    expect(isRequest({ type: 'connections.test', id: 'jira' })).toBe(true);
+    for (const id of ['nope', '', 'GitHub', '../github', '__proto__']) {
+      expect(isRequest({ type: 'connections.test', id }), id).toBe(false);
+      expect(isRequest({ type: 'connections.disconnect', id }), id).toBe(false);
+    }
+  });
+
+  it('connections.* without the connections deps fail', async () => {
+    const s = setup();
+    expect(await s.handle({ type: 'connections.list' }, ui)).toEqual({ ok: false, error: 'connections unavailable' });
+  });
+
+  it('connections.github.start: the user code, verification URI, expiry and interval; never the device_code', async () => {
+    const s = await connRig();
+    const r = await s.handle({ type: 'connections.github.start' }, ui);
+    expect(r).toEqual({ ok: true, data: { userCode: 'WDJB-MJHT', verificationUri: 'https://github.com/login/device', expiresAt: expect.any(Number), interval: 5 } });
+    deepScan(r, await all());
+  });
+
+  it('connections.github.start: a failed start is an error response', async () => {
+    const s = await connRig();
+    vi.spyOn(s.device, 'start').mockResolvedValue({ ok: false, error: 'Tabchef needs access to github.com to sign in with GitHub' });
+    expect(await s.handle({ type: 'connections.github.start' }, ui)).toEqual({ ok: false, error: 'Tabchef needs access to github.com to sign in with GitHub' });
+  });
+
+  it('connections.github.poll: pending, then done stores the connection; no token or device_code in any response', async () => {
+    let answer = () => json(200, { error: 'authorization_pending' });
+    const s = await connRig({ token: () => answer() });
+    await s.handle({ type: 'connections.github.start' }, ui);
+    const pending = await s.handle({ type: 'connections.github.poll' }, ui);
+    expect(pending).toEqual({ ok: true, data: { state: 'pending', interval: 5 } });
+    answer = () => json(200, { access_token: ACCESS, token_type: 'bearer', scope: '' });
+    const done = await s.handle({ type: 'connections.github.poll' }, ui);
+    expect(done).toEqual({ ok: true, data: { state: 'done' } });
+    const list = await s.handle({ type: 'connections.list' }, ui);
+    expect(list).toMatchObject({ ok: true, data: { defs: [{ id: 'github', auth: 'device-code', login: 'octo' }], status: [{ state: 'ok' }] } });
+    for (const r of [pending, done, list]) deepScan(r, await all());
+  });
+
+  it('connections.setToken github: validated and stored via setGitHubToken; the status comes back without the token', async () => {
+    const s = await connRig();
+    const spy = vi.spyOn(s.connections, 'setGitHubToken');
+    const r = await s.handle({ type: 'connections.setToken', id: 'github', token: PAT }, ui);
+    expect(spy).toHaveBeenCalledWith(PAT);
+    expect(r).toMatchObject({ ok: true, data: { id: 'github', state: 'ok' } });
+    expect(await s.secrets.getSecret('github')).toEqual({ token: PAT });
+    deepScan(r, await all());
+  });
+
+  it('T7 fix (M3-R55): disconnect during a pending device flow cancels it; the next poll stores nothing', async () => {
+    const s = await connRig({ token: () => json(200, { access_token: ACCESS, token_type: 'bearer', scope: '' }) });
+    expect((await s.handle({ type: 'connections.github.start' }, ui)).ok).toBe(true);
+    const out = await s.handle({ type: 'connections.disconnect', id: 'github' }, ui);
+    expect(out).toEqual({ ok: true, data: null });
+    deepScan(out, await all());
+    expect((await browser.storage.session.get('conn.device.github'))['conn.device.github']).toBeUndefined();
+    expect(await s.handle({ type: 'connections.github.poll' }, ui)).toEqual({ ok: true, data: { state: 'error', message: 'No GitHub sign-in in progress; start again' } });
+    expect(await s.secrets.getSecret('github')).toBeUndefined();
+    expect(await s.secrets.getAccess('github')).toBeUndefined();
+    expect(JSON.stringify(await browser.storage.local.get(null))).not.toContain(ACCESS);
+  });
+
+  it('T7 fix (M3-R55): a short setToken candidate is not a redaction needle (the error text stays readable)', async () => {
+    const s = await connRig();
+    vi.spyOn(s.connections, 'setGitHubToken').mockResolvedValue({ ok: false, error: 'GitHub rejected this token (401)' });
+    expect(await s.handle({ type: 'connections.setToken', id: 'github', token: 'e' }, ui)).toEqual({ ok: false, error: 'GitHub rejected this token (401)' });
+    const long = 'abcdefgh';
+    vi.spyOn(s.connections, 'setGitHubToken').mockResolvedValue({ ok: false, error: `bad ${long}` });
+    expect(await s.handle({ type: 'connections.setToken', id: 'github', token: long }, ui)).toEqual({ ok: false, error: 'bad «redacted»' });
+  });
+
+  it('connections.setToken: a rejected token is an error response without the token; jira is not available yet', async () => {
+    const s = await connRig({ user: () => json(401, { message: `bad credentials ${PAT}` }) });
+    const r = await s.handle({ type: 'connections.setToken', id: 'github', token: PAT }, ui);
+    expect(r).toEqual({ ok: false, error: 'GitHub rejected this token (401)' });
+    expect(await s.handle({ type: 'connections.setToken', id: 'jira', token: PAT }, ui)).toEqual({ ok: false, error: 'Jira connections are not available yet' });
+    expect(await s.secrets.getSecret('jira')).toBeUndefined();
+  });
+
+  it('connections.test: GET /user through the manager → the login; a failure is an error response', async () => {
+    const s = await connRig();
+    await s.handle({ type: 'connections.setToken', id: 'github', token: PAT }, ui);
+    const fetchSpy = vi.spyOn(s.manager, 'fetch');
+    const tested = await s.handle({ type: 'connections.test', id: 'github' }, ui);
+    expect(tested).toEqual({ ok: true, data: { login: 'octo' } });
+    deepScan(tested, await all());
+    expect(fetchSpy).toHaveBeenCalledWith('github', { method: 'GET', path: '/user' });
+    fetchSpy.mockResolvedValueOnce({ ok: false, kind: 'server', status: 502, message: 'GitHub server error (502)' });
+    expect(await s.handle({ type: 'connections.test', id: 'github' }, ui)).toEqual({ ok: false, error: 'GitHub server error (502)' });
+    // Even a message echoing the stored token comes back redacted.
+    fetchSpy.mockResolvedValueOnce({ ok: false, kind: 'server', status: 502, message: `echo ${PAT}` });
+    const failed = await s.handle({ type: 'connections.test', id: 'github' }, ui);
+    expect(failed.ok).toBe(false);
+    deepScan(failed, await all());
+    expect(await s.handle({ type: 'connections.test', id: 'jira' }, ui)).toEqual({ ok: false, error: 'Testing jira is not supported' });
+    expect(await s.handle({ type: 'connections.test', id: 'nope' }, ui)).toEqual({ ok: false, error: 'unknown request' });
+  });
+
+  it('connections.disconnect clears the secrets (SecretStore.clear) and keeps the def as not-configured', async () => {
+    const s = await connRig();
+    await s.handle({ type: 'connections.setToken', id: 'github', token: PAT }, ui);
+    const clear = vi.spyOn(s.secrets, 'clear');
+    const out = await s.handle({ type: 'connections.disconnect', id: 'github' }, ui);
+    expect(out).toEqual({ ok: true, data: null });
+    deepScan(out, await all());
+    expect(clear).toHaveBeenCalledWith('github');
+    expect(await s.secrets.getSecret('github')).toBeUndefined();
+    expect(await s.handle({ type: 'connections.list' }, ui)).toMatchObject({
+      ok: true, data: { defs: [{ id: 'github' }], status: [{ id: 'github', state: 'not-configured' }] },
+    });
   });
 });

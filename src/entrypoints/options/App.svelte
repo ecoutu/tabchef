@@ -15,6 +15,7 @@
   import { matchRoute } from '../../ui/routes';
   import Backups from './Backups.svelte';
   import Import from './Import.svelte';
+  import Connections from './Connections.svelte';
   import PreviewDialog from './PreviewDialog.svelte';
   import { previewThenApply } from '../../ui/preview-flow';
   import type { PreviewResult } from '../../core/lang/preview';
@@ -25,7 +26,7 @@
    */
   const ROUTES: {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    path: string; label: string; page: 'rules' | 'recipes' | 'dedupe' | 'history' | 'backups' | 'import' | 'explain' | 'newRule' | Component<any>; nav?: false;
+    path: string; label: string; page: 'rules' | 'recipes' | 'dedupe' | 'history' | 'backups' | 'import' | 'explain' | 'newRule' | 'connections' | Component<any>; nav?: false;
   }[] = [
     { path: '/rules', label: 'Rules', page: 'rules' },
     { path: '/recipes', label: 'Recipes', page: 'recipes' },
@@ -37,6 +38,8 @@
     { path: '/explain/:tabId', label: 'Why is this tab here?', page: 'explain', nav: false },
     // A pre-filled rule from the context menu (M2 T16, newRuleHash); longest prefix wins over /rules (R28).
     { path: '/rules/new', label: 'New rule', page: 'newRule', nav: false },
+    // Connections (M3 T7): sign in to GitHub; needs no config.
+    { path: '/connections', label: 'Connections', page: 'connections' },
     // ROUTE-INSERT-POINT
   ];
 
@@ -202,6 +205,8 @@
       <History />
     {:else if current.page === 'explain'}
       {#key matched.params.tabId}<Explain tabId={Number(matched.params.tabId)} />{/key}
+    {:else if current.page === 'connections'}
+      <Connections />
     {:else if current.page === 'backups'}
       {#if saved}<Backups saved={saved!} {dirty} onApplied={loadConfig} />{/if}
     {:else if current.page === 'recipes'}

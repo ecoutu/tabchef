@@ -94,11 +94,33 @@ vi.mock('../../src/engine/context-menu', async (orig) => ({
   refreshMenus: vi.fn(async () => {}),
   onMenuClick: vi.fn(async () => {}),
 }));
+vi.mock('../../src/engine/connections/manager', async (orig) => ({
+  ...(await orig<typeof import('../../src/engine/connections/manager')>()),
+  ConnectionManager: h.fake('connManager', () => ({ onStatusChange: vi.fn(() => () => {}) })),
+}));
+vi.mock('../../src/engine/connections/secret-store', async (orig) => ({
+  ...(await orig<typeof import('../../src/engine/connections/secret-store')>()),
+  SecretStore: h.fake('secrets'),
+}));
+vi.mock('../../src/engine/connections/rate-limiter', async (orig) => ({
+  ...(await orig<typeof import('../../src/engine/connections/rate-limiter')>()),
+  RateLimiter: h.fake('limiter'),
+}));
+vi.mock('../../src/engine/connections/github-auth', async (orig) => ({
+  ...(await orig<typeof import('../../src/engine/connections/github-auth')>()),
+  GitHubDeviceAuth: h.fake('githubAuth'),
+}));
+vi.mock('../../src/engine/connections/token-auth', async (orig) => ({
+  ...(await orig<typeof import('../../src/engine/connections/token-auth')>()),
+  TokenAuth: h.fake('tokenAuth'),
+  setGitHubToken: vi.fn(async () => ({ ok: false, error: 'x' })),
+}));
 
 const { afterConfigChange } = await import('../../src/engine/close-executor');
 const { installMenus, onMenuClick, refreshMenus } = await import('../../src/engine/context-menu');
 const { createAskController } = await import('../../src/engine/ask');
-const { createOnMessage, refreshBadge } = await import('../../src/engine/messages');
+const { createHandler, createOnMessage, refreshBadge } = await import('../../src/engine/messages');
+const { setGitHubToken } = await import('../../src/engine/connections/token-auth');
 const background = (await import('../../src/entrypoints/background')).default;
 
 /**
@@ -470,6 +492,66 @@ describe('background wiring', () => {
   it('a context menu click waits for safety, then runs onMenuClick for the tab', async () => {
     await fire('contextMenus.onClicked', { menuItemId: 'tc-lock' }, { id: 8 });
     expect(onMenuClick).toHaveBeenCalledWith({ menuItemId: 'tc-lock' }, { id: 8 }, expect.objectContaining({ openPage: expect.any(Function) }));
+  });
+
+  describe('connections (M3 T7)', () => {
+    const mgrDeps = () => I('connManager').args[0] as Record<string, unknown>;
+    const handlerConnections = () => (vi.mocked(createHandler).mock.calls[0]![0] as unknown as { connections: Record<string, (...a: unknown[]) => unknown> }).connections;
+
+    it('one ConnectionManager over the shared secret store, limiter, port and fetch; auth map device-code → GitHubDeviceAuth, token → TokenAuth', () => {
+      const d = mgrDeps();
+      expect(d.secrets).toBe(I('secrets'));
+      expect(d.limiter).toBe(I('limiter'));
+      expect(d.port).toBe(I('port'));
+      expect(typeof d.fetch).toBe('function');
+      expect(d.log).toBeDefined();
+      const auth = d.auth as Record<string, unknown>;
+      expect(auth['device-code']).toBe(I('githubAuth'));
+      expect(auth.token).toBe(I('tokenAuth'));
+      // The device-flow provider gets the same secret store, port and fetch, and the manager through its lazy getter.
+      const g = I('githubAuth').args[0] as Record<string, unknown>;
+      expect(g.secrets).toBe(I('secrets'));
+      expect(g.port).toBe(I('port'));
+      expect(g.fetch).toBe(d.fetch);
+      expect((g.manager as () => unknown)()).toBe(I('connManager'));
+    });
+
+    it('M3-R35: a production build (no WXT_E2E_LOCALHOST) has allowLocalhost false', () => {
+      expect(mgrDeps().allowLocalhost).toBe(false);
+    });
+
+    it('M3-R35: the e2e build flag WXT_E2E_LOCALHOST=1 turns allowLocalhost on', () => {
+      vi.stubEnv('WXT_E2E_LOCALHOST', '1');
+      try {
+        for (const k of Object.keys(h.listeners)) delete h.listeners[k];
+        background.main();
+        expect(mgrDeps().allowLocalhost).toBe(true);
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
+
+    it('createHandler gets the connections deps; setToken uses setGitHubToken with the shared instances', async () => {
+      const c = handlerConnections();
+      expect(c.manager).toBe(I('connManager'));
+      expect(c.github).toBe(I('githubAuth'));
+      await c.setGitHubToken!('tok');
+      expect(setGitHubToken).toHaveBeenCalledWith({ manager: I('connManager'), secrets: I('secrets'), port: I('port'), fetch: mgrDeps().fetch, allowLocalhost: false }, 'tok');
+      await c.knownSecrets!();
+      expect(I('secrets').knownSecrets).toHaveBeenCalled();
+    });
+
+    it('a status change broadcasts connections.changed (id only) to extension pages; "no receiver" is expected', async () => {
+      const cb = I('connManager').onStatusChange!.mock.calls[0]![0] as (s: unknown) => void;
+      h.returns['runtime.sendMessage'] = () => Promise.reject(new Error('Could not establish connection. Receiving end does not exist.'));
+      try {
+        cb({ id: 'github', state: 'ok', lastError: 'x', ssoRequired: [], scopes: [] });
+        await vi.advanceTimersByTimeAsync(0);
+      } finally {
+        delete h.returns['runtime.sendMessage'];
+      }
+      expect(h.calls.filter(([p]) => p === 'runtime.sendMessage').map(([, a]) => a[0])).toEqual([{ type: 'connections.changed', id: 'github' }]);
+    });
   });
 
   afterAll(({}, suite) => {

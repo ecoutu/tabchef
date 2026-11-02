@@ -554,6 +554,52 @@ describe('ConnectionManager', () => {
       expect(cb).not.toHaveBeenCalled();
     });
 
+    it('T7: disconnect clears the secrets (SecretStore.clear) and the runtime status, keeps the def as not-configured', async () => {
+      const r = rig({ fetch: async () => json(401, {}) });
+      await r.mgr.save({ ...github(), login: 'octo', scopes: ['repo'] });
+      await r.secrets.setSecret('github', { token: TOKEN });
+      await r.secrets.setAccess('github', { token: 'ghu_access_token_xyz' });
+      await r.mgr.fetch('github', GET);
+      expect((await st(r)).state).toBe('needs-reauth');
+      const clear = vi.spyOn(r.secrets, 'clear');
+      const changes: ConnectionStatus[] = [];
+      r.mgr.onStatusChange((s) => changes.push(s));
+      await r.mgr.disconnect('github');
+      expect(clear).toHaveBeenCalledWith('github');
+      expect(await r.secrets.getSecret('github')).toBeUndefined();
+      expect(await r.secrets.getAccess('github')).toBeUndefined();
+      const [def] = await r.mgr.defs();
+      expect(def).toMatchObject({ id: 'github', auth: 'device-code', scopes: [] });
+      expect(def!.login).toBeUndefined();
+      expect(await st(r)).toEqual({ id: 'github', state: 'not-configured', ssoRequired: [], scopes: [] });
+      expect(changes.at(-1)).toMatchObject({ id: 'github', state: 'not-configured' });
+    });
+
+    it('T7: a disconnected connection is not-configured even while its rate-limit block lasts', async () => {
+      const r = rig({ fetch: async () => json(403, {}, { 'retry-after': '120' }) });
+      await connected(r);
+      await r.mgr.fetch('github', GET);
+      expect((await st(r)).state).toBe('rate-limited');
+      await r.mgr.disconnect('github');
+      expect((await st(r)).state).toBe('not-configured');
+    });
+
+    it('T4 minor: an extended rate-limit block (new retryAt) emits a status change', async () => {
+      let retry = '120';
+      const r = rig({ fetch: async () => json(403, {}, { 'retry-after': retry }) });
+      await connected(r);
+      const changes: ConnectionStatus[] = [];
+      r.mgr.onStatusChange((s) => changes.push(s));
+      await r.mgr.fetch('github', GET);
+      expect(changes.at(-1)).toMatchObject({ state: 'rate-limited', blockedUntil: NOW + 120_000 });
+      const n = changes.length;
+      now = NOW + 120_000; // the block ran out; the next request is limited again, for longer
+      retry = '300';
+      await r.mgr.fetch('github', GET);
+      expect(changes.length).toBe(n + 1);
+      expect(changes.at(-1)).toMatchObject({ state: 'rate-limited', blockedUntil: NOW + 420_000 });
+    });
+
     it('remove clears the runtime status', async () => {
       const r = rig({ fetch: async () => json(401, {}) });
       await connected(r);
