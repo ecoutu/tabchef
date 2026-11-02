@@ -12,7 +12,7 @@
   import History from './History.svelte';
   import Explain from './Explain.svelte';
   import NewRule from './NewRule.svelte';
-  import { matchRoute } from '../../ui/routes';
+  import { matchRoute, OPTIONS_ROUTES, type OptionsPage } from '../../ui/routes';
   import Backups from './Backups.svelte';
   import Import from './Import.svelte';
   import Connections from './Connections.svelte';
@@ -21,27 +21,13 @@
   import type { PreviewResult } from '../../core/lang/preview';
 
   /**
-   * Route table. To add a page (e.g. '/import' in Task 17), add one entry here; the nav and hash routing pick it up.
-   * Routing is longest-prefix with `:param` segments (R28, src/ui/routes.ts); `nav: false` keeps a route out of the nav.
+   * Route table: OPTIONS_ROUTES (src/ui/routes.ts), where pages are added. Routing is longest-prefix with `:param`
+   * segments (R28); `nav: false` keeps a route out of the nav. A route may also name a component as its page.
    */
   const ROUTES: {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    path: string; label: string; page: 'rules' | 'recipes' | 'dedupe' | 'history' | 'backups' | 'import' | 'explain' | 'newRule' | 'connections' | Component<any>; nav?: false;
-  }[] = [
-    { path: '/rules', label: 'Rules', page: 'rules' },
-    { path: '/recipes', label: 'Recipes', page: 'recipes' },
-    { path: '/dedupe', label: 'Duplicates', page: 'dedupe' },
-    { path: '/history', label: 'History', page: 'history' },
-    { path: '/backups', label: 'Backups', page: 'backups' },
-    { path: '/import', label: 'Import', page: 'import' },
-    // The conflict view (M2 T14): linked from History rows and T16's "Why is this tab here?" (explainHash).
-    { path: '/explain/:tabId', label: 'Why is this tab here?', page: 'explain', nav: false },
-    // A pre-filled rule from the context menu (M2 T16, newRuleHash); longest prefix wins over /rules (R28).
-    { path: '/rules/new', label: 'New rule', page: 'newRule', nav: false },
-    // Connections (M3 T7): sign in to GitHub; needs no config.
-    { path: '/connections', label: 'Connections', page: 'connections' },
-    // ROUTE-INSERT-POINT
-  ];
+    path: string; label: string; page: OptionsPage | Component<any>; nav?: false;
+  }[] = [...OPTIONS_ROUTES];
 
   const parseHash = () => matchRoute(ROUTES, window.location.hash);
 

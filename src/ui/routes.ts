@@ -4,6 +4,29 @@
 
 export interface RouteMatch { path: string; params: Record<string, string> }
 
+/** A page of the options page. */
+export type OptionsPage = 'rules' | 'recipes' | 'dedupe' | 'history' | 'backups' | 'import' | 'explain' | 'newRule' | 'connections';
+
+/**
+ * The options page's route table. To add a page, add one entry here; the nav and hash routing pick it up, and
+ * `npm run check:terms` learns its label. `nav: false` keeps a route out of the nav.
+ */
+export const OPTIONS_ROUTES: readonly { path: string; label: string; page: OptionsPage; nav?: false }[] = [
+  { path: '/rules', label: 'Rules', page: 'rules' },
+  { path: '/recipes', label: 'Recipes', page: 'recipes' },
+  { path: '/dedupe', label: 'Duplicates', page: 'dedupe' },
+  { path: '/history', label: 'History', page: 'history' },
+  { path: '/backups', label: 'Backups', page: 'backups' },
+  { path: '/import', label: 'Import', page: 'import' },
+  // The conflict view (M2 T14): linked from History rows and T16's "Why is this tab here?" (explainHash).
+  { path: '/explain/:tabId', label: 'Why is this tab here?', page: 'explain', nav: false },
+  // A pre-filled rule from the context menu (M2 T16, newRuleHash); longest prefix wins over /rules (R28).
+  { path: '/rules/new', label: 'New rule', page: 'newRule', nav: false },
+  // Connections: sign in to GitHub and Jira; needs no config.
+  { path: '/connections', label: 'Connections', page: 'connections' },
+  // ROUTE-INSERT-POINT
+];
+
 const FALLBACK = '/rules';
 const segments = (p: string): string[] => p.split('/').filter((s) => s !== '');
 const decode = (s: string): string => {
