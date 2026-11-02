@@ -9,7 +9,10 @@ export type Matcher = (url: string) => Record<string, string> | null;
 
 /** Regex-safety cap: every user or recipe regex is at most this many characters. */
 export const MAX_REGEX_LEN = 500;
+/** Regex-safety cap on matched input: titles and URLs are truncated to this many characters before matching. */
+export const MAX_MATCH_INPUT = 2048;
 const cache = new Map<string, Matcher>();
+const textCache = new Map<string, Matcher>();
 
 function collect(groups: Record<string, string | undefined> | undefined): Record<string, string> {
   const out: Record<string, string> = {};
@@ -109,6 +112,7 @@ function render(comp: Comp, toks: Tok[]): string {
 }
 
 type Auth = Pick<Record<Comp, string>, 'username' | 'password' | 'hostname' | 'port'>;
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
 const ANY_AUTH: Auth = { username: '*', password: '*', hostname: '*', port: '*' };
 const HOST_CHARS = /^[A-Za-z0-9._-]+$/;
 
@@ -307,6 +311,27 @@ export function compilePattern(p: string): Matcher {
   const isRegex = p.length >= 2 && p.startsWith('/') && p.lastIndexOf('/') > 0;
   const fn = isRegex ? compileRegex(p) : compileGlob(p);
   cache.set(p, fn);
+  return fn;
+}
+
+/**
+ * Compile a title pattern (R6): a glob where `*` is `.*`, anchored and case-insensitive, with no scheme or host
+ * handling and no `:param`s (use a regex named group), or `/regex/flags` as in compilePattern. Cached per pattern.
+ * Input longer than MAX_MATCH_INPUT is truncated before matching.
+ */
+export function compileTextPattern(p: string): Matcher {
+  const hit = textCache.get(p);
+  if (hit) return hit;
+  if (p.length > MAX_REGEX_LEN) throw new PatternError('pattern too long');
+  const isRegex = p.length >= 2 && p.startsWith('/') && p.lastIndexOf('/') > 0;
+  let inner: Matcher;
+  if (isRegex) inner = compileRegex(p);
+  else {
+    const re = new RegExp(`^${p.split('*').map(escapeRe).join('.*')}$`, 'is');
+    inner = (s) => (re.test(s) ? {} : null);
+  }
+  const fn: Matcher = (s) => inner(s.slice(0, MAX_MATCH_INPUT));
+  textCache.set(p, fn);
   return fn;
 }
 
