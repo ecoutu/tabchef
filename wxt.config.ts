@@ -43,9 +43,16 @@ export const yamlJson = {
   },
 };
 
+/**
+ * e2e-only build (`npm run e2e:m3`, M3-R86): the mock services run on http://localhost, so the worker may fetch them
+ * without a grant (optional permissions cannot be granted in e2e). The same flag reaches the worker as
+ * `import.meta.env.WXT_E2E_LOCALHOST` (M3-R35). Never set for `build` / `zip`; the m3 e2e spec's guard checks that.
+ */
+const e2eLocalhost = process.env.WXT_E2E_LOCALHOST === '1';
+
 // See https://wxt.dev/api/reference/wxt/interfaces/inlineconfig.html
 export default defineConfig({
-  manifest: manifestConfig,
+  manifest: e2eLocalhost ? { ...manifestConfig, host_permissions: ['http://localhost/*'] } : manifestConfig,
   modules: ['@wxt-dev/module-svelte'],
   srcDir: 'src',
   vite: () => ({ plugins: [lzmaDecoderFix, yamlJson] }),

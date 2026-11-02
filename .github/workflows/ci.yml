@@ -36,3 +36,5 @@ jobs:
       # Bundled Chromium in new headless mode loads unpacked extensions; no xvfb needed.
       - run: npx playwright install --with-deps chromium
       - run: npm run e2e
+      # M3 mocked-services spec: its own build with WXT_E2E_LOCALHOST=1 (localhost host permission, M3-R86).
+      - run: npm run e2e:m3
