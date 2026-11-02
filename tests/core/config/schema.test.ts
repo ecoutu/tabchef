@@ -24,7 +24,7 @@ describe('config schema', () => {
   it('has the specified dedupe defaults', () => {
     expect(defaultConfig().dedupe).toEqual({
       mode: 'always-switch', keep: 'existing', stripFragment: true, ignoreTrailingSlash: true,
-      followFragment: true, includeIncognito: false, canonicalizers: ['githubPr'],
+      followFragment: true, includeIncognito: false, canonicalizers: [],
       stripParams: ['utm_*', 'fbclid', 'gclid', 'mc_cid', 'mc_eid'],
       allowDuplicates: [], alwaysSwitchSites: [], scope: 'all-windows', urlTransforms: [],
       fragmentOverrides: [], matchTitle: false, titleOverrides: [],

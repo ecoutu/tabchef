@@ -185,6 +185,7 @@ export interface HandlerDeps {
   extensionOrigin: string;
   store: Pick<ConfigStore, 'get' | 'set' | 'update' | 'backups' | 'restore' | 'status'>;
   port: BrowserPort;
+  /** Effective dedupe settings: the compiled Program's `dedupe` (config + recipe urlTransforms, ruling R4). */
   getSettings: () => Promise<DedupeSettings>;
   safety: Pick<SafetyService, 'pause' | 'resume' | 'isPaused' | 'lock' | 'unlock' | 'isLocked' | 'lockedTabIds' | 'undo'>;
   recentlyClosed: Pick<RecentlyClosed, 'list' | 'add' | 'ready'>;

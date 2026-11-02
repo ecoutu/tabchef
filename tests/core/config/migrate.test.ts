@@ -47,6 +47,15 @@ describe('migrateConfig v1 -> v2', () => {
     expect(r.config.dryRun).toBe(false);
   });
 
+  it('an older v1 without canonicalizers gets the M1 default (githubPr) and so github-prs; githubPr is dropped (M2 T6)', () => {
+    const v = v1Config() as unknown as { dedupe: Record<string, unknown> };
+    delete v.dedupe.canonicalizers;
+    const r = ok(v).config;
+    expect(r.recipes.find((x) => x.id === 'github-prs')?.enabled).toBe(true);
+    expect(r.dedupe.canonicalizers).toEqual([]);
+    expect(ok(v1Config([], { canonicalizers: ['githubPr', 'other'] })).config.dedupe.canonicalizers).toEqual(['other']);
+  });
+
   it('enables github-prs only when v1 had the githubPr canonicalizer', () => {
     const on = ok(v1Config([], { canonicalizers: ['githubPr'] })).config.recipes;
     const off = ok(v1Config([], { canonicalizers: [] })).config.recipes;

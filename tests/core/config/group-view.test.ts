@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { asGroupRule, groupView } from '../../../src/core/config/group-view';
+import { asGroupRule, orderedUserRules } from '../../../src/core/config/group-view';
 import { groupRuleToRule } from '../../../src/core/config/migrate';
 import { defaultConfig } from '../../../src/core/config/defaults';
 import type { Config, GroupRule } from '../../../src/core/types';
@@ -30,17 +30,9 @@ describe('asGroupRule', () => {
   });
 });
 
-describe('groupView', () => {
-  it('follows order, appends user rules missing from it, and ids are rule keys (R19)', () => {
+describe('orderedUserRules', () => {
+  it('follows order, then appends user rules missing from it', () => {
     const c = cfg([v2('a'), v2('b'), v2('c')], ['user/c', 'github-prs/pr', 'user/a', 'user/gone']);
-    expect(groupView(c).map((r) => r.id)).toEqual(['user/c', 'user/a', 'user/b']);
-  });
-  it('skips rules it cannot express', () => {
-    const c = cfg([v2('a'), v2('b', { match: { title: 'x' } })], ['user/a', 'user/b']);
-    expect(groupView(c).map((r) => r.id)).toEqual(['user/a']);
-  });
-  it('carries a dedupe action mode as the per-rule override', () => {
-    const c = cfg([groupRuleToRule(g('a', { dedupe: 'off' }))], []);
-    expect(groupView(c)[0]!.dedupe).toBe('off');
+    expect(orderedUserRules(c).map((r) => r.id)).toEqual(['c', 'a', 'b']);
   });
 });

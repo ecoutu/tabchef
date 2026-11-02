@@ -1,4 +1,4 @@
-import type { RecipeRef, Rule } from './lang/types';
+import type { DedupeAction, RecipeRef, Rule } from './lang/types';
 export type { Action, Cond, RecipeRef, Rule } from './lang/types';
 
 export type GroupColor = 'grey'|'blue'|'red'|'yellow'|'green'|'pink'|'purple'|'cyan'|'orange';
@@ -13,6 +13,11 @@ export interface GroupRule {
   merge?: boolean;    // default false: one group across all windows; matching tabs move into the existing group's window (Auto-Group Tabs "Merge")
 }
 export type DedupeMode = 'always-switch' | 'ask' | 'off';
+/**
+ * Per-rule dedupe override (ruling R25): the winning rule's dedupe action (evaluateTab().dedupe). Set fields win over
+ * the DedupeSettings. `matchTitle` is carried for M2 T18 (R18) and not applied yet.
+ */
+export type DedupeOverride = DedupeAction;
 export interface DedupeSettings {
   mode: DedupeMode; keep: 'existing';         // new tab always closes (anti-goal)
   stripParams: string[]; stripFragment: boolean; ignoreTrailingSlash: boolean;

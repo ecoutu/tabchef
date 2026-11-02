@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { managedGroupIds, planGroups, syncCreationOrder, type PlanContext } from '../../../src/core/group/plan';
 import { FakeBrowserPort } from '../../../src/platform/fake-port';
 import type { Config, GroupColor, GroupRule, Op, Snapshot, TabSnap } from '../../../src/core/types';
-import { withGroupRules } from '../../helpers/config';
+import type { GroupAction, Program, Rule } from '../../../src/core/lang/types';
+import { defaultConfig } from '../../../src/core/config/defaults';
+import { programFromGroupRules, programOf } from '../../helpers/config';
 
 type NewTab = Omit<TabSnap, 'index' | 'groupId'> & Partial<Pick<TabSnap, 'index' | 'groupId'>>;
 
@@ -14,7 +16,8 @@ const OTHER = 'https://other.com/';
 const rule = (id: string, url: string, title: string, o: Partial<GroupRule> = {}, color: GroupColor = 'blue'): GroupRule => ({
   id, name: id, enabled: true, match: { url }, group: { title, color }, ...o,
 });
-const cfg = (...groupRules: GroupRule[]): Config => (withGroupRules(groupRules));
+/** The M1 rules as the engine now sees them: a v1 config migrated (migrateConfig) and compiled (compileProgram). */
+const cfg = (...groupRules: GroupRule[]): Program => programFromGroupRules(groupRules);
 const ctx = (o: Partial<PlanContext> = {}): PlanContext => ({
   leaveAlone: new Set(), managedTitles: new Set(), creationOrder: new Map(), ...o,
 });
@@ -75,7 +78,7 @@ async function apply(f: FakeBrowserPort, ops: Op[]): Promise<void> {
   }
 }
 /** Plan/apply until no ops; returns each pass's ops (the final pass is always []). */
-async function converge(f: FakeBrowserPort, config: Config, c: PlanContext = ctx()): Promise<Op[][]> {
+async function converge(f: FakeBrowserPort, config: Program, c: PlanContext = ctx()): Promise<Op[][]> {
   const passes: Op[][] = [];
   for (let i = 0; i < 4; i++) {
     const ops = planGroups(snap(f), config, c);
@@ -594,5 +597,42 @@ describe('planGroups: a title claimed by a merge rule is global (CR#9)', () => {
     const passes = await converge(f, mixed, ctx({ managedTitles: new Set(['api']) }));
     expect(passes.length).toBeLessThanOrEqual(3);
     expect(f.state.groups.filter((g) => g.title === 'api').map((g) => g.id)).toEqual([10]);
+  });
+});
+
+describe('planGroups: compiled-program inputs (M2 T6)', () => {
+  const v2 = (rules: Rule[], o: Partial<Config> = {}) => programOf({ ...defaultConfig(), rules, ...o });
+  const gr = (id: string, url: string, title: string, extra: Partial<Rule> = {}, group: Partial<GroupAction> = {}): Rule => ({
+    id, name: id, enabled: true, match: { url }, actions: [{ group: { title, color: 'blue', ...group } }], ...extra,
+  });
+
+  it('a dry-run rule never moves or ungroups the tab it wins (T12 logs it instead)', () => {
+    const f = world();
+    f.addTab(tab(1, A));
+    f.addTab(tab(2, B, { groupId: 10 }));
+    f.addGroup({ id: 10, windowId: 1, title: 'A', color: 'blue', collapsed: false });
+    const p = v2([gr('a', 'a.com/*', 'A', { dryRun: true }), gr('b', 'b.com/*', 'B', { dryRun: true })]);
+    expect(planGroups(snap(f), p, ctx({ managedTitles: new Set(['A']) }))).toEqual([]);
+    expect(planGroups(snap(f), v2([gr('a', 'a.com/*', 'A')], { dryRun: true }), ctx({ managedTitles: new Set(['A']) }))).toEqual([]);
+  });
+
+  it('strictness of a group no tab targets comes from the program rule whose title template produces it', () => {
+    const f = world();
+    f.addTab(tab(1, OTHER, { groupId: 10 }));
+    f.addGroup({ id: 10, windowId: 1, title: 'repo-x', color: 'blue', collapsed: false });
+    const loose = v2([gr('r', 'github.com/:repo/*', 'repo-{repo}', {}, { strict: false })]);
+    expect(planGroups(snap(f), loose, ctx({ managedTitles: new Set(['repo-x']) }))).toEqual([]);
+    const strict = v2([gr('r', 'github.com/:repo/*', 'repo-{repo}')]);
+    expect(planGroups(snap(f), strict, ctx({ managedTitles: new Set(['repo-x']) }))).toEqual([{ kind: 'ungroup', tabIds: [1], ruleId: 'user/r' }]);
+  });
+
+  it('opener conditions see the opener tab from the snapshot', () => {
+    const f = world();
+    f.addTab(tab(1, A));
+    f.addTab(tab(2, OTHER, { openerTabId: 1 }));
+    const p = v2([{ id: 'o', name: 'o', enabled: true, match: { opener: { url: 'a.com/*' } }, actions: [{ group: { title: 'From A', color: 'blue' } }] }]);
+    expect(planGroups(snap(f), p, ctx())).toEqual([
+      { kind: 'group', tabIds: [2], windowId: 1, title: 'From A', color: 'blue', collapsed: false, ruleId: 'user/o' },
+    ]);
   });
 });

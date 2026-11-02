@@ -10,7 +10,7 @@ import { evaluateGroupRules } from '../../src/core/group/evaluate';
 import { Reconciler } from '../../src/engine/reconciler';
 import { FakeBrowserPort } from '../../src/platform/fake-port';
 import type { Config } from '../../src/core/types';
-import { withGroupRules } from '../helpers/config';
+import { withGroupRules, programOf } from '../helpers/config';
 
 const config: Config = withGroupRules([{ id: 'a', name: 'a', enabled: true, match: { url: 'https://a.com/**' }, group: { title: 'A', color: 'red' } }]);
 
@@ -25,7 +25,7 @@ describe('Reconciler: targets computed once per pass (CR#8)', () => {
         incognito: false, discarded: false, active: false, audible: false });
     }
     const snapshots = vi.spyOn(f, 'snapshot');
-    await new Reconciler(f, async () => config).flush();
+    await new Reconciler(f, async () => programOf(config)).flush();
     const passes = snapshots.mock.calls.length;
     expect(passes).toBe(2); // group, then a satisfied re-plan
     expect(vi.mocked(evaluateGroupRules).mock.calls.length).toBe(3 * passes);

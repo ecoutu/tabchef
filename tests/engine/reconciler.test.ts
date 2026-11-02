@@ -5,7 +5,8 @@ import { Reconciler } from '../../src/engine/reconciler';
 import type { RuntimeState } from '../../src/engine/state';
 import { FakeBrowserPort } from '../../src/platform/fake-port';
 import type { Config, GroupColor, GroupRule, TabSnap } from '../../src/core/types';
-import { withGroupRules } from '../helpers/config';
+import { withGroupRules, programOf } from '../helpers/config';
+import { builtinRecipes } from '../../src/recipes/load';
 
 type NewTab = Omit<TabSnap, 'index' | 'groupId'> & Partial<Pick<TabSnap, 'index' | 'groupId'>>;
 
@@ -73,7 +74,7 @@ describe('Reconciler', () => {
     let paused = false;
     let release!: () => void;
     const gate = new Promise<void>((r) => { release = () => { paused = true; r(); }; });
-    const r = new Reconciler(f, async () => config, { isPaused: () => paused, beforeRun: () => gate });
+    const r = new Reconciler(f, async () => programOf(config), { isPaused: () => paused, beforeRun: () => gate });
     const p = r.flush();
     release();
     await p;
@@ -83,7 +84,7 @@ describe('Reconciler', () => {
   it('debounces: 5 schedule calls within 100 ms → a single snapshot', async () => {
     const f = world();
     f.addTab(tab(1, OTHER));
-    const r = new Reconciler(f, async () => config);
+    const r = new Reconciler(f, async () => programOf(config));
     for (let i = 0; i < 5; i++) {
       r.schedule('test');
       await vi.advanceTimersByTimeAsync(20);
@@ -99,7 +100,7 @@ describe('Reconciler', () => {
     f.addTab(tab(2, OTHER));
     f.addTab(tab(3, A));
     f.addTab(tab(4, B));
-    const r = new Reconciler(f, async () => config);
+    const r = new Reconciler(f, async () => programOf(config));
     emitGroupEvents(f, r);
     await r.flush();
     expect(groupTitles(f)).toEqual(['A', 'B']);
@@ -120,7 +121,7 @@ describe('Reconciler', () => {
     f.addTab(tab(10, OTHER, { windowId: 2 }));
     f.addTab(tab(11, B, { windowId: 2 }));
     f.addTab(tab(12, A, { windowId: 2 }));
-    const r = new Reconciler(f, async () => config);
+    const r = new Reconciler(f, async () => programOf(config));
     emitGroupEvents(f, r);
     await r.flush();
     expect(groupTitles(f, 1)).toEqual(['A', 'B']);
@@ -136,7 +137,7 @@ describe('Reconciler', () => {
     const f = world();
     f.addTab(tab(1, A));
     f.addTab(tab(2, A));
-    const r = new Reconciler(f, async () => config);
+    const r = new Reconciler(f, async () => programOf(config));
     emitGroupEvents(f, r);
     await r.flush();
     expect(groupOf(f, 1)).toBe('A');
@@ -155,7 +156,7 @@ describe('Reconciler', () => {
     const f = world();
     f.addTab(tab(1, A));
     f.addTab(tab(2, A));
-    const r = new Reconciler(f, async () => config);
+    const r = new Reconciler(f, async () => programOf(config));
     emitGroupEvents(f, r);
     await r.flush();
     setUrl(f, 1, OTHER); // strict rule → Tabchef ungroups it (no onTabUrlChanged, to isolate the expectation path)
@@ -175,7 +176,7 @@ describe('Reconciler', () => {
     f.addGroup({ id: 60, windowId: 1, title: 'A', color: 'red', collapsed: false });
     f.failNext('moveGroup', DRAG, 99);
     const log = { add: vi.fn() };
-    const r = new Reconciler(f, async () => config, { log });
+    const r = new Reconciler(f, async () => programOf(config), { log });
     r.schedule('test');
     await vi.advanceTimersByTimeAsync(150 + 250 + 500 + 1000 + 2000 + 10);
     expect(count(f, 'moveGroup')).toBe(5);
@@ -197,7 +198,7 @@ describe('Reconciler', () => {
     f.addGroup({ id: 50, windowId: 1, title: 'B', color: 'blue', collapsed: false });
     f.addGroup({ id: 60, windowId: 1, title: 'A', color: 'red', collapsed: false });
     f.failNext('moveGroup', DRAG, 5);
-    const r = new Reconciler(f, async () => config);
+    const r = new Reconciler(f, async () => programOf(config));
     const p = r.flush();
     await vi.advanceTimersByTimeAsync(250 + 500 + 1000 + 2000 + 10);
     await expect(p).resolves.toBeUndefined(); // flush never rejects on drag exhaustion
@@ -216,7 +217,7 @@ describe('Reconciler', () => {
     const f = world();
     f.addTab(tab(1, B));
     f.addTab(tab(2, A));
-    const r = new Reconciler(f, async () => config, { isPaused: () => true });
+    const r = new Reconciler(f, async () => programOf(config), { isPaused: () => true });
     await r.flush();
     r.schedule('x');
     await vi.advanceTimersByTimeAsync(1000);
@@ -233,7 +234,7 @@ describe('Reconciler', () => {
       maxInFlight = Math.max(maxInFlight, inFlight);
       await new Promise((res) => setTimeout(res, 1000));
       inFlight--;
-      return config;
+      return programOf(config);
     });
     const r = new Reconciler(f, getConfig);
     const p = r.flush();
@@ -252,7 +253,7 @@ describe('Reconciler', () => {
     const f = world();
     f.addTab(tab(1, A));
     f.addTab(tab(2, B));
-    const r = new Reconciler(f, async () => config);
+    const r = new Reconciler(f, async () => programOf(config));
     emitGroupEvents(f, r);
     await r.flush();
     f.state.tabs.find((t) => t.id === 1)!.groupId = -1;
@@ -263,7 +264,7 @@ describe('Reconciler', () => {
     expect([...rt.managedTitles].sort()).toEqual(['A', 'B']);
     expect(rt.creationOrder).toEqual([['1|A', 1], ['1|B', 2]]);
     // service worker restart: new instance, same storage
-    const r2 = new Reconciler(f, async () => config);
+    const r2 = new Reconciler(f, async () => programOf(config));
     f.calls = [];
     await r2.flush();
     expect(f.calls.filter((c) => c.method === 'group')).toEqual([]); // only a moveGroup (B left of the loose tab)
@@ -274,12 +275,12 @@ describe('Reconciler', () => {
     const f = world();
     f.addTab(tab(1, A));
     f.addTab(tab(2, A));
-    const r = new Reconciler(f, async () => config);
+    const r = new Reconciler(f, async () => programOf(config));
     emitGroupEvents(f, r);
     await r.flush();
     expect(groupOf(f, 1)).toBe('A');
     // Worker idles out; the drag event wakes a fresh instance before any flush.
-    const r2 = new Reconciler(f, async () => config);
+    const r2 = new Reconciler(f, async () => programOf(config));
     f.state.tabs.find((t) => t.id === 1)!.groupId = -1;
     await r2.onTabGroupChanged(1, -1);
     const { rt } = (await browser.storage.session.get('rt')) as { rt: RuntimeState };
@@ -296,7 +297,7 @@ describe('Reconciler', () => {
       f.addTab(tab(1, A, { groupId: 70 }));
       f.addGroup({ id: 70, windowId: 1, title: 'A', color: 'red', collapsed: false });
       f.addTab(tab(2, A, { windowId: 2 }));
-      return { f, r: new Reconciler(f, async () => merge) };
+      return { f, r: new Reconciler(f, async () => programOf(merge)) };
     };
     const leaveAlone = async () => ((await browser.storage.session.get('rt')) as { rt: RuntimeState }).rt.leaveAlone;
 
@@ -326,7 +327,7 @@ describe('Reconciler', () => {
     f.addGroup({ id: 60, windowId: 1, title: 'A', color: 'red', collapsed: false });
     f.moveGroup = async () => {}; // the browser ignores the move: the planner can never converge
     const log = { add: vi.fn() };
-    const r = new Reconciler(f, async () => config, { log });
+    const r = new Reconciler(f, async () => programOf(config), { log });
     await r.flush();
     expect(log.add).toHaveBeenCalledWith(expect.objectContaining({ action: 'reconcile-not-converged', detail: expect.stringContaining('1 op') }));
   });
@@ -337,7 +338,7 @@ describe('Reconciler', () => {
     f.addTab(tab(1, A, { groupId: 70 }));
     f.addGroup({ id: 70, windowId: 1, title: 'A', color: 'red', collapsed: false });
     f.addTab(tab(2, A, { windowId: 2 }));
-    const r = new Reconciler(f, async () => merge);
+    const r = new Reconciler(f, async () => programOf(merge));
     emitGroupEvents(f, r);
     await r.flush();
     expect(order(f, 1)).toEqual([1, 2]);
@@ -352,7 +353,7 @@ describe('Reconciler', () => {
     f.addTab(tab(1, A));
     f.failNext('group', 'No tab with id: 1');
     const log = { add: vi.fn() };
-    const r = new Reconciler(f, async () => config, { log });
+    const r = new Reconciler(f, async () => programOf(config), { log });
     await expect(r.flush()).resolves.toBeUndefined();
     expect(log.add).toHaveBeenCalledWith(expect.objectContaining({ action: 'reconcile-error' }));
     await r.flush();
@@ -367,7 +368,7 @@ describe('Reconciler', () => {
       f.addTab(tab(1, A, { groupId: 50 }));
       f.addTab(tab(2, A, { groupId: 50 }));
       f.addGroup({ id: 50, windowId: 1, title: 'A', color: 'red', collapsed: false });
-      const r = new Reconciler(f, async () => config);
+      const r = new Reconciler(f, async () => programOf(config));
       await r.flush();
       expect(mutations(f)).toEqual([]);
       f.state.tabs.find((t) => t.id === 1)!.groupId = -1;
@@ -385,7 +386,7 @@ describe('Reconciler', () => {
       f.addGroup({ id: 20, windowId: 1, title: 'zeta', color: 'blue', collapsed: false });
       f.addGroup({ id: 10, windowId: 1, title: 'alpha', color: 'blue', collapsed: false });
       f.addTab(tab(3, GH('beta')));
-      const r = new Reconciler(f, async () => repoCfg);
+      const r = new Reconciler(f, async () => programOf(repoCfg));
       emitGroupEvents(f, r);
       await r.flush();
       expect(groupTitles(f)).toEqual(['zeta', 'alpha', 'beta']);
@@ -411,7 +412,7 @@ describe('Reconciler', () => {
     f.addTab(tab(1, A));
     f.addTab(tab(2, A));
     const entries: { tabId?: number; ruleId?: string; action: string; detail: string }[] = [];
-    const r = new Reconciler(f, async () => named, { log: { add: (e) => { entries.push(e); } } });
+    const r = new Reconciler(f, async () => programOf(named), { log: { add: (e) => { entries.push(e); } } });
     emitGroupEvents(f, r);
     await r.flush();
     expect(entries.filter((e) => e.action === 'grouped')).toEqual([
@@ -431,7 +432,7 @@ describe('Reconciler', () => {
     const f = world();
     f.addTab(tab(1, A));
     f.failNext('updateGroup', 'Group busy');
-    const r = new Reconciler(f, async () => config);
+    const r = new Reconciler(f, async () => programOf(config));
     emitGroupEvents(f, r);
     await r.flush();
     expect(f.state.groups.map((g) => g.title)).toEqual(['']);
@@ -449,7 +450,7 @@ describe('Reconciler', () => {
     f.addGroup({ id: 70, windowId: 1, title: 'A', color: 'red', collapsed: false });
     f.addTab(tab(2, A, { windowId: 2 }));
     f.failNext('moveTabs', DRAG, 3); // 250 + 500 + 1000 ms of drag retries before the move succeeds
-    const r = new Reconciler(f, async () => merge);
+    const r = new Reconciler(f, async () => programOf(merge));
     const p = r.flush();
     await vi.advanceTimersByTimeAsync(1800);
     await p;
@@ -464,7 +465,7 @@ describe('Reconciler', () => {
     const f = world();
     f.addTab(tab(1, A));
     f.addTab(tab(2, A));
-    const r = new Reconciler(f, async () => config);
+    const r = new Reconciler(f, async () => programOf(config));
     emitGroupEvents(f, r);
     await r.flush();
     f.state.tabs.find((t) => t.id === 1)!.groupId = -1;
@@ -494,7 +495,7 @@ describe('Reconciler', () => {
         return orig(gid, p);
       };
       const log = { add: vi.fn() };
-      const r = new Reconciler(f, async () => config, { log });
+      const r = new Reconciler(f, async () => programOf(config), { log });
       emitGroupEvents(f, r);
       await r.flush(); // group created, title call fails: pending
       expect((await rt()).pendingTitles).toHaveLength(1);
@@ -517,7 +518,7 @@ describe('Reconciler', () => {
       f.addTab(tab(1, A));
       f.failNext('updateGroup', 'Group busy');
       const log = { add: vi.fn() };
-      const r = new Reconciler(f, async () => config, { log });
+      const r = new Reconciler(f, async () => programOf(config), { log });
       await r.flush();
       f.failNext('updateGroup', DRAG, 5); // 1 try + 4 retries (3.75 s): exhausted
       const p = r.flush();
@@ -531,7 +532,7 @@ describe('Reconciler', () => {
       const f = world();
       f.addTab(tab(1, A));
       f.failNext('updateGroup', 'Group busy');
-      const r = new Reconciler(f, async () => config);
+      const r = new Reconciler(f, async () => programOf(config));
       emitGroupEvents(f, r);
       await r.flush();
       expect(f.state.groups.map((g) => g.title)).toEqual(['']);
@@ -548,7 +549,7 @@ describe('Reconciler', () => {
       f.addTab(tab(1, 'https://a.com/m'));
       f.addTab(tab(2, 'https://a.com/n', { windowId: 2 }));
       const log = { add: vi.fn() };
-      const r = new Reconciler(f, async () => mixed, { log });
+      const r = new Reconciler(f, async () => programOf(mixed), { log });
       emitGroupEvents(f, r);
       await r.flush();
       expect(f.state.groups.filter((g) => g.title === 'api')).toHaveLength(1);
@@ -557,5 +558,36 @@ describe('Reconciler', () => {
       await r.flush();
       expect(mutations(f)).toEqual([]);
     });
+  });
+});
+
+describe('Reconciler: compiled program (M2 T6)', () => {
+  it('a color that renders outside Chrome colors groups grey and warns once per rule key, not per tab', async () => {
+    const f = world();
+    f.addTab(tab(1, 'https://a.com/1'));
+    f.addTab(tab(2, 'https://a.com/2'));
+    const c: Config = {
+      ...withGroupRules([]),
+      rules: [{ id: 'c', name: 'c', enabled: true, match: { url: 'a.com/:x' }, actions: [{ group: { title: 'A', color: '{x}' } }] }],
+    };
+    const warn = vi.fn();
+    const r = new Reconciler(f, async () => programOf(c), { warn });
+    await r.flush();
+    f.addTab(tab(3, 'https://a.com/3'));
+    await r.flush();
+    expect(f.state.groups.map((g) => [g.title, g.color])).toEqual([['A', 'grey']]);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]?.[0])).toContain('user/c');
+  });
+
+  it('names recipe rules in the why-log by their program rule name', async () => {
+    const f = world();
+    f.addTab(tab(1, 'https://github.com/acme/widgets'));
+    const body = structuredClone(builtinRecipes()['github-prs']!);
+    body.rules[0]!.enabled = true;
+    const entries: { ruleId?: string; detail: string }[] = [];
+    const r = new Reconciler(f, async () => programOf(withGroupRules([]), { ...builtinRecipes(), 'github-prs': body }), { log: { add: (e) => { entries.push(e); } } });
+    await r.flush();
+    expect(entries).toContainEqual(expect.objectContaining({ ruleId: 'github-prs/group-by-repo', detail: 'Moved to widgets by rule Group GitHub tabs by repository' }));
   });
 });

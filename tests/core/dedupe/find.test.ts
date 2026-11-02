@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { findDuplicate, findDuplicateSets } from '../../../src/core/dedupe/find';
 import { defaultConfig } from '../../../src/core/config/defaults';
 import type { DedupeSettings, TabSnap } from '../../../src/core/types';
+import { programOf } from '../../helpers/config';
 
-const s = (o: Partial<DedupeSettings> = {}): DedupeSettings => ({ ...defaultConfig().dedupe, ...o });
+// Effective settings of the default program: the github-prs recipe supplies the PR urlTransform.
+const s = (o: Partial<DedupeSettings> = {}): DedupeSettings => ({ ...programOf(defaultConfig()).dedupe, ...o });
 const tab = (id: number, url: string, o: Partial<TabSnap> = {}): TabSnap => ({
   id, windowId: 1, index: id, url, title: `t${id}`, pinned: false, groupId: -1, incognito: false,
   discarded: false, active: false, audible: false, ...o,
@@ -70,10 +72,16 @@ describe('findDuplicate', () => {
     expect(findDuplicate(tab(2, PR), [other], s({ scope: 'all-windows' }))?.existing.id).toBe(1);
   });
 
-  it('ruleMode off overrides s.mode; ruleMode always-switch overrides s.mode off', () => {
-    expect(findDuplicate(tab(2, PR), [tab(1, PR)], s(), 'off')).toBeNull();
+  it('override mode off overrides s.mode; override always-switch overrides s.mode off', () => {
+    expect(findDuplicate(tab(2, PR), [tab(1, PR)], s(), { mode: 'off' })).toBeNull();
     expect(findDuplicate(tab(2, PR), [tab(1, PR)], s({ mode: 'off' }))).toBeNull();
-    expect(findDuplicate(tab(2, PR), [tab(1, PR)], s({ mode: 'off' }), 'always-switch')?.existing.id).toBe(1);
+    expect(findDuplicate(tab(2, PR), [tab(1, PR)], s({ mode: 'off' }), { mode: 'always-switch' })?.existing.id).toBe(1);
+  });
+
+  it('override keepFragment keys both tabs with their fragment (R25)', () => {
+    expect(findDuplicate(tab(2, `${PR}#a`), [tab(1, `${PR}#b`)], s(), { keepFragment: true })).toBeNull();
+    expect(findDuplicate(tab(2, `${PR}#a`), [tab(1, `${PR}#a`)], s(), { keepFragment: true })?.existing.id).toBe(1);
+    expect(findDuplicate(tab(2, `${PR}#a`), [tab(1, `${PR}#b`)], s())?.existing.id).toBe(1);
   });
 
   it('a protected candidate -> null', () => {

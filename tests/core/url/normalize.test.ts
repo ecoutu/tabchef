@@ -5,7 +5,7 @@ const base = {
   stripParams: ['utm_*', 'fbclid', 'gclid', 'mc_cid', 'mc_eid'],
   stripFragment: true,
   ignoreTrailingSlash: true,
-  canonicalizers: ['githubPr'],
+  canonicalizers: [] as string[],
   urlTransforms: [] as { pattern: string; replacement: string; flags?: string }[],
   fragmentOverrides: [] as { pattern: string; keepFragment: boolean }[],
 };
@@ -24,19 +24,21 @@ describe('isExemptUrl', () => {
 });
 
 describe('normalizeUrl', () => {
-  it('github PR variants share a key', () => {
+  // The M1 githubPr canonicalizer is now the github-prs recipe's urlTransform (tests/recipes/github-prs.test.ts).
+  it('github PR sub-pages are plain URLs without the github-prs transform; the fragment is still split off', () => {
     const k = key('https://github.com/o/r/pull/123');
     expect(k).toBe('https://github.com/o/r/pull/123');
-    expect(key('https://github.com/o/r/pull/123/files')).toBe(k);
-    expect(key('https://github.com/o/r/pull/123/files/abc')).toBe(k);
-    expect(key('https://github.com/o/r/pull/123/commits?w=1', { ...base, stripParams: ['w'] })).toBe(k);
-    expect(key('https://github.com/o/r/pull/123/checks')).toBe(k);
+    expect(key('https://github.com/o/r/pull/123/files')).toBe('https://github.com/o/r/pull/123/files');
     expect(key('https://github.com/o/r/pull/123#discussion_r456')).toBe(k);
     expect(normalizeUrl('https://github.com/o/r/pull/123#discussion_r456', base)?.fragment).toBe('discussion_r456');
   });
-  it('does not canonicalize non-PR github paths or other hosts', () => {
-    expect(key('https://github.com/o/r/pull/123/other')).toBe('https://github.com/o/r/pull/123/other');
-    expect(key('https://example.com/o/r/pull/123/files')).toBe('https://example.com/o/r/pull/123/files');
+  it('the M1 githubPr id is ignored like any unknown id', () => {
+    expect(key('https://github.com/o/r/pull/123/files', { ...base, canonicalizers: ['githubPr'] })).toBe('https://github.com/o/r/pull/123/files');
+  });
+  it('per-rule override: keepFragment wins over stripFragment (R25)', () => {
+    expect(normalizeUrl('https://a.com/x#f', base, { keepFragment: true })).toEqual({ key: 'https://a.com/x#f', fragment: 'f' });
+    expect(normalizeUrl('https://a.com/x#f', { ...base, stripFragment: false }, { keepFragment: false })).toEqual({ key: 'https://a.com/x', fragment: 'f' });
+    expect(normalizeUrl('https://a.com/x#f', base, {})).toEqual({ key: 'https://a.com/x', fragment: 'f' });
   });
   it('unknown canonicalizer ids ignored', () => {
     expect(key('https://a.com/x', { ...base, canonicalizers: ['nope'] })).toBe('https://a.com/x');

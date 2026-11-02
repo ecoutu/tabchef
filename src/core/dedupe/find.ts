@@ -1,6 +1,6 @@
 import { compilePattern, PatternError } from '../match/pattern';
 import { isExemptUrl, normalizeUrl } from '../url/normalize';
-import type { DedupeMode, DedupeSettings, TabSnap } from '../types';
+import type { DedupeOverride, DedupeSettings, TabSnap } from '../types';
 
 /** The URL a tab is on or about to be on. */
 export const tabUrl = (t: TabSnap): string => t.pendingUrl || t.url;
@@ -17,36 +17,37 @@ function isAllowedDuplicate(url: string, patterns: string[]): boolean {
 }
 
 /** Dedupe key for a tab, or null when it never takes part in dedupe (exempt, allow-listed, excluded incognito). */
-function keyOf(url: string, incognito: boolean, s: DedupeSettings): { key: string; fragment: string } | null {
+function keyOf(url: string, incognito: boolean, s: DedupeSettings, o?: DedupeOverride): { key: string; fragment: string } | null {
   if (isExemptUrl(url)) return null;
   if (incognito && !s.includeIncognito) return null;
   if (isAllowedDuplicate(url, s.allowDuplicates)) return null;
-  return normalizeUrl(url, s);
+  return normalizeUrl(url, s, o);
 }
 
 /**
  * The oldest (lowest id) tab that duplicates `newTab`, or null. Pure.
  * `newTab.url` is the candidate URL (pendingUrl is ignored for the candidate); other tabs use pendingUrl || url.
  * Pinned and `protectedIds` candidates are never deduped; a pinned tab can still be the existing tab.
- * `ruleMode` (the matching group rule's override) wins over `s.mode`; an effective mode of 'off' returns null.
+ * `o` is the new tab's winning dedupe action (R25): `o.mode` wins over `s.mode` (an effective 'off' returns null) and
+ * `o.keepFragment` keys every tab compared here.
  */
 export function findDuplicate(
   newTab: TabSnap,
   tabs: TabSnap[],
   s: DedupeSettings,
-  ruleMode?: DedupeMode,
+  o?: DedupeOverride,
   protectedIds?: Set<number>,
 ): { existing: TabSnap; fragment: string } | null {
-  if ((ruleMode ?? s.mode) === 'off') return null;
+  if ((o?.mode ?? s.mode) === 'off') return null;
   if (newTab.pinned || protectedIds?.has(newTab.id)) return null;
-  const mine = keyOf(newTab.url, newTab.incognito, s);
+  const mine = keyOf(newTab.url, newTab.incognito, s, o);
   if (!mine) return null;
   let best: TabSnap | null = null;
   for (const t of tabs) {
     if (t.id === newTab.id) continue;
     if (s.scope === 'same-window' && t.windowId !== newTab.windowId) continue;
     if (best && t.id > best.id) continue;
-    if (keyOf(tabUrl(t), t.incognito, s)?.key === mine.key) best = t;
+    if (keyOf(tabUrl(t), t.incognito, s, o)?.key === mine.key) best = t;
   }
   return best ? { existing: best, fragment: mine.fragment } : null;
 }

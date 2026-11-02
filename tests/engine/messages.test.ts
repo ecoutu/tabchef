@@ -3,7 +3,7 @@ import { configRev, badgeCount, createDebounce, createHandler, createOnMessage, 
 import { defaultConfig } from '../../src/core/config/defaults';
 import { FakeBrowserPort } from '../../src/platform/fake-port';
 import type { Config } from '../../src/core/types';
-import { withGroupRules } from '../helpers/config';
+import { programOf, withGroupRules } from '../helpers/config';
 
 type Loose = { ok: boolean; data: { sets: { key: string }[]; pending: unknown[] }; errors: string[] };
 const A = 'https://a.example/x';
@@ -29,7 +29,8 @@ function setup() {
       status: async () => ({ syncing: true }),
     },
     port,
-    getSettings: async () => cfg.dedupe,
+    // Background wires the effective (program) settings: config dedupe + recipe urlTransforms (R4).
+    getSettings: async () => programOf(cfg).dedupe,
     safety: {
       pause: vi.fn(), resume: vi.fn(), isPaused: () => false, lock: (id) => { locked.add(id); }, unlock: (id) => { locked.delete(id); },
       isLocked: (id) => locked.has(id), lockedTabIds: () => [...locked], undo: vi.fn(async () => {}),
