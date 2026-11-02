@@ -1,5 +1,5 @@
 // SourceService (M3 T11): collects the source lookups rules ask for (`Rule.source`), batches them through the
-// ConnectionManager, caches results in storage.local (`sourceCache`, LRU), falls back to the page adapters when there
+// ConnectionManager, caches results (SourceCache: storage.local `sourceCache`, LRU), falls back to the page adapters when there
 // is no usable connection, and reports tabs whose data changed so rules re-evaluate.
 //
 // Resolution per lookup: 1. the cache (a `final` entry is never refetched, a fresh one not within its TTL); 2. the
@@ -25,12 +25,12 @@ import type { ConnectionManager } from './connections/manager';
 import { resourceFor, type RateLimiter } from './connections/rate-limiter';
 import type { KeyValueArea } from './connections/secret-store';
 import type { PageFacts } from './page-facts';
+import { hasData, publicOf, SourceCache, type CacheEntry } from './source-cache';
 
-export const SOURCE_CACHE_KEY = 'sourceCache';
+export { CACHE_MAX, SOURCE_CACHE_KEY } from './source-cache';
 export const SOURCES_ALARM = 'sources.refresh';
 export const SOURCES_PERIOD_MINUTES = 5;
 export const POPUP_THROTTLE_MS = 30_000;
-export const CACHE_MAX = 2000;
 /** The connection ids linkedFor / issues use (the built-in GitHub and Jira connections). */
 const GITHUB = 'github';
 const JIRA = 'jira';
@@ -58,19 +58,10 @@ export interface SourceServiceDeps {
   onUpdated: (tabIds: number[]) => void;
 }
 
-type Entry = SourceEntry & { usedAt: number };
 const KEY_RE = new RegExp(`^${DEFAULT_KEY_PATTERN}$`);
 const NAME_RE = /^[A-Za-z0-9_.-]+$/;
-const VIA = new Set(['api', 'page', 'none']);
 const TRUE: Cond = { all: [] };
 const NO_DATA = '[]';
-const hasData = (e: Entry | undefined): boolean => !!e && e.via !== 'none' && e.data !== undefined;
-/** The entry without its LRU bookkeeping. */
-function publicOf(e: Entry): SourceEntry {
-  const out: SourceEntry & { usedAt?: number } = { ...e };
-  delete out.usedAt;
-  return out;
-}
 
 function hasField(c: Cond): boolean {
   if ('field' in c) return true;
@@ -109,22 +100,16 @@ function stateError(s: ConnectionState | undefined): ConnErrorKind {
   if (s === 'error') return 'server';
   return 'not-configured';
 }
-const sameDetail = (e: Entry, error: ConnErrorKind, d: IssueFailureDetail): boolean =>
-  e.error === error && e.retryAt === d.retryAt && JSON.stringify(e.sso) === JSON.stringify(d.sso);
 const detailOf = (r: { retryAt?: number; sso?: { org: string; url: string } }): IssueFailureDetail =>
   ({ ...(r.retryAt !== undefined && { retryAt: r.retryAt }), ...(r.sso && { sso: r.sso }) });
 const chunks = <T>(xs: T[], n: number): T[][] => Array.from({ length: Math.ceil(xs.length / n) }, (_, i) => xs.slice(i * n, i * n + n));
 
 export class SourceService {
-  private readonly cache = new Map<string, Entry>();
+  private readonly cache: SourceCache;
   private byTab = new Map<number, { url: string; reqs: SourceRequest[] }>();
   private lastPopup = -Infinity;
   /** Per indexed tab, the picked data last reported through onUpdated (or seen at load): what rules have read. */
   private reported = new Map<number, string>();
-  /** The stored cache loaded. Until then nothing is saved (it would replace the stored cache) and runs retry the load. */
-  private loaded = false;
-  /** Entries changed since the last save. */
-  private dirty = false;
   private chain: Promise<unknown> = Promise.resolve();
   private readonly now: () => number;
   /** The cache loaded and the open tabs indexed (no network): factsFor answers from here on. */
@@ -132,11 +117,12 @@ export class SourceService {
 
   constructor(private readonly deps: SourceServiceDeps) {
     this.now = deps.now ?? Date.now;
+    this.cache = new SourceCache(deps.local);
     this.ready = this.load();
   }
 
   private async load(): Promise<void> {
-    await this.loadCache();
+    await this.cache.load();
     try {
       this.index(await this.deps.port.snapshot(), await this.deps.getProgram());
       this.reported = this.dataByTab();
@@ -145,31 +131,31 @@ export class SourceService {
     }
   }
 
-  /** Reads the stored cache; entries this worker set since (a retried load) win. On failure `loaded` stays false. */
-  private async loadCache(): Promise<void> {
-    try {
-      const raw = (await this.deps.local.get(SOURCE_CACHE_KEY))[SOURCE_CACHE_KEY];
-      for (const x of Array.isArray(raw) ? raw : []) {
-        const [k, e] = Array.isArray(x) ? x as [unknown, Partial<Entry>] : [];
-        if (typeof k !== 'string' || typeof e !== 'object' || e === null || typeof e.fetchedAt !== 'number' || !VIA.has(e.via as string)) continue;
-        if (this.cache.has(k)) continue;
-        this.cache.set(k, { ...e, final: e.final === true, stale: e.stale === true, usedAt: typeof e.usedAt === 'number' ? e.usedAt : 0 } as Entry);
-      }
-      this.loaded = true;
-    } catch (e) {
-      console.warn('[tabchef] source cache load failed; retrying before the next write', e);
-    }
-  }
-
   /** Awaits the first load and retries a failed one. */
   private async ensureLoaded(): Promise<void> {
     await this.ready;
-    if (!this.loaded) await this.loadCache();
+    await this.cache.ensureLoaded();
+  }
+
+  /**
+   * Runs `fn`, then settles, also when `fn` failed midway (what changed is saved and reported). `fn`'s own error wins:
+   * a settle failing after it is logged, not thrown over it.
+   */
+  private async settling<T>(fn: () => Promise<T>): Promise<T> {
+    let result: T;
+    try {
+      result = await fn();
+    } catch (e) {
+      await this.settle().catch((s: unknown) => { console.warn('[tabchef] source save failed after a failed refresh', s); });
+      throw e;
+    }
+    await this.settle();
+    return result;
   }
 
   /** Saves, then reports the indexed tabs whose picked data differs from what was last reported. */
   private async settle(): Promise<void> {
-    await this.save();
+    await this.cache.save();
     const now = this.dataByTab();
     const changed = [...now].filter(([id, d]) => (this.reported.get(id) ?? NO_DATA) !== d).map(([id]) => id);
     this.reported = now;
@@ -261,11 +247,7 @@ export class SourceService {
     await this.ensureLoaded();
     const [p, snap] = [await this.deps.getProgram(), await this.deps.port.snapshot()];
     const reqs = this.index(snap, p);
-    try {
-      await this.resolve(reqs, reason);
-    } finally {
-      await this.settle(); // also after a failure midway: what changed is saved and reported
-    }
+    await this.settling(() => this.resolve(reqs, reason));
   }
 
   private async resolve(reqs: SourceRequest[], reason: RefreshReason): Promise<void> {
@@ -277,13 +259,12 @@ export class SourceService {
     const api = new Map<string, SourceRequest[]>(); // `${connection}|${query}` -> one request per key
     for (const [key, rs] of byKey) {
       const r = rs[0]!;
-      const e = this.cache.get(key);
-      if (e) e.usedAt = now;
+      const e = this.cache.touch(key, now);
       const state = states.get(r.connection);
       const blocked = (e?.retryAt ?? 0) > now;
       if (e && (e.final || this.fresh(e, r.query, now))) {
-        if (state !== 'ok') this.markStale(e, stateError(state));
-        else if (e.stale) { e.stale = false; delete e.error; this.dirty = true; } // a final entry, usable again
+        if (state !== 'ok') this.cache.markStale(e, stateError(state));
+        else this.cache.unstale(e); // a final entry, usable again
         continue;
       }
       if (state === 'ok' && !blocked) {
@@ -292,7 +273,7 @@ export class SourceService {
         continue;
       }
       const page = await this.readPage(rs);
-      if (page) this.putPage(key, page, now);
+      if (page) this.cache.putPage(key, page, now);
       else this.fail(key, r.target, blocked ? 'rate-limited' : stateError(state), blocked ? { retryAt: e!.retryAt! } : {}, now);
     }
     for (const rs of api.values()) {
@@ -312,45 +293,15 @@ export class SourceService {
     return out;
   }
 
-  private fresh(e: Entry, query: SourceQueryKind, now: number): boolean {
+  private fresh(e: CacheEntry, query: SourceQueryKind, now: number): boolean {
     return e.via === 'api' && !e.stale && now - e.fetchedAt < SOURCE_QUERIES[query].ttlMs;
   }
 
-  private markStale(e: Entry, error: ConnErrorKind): void {
-    if (e.stale && e.error === error) return;
-    e.stale = true;
-    e.error = error;
-    this.dirty = true;
-  }
-
-  private put(key: string, e: SourceEntry, now: number): void {
-    this.cache.delete(key);
-    this.cache.set(key, { ...e, usedAt: now });
-    this.dirty = true;
-  }
-
-  /** A page reading: never final (it lacks fields such as mergedAt); unchanged data is left as it is. */
-  private putPage(key: string, data: object, now: number): void {
-    const e = this.cache.get(key);
-    if (e?.via === 'page' && !e.stale && JSON.stringify(e.data) === JSON.stringify(data)) return;
-    this.put(key, { data, via: 'page', fetchedAt: now, final: false, stale: false }, now);
-  }
-
-  /** A failed lookup: the previous data stays (stale, with the error); without any, a `none` entry. */
+  /** A failed lookup (SourceCache.fail); a PR's `none` entry holds the PR with state 'unknown'. */
   private fail(key: string, target: Target | undefined, error: ConnErrorKind, d: IssueFailureDetail, now: number): void {
-    const e = this.cache.get(key);
-    if (e && hasData(e)) {
-      this.markStale(e, error);
-      if ((d.retryAt !== undefined && e.retryAt !== d.retryAt) || (d.sso && JSON.stringify(e.sso) !== JSON.stringify(d.sso))) {
-        Object.assign(e, d);
-        this.dirty = true;
-      }
-      return;
-    }
-    if (e?.via === 'none' && sameDetail(e, error, d)) return; // the same failure again: nothing to write
     const data = target && 'pr' in target
       ? { ...target.pr, state: 'unknown', url: `https://github.com/${target.pr.owner}/${target.pr.repo}/pull/${target.pr.number}` } : undefined;
-    this.put(key, { ...(data && { data }), via: 'none', fetchedAt: now, final: false, stale: false, error, ...d }, now);
+    this.cache.fail(key, error, d, now, data);
   }
 
   /** The page adapter's reading of a loaded, live tab on a granted host (the first usable one), or undefined. */
@@ -393,7 +344,7 @@ export class SourceService {
         const err = errors.get(id);
         const info = parsed.prs.get(id);
         if (err || !info) this.fail(r.key, r.target, err?.kind ?? 'not-found', detailOf(err ?? {}), now);
-        else this.put(r.key, { data: info, via: 'api', fetchedAt: now, final: SOURCE_QUERIES['github.pull_request'].final(info), stale: false }, now);
+        else this.cache.put(r.key, { data: info, via: 'api', fetchedAt: now, final: SOURCE_QUERIES['github.pull_request'].final(info), stale: false }, now);
       }
     }
   }
@@ -421,7 +372,7 @@ export class SourceService {
       for (const k of batch) {
         const key = cacheKey(connection, 'jira.issue', k);
         const issue = r.issues.get(k);
-        if (issue) this.put(key, { data: issue, via: 'api', fetchedAt: now, final: false, stale: false }, now);
+        if (issue) this.cache.put(key, { data: issue, via: 'api', fetchedAt: now, final: false, stale: false }, now);
         else this.fail(key, { issue: k }, r.errors.get(k) ?? 'not-found', r.details.get(k) ?? {}, now);
       }
     }
@@ -432,8 +383,7 @@ export class SourceService {
     const [st] = await this.deps.conn.status(connection);
     const out: string[] = [];
     for (const k of keys) {
-      const e = this.cache.get(key(k));
-      if (e) e.usedAt = now;
+      const e = this.cache.touch(key(k), now);
       if (st?.state === 'ok' && !(e && (e.final || this.fresh(e, query, now) || (e.retryAt ?? 0) > now))) out.push(k);
     }
     return out;
@@ -450,20 +400,18 @@ export class SourceService {
       const o = [...new Set(orgs.map((x) => x.toLowerCase()))].sort();
       const keys = [...new Set(projectKeys)];
       const key = (k: string) => cacheKey(GITHUB, 'github.search_prs_by_key', `${k}|${o.join(',')}`);
-      try {
+      await this.settling(async () => {
         for (const batch of chunks(await this.due(GITHUB, keys, 'github.search_prs_by_key', key, now), SOURCE_QUERIES['github.search_prs_by_key'].batch)) {
-        const q = buildKeySearchQuery(batch, o);
-        const res = (await this.send(GITHUB, { method: 'POST', path: '/graphql', json: { query: q.query, variables: q.variables } }, false))!;
-        const parsed = res.ok ? parseKeySearchResponse(res.data, q.aliases, {}, o) : undefined; // orgs: the SSO org (T8 carry)
-        for (const k of batch) {
-          const err = parsed ? parsed.errors.find((e) => e.key === k) : (res as ApiResult & { ok: false });
-          if (err) this.fail(key(k), undefined, err.kind, detailOf(err), now);
-          else this.put(key(k), { data: parsed!.byKey.get(k) ?? [], via: 'api', fetchedAt: now, final: false, stale: false }, now);
+          const q = buildKeySearchQuery(batch, o);
+          const res = (await this.send(GITHUB, { method: 'POST', path: '/graphql', json: { query: q.query, variables: q.variables } }, false))!;
+          const parsed = res.ok ? parseKeySearchResponse(res.data, q.aliases, {}, o) : undefined; // orgs: the SSO org (T8 carry)
+          for (const k of batch) {
+            const err = parsed ? parsed.errors.find((e) => e.key === k) : (res as ApiResult & { ok: false });
+            if (err) this.fail(key(k), undefined, err.kind, detailOf(err), now);
+            else this.cache.put(key(k), { data: parsed!.byKey.get(k) ?? [], via: 'api', fetchedAt: now, final: false, stale: false }, now);
+          }
         }
-        }
-      } finally {
-        await this.settle();
-      }
+      });
       const out = new Map<string, PrInfo[]>();
       for (const k of keys) {
         const e = this.cache.get(key(k));
@@ -480,11 +428,8 @@ export class SourceService {
       const now = this.now();
       const valid = [...new Set(keys)].filter((k) => KEY_RE.test(k));
       const key = (k: string) => cacheKey(JIRA, 'jira.issue', k);
-      try {
-        await this.fetchIssues(JIRA, await this.due(JIRA, valid, 'jira.issue', key, now), false, now);
-      } finally {
-        await this.settle(); // tab rules read these entries too
-      }
+      // Settled: tab rules read these entries too.
+      await this.settling(async () => this.fetchIssues(JIRA, await this.due(JIRA, valid, 'jira.issue', key, now), false, now));
       const out = new Map<string, SourceEntry<JiraIssue>>();
       for (const k of valid) {
         const e = this.cache.get(key(k));
@@ -492,19 +437,5 @@ export class SourceService {
       }
       return out;
     });
-  }
-
-  /**
-   * Evicts the least recently used entries above CACHE_MAX, then writes the cache when an entry changed (LRU touches
-   * alone are not written: they ride along with the next change). Never before the stored cache loaded.
-   */
-  private async save(): Promise<void> {
-    if (!this.loaded || !this.dirty) return;
-    if (this.cache.size > CACHE_MAX) {
-      const old = [...this.cache].sort(([, a], [, b]) => a.usedAt - b.usedAt).slice(0, this.cache.size - CACHE_MAX);
-      for (const [k] of old) this.cache.delete(k);
-    }
-    await this.deps.local.set({ [SOURCE_CACHE_KEY]: [...this.cache] });
-    this.dirty = false;
   }
 }

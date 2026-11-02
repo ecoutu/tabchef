@@ -370,6 +370,46 @@ describe('SourceService: fix round 1', () => {
   });
 });
 
+describe('SourceService: follow-up round', () => {
+  const open = { texts: [], extracts: { 'adapter:github.prPage.state': 'Status: Open' }, formEdited: false };
+
+  it('a page reading keeps a rate-limited retryAt: no API call until it passes', async () => {
+    const retryAt = Date.parse('2026-11-02T10:10:00Z');
+    const t = setup({
+      tabs: [prTab(1)], conn: { github: 'not-configured' }, granted: true, facts: { 1: open },
+      fetch: async () => ({ ok: false, kind: 'rate-limited', message: 'slow down', retryAt }),
+    });
+    await t.svc.refresh('alarm'); // page entry
+    t.conn.github = 'ok';
+    t.advance(MIN);
+    await t.svc.refresh('alarm'); // the API rate-limits: stale with retryAt
+    expect(t.fetch).toHaveBeenCalledTimes(1);
+    expect(stateOf(t.svc, 1)).toMatchObject({ via: 'page', stale: true, retryAt });
+    for (let i = 0; i < 4; i++) {
+      t.advance(MIN);
+      await t.svc.refresh('alarm'); // blocked: the page is read again, the retryAt kept
+    }
+    expect(t.fetch).toHaveBeenCalledTimes(1);
+    expect(stateOf(t.svc, 1)).toMatchObject({ via: 'page', stale: false, retryAt, data: { state: 'open' } });
+    t.advance(5 * MIN); // past retryAt
+    await t.svc.refresh('alarm');
+    expect(t.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("a run's own error wins over a failing save in its finally", async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const t = setup({ tabs: [prTab(1), tab(2, 'https://acme.atlassian.net/browse/ABC-1')], rules: [prRule, issueRule] });
+    vi.mocked(t.deps.conn.defs).mockRejectedValue(new Error('storage gone'));
+    t.local.set.mockRejectedValue(new Error('quota'));
+    await expect(t.svc.refresh('alarm')).rejects.toThrow('storage gone');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('source save failed after a failed refresh'), expect.objectContaining({ message: 'quota' }));
+    warn.mockRestore();
+    const ok = setup({ tabs: [prTab(1)] });
+    ok.local.set.mockRejectedValue(new Error('quota'));
+    await expect(ok.svc.refresh('alarm')).rejects.toThrow('quota'); // without a run error, the save error surfaces
+  });
+});
+
 describe('SourceService: Jira', () => {
   const issues = (keys: string[]) => ({
     issues: keys.map((key) => ({ key, fields: { summary: `S ${key}`, status: { name: 'In Progress', statusCategory: { key: 'indeterminate' } } } })),
