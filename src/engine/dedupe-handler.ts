@@ -5,6 +5,7 @@ import { isDryRunRule, liveProgram } from '../core/lang/dry-run';
 import { isExemptUrl, normalizeUrl } from '../core/url/normalize';
 import type { DedupeOverride, Snapshot, TabSnap } from '../core/types';
 import type { Program, TabFacts } from '../core/lang/types';
+import { neverCloseReason } from '../core/safety/never-close';
 import type { BrowserPort } from '../platform/browser-port';
 import { SESSION_MARKER, STARTUP_GRACE_MS } from './dedupe-constants';
 
@@ -374,7 +375,7 @@ export class DedupeHandler {
     const fresh = await this.port.snapshot();
     const cand = fresh.tabs.find((t) => t.id === tabId);
     const existing = fresh.tabs.find((t) => t.id === dup.existing.id);
-    if (!cand || !existing || cand.pinned || this.kept(tabId) || this.exemptNow(tabId, key, cand.windowId, p)) return;
+    if (!cand || !existing || neverCloseReason(cand, this.deps) || this.exemptNow(tabId, key, cand.windowId, p)) return;
     const keyOf = (u: string | undefined) => (u ? normalizeUrl(u, s, o)?.key : undefined);
     const dupKey = keyOf(url);
     if (dupKey === undefined || (keyOf(cand.pendingUrl) !== dupKey && keyOf(cand.url) !== dupKey)) return;

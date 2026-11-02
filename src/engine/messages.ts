@@ -1,4 +1,5 @@
 import type { Config, DedupeSettings, GroupRule, Snapshot, TabSnap } from '../core/types';
+import { neverCloseReason } from '../core/safety/never-close';
 import { ruleTitleProblems, validateConfig } from '../core/config/schema';
 import { groupRuleToRule, sanitizeRuleId, userKey } from '../core/config/migrate';
 import { importAutoGroupTabs } from '../core/import/auto-group-tabs';
@@ -444,7 +445,7 @@ async function duplicateSets(deps: Pick<HandlerDeps, 'port' | 'getSettings' | 'g
 /** Duplicate sets with their closable extras (pinned and `isLocked` tabs are never closed) and the pending asks. */
 async function dupesDataOf(deps: BadgeDeps): Promise<{ sets: DupeSetView[]; pending: PendingAsk[] }> {
   const [sets, pending] = await Promise.all([duplicateSets(deps), deps.ask.listPending()]);
-  return { sets: sets.map((s) => ({ ...s, closable: s.tabs.slice(1).filter((t) => !t.pinned && !deps.isLocked(t.id)).length })), pending };
+  return { sets: sets.map((s) => ({ ...s, closable: s.tabs.slice(1).filter((t) => !neverCloseReason(t, deps)).length })), pending };
 }
 
 /** Closable duplicate extras (tabs after the oldest, excluding pinned and locked) plus pending asks. */
@@ -521,6 +522,7 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
   const now = deps.now ?? Date.now;
   /** Never closed from the popup: locked and anchor tabs (pinned are checked per tab). */
   const kept = (id: number): boolean => deps.safety.isLocked(id) || (deps.isAnchor?.(id) ?? false);
+  const never = (t: TabSnap) => neverCloseReason(t, { isLocked: (id) => deps.safety.isLocked(id), ...(deps.isAnchor && { isAnchor: deps.isAnchor }) });
   /** Built-in recipe bodies, when wired: their table names are avoided by import collapse suggestions (T19). */
   const importBuiltins = (): Record<string, Recipe> | undefined => deps.recipes?.builtins ?? deps.preview?.builtins ?? deps.explain?.builtins;
 
@@ -528,7 +530,7 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
   async function closeSet(set: DupeSet): Promise<number> {
     let closed = 0;
     for (const t of set.tabs.slice(1)) {
-      if (t.pinned || kept(t.id)) continue;
+      if (never(t)) continue;
       const url = tabUrl(t);
       await deps.port.closeTab(t.id);
       deps.recentlyClosed.add({ url, title: t.title, windowId: t.windowId, reason: 'duplicate', at: now() });
@@ -576,8 +578,8 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
       if (!row.suggested || !d.closes) return fail('not in view');
       await d.closes.exempt(tab.id, row.url);
     } else {
-      if (tab.pinned) return fail('tab is pinned');
-      if (kept(tab.id)) return fail('tab is locked');
+      const why = never(tab);
+      if (why) return fail(why === 'pinned' ? 'tab is pinned' : 'tab is locked');
       const at = now();
       const groupTitle = tab.groupId !== -1 ? snap.groups.find((g) => g.id === tab.groupId)?.title : undefined;
       await deps.port.closeTab(tab.id);

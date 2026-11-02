@@ -22,6 +22,7 @@ import type { Program } from '../core/lang/types';
 import type { RecentlyClosed, RecentlyClosedInput } from '../core/safety/recently-closed';
 import type { WhyEntry } from '../core/safety/why-log';
 import type { Snapshot, TabSnap } from '../core/types';
+import { neverCloseReason } from '../core/safety/never-close';
 import { normalizeUrl } from '../core/url/normalize';
 import type { BrowserPort } from '../platform/browser-port';
 import type { PageFacts } from './page-facts';
@@ -485,8 +486,8 @@ export class CloseExecutor {
   /** Why the tab must not be closed now, or undefined. */
   private inUse(snap: Snapshot, tab: TabSnap, e: PendingClose): string | undefined {
     const s = this.deps.safety;
-    if (s.isLocked(tab.id)) return 'locked';
-    if (tab.pinned) return 'pinned';
+    const never = neverCloseReason(tab, { isLocked: (id) => s.isLocked(id) }); // anchors were skipped before (step 4)
+    if (never) return never;
     if (s.isProtected(tab)) return 'protected';
     if (s.isActiveFocused(tab, snap.windows)) return 'active';
     // I1: observable only on evidence: the watch is known to run at this URL AND it reported for this tab's document.
