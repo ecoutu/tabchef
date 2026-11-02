@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { PAGE_FACTS_KEY, PAGE_HOLD_MS, PageFacts, usesPageFacts } from '../../src/engine/page-facts';
 import { defaultConfig } from '../../src/core/config/defaults';
-import type { Rule } from '../../src/core/lang/types';
+import type { Program, Rule } from '../../src/core/lang/types';
 import { programOf } from '../helpers/config';
 import { createContentHandler } from '../../src/engine/messages';
 import { GITHUB_PR_PAGE } from '../../src/core/adapters/github-pr-page';
@@ -238,6 +238,25 @@ describe('PageFacts.watchConfigFor', () => {
     expect(new Set(cfg.selectors.map(key))).toEqual(new Set(['adapter:github.prPage.state', 'adapter:github.prPage.branch']));
     expect(pf.watchConfigFor('https://github.com/acme/api/issues/7', p2).selectors).toEqual([]);
     expect(new Set(pf.watchConfigFor('https://acme.atlassian.net/browse/ABC-1', p2).selectors.map(key))).toEqual(new Set(['adapter:jira.issuePage.status']));
+  });
+
+  it("sends a source fallback adapter's selectors (every field) where the rule and the adapter URL match (T10 carry)", () => {
+    const src = (adapter: 'github.prPage' | 'jira.issuePage'): Rule['source'] => ({
+      connection: 'github', query: 'github.pull_request', args: {}, fields: { state: 'state' }, fallback: { adapter },
+    });
+    const prRule = rule('pr', { url: 'github.com/:o/:r/pull/:n' }, { source: src('github.prPage') });
+    const elsewhere = rule('jr', { url: 'example.com/*' }, { source: src('jira.issuePage') });
+    const p2: Program = {
+      ...prog(), rules: [prRule, elsewhere].map((r, index) => ({ key: `rec/${r.id}`, rule: r, recipeId: 'rec', index, dryRun: false })),
+    };
+    const cfg = pf.watchConfigFor('https://github.com/acme/api/pull/7', p2);
+    const sel = (s: { selector: string; attr?: string }) => ({ selector: s.selector, ...(s.attr !== undefined && { attr: s.attr }) });
+    expect(cfg.selectors.filter((s) => s.key === 'adapter:github.prPage.state').map(sel)).toEqual([...GITHUB_PR_PAGE.selectors.state].reverse());
+    expect(cfg.selectors.filter((s) => s.key === 'adapter:github.prPage.branch').map(sel)).toEqual([...GITHUB_PR_PAGE.selectors.branch].reverse());
+    expect(cfg.selectors.every((s) => s.key.startsWith('adapter:github.prPage.'))).toBe(true);
+    // The jira rule's URL condition cannot match here, and the PR adapter's URL pattern does not match an issue page.
+    expect(pf.watchConfigFor('https://github.com/acme/api/issues/7', p2).selectors).toEqual([]);
+    expect(pf.watchConfigFor('https://acme.atlassian.net/browse/ABC-1', p2).selectors).toEqual([]);
   });
 
   it('a discarded or frozen tab gets an empty config (Review Focus #4)', () => {

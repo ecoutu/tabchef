@@ -265,8 +265,11 @@ describe('M3 T1: sources, fields, keys and projects', () => {
     expect(at(validateRecipe(recipe({ rules: [rule({ source: src({ fields: { x: 'a[0]()' } }) })] })), '/rules/0/source/fields/x').length).toBeGreaterThan(0);
     expect(validateRecipe(recipe({ rules: [rule({ source: src({ fields: { x: 'head.repo.name' } }) })] })).ok).toBe(true);
   });
-  it('rejects a source fallback adapter (deferred to T11, M3-R58)', () => {
-    expect(validateRecipe(recipe({ rules: [rule({ source: src({ fallback: { adapter: 'github.prPage' } }) })] })).ok).toBe(false);
+  it('accepts a source fallback page adapter (M3-R59) and rejects an unknown one or extra keys', () => {
+    expect(errorsOf(validateRecipe(recipe({ rules: [rule({ source: src({ fallback: { adapter: 'github.prPage' } }) })] })))).toEqual([]);
+    expect(at(validateRecipe(recipe({ rules: [rule({ source: src({ fallback: { adapter: 'gitlab.mrPage' } }) })] })), '/rules/0/source/fallback/adapter').length).toBeGreaterThan(0);
+    expect(validateRecipe(recipe({ rules: [rule({ source: src({ fallback: { adapter: 'github.prPage', x: 1 } }) })] })).ok).toBe(false);
+    expect(validateRecipe(recipe({ rules: [rule({ source: src({ fallback: {} }) })] })).ok).toBe(false);
   });
   it('a field path may come from a string param ({params.x} placeholder)', () => {
     const r = recipe({ params: { p: { type: 'string', default: 'mergedAt', label: 'P' } }, rules: [rule({ source: src({ fields: { x: '{params.p}' } }) })] });

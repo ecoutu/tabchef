@@ -2,7 +2,7 @@
 // values and whether a form was edited. Held in memory, mirrored to storage.session (key `pageFacts`) so a restarted
 // worker keeps them; cleared on a top-frame navigation (onCommitted) and when the tab is removed.
 import { compilePattern } from '../core/match/pattern';
-import { adapterKey, adapterOf } from '../core/adapters';
+import { adapterKey, adapterOf, type AdapterId } from '../core/adapters';
 import { isPageExtract } from '../core/lang/evaluate';
 import type { Cond, Program, Rule, TabFacts } from '../core/lang/types';
 import type { PageLookup } from '../core/group/plan';
@@ -274,7 +274,7 @@ export class PageFacts implements PageLookup {
    * What the watch content script at `url` should look for: the pageText needles, selector extracts and adapter
    * fields of every program rule whose URL condition can match `url` (a rule without one counts as matching). Selector
    * keys are `<ruleKey>.<name>`, the names evaluateTab reads back from `page.extracts`. An adapter field's selectors
-   * are sent only where the adapter's urlPattern matches, once per field, under `adapter:<id>.<field>`. Nothing for a
+   * (every field of a source's `fallback` adapter) are sent only where the adapter's urlPattern matches, once per field, under `adapter:<id>.<field>`. Nothing for a
    * discarded or frozen `tab` (Review Focus #4): it runs no page script, so it is never sent one either.
    */
   watchConfigFor(url: string, p: Program, tab?: WatchTab): WatchConfig {
@@ -282,20 +282,24 @@ export class PageFacts implements PageLookup {
     const selectors: WatchSelector[] = [];
     if (tab?.discarded || tab?.frozen) return { needles, selectors };
     const adapterFields = new Set<string>();
+    const addAdapterField = (id: AdapterId, field: string) => {
+      const a = adapterOf(id);
+      const key = adapterKey(id, field);
+      if (!a || adapterFields.has(key) || !urlMatches(a.urlPattern, url)) return;
+      adapterFields.add(key);
+      // The watch keeps the last value it finds per key: the first-listed fallback goes last, so the best one wins.
+      for (const s of [...(a.selectors[field] ?? [])].reverse()) selectors.push({ key, ...s });
+    };
     for (const r of p.rules) {
       if (urlMay(r.rule.match, url) === false) continue;
       needlesOf(r.rule.match, needles);
       for (const [name, x] of Object.entries(r.rule.extract ?? {})) {
         if ('selector' in x) selectors.push({ key: `${r.key}.${name}`, selector: x.selector, ...(x.attr !== undefined && { attr: x.attr }) });
-        else if ('adapter' in x) {
-          const a = adapterOf(x.adapter);
-          const key = adapterKey(x.adapter, x.field);
-          if (!a || adapterFields.has(key) || !urlMatches(a.urlPattern, url)) continue;
-          adapterFields.add(key);
-          // The watch keeps the last value it finds per key: the first-listed fallback goes last, so the best one wins.
-          for (const s of [...(a.selectors[x.field] ?? [])].reverse()) selectors.push({ key, ...s });
-        }
+        else if ('adapter' in x) addAdapterField(x.adapter, x.field);
       }
+      // A source's page fallback (M3-R59) reads every field of its adapter (SourceService parses them).
+      const fb = r.rule.source?.fallback?.adapter;
+      if (fb !== undefined) for (const field of Object.keys(adapterOf(fb)?.selectors ?? {})) addAdapterField(fb, field);
     }
     return { needles: [...new Set(needles)], selectors };
   }
