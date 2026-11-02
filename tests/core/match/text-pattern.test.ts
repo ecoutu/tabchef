@@ -32,6 +32,30 @@ describe('compileTextPattern (R6)', () => {
     expect(t('*y', 'x'.repeat(3000) + 'y')).toBeNull();
     expect(t('/^x{2048}$/', 'x'.repeat(3000))).toEqual({});
   });
+  it('title globs match in linear time (ReDoS regression, 4-star case)', () => {
+    const t0 = performance.now();
+    expect(t('*a*a*a*ab', 'a'.repeat(2048))).toBeNull();
+    expect(performance.now() - t0).toBeLessThan(50);
+  });
+  it('title globs match in linear time (ReDoS regression, 7-star case)', () => {
+    const t0 = performance.now();
+    expect(t('*a*a*a*a*a*a*ab', 'a'.repeat(2048))).toBeNull();
+    expect(t('*a*a*a*a*a*a*ab', 'a'.repeat(2047) + 'b')).toEqual({});
+    expect(performance.now() - t0).toBeLessThan(50);
+  });
+  it('glob segments match leftmost-first and keep the anchors', () => {
+    expect(t('a*b*c', 'abc')).toEqual({});
+    expect(t('a*b*c', 'axxbyyc')).toEqual({});
+    expect(t('a*b*c', 'axxbyyc!')).toBeNull();
+    expect(t('a*b*c', '!axxbyyc')).toBeNull();
+    expect(t('ab*ba', 'aba')).toBeNull();
+    expect(t('ab*ba', 'abba')).toEqual({});
+    expect(t('*ab*', 'xxAByy')).toEqual({});
+    expect(t('**', 'anything')).toEqual({});
+    expect(t('', '')).toEqual({});
+    expect(t('', 'x')).toBeNull();
+    expect(t('x*', 'x\ny')).toEqual({});
+  });
   it('is cached separately from URL patterns', () => {
     expect(compileTextPattern('cache*')).toBe(compileTextPattern('cache*'));
   });

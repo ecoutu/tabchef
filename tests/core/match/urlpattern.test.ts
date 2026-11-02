@@ -101,3 +101,12 @@ describe('URL globs are backed by URLPattern', () => {
     }
   });
 });
+
+describe('compilePattern matchers cap input length', () => {
+  it('truncates URLs to 2048 characters before matching, for globs and regexes', () => {
+    const long = 'https://a.com/' + 'x'.repeat(3000);
+    expect(compilePattern('/^.{2048}$/s')(long)).toEqual({});
+    expect(compilePattern('a.com/*y')(long + 'y')).toBeNull();
+    expect(compilePattern('a.com/*')(long + 'y')).toEqual({});
+  });
+});

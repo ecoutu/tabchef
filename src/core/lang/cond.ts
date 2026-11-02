@@ -1,5 +1,5 @@
 // Condition evaluator for the M2 rule language (`Rule.match`). Pure: no browser access; the caller resolves facts.
-import { compilePattern, compileTextPattern, MAX_MATCH_INPUT } from '../match/pattern';
+import { compilePattern, compileTextPattern } from '../match/pattern';
 import type { Matcher } from '../match/pattern';
 import { parseDuration } from './duration';
 import type { Cond, TabFacts } from './types';
@@ -60,7 +60,7 @@ export function evalCond(c: Cond, f: TabFacts, now: number): CondResult {
       return r.needsPage ? no(true) : bool(!r.ok);
     }
     case 'url': {
-      const url = (f.tab.pendingUrl ?? f.tab.url).slice(0, MAX_MATCH_INPUT);
+      const url = f.tab.pendingUrl ?? f.tab.url; // matchers truncate to MAX_MATCH_INPUT
       for (const p of Array.isArray(v) ? v : [v]) {
         const caps = run(compilePattern, p, url);
         if (caps) return yes(caps);
