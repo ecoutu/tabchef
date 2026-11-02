@@ -15,6 +15,7 @@ import { liveProgram } from '../core/lang/dry-run';
 import { evaluateTab, type EvalResult } from '../core/lang/evaluate';
 import type { Program, Recipe, TabFacts, View } from '../core/lang/types';
 import type { Config, Snapshot, TabSnap } from '../core/types';
+import { normalizeUrl } from '../core/url/normalize';
 import type { PendingAsk } from './ask';
 import type { CloseSuggestion } from './close-executor';
 import type { DupeSetView } from './messages';
@@ -68,6 +69,11 @@ export interface ViewsInput {
 }
 
 export interface ComputedView { view: DeclaredView; summary: ViewSummary; data: ViewData }
+
+/** The same page as CloseExecutor sees it: equal dedupe-normalized URLs (tracking params, fragment, ...). */
+export function samePage(a: string, b: string, p: Program): boolean {
+  return (normalizeUrl(a, p.dedupe)?.key ?? a) === (normalizeUrl(b, p.dedupe)?.key ?? b);
+}
 
 /** The Finished recipe's view: it also lists CloseExecutor.suggestions() (T9→T17). */
 const isSuggestionsView = (v: DeclaredView): boolean => v.recipeId === 'finished' && v.id === 'finished';
@@ -124,12 +130,14 @@ function cmp(a: unknown, b: unknown): number {
 }
 
 function listRows(
-  v: DeclaredView, snap: Snapshot, evalOf: (t: TabSnap) => EvalResult, suggestions: Map<number, CloseSuggestion>,
+  v: DeclaredView, snap: Snapshot, p: Program, evalOf: (t: TabSnap) => EvalResult, suggestions: Map<number, CloseSuggestion>,
 ): ViewRow[] {
   const rows: { row: ViewRow; sortKey: unknown; order: number }[] = [];
   snap.tabs.forEach((tab, order) => {
     const ev = evalOf(tab);
-    const sug = isSuggestionsView(v) ? suggestions.get(tab.id) : undefined;
+    // A suggestion is for one page (R61): once the tab navigated it is stale, even before the executor clears it.
+    const s = isSuggestionsView(v) ? suggestions.get(tab.id) : undefined;
+    const sug = s && samePage(s.url, tabUrl(tab), p) ? s : undefined;
     if (!sug && !ev.views.includes(v.id)) return;
     const field = fieldOf(tab, ev.viewVars?.[v.id] ?? {});
     if (v.show && !evalShow(v.show, field)) return;
@@ -197,7 +205,7 @@ export async function readViews(d: ViewsDeps, input: ViewsInput): Promise<Comput
   for (const v of views) {
     const data: ViewData = v.kind === 'duplicates' && dupes
       ? { kind: 'duplicates', ...dupes }
-      : { kind: 'list', rows: listRows(v, snap, evalOf, suggestions) };
+      : { kind: 'list', rows: listRows(v, snap, p, evalOf, suggestions) };
     const count = data.kind === 'duplicates'
       ? data.sets.reduce((n, s) => n + s.closable, 0) + data.pending.length
       : data.rows.length;

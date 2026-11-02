@@ -25,9 +25,10 @@
     onChange();
   }
   const focus = (tabId: number) => act(() => send({ type: 'tab.focus', tabId }));
-  const close = (tabId: number) => act(() => send({ type: 'view.close', viewId: view.id, tabId }));
-  const keep = (tabId: number) => act(() => send({ type: 'view.keep', viewId: view.id, tabId }));
-  const closeAll = () => act(...rows.map((r) => () => send({ type: 'view.close', viewId: view.id, tabId: r.tabId })));
+  // The row's URL goes along: the worker refuses if the tab has navigated since (R61).
+  const close = (r: ViewRow) => act(() => send({ type: 'view.close', viewId: view.id, tabId: r.tabId, url: r.url }));
+  const keep = (r: ViewRow) => act(() => send({ type: 'view.keep', viewId: view.id, tabId: r.tabId, url: r.url }));
+  const closeAll = () => act(...rows.map((r) => () => send({ type: 'view.close', viewId: view.id, tabId: r.tabId, url: r.url })));
 </script>
 
 <section>
@@ -55,10 +56,10 @@
             {#if r.reason}<span class="reason">{r.reason}</span>{/if}
           </span>
           {#if can('keep') && r.suggested}
-            <button type="button" class="act" aria-label={`Keep ${name}`} onclick={() => keep(r.tabId)}>Keep</button>
+            <button type="button" class="act" aria-label={`Keep ${name}`} onclick={() => keep(r)}>Keep</button>
           {/if}
           {#if can('close')}
-            <button type="button" class="act" aria-label={`Close ${name}`} onclick={() => close(r.tabId)}>Close</button>
+            <button type="button" class="act" aria-label={`Close ${name}`} onclick={() => close(r)}>Close</button>
           {/if}
         </li>
       {/each}

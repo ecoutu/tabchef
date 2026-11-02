@@ -18,7 +18,7 @@ import type { PendingAsk } from './ask';
 import type { PageFacts, WatchSelector } from './page-facts';
 import type { PauseDuration, SafetyService } from './safety';
 import { dedupeDecision, openerOf } from './dedupe-handler';
-import { readViews, type ViewData, type ViewsDeps, type ViewSummary } from './views';
+import { readViews, samePage, type ViewData, type ViewsDeps, type ViewSummary } from './views';
 
 /** Messages between the background worker and the dedupe banner content script. */
 export type BannerShowMessage = {
@@ -156,10 +156,13 @@ export type Request =
   | { type: 'views.list' }
   /** One view's rows (`list`) or duplicate sets and pending asks (`duplicates`). Read-only. */
   | { type: 'view.data'; viewId: string }
-  /** Closes one row tab of a list view with a close / close-all action (user-initiated: also under dry run, R50). */
-  | { type: 'view.close'; viewId: string; tabId: number }
-  /** Dismisses a Finished suggestion: CloseExecutor.exempt, so the tab is not suggested again at that URL. */
-  | { type: 'view.keep'; viewId: string; tabId: number };
+  /**
+   * Closes one row tab of a list view with a close / close-all action (user-initiated: also under dry run, R50).
+   * `url`: the row's URL as the popup showed it; refused when the tab has since navigated (R61).
+   */
+  | { type: 'view.close'; viewId: string; tabId: number; url?: string }
+  /** Dismisses a Finished suggestion: CloseExecutor.exempt, so the tab is not suggested again at that URL. `url` as above. */
+  | { type: 'view.keep'; viewId: string; tabId: number; url?: string };
 
 /** explain.tab's answer: the tab and its relevant rules in priority order (src/core/lang/explain.ts). */
 export interface ExplainView {
@@ -292,7 +295,7 @@ export function isRequest(m: unknown): m is Request {
     case 'explain.tab': return num(x.tabId);
     case 'rules.shadowed': return x.config === undefined || (typeof x.config === 'object' && x.config !== null);
     case 'view.data': return str(x.viewId);
-    case 'view.close': case 'view.keep': return str(x.viewId) && num(x.tabId);
+    case 'view.close': case 'view.keep': return str(x.viewId) && num(x.tabId) && (x.url === undefined || str(x.url));
     default: return false;
   }
 }
@@ -487,8 +490,14 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
     if (!v) return fail('unknown view');
     const allowed = req.type === 'view.keep' ? v.summary.actions.includes('keep') : v.summary.actions.some((a) => a === 'close' || a === 'close-all');
     if (!allowed) return fail('action not allowed');
-    const row = v.data.kind === 'list' ? v.data.rows.find((r) => r.tabId === req.tabId) : undefined;
     const tab = snap.tabs.find((t) => t.id === req.tabId);
+    // R61: act only on the page the row was for. A suggestion made for another page, or a row the popup showed at
+    // another URL, means the tab navigated (its suggestion may not be cleared yet): refuse, never act on the new page.
+    const p = await d.getProgram();
+    const stale = tab !== undefined && ((req.url !== undefined && !samePage(req.url, tabUrl(tab), p))
+      || (v.view.recipeId === 'finished' && d.closes?.suggestions().some((x) => x.tabId === tab.id && !samePage(x.url, tabUrl(tab), p))));
+    if (stale) return fail('tab has navigated');
+    const row = v.data.kind === 'list' ? v.data.rows.find((r) => r.tabId === req.tabId) : undefined;
     if (!row || !tab) return fail('not in view');
     if (req.type === 'view.keep') {
       if (!row.suggested || !d.closes) return fail('not in view');

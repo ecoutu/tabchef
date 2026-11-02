@@ -84,7 +84,8 @@ export default defineBackground(() => {
     reconciler.schedule('config');
     // Enabled recipes changed: their needs, the paused set and the watch origins. Then every open tab is re-evaluated
     // for close rules against the new Program (R51), so a newly enabled close rule applies to tabs already open.
-    void afterConfigChange(() => permissions.onChanged(), closeExecutor).catch(warn('close re-evaluation'));
+    // Then the badge, which counts the shown views (R60): they depend on the config. scheduleBadge is declared below.
+    void afterConfigChange(() => permissions.onChanged(), closeExecutor, () => scheduleBadge()).catch(warn('close re-evaluation'));
     // Tell open extension pages (options) the config changed; "no receiver" rejections are expected.
     Promise.resolve(browser.runtime.sendMessage({ type: 'config.changed', rev: configRev(c) })).catch(() => {});
   });
@@ -361,7 +362,8 @@ export default defineBackground(() => {
     pageFacts,
     safety,
     schedule: (r) => reconciler.schedule(r),
-    onFacts: (id) => { void closeExecutor.onFacts(id); },
+    // New page facts can change list views (pageText showInView), hence the badge (R60).
+    onFacts: (id) => { void closeExecutor.onFacts(id); scheduleBadge(); },
     onCloseChoice: (id, choice) => { void closeExecutor.onCloseChoice(id, choice); },
   });
   // UI requests (popup / options), banner choices (content script in the duplicate tab) and the watch script.

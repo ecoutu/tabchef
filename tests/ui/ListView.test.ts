@@ -25,9 +25,9 @@ describe('ListView (M2 T17)', () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Tab 3' }));
     expect(send).toHaveBeenCalledWith({ type: 'tab.focus', tabId: 3 });
     await fireEvent.click(screen.getByRole('button', { name: 'Keep Tab 3' }));
-    expect(send).toHaveBeenCalledWith({ type: 'view.keep', viewId: 'finished', tabId: 3 });
+    expect(send).toHaveBeenCalledWith({ type: 'view.keep', viewId: 'finished', tabId: 3, url: 'http://localhost:3000/cb3' });
     await fireEvent.click(screen.getByRole('button', { name: 'Close Tab 3' }));
-    expect(send).toHaveBeenCalledWith({ type: 'view.close', viewId: 'finished', tabId: 3 });
+    expect(send).toHaveBeenCalledWith({ type: 'view.close', viewId: 'finished', tabId: 3, url: 'http://localhost:3000/cb3' });
     expect(onChange).toHaveBeenCalledTimes(3);
   });
 
@@ -45,7 +45,8 @@ describe('ListView (M2 T17)', () => {
     render(ListView, { view: { ...finished, actions: ['close-all'] }, rows: [row(1), row(2)], onChange: vi.fn() });
     await fireEvent.click(screen.getByRole('button', { name: 'Close all' }));
     expect(send.mock.calls.map((c) => c[0])).toEqual([
-      { type: 'view.close', viewId: 'finished', tabId: 1 }, { type: 'view.close', viewId: 'finished', tabId: 2 },
+      { type: 'view.close', viewId: 'finished', tabId: 1, url: 'http://localhost:3000/cb1' },
+      { type: 'view.close', viewId: 'finished', tabId: 2, url: 'http://localhost:3000/cb2' },
     ]);
   });
 

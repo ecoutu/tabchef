@@ -2,6 +2,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { badgeCount, createHandler, refreshBadge, type HandlerDeps } from '../../src/engine/messages';
 import { pausedReason } from '../../src/engine/permissions';
+import { afterConfigChange } from '../../src/engine/close-executor';
 import { defaultConfig } from '../../src/core/config/defaults';
 import { FakeBrowserPort } from '../../src/platform/fake-port';
 import type { Config, RecipeRef } from '../../src/core/types';
@@ -78,7 +79,7 @@ function setup(o: { suggestions?: CloseSuggestion[]; granted?: (origin: string) 
   return { port, mk, deps, handle, set, added, whyAdd, locked, exempt, setCfg, getCfg: () => cfg };
 }
 
-const oauth: CloseSuggestion = { tabId: 3, ruleKey: 'finished/oauth-callback', reason: 'Close OAuth callback tabs' };
+const oauth: CloseSuggestion = { tabId: 3, url: CB, ruleKey: 'finished/oauth-callback', reason: 'Close OAuth callback tabs' };
 
 describe('view.data', () => {
   it("view.data('finished') returns a suggested localhost tab", async () => {
@@ -214,7 +215,7 @@ describe('view actions (user-initiated: they apply under global dry run, R50)', 
   });
 
   it('view.close closes a row tab and records it (also under dry run); never a locked tab or a tab outside the view', async () => {
-    const s = setup({ suggestions: [oauth, { tabId: 4, ruleKey: 'finished/oauth-callback', reason: 'Close OAuth callback tabs' }] });
+    const s = setup({ suggestions: [oauth, { tabId: 4, url: `${CB}2`, ruleKey: 'finished/oauth-callback', reason: 'Close OAuth callback tabs' }] });
     await s.setCfg({ ...enable(defaultConfig(), 'finished'), dryRun: true });
     s.mk(3, CB); s.mk(4, `${CB}2`); s.mk(5, 'https://example.com/');
     s.locked.add(4);
@@ -255,7 +256,7 @@ describe('R59 / R60: Finished shown whenever suggestions exist; the badge counts
     (((await s.handle({ type: 'views.list' }, ui)) as Loose).data as { count: number }[]).reduce((n, v) => n + v.count, 0);
 
   it('R59: finished disabled, a suggestion from a user suggest-mode rule → Finished shows and the badge counts it', async () => {
-    const user: CloseSuggestion = { tabId: 3, ruleKey: 'user/cb', reason: 'Callback' };
+    const user: CloseSuggestion = { tabId: 3, url: CB, ruleKey: 'user/cb', reason: 'Callback' };
     const s = setup({ suggestions: [user] });
     const rule: Rule = { id: 'cb', name: 'Callback', enabled: true, match: { url: 'localhost:*/*' }, actions: [{ close: { mode: 'suggest' } }] };
     await s.setCfg({ ...defaultConfig(), rules: [rule], order: ['user/cb'] }); // finished is disabled by default
@@ -295,5 +296,54 @@ describe('R59 / R60: Finished shown whenever suggestions exist; the badge counts
     await refreshBadge({ ...s.deps, getConfig: s.deps.store.get, isLocked: () => false });
     expect(s.port.badge).toBe('2');
     expect(await total(s)).toBe(2);
+  });
+});
+
+describe('T17 fix round 1', () => {
+  it('fix 1: a config change alone (no tab event) refreshes the badge through afterConfigChange; it equals the popup total', async () => {
+    const s = setup({ suggestions: [oauth] });
+    const c = enable(defaultConfig(), 'finished');
+    await s.setCfg(c);
+    s.mk(1, 'https://a.example/x'); s.mk(2, 'https://a.example/x'); s.mk(3, CB);
+    const badge = () => refreshBadge({ ...s.deps, getConfig: s.deps.store.get, isLocked: () => false });
+    await badge();
+    expect(s.port.badge).toBe('2');
+    await s.setCfg({ ...c, dedupe: { ...c.dedupe, mode: 'off' }, recipes: c.recipes.map((r) => (r.id === 'duplicates' ? { ...r, enabled: false } : r)) });
+    let refreshed: Promise<void> | undefined;
+    await afterConfigChange(async () => {}, { evaluateAll: async () => {} }, () => { refreshed = badge(); });
+    await refreshed;
+    expect(s.port.badge).toBe('1');
+    const views = ((await s.handle({ type: 'views.list' }, ui)) as Loose).data as { count: number }[];
+    expect(views.reduce((n, v) => n + v.count, 0)).toBe(1);
+  });
+
+  it('R61: a suggested tab that navigated (before the executor cleared it) is not listed, closed or exempted', async () => {
+    const s = setup({ suggestions: [oauth] });
+    await s.setCfg(enable(defaultConfig(), 'finished'));
+    s.mk(3, 'https://example.com/new-page'); // the suggestion was made at CB; the tab is elsewhere now
+    expect(((await s.handle({ type: 'view.data', viewId: 'finished' }, ui)) as Loose).data.rows).toEqual([]);
+    expect(await s.handle({ type: 'view.close', viewId: 'finished', tabId: 3 }, ui)).toEqual({ ok: false, error: 'tab has navigated' });
+    expect(await s.handle({ type: 'view.keep', viewId: 'finished', tabId: 3 }, ui)).toEqual({ ok: false, error: 'tab has navigated' });
+    expect((await s.port.snapshot()).tabs.map((t) => t.id)).toEqual([3]);
+    expect(s.exempt).not.toHaveBeenCalled();
+    expect(s.added).toEqual([]);
+  });
+
+  it('R61: same page after normalization (tracking params) still matches', async () => {
+    const s = setup({ suggestions: [oauth] });
+    await s.setCfg(enable(defaultConfig(), 'finished'));
+    s.mk(3, `${CB}&utm_source=x`);
+    expect(((await s.handle({ type: 'view.data', viewId: 'finished' }, ui)) as Loose).data.rows).toHaveLength(1);
+  });
+
+  it('R61: the row URL the popup showed is checked at action time: a showInView row whose tab navigated is refused', async () => {
+    const s = setup();
+    const all: Rule = { id: 'all', name: 'All', enabled: true, match: { url: '*' }, actions: [{ showInView: { view: 'any' } }] };
+    await s.setCfg({ ...defaultConfig(), recipes: [userRecipe('mine', [all], [{ id: 'any', tab: 'Any', kind: 'list', actions: ['close'] }])] });
+    s.mk(1, 'https://example.com/new');
+    expect(await s.handle({ type: 'view.close', viewId: 'any', tabId: 1, url: 'https://example.com/old' }, ui)).toEqual({ ok: false, error: 'tab has navigated' });
+    expect((await s.port.snapshot()).tabs.map((t) => t.id)).toEqual([1]);
+    expect(await s.handle({ type: 'view.close', viewId: 'any', tabId: 1, url: 'https://example.com/new' }, ui)).toEqual({ ok: true, data: null });
+    expect(await s.handle({ type: 'view.close', viewId: 'any', tabId: 1, url: 7 }, ui)).toEqual({ ok: false, error: 'unknown request' });
   });
 });
