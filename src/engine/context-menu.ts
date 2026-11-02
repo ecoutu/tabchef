@@ -1,5 +1,5 @@
 import { isExemptUrl } from '../core/url/normalize';
-import { explainHash, newRuleHash, type NewRuleKind } from '../ui/routes';
+import { explainHash, newRuleHash, type NewRuleKind } from '../core/links';
 import type { SafetyService } from './safety';
 
 // The page / link / toolbar-icon context menu (M2 T16). Items are created on runtime.onInstalled (they persist across

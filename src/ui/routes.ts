@@ -36,15 +36,4 @@ export function matchRoute(routes: readonly { path: string }[], hash: string): R
   return { path: best.path, params: { ...query, ...best.params } };
 }
 
-/** The conflict view of a tab ("Why is this tab here?", M2 T14). T16's context-menu item opens options at this hash. */
-export function explainHash(tabId: number): string {
-  return `#/explain/${tabId}`;
-}
-
-/** The kinds of pre-filled rule the context menu creates (M2 T16): group, auto-close, never dedupe. */
-export type NewRuleKind = 'group' | 'close' | 'allowDup';
-
-/** The pre-filled rule page (`#/rules/new?url=<enc>&kind=…`, M2 T16) the context menu opens. */
-export function newRuleHash(url: string, kind: NewRuleKind): string {
-  return `#/rules/new?${new URLSearchParams({ url, kind }).toString()}`;
-}
+export { explainHash, newRuleHash, type NewRuleKind } from '../core/links';
