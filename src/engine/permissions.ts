@@ -86,6 +86,12 @@ export class PermissionsManager {
   /** Origins the watch is registered for; undefined until the first sync (the persisted registration is unknown). */
   private registered?: string[];
   private chain: Promise<void> = Promise.resolve();
+  private markReady!: () => void;
+  /**
+   * Resolves once the first onChanged() sync has finished, whether it succeeded or not (a failed sync or a missing
+   * `scripting` still resolves it). Until then paused() is empty, so engine steps that act on it await this.
+   */
+  readonly ready: Promise<void> = new Promise((r) => { this.markReady = r; });
 
   constructor(
     private readonly port: BrowserPort,
@@ -145,8 +151,9 @@ export class PermissionsManager {
    * changes and worker start. Serialized; never rejects (problems are reported through `warn`).
    */
   onChanged(): Promise<void> {
-    const run = this.chain.then(() => this.sync());
+    const run = this.chain.then(() => this.sync()).catch((e: unknown) => { this.warn('[tabchef] permission sync failed', e); });
     this.chain = run;
+    void run.finally(() => this.markReady());
     return run;
   }
 

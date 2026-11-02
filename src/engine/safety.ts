@@ -1,10 +1,10 @@
 import { browser } from 'wxt/browser';
 import { isExemptUrl } from '../core/url/normalize';
 import type { RecentlyClosed, RecentlyClosedInput } from '../core/safety/recently-closed';
-import type { TabSnap } from '../core/types';
+import type { TabSnap, WindowSnap } from '../core/types';
 import type { BrowserPort } from '../platform/browser-port';
 import type { AskApi } from './ask';
-import { UNDO_NOTIFICATION_PREFIX, undoText } from './messages';
+import { PROTECTED_CLOSE_TEXT, UNDO_NOTIFICATION_PREFIX, undoText } from './messages';
 
 export const RESUME_ALARM = 'resume';
 export const LOCKS_KEY = 'locks';
@@ -36,6 +36,10 @@ export interface SafetyDeps {
    * worker has no flag of its own, so form-edit protection survives a worker restart (D34).
    */
   pageFormEdited?: (tabId: number) => boolean;
+  /** Pause ended: re-fire the pending closes that were kept while paused (CloseExecutor.rearm, D37 / R23). */
+  onResume?: () => void;
+  /** A closed tab was reopened by undo: exempt it from auto-close until its URL changes (CloseExecutor.exempt, R24). */
+  onUndone?: (tabId: number, url: string) => void;
   now?: () => number;
 }
 
@@ -143,6 +147,7 @@ export class SafetyService {
     this.pausedUntil = 0;
     this.deps.schedule('resume');
     this.pausedUntilRestart = false;
+    this.deps.onResume?.();
     this.queue(async () => {
       await browser.storage.local.remove(PAUSE_UNTIL_KEY);
       await browser.storage.session.remove(PAUSE_RESTART_KEY);
@@ -272,6 +277,11 @@ export class SafetyService {
     return tab.pinned || this.isLocked(tab.id) || this.isFormEdited(tab.id) || tab.audible || isExemptUrl(tab.url);
   }
 
+  /** The tab is the active tab of the focused window: the user is looking at it (spec §6.9 active-tab protection). */
+  isActiveFocused(tab: TabSnap, windows: WindowSnap[]): boolean {
+    return tab.active && windows.some((w) => w.id === tab.windowId && w.focused);
+  }
+
   // ---- undo ----
 
   /** Reopen a closed tab in its window (any normal window if that is gone); the reconciler then regroups it. */
@@ -303,6 +313,7 @@ export class SafetyService {
     }
     disarm();
     this.deps.exemptOnce(tabId);
+    this.deps.onUndone?.(tabId, e.url);
     this.deps.recentlyClosed.take(id);
     this.deps.log.add({
       tabId, action: 'undo', detail: `Reopened "${e.title}"${e.groupTitle ? ` (was in ${e.groupTitle})` : ''}`, at: this.now(),
@@ -315,12 +326,12 @@ export class SafetyService {
 
   /**
    * Offer Undo after an automatic close: banner in the newly focused tab if eligible, else a notification, else nothing
-   * (the entry is still in the popup's Recently closed list). Never throws.
+   * (the entry is still in the popup's Recently closed list). Without a tab to show it in, the notification. Never throws.
    */
-  async toast(entryId: string, entry: RecentlyClosedInput, focused: TabSnap): Promise<void> {
+  async toast(entryId: string, entry: RecentlyClosedInput, focused: TabSnap | undefined): Promise<void> {
     const text = undoText(entry);
     try {
-      if (await this.bannerEligible(focused)) {
+      if (focused && await this.bannerEligible(focused)) {
         await this.deps.api.executeScript(focused.id, this.deps.bannerFile);
         const reply = await this.deps.api.sendMessage(focused.id, { type: 'banner.show', payload: { kind: 'undo', entryId, text } });
         if ((reply as { ok?: unknown } | undefined)?.ok === true) return;
@@ -339,7 +350,23 @@ export class SafetyService {
     }
   }
 
-  private async bannerEligible(t: TabSnap): Promise<boolean> {
+  /**
+   * The protected-close banner ("Close this tab? [Close] [Keep]", D22) in `tab`, when it is eligible. True once the
+   * banner acknowledged it is showing; the choice comes back as `banner.closeChoice`. Never throws.
+   */
+  async protectedCloseBanner(tab: TabSnap): Promise<boolean> {
+    try {
+      if (!(await this.bannerEligible(tab))) return false;
+      await this.deps.api.executeScript(tab.id, this.deps.bannerFile);
+      const reply = await this.deps.api.sendMessage(tab.id, { type: 'banner.show', payload: { kind: 'protected-close', text: PROTECTED_CLOSE_TEXT } });
+      return (reply as { ok?: unknown } | undefined)?.ok === true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** The banner content script can run in `t`: a live http(s) page whose host and `scripting` are granted. */
+  async bannerEligible(t: TabSnap): Promise<boolean> {
     if (t.discarded || t.frozen) return false;
     const origin = hostPattern(t.url);
     if (origin === undefined) return false;
