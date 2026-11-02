@@ -122,6 +122,48 @@ describe('dry run: grouping', () => {
     expect(groupOf(w.port, 1)).toBeUndefined(); // B is strict: the non-matching tab leaves X
   });
 
+  it('R49: switching a rule to dry-run leaves its existing group alone (no ungroup, no move, no would-ungroup)', async () => {
+    const live = cfgOf([rule('a', 'a.com/*', [group('api')])]);
+    const port = new FakeBrowserPort();
+    port.addWindow(1);
+    const logs: WhyEntry[] = [];
+    const cfg = { c: live };
+    const r = new Reconciler(port, async () => programOf(cfg.c), { log: { add: (e) => { logs.push(e); } } });
+    port.addTab(tab(1, 'https://a.com/1'));
+    port.addTab(tab(2, 'https://a.com/2'));
+    await r.flush();
+    expect([groupOf(port, 1), groupOf(port, 2)]).toEqual(['api', 'api']);
+    port.state.tabs.find((t) => t.id === 2)!.url = 'https://other.com/'; // strict would ungroup it under a live A
+    cfg.c = cfgOf([rule('a', 'a.com/*', [group('api')], { dryRun: true })]);
+    const before = port.calls.length;
+    await r.flush();
+    await r.flush();
+    expect(port.calls.slice(before).filter((c) => MUTATING.has(c.method))).toEqual([]);
+    expect([groupOf(port, 1), groupOf(port, 2)]).toEqual(['api', 'api']);
+    expect(logs.filter((l) => l.action === 'would-ungroup')).toEqual([]);
+  });
+
+  it('R49: a NEW matching tab still falls through to a lower live rule B; A\'s would-group is logged once', async () => {
+    const port = new FakeBrowserPort();
+    port.addWindow(1);
+    const logs: WhyEntry[] = [];
+    const cfg = { c: cfgOf([rule('a', 'a.com/*', [group('api')]), rule('b', 'a.com/*', [group('B')])]) };
+    const r = new Reconciler(port, async () => programOf(cfg.c), { log: { add: (e) => { logs.push(e); } } });
+    port.addTab(tab(1, 'https://a.com/1'));
+    await r.flush();
+    expect(groupOf(port, 1)).toBe('api');
+    cfg.c = cfgOf([rule('a', 'a.com/*', [group('api')], { dryRun: true }), rule('b', 'a.com/*', [group('B')])]);
+    await r.flush();
+    port.addTab(tab(2, 'https://a.com/2'));
+    await r.flush();
+    await r.flush();
+    expect(groupOf(port, 1)).toBe('api'); // A's existing group is left alone
+    expect(groupOf(port, 2)).toBe('B'); // the new tab falls through to B
+    expect(logs.filter((l) => l.action.startsWith('would-'))).toEqual([
+      expect.objectContaining({ tabId: 2, ruleId: 'user/a', action: 'would-group', detail: 'Would move to api by rule A (dry run)', dryRun: true }),
+    ]);
+  });
+
   it('a dry-run group rule opens no anchors', async () => {
     const w = reconciler(cfgOf([rule('a', 'a.com/*', [group('A', { anchors: ['https://a.com/home'] })], { dryRun: true })]));
     w.port.addTab(tab(1, 'https://a.com/1'));

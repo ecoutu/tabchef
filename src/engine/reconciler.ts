@@ -1,4 +1,4 @@
-import { planGroups, planTargets, syncCreationOrder, type PageLookup, type PlanContext, type Targets } from '../core/group/plan';
+import { dryRunGroupTabs, planGroups, planTargets, syncCreationOrder, type PageLookup, type PlanContext, type Targets } from '../core/group/plan';
 import type { Op, Snapshot } from '../core/types';
 import type { Program } from '../core/lang/types';
 import { hasDryRun, isDryRunRule, liveProgram } from '../core/lang/dry-run';
@@ -168,10 +168,14 @@ export class Reconciler {
       const program = await this.getProgram();
       const ctxOf = (snap: Snapshot): PlanContext => {
         // Locked tabs and anchors still at their anchor URL (R21: strict would ungroup an anchor outside the rule).
-        const extra = [...(this.opts.extraLeaveAlone?.() ?? []), ...anchorLeaveAlone(st.anchors, snap, program)];
+        // R49 (per-rule dry run only): a dry-run rule's existing group is left alone, by both passes.
+        const extra = [...(this.opts.extraLeaveAlone?.() ?? []), ...anchorLeaveAlone(st.anchors, snap, program),
+          ...(program.dryRun ? [] : dryRunGroupTabs(snap, program))];
         return extra.length ? { ...st, leaveAlone: new Set([...st.leaveAlone, ...extra]) } : st;
       };
-      if (program.dryRun) { // global dry run: nothing is applied, every op is only logged
+      // Global dry run (R50): engine-initiated changes are only logged. User-initiated actions (popup close / close-all,
+      // banner choices, undo) still apply: they go through their own handlers, not this loop.
+      if (program.dryRun) {
         const snap = await this.port.snapshot();
         this.dryRunPass(snap, program, ctxOf(snap));
         return;

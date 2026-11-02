@@ -144,6 +144,26 @@ export function managedGroupIds(snap: Snapshot, p: Program, ctx: ManagedCtx, pre
   return (pre ?? planTargets(snap, p, ctx)).managed;
 }
 
+/**
+ * Ruling R49: tabs sitting in a titled group (normal windows) whose title some dry-run rule's group template produces
+ * and no live rule's does. The engine merges them into leaveAlone for per-rule dry run, so switching a rule to dry-run
+ * never ungroups, moves or would-ungroups its existing group's tabs; new or ungrouped tabs still fall through (R48).
+ * A title a live rule also produces stays that rule's (a dry-run rule never makes a live strict group non-strict).
+ */
+export function dryRunGroupTabs(snap: Snapshot, p: Program): number[] {
+  const templates = (dry: boolean) => p.rules.filter((r) => r.dryRun === dry)
+    .flatMap((r) => r.rule.actions.flatMap((a) => ('group' in a ? [a.group.title] : [])));
+  const dry = templates(true);
+  if (dry.length === 0) return [];
+  const live = templates(false);
+  const normal = new Set(snap.windows.filter((w) => w.type === 'normal').map((w) => w.id));
+  const held = new Set(snap.groups
+    .filter((g) => normal.has(g.windowId) && g.title !== ''
+      && dry.some((t) => templateProduces(t, g.title)) && !live.some((t) => templateProduces(t, g.title)))
+    .map((g) => g.id));
+  return held.size ? snap.tabs.filter((t) => held.has(t.groupId)).map((t) => t.id) : [];
+}
+
 /** Options for syncCreationOrder's deletion of numbers whose group is not live. */
 export interface CreationPrune {
   /** Titles of groups created but not titled yet (they are untitled meanwhile): their numbers are kept. */

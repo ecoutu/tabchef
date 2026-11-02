@@ -14,6 +14,7 @@
 // Dry run (M2 T12, rulings R10 / R48): the live close is decided as if dry-run rules did not exist, so the next live
 // close rule wins. A dry-run close rule that would have won (every rule under global dry run) is logged once per page
 // as `would-close` (flagged dryRun) when the tab is evaluated, and never scheduled.
+// Global dry run (R50) blocks only these engine-initiated closes: a protected-close banner answer still closes.
 import { evaluateTab, type CloseResult } from '../core/lang/evaluate';
 import { liveProgram } from '../core/lang/dry-run';
 import type { Program } from '../core/lang/types';

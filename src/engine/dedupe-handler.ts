@@ -290,7 +290,9 @@ export class DedupeHandler {
         });
       }
     }
-    if (p.dryRun) return; // global dry run: nothing is applied
+    // Global dry run (R50): an engine-initiated close or ask is only logged. A user's banner choice (ask.ts switchTo),
+    // popup close / close-all and undo still apply.
+    if (p.dryRun) return;
     const { o, ruleId } = dedupeDecision(p, facts, this.now());
     const act = outcome({ ...(o && { o }) });
     if (!act) return;
