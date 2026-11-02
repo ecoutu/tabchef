@@ -40,3 +40,11 @@ export function matchRoute(routes: readonly { path: string }[], hash: string): R
 export function explainHash(tabId: number): string {
   return `#/explain/${tabId}`;
 }
+
+/** The kinds of pre-filled rule the context menu creates (M2 T16): group, auto-close, never dedupe. */
+export type NewRuleKind = 'group' | 'close' | 'allowDup';
+
+/** The pre-filled rule page (`#/rules/new?url=<enc>&kind=…`, M2 T16) the context menu opens. */
+export function newRuleHash(url: string, kind: NewRuleKind): string {
+  return `#/rules/new?${new URLSearchParams({ url, kind }).toString()}`;
+}

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { reorderRules, addRule, updateRule, removeRule, previewMatches, patternError, configPatternErrors, errorsForPath, orderedUserRules, formRule } from '../../src/ui/rules-model';
+import { reorderRules, addRule, updateRule, removeRule, previewMatches, patternError, configPatternErrors, errorsForPath, orderedUserRules, formRule, addNewRule, groupRuleChoices } from '../../src/ui/rules-model';
 import { defaultConfig } from '../../src/core/config/defaults';
 import { validateConfig } from '../../src/core/config/schema';
 import type { Config, GroupRule, Rule, TabSnap } from '../../src/core/types';
@@ -262,5 +262,39 @@ describe('rules-model: form and helpers (M2 T15)', () => {
   it('configPatternErrors also checks url and title patterns nested in all/any/not', async () => {
     const c = { ...defaultConfig(), rules: [{ id: 'x', name: 'X', enabled: true, match: { all: [{ url: 'a.com/*' }, { not: { title: '/(/' } }] }, actions: [{ close: {} }] }], order: [] } as Config;
     expect(configPatternErrors(c).map((e) => e.path)).toEqual(['/rules/0/match/all/1/not/title']);
+  });
+});
+
+describe('rules-model: pre-filled rules (M2 T16)', () => {
+  it('addNewRule: a valid rule first in priority, with a readable unique id; the input is not mutated', () => {
+    const c = cfg('a');
+    const n = addNewRule(c, { kind: 'group', pattern: 'github.com/acme/*', name: 'Group github.com/acme/*', group: { title: 'Acme', color: 'blue' } });
+    const r = n.rules.at(-1)!;
+    expect(r).toEqual({ id: 'group-github-com-acme', name: 'Group github.com/acme/*', enabled: true, match: { url: 'github.com/acme/*' }, actions: [{ group: { title: 'Acme', color: 'blue' } }] });
+    expect(n.order[0]).toBe('user/group-github-com-acme');
+    expect(validateConfig(n).ok).toBe(true);
+    expect(c.rules).toHaveLength(1);
+    const again = addNewRule(n, { kind: 'allowDup', pattern: 'github.com/acme/*', name: 'x' });
+    expect(again.rules.at(-1)!.id).toBe('allowdup-github-com-acme');
+    expect(again.rules.at(-1)!.actions).toEqual([{ dedupe: { mode: 'off' } }]);
+    const close = addNewRule(n, { kind: 'close', pattern: '*.example.com/*', name: 'x', close: { after: '1h', mode: 'auto' } });
+    expect(close.rules.at(-1)!.actions).toEqual([{ close: { after: '1h', mode: 'auto' } }]);
+    expect(validateConfig(close).ok).toBe(true);
+  });
+
+  it('addNewRule into an existing group rule appends the pattern once, keeps order', () => {
+    const c = cfg('a');
+    const n = addNewRule(c, { kind: 'group', pattern: 'b.com/*', name: 'x', group: { existing: 'a' } });
+    expect(n.rules).toHaveLength(1);
+    expect(n.rules[0]!.match).toEqual({ url: ['a.com/*', 'b.com/*'] });
+    expect(n.order).toEqual(c.order);
+    expect(addNewRule(c, { kind: 'group', pattern: 'a.com/*', name: 'x', group: { existing: 'a' } })).toEqual(c);
+  });
+
+  it('groupRuleChoices lists form-editable user rules with a group action only', () => {
+    const odd = { id: 'odd', name: 'Odd', enabled: true, match: { title: '*x*' }, actions: [{ showInView: { view: 'v' } }] } as Rule;
+    const closer = { id: 'cl', name: 'Closer', enabled: true, match: { url: 'c.com/*' }, actions: [{ close: { mode: 'auto' } }] } as Rule;
+    const c = { ...cfg('a'), rules: [...cfg('a').rules, odd, closer] };
+    expect(groupRuleChoices(c)).toEqual([{ id: 'a', name: 'a', title: 'a' }]);
   });
 });

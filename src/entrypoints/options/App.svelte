@@ -11,6 +11,7 @@
   import Dedupe from './Dedupe.svelte';
   import History from './History.svelte';
   import Explain from './Explain.svelte';
+  import NewRule from './NewRule.svelte';
   import { matchRoute } from '../../ui/routes';
   import Backups from './Backups.svelte';
   import Import from './Import.svelte';
@@ -24,7 +25,7 @@
    */
   const ROUTES: {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    path: string; label: string; page: 'rules' | 'recipes' | 'dedupe' | 'history' | 'backups' | 'import' | 'explain' | Component<any>; nav?: false;
+    path: string; label: string; page: 'rules' | 'recipes' | 'dedupe' | 'history' | 'backups' | 'import' | 'explain' | 'newRule' | Component<any>; nav?: false;
   }[] = [
     { path: '/rules', label: 'Rules', page: 'rules' },
     { path: '/recipes', label: 'Recipes', page: 'recipes' },
@@ -34,6 +35,8 @@
     { path: '/import', label: 'Import', page: 'import' },
     // The conflict view (M2 T14): linked from History rows and T16's "Why is this tab here?" (explainHash).
     { path: '/explain/:tabId', label: 'Why is this tab here?', page: 'explain', nav: false },
+    // A pre-filled rule from the context menu (M2 T16, newRuleHash); longest prefix wins over /rules (R28).
+    { path: '/rules/new', label: 'New rule', page: 'newRule', nav: false },
     // ROUTE-INSERT-POINT
   ];
 
@@ -57,7 +60,8 @@
   let preview = $state<{ result: PreviewResult; answer: (apply: boolean) => void } | null>(null);
 
   const dirty = $derived(saved !== null && draft !== null && JSON.stringify(saved) !== JSON.stringify(draft));
-  const summary = $derived(unclaimedErrors(saveErrors));
+  // NewRule (T16) shows no per-field server errors, so on its page every error goes to the summary.
+  const summary = $derived(route === '/rules/new' ? saveErrors : unclaimedErrors(saveErrors));
 
   async function loadConfig(): Promise<void> {
     const r = await send({ type: 'config.get' });
@@ -97,8 +101,24 @@
   /** Save → preview.change → [Apply] → config.set {baseRev}; a change with no effects saves straight away (R5, T13). */
   async function save(): Promise<void> {
     if (!draft) return;
+    await commit(structuredClone($state.snapshot(draft)));
+  }
+
+  /**
+   * The pre-filled rule page (M2 T16) saves through the same path as the draft: `next` is the draft plus the new
+   * rule. Saved → the draft becomes it and the Rules list opens; cancelled / failed / conflict → nothing changes here
+   * (the error or banner shows above) and the page keeps its form.
+   */
+  async function saveNewRule(next: Config): Promise<void> {
+    const toSave = structuredClone($state.snapshot(next));
+    if (!(await commit(toSave))) return;
+    draft = structuredClone(toSave);
+    window.location.hash = '#/rules';
+  }
+
+  /** Runs the Save path for `toSave`; true when it was stored. */
+  async function commit(toSave: Config): Promise<boolean> {
     saving = true; saveErrors = []; saveMessage = ''; previewError = '';
-    const toSave = structuredClone($state.snapshot(draft));
     // baseRev is read when Apply is clicked: a remote change meanwhile still conflicts.
     const out = await previewThenApply(toSave, confirmPreview,
       () => send({ type: 'config.set', config: toSave, ...(baseRev !== undefined ? { baseRev } : {}) }));
@@ -106,7 +126,7 @@
     if (out.status !== 'applied') {
       saving = false;
       if (out.status === 'failed') previewError = `Could not preview: ${out.error}`;
-      return;
+      return false;
     }
     const r = out.value;
     if (r.ok) {
@@ -115,11 +135,12 @@
       if (g.ok) baseRev = g.data.rev;
       saving = false;
       void loadStatus();
-      return;
+      return true;
     }
     saving = false;
-    if (r.error === 'conflict') { conflict = true; return; }
+    if (r.error === 'conflict') { conflict = true; return false; }
     saveErrors = r.errors?.length ? r.errors : [r.error];
+    return false;
   }
 
   function edit(c: Config): void { draft = c; saveMessage = ''; previewError = ''; }
@@ -187,6 +208,10 @@
       {#if saved}<Recipes saved={saved!} {baseRev} {dirty} onApplied={loadConfig} />{/if}
     {:else if current.page === 'import'}
       {#if saved}<Import {dirty} onApplied={loadConfig} />{/if}
+    {:else if draft && current.page === 'newRule'}
+      {#key `${matched.params.url}|${matched.params.kind}`}
+        <NewRule url={matched.params.url ?? ''} kind={matched.params.kind ?? ''} config={draft} {tabs} {saving} onSave={saveNewRule} />
+      {/key}
     {:else if draft && current.page === 'rules'}
       <Rules config={draft} {tabs} {dirty} {saving} serverErrors={saveErrors} onChange={edit} onSave={save} />
     {:else if draft && current.page === 'dedupe'}

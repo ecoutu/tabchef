@@ -20,6 +20,7 @@ import { Reconciler } from '../engine/reconciler';
 import { SafetyService } from '../engine/safety';
 import { ChromePort } from '../platform/chrome-port';
 import { ConfigStore } from '../storage/config-store';
+import { installMenus, onMenuClick, refreshMenus, type MenuApi, type MenuTab } from '../engine/context-menu';
 
 export default defineBackground(() => {
   const store = new ConfigStore();
@@ -200,6 +201,20 @@ export default defineBackground(() => {
   // Tabs already on a new-tab page when this worker starts are still "fresh" (rule: never committed a real URL).
   port.snapshot().then((s) => dedupe.seed(s.tabs), (e: unknown) => console.warn('[tabchef] dedupe seed failed', e));
 
+  // Context menu (M2 T16): items are created on onInstalled; title / enabled follow the active tab and its lock.
+  const menuApi: MenuApi = {
+    removeAll: () => browser.contextMenus.removeAll(),
+    create: (p) => { browser.contextMenus.create(p, () => void browser.runtime.lastError); },
+    update: async (id, p) => { await browser.contextMenus.update(id, p); },
+  };
+  const refreshMenu = (tab: MenuTab | undefined) => {
+    safety.ready.then(() => refreshMenus(menuApi, tab, (id) => safety.isLocked(id))).catch(warn('menu refresh'));
+  };
+  const refreshActiveMenu = () => {
+    browser.tabs.query({ active: true, lastFocusedWindow: true }).then(([t]) => refreshMenu(t), warn('menu refresh'));
+  };
+  const openOptions = async (hash: string) => { await browser.tabs.create({ url: `${browser.runtime.getURL('/options.html')}${hash}` }); };
+
   // MV3: every listener is registered synchronously at the top level so a restarted worker receives the event.
   browser.tabs.onCreated.addListener((tab) => {
     if (tab.id !== undefined) {
@@ -218,7 +233,10 @@ export default defineBackground(() => {
     void closeExecutor.onCommitted(d.tabId);
     void closeExecutor.evaluate(d.tabId);
   });
-  browser.tabs.onActivated.addListener((info) => { void closeExecutor.onActivated(info.tabId); });
+  browser.tabs.onActivated.addListener((info) => {
+    void closeExecutor.onActivated(info.tabId);
+    browser.tabs.get(info.tabId).then(refreshMenu, warn('menu refresh'));
+  });
   browser.tabs.onUpdated.addListener((tabId, info, tab) => {
     const dedupeUrl = info.url ?? (info.status === 'loading' ? tab.pendingUrl : undefined);
     if (dedupeUrl) candidate(tabId, dedupeUrl, 'pending');
@@ -226,6 +244,7 @@ export default defineBackground(() => {
       safety.onTabSeen({ id: tabId, url: info.url, windowId: tab.windowId });
       void reconciler.onTabUrlChanged(tabId, info.url);
       void closeExecutor.evaluate(tabId); // also same-document navigations, which fire no onCommitted
+      if (tab.active) refreshActiveMenu(); // e.g. a new tab (chrome://newtab) navigating to a site
     }
     if (info.groupId !== undefined) void reconciler.onTabGroupChanged(tabId, info.groupId, tab.url);
     if (info.url !== undefined || info.groupId !== undefined || info.pinned !== undefined) {
@@ -259,6 +278,8 @@ export default defineBackground(() => {
     reconciler.schedule('group-removed');
   });
   browser.windows.onCreated.addListener(schedule('window-created'));
+  // The menu is global: it follows the active tab of the focused window.
+  browser.windows.onFocusChanged.addListener(() => refreshActiveMenu());
   browser.runtime.onStartup.addListener(() => {
     dedupe.noteStartup();
     reconciler.schedule('startup');
@@ -286,7 +307,13 @@ export default defineBackground(() => {
     runtimeId: browser.runtime.id,
     extensionOrigin: new URL(browser.runtime.getURL('/')).origin,
     store,
-    safety,
+    // Lock changes from the popup also update the menu's Lock / Unlock title.
+    safety: {
+      pause: (d) => safety.pause(d), resume: () => safety.resume(), isPaused: () => safety.isPaused(),
+      isLocked: (id) => safety.isLocked(id), lockedTabIds: () => safety.lockedTabIds(), undo: (id) => safety.undo(id),
+      lock: (id) => { safety.lock(id); refreshActiveMenu(); },
+      unlock: (id) => { safety.unlock(id); refreshActiveMenu(); },
+    },
     recentlyClosed,
     whyLog,
     recipes: { builtins: builtinRecipes(), permissions },
@@ -360,5 +387,13 @@ export default defineBackground(() => {
   browser.permissions.onAdded.addListener(syncPermissions);
   browser.permissions.onRemoved.addListener(syncPermissions);
   syncPermissions();
-  browser.runtime.onInstalled.addListener(schedule('installed'));
+  browser.runtime.onInstalled.addListener(() => {
+    reconciler.schedule('installed');
+    installMenus(menuApi).then(refreshActiveMenu, warn('context menu install'));
+  });
+  browser.contextMenus.onClicked.addListener((info, tab) => {
+    safety.ready
+      .then(() => onMenuClick(info, tab, { openPage: openOptions, safety, refresh: () => refreshMenu(tab) }))
+      .catch(warn('context menu click'));
+  });
 });

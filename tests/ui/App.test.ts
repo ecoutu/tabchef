@@ -223,3 +223,89 @@ describe('App routing (R28, M2 T14)', () => {
     expect(await screen.findByRole('region', { name: 'Duplicates' })).toBeTruthy();
   });
 });
+
+describe('App: #/rules/new (M2 T16, R28)', () => {
+  const effects = { moves: [{ tabId: 1, title: 'A tab', to: 'API' }], closes: [], groupsCreated: ['API'], unchanged: 0, anchorsOpened: 0, dryRun: false };
+  const NEW = `#/rules/new?url=${encodeURIComponent('https://github.com/acme/api/pull/1')}&kind=group`;
+  const types = () => send.mock.calls.map((c) => c[0].type);
+  const withPreview = (data: unknown) => {
+    const base = send.getMockImplementation()!;
+    send.mockImplementation(async (req: { type: string }) => (req.type === 'preview.change' ? data : base(req)));
+  };
+
+  it('renders NewRule, not the Rules list, and is not in the nav', async () => {
+    window.location.hash = NEW;
+    render(App);
+    expect(await screen.findByRole('radio', { name: 'github.com/acme/api/*' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Add rule' })).toBeNull();
+    expect(screen.queryByRole('link', { name: /new rule/i })).toBeNull();
+  });
+
+  it('Save → preview → Apply → config.set {baseRev}, then back to the Rules list', async () => {
+    withPreview({ ok: true, data: effects });
+    window.location.hash = NEW;
+    render(App);
+    await fireEvent.click(await screen.findByRole('button', { name: 'Save' }));
+    await fireEvent.click(await screen.findByRole('button', { name: 'Apply' }));
+    await screen.findByText('Saved.');
+    const set = send.mock.calls.map((c) => c[0]).filter((r) => r.type === 'config.set');
+    expect(set).toHaveLength(1);
+    expect(set[0].baseRev).toBe('r1');
+    expect(set[0].config.rules.some((r: { match: unknown }) => JSON.stringify(r.match) === '{"url":"github.com/acme/api/pull/*"}')).toBe(true);
+    expect(types().indexOf('preview.change')).toBeLessThan(types().indexOf('config.set'));
+    await waitFor(() => expect(window.location.hash).toBe('#/rules'));
+    expect(screen.queryByText('Unsaved changes')).toBeNull();
+  });
+
+  it('Cancel in the preview saves nothing and keeps the form', async () => {
+    withPreview({ ok: true, data: effects });
+    window.location.hash = NEW;
+    render(App);
+    await fireEvent.click(await screen.findByRole('radio', { name: 'github.com/acme/*' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(types()).not.toContain('config.set');
+    expect(window.location.hash).toBe(NEW);
+    expect((screen.getByRole('radio', { name: 'github.com/acme/*' }) as HTMLInputElement).checked).toBe(true);
+  });
+
+  it('a failed preview shows the error, saves nothing and keeps the form', async () => {
+    withPreview({ ok: false, error: 'boom' });
+    window.location.hash = NEW;
+    render(App);
+    await screen.findByRole('radio', { name: 'github.com/acme/api/*' });
+    await fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await screen.findByText('Could not preview: boom');
+    expect(types()).not.toContain('config.set');
+    expect(window.location.hash).toBe(NEW);
+    expect(screen.getByRole('button', { name: 'Save' })).toBeTruthy();
+  });
+
+  it('field errors from config.set are listed (NewRule shows none inline)', async () => {
+    const base = send.getMockImplementation()!;
+    send.mockImplementation(async (req: { type: string }) => {
+      if (req.type === 'preview.change') return { ok: false, error: 'invalid config', errors: [] };
+      if (req.type === 'config.set') return { ok: false, error: 'invalid config', errors: ['/rules/1/name must be string'] };
+      return base(req);
+    });
+    window.location.hash = NEW;
+    render(App);
+    await screen.findByRole('radio', { name: 'github.com/acme/api/*' });
+    await fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await screen.findByText('/rules/1/name must be string');
+    expect(window.location.hash).toBe(NEW);
+  });
+
+  it('a conflict shows the banner and stays on the form', async () => {
+    withPreview({ ok: true, data: effects });
+    window.location.hash = NEW;
+    render(App);
+    await screen.findByRole('radio', { name: 'github.com/acme/api/*' });
+    await fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    rev = 'r2';
+    await fireEvent.click(await screen.findByRole('button', { name: 'Apply' }));
+    await screen.findByText('Settings changed elsewhere.');
+    expect(window.location.hash).toBe(NEW);
+  });
+});
