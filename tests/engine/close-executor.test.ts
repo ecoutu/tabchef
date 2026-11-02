@@ -4,6 +4,7 @@ import {
   afterConfigChange, CLOSE_ALARM_PREFIX, CLOSE_SUGGESTIONS_KEY, CloseExecutor, PENDING_CLOSES_KEY, type CloseExecutorDeps,
 } from '../../src/engine/close-executor';
 import { SafetyService } from '../../src/engine/safety';
+import { PermissionsManager } from '../../src/engine/permissions';
 import { RecentlyClosed } from '../../src/core/safety/recently-closed';
 import { defaultConfig } from '../../src/core/config/defaults';
 import { FakeBrowserPort } from '../../src/platform/fake-port';
@@ -335,6 +336,33 @@ describe('CloseExecutor', () => {
     expect(w.ex.suggestions().map((s) => s.tabId)).toEqual([2]);
   });
 
+  it('I1: the watch is registered for the URL but never reported for this tab: form state unobservable, a used tab is not closed', async () => {
+    const e = env();
+    e.port.addTab(tab(2, CB));
+    const w = worker(e, { observesForm: () => true }); // registered, but no page facts for tab 2
+    w.banner.mockResolvedValue(false);
+    await w.ex.onCommitted(2);
+    await w.ex.evaluate(2);
+    await w.ex.onActivated(2);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(w.closes()).toEqual([]);
+    expect(w.ex.suggestions().map((s) => s.tabId)).toEqual([2]);
+  });
+
+  it('I1: an unknown registration (before the first permission sync) is unobservable even with page facts', async () => {
+    const e = env();
+    e.port.addTab(tab(2, CB));
+    const pm = new PermissionsManager(e.port, async () => { throw new Error('not yet'); }, { register: async () => [], unregister: async () => [] }, { warn: () => {} });
+    const w = worker(e, { observesForm: (u) => pm.coversKnown(u) });
+    w.facts.set(2, { texts: [], extracts: {}, formEdited: false });
+    w.banner.mockResolvedValue(false);
+    await w.ex.onCommitted(2);
+    await w.ex.evaluate(2);
+    await w.ex.onActivated(2);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(w.closes()).toEqual([]);
+  });
+
   it('form state unobservable: a recommit of the same page restarts the activity baseline', async () => {
     const e = env();
     e.port.addTab(tab(2, CB));
@@ -353,6 +381,7 @@ describe('CloseExecutor', () => {
     const e = env();
     e.port.addTab(tab(2, CB));
     const w = worker(e, { observesForm: () => true });
+    w.facts.set(2, { texts: [], extracts: {}, formEdited: false }); // the watch reported for this document
     await w.ex.onCommitted(2);
     await w.ex.evaluate(2);
     await w.ex.onActivated(2);
@@ -476,6 +505,7 @@ describe('CloseExecutor', () => {
     e.port.addTab(tab(2, CB));
     e.port.addTab(tab(3, 'https://other.test/'));
     const w = worker(e, { observesForm: () => true }); // no commit seen yet: closes only where form state is known (R46)
+    w.facts.set(2, { texts: [], extracts: {}, formEdited: false });
     await w.ex.evaluateAll();
     await vi.advanceTimersByTimeAsync(3_000);
     expect(w.closes()).toEqual([2]);
@@ -501,6 +531,7 @@ describe('config change re-evaluates open tabs (ruling R51)', () => {
     e.cfg.c = finished(false);
     e.port.addTab(tab(1, CALLBACK));
     const w = worker(e, { observesForm: () => true });
+    w.facts.set(1, { texts: [], extracts: {}, formEdited: false });
     await w.ex.evaluateAll();
     expect(pending(e) ?? []).toEqual([]);
     e.cfg.c = finished(true);
@@ -515,6 +546,7 @@ describe('config change re-evaluates open tabs (ruling R51)', () => {
     e.cfg.c = finished(true);
     e.port.addTab(tab(1, CALLBACK));
     const w = worker(e, { observesForm: () => true });
+    w.facts.set(1, { texts: [], extracts: {}, formEdited: false });
     await afterConfigChange(async () => {}, w.ex);
     await vi.advanceTimersByTimeAsync(2_000);
     e.cfg.c = { ...finished(true), dryRun: false, tables: { x: { a: 'b' } } }; // an unrelated change
@@ -531,6 +563,7 @@ describe('config change re-evaluates open tabs (ruling R51)', () => {
     e.cfg.c = finished(true);
     e.port.addTab(tab(1, CALLBACK));
     const w = worker(e, { observesForm: () => true });
+    w.facts.set(1, { texts: [], extracts: {}, formEdited: false });
     await afterConfigChange(async () => {}, w.ex);
     e.cfg.c = finished(false);
     await afterConfigChange(async () => {}, w.ex);

@@ -190,7 +190,8 @@ export default defineBackground(() => {
       set: (k, v) => browser.storage.session.set({ [k]: v }),
     },
     isRulePaused: (key) => permissions.paused().has(key),
-    observesForm: (url) => permissions.covers(url),
+    // I1: evidence-based (the executor also requires page facts for the tab); covers() is only for the page-facts hold.
+    observesForm: (url) => permissions.coversKnown(url),
     beforeRun: async () => { await Promise.all([safety.ready, pageFacts.ready, permissions.ready, anchors.ready]); },
     isAnchor: (id) => anchors.isAnchor(id),
   });

@@ -76,7 +76,10 @@ export interface CloseExecutorDeps {
   isRulePaused?: (ruleKey: string) => boolean;
   /** Anchor tabs are never auto-closed (R11; anchors are M2 T11). Default: none. */
   isAnchor?: (tabId: number) => boolean;
-  /** The watch content script runs at `url`, so form edits there are known (PermissionsManager.covers). Default: no. */
+  /**
+   * The watch content script is known to run at `url` (PermissionsManager.coversKnown, never the optimistic covers()).
+   * Form state counts as observed only when this holds AND `facts` has the tab's page facts (I1). Default: no.
+   */
   observesForm?: (url: string) => boolean;
   /**
    * Awaited before every step (background: SafetyService and PageFacts ready), so a restarted worker never decides on
@@ -463,7 +466,9 @@ export class CloseExecutor {
     const s = this.deps.safety;
     if (s.isProtected(tab)) return 'protected';
     if (s.isActiveFocused(tab, snap.windows)) return 'active';
-    if (!(this.deps.observesForm?.(tab.url) ?? false) && (e.activated || tab.active)) return 'used since it loaded; form state unknown';
+    // I1: observable only on evidence: the watch is known to run at this URL AND it reported for this tab's document.
+    const observed = (this.deps.observesForm?.(tab.url) ?? false) && this.deps.facts.get(tab.id) !== undefined;
+    if (!observed && (e.activated || tab.active)) return 'used since it loaded; form state unknown';
     return undefined;
   }
 
