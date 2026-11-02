@@ -5,6 +5,8 @@ import { DURATION } from '../lang/duration';
 import { parseTemplate, TemplateError, templateTables, templateVars } from '../match/template';
 import schema from './config.schema.json';
 import { validate, validateRule, type ValidateError } from './validate-config.generated.js';
+// Import cycle (lang/schema imports this module): only functions cross it, none run at module load.
+import { validateRecipe } from '../lang/schema';
 
 export const configJsonSchema = schema;
 
@@ -189,11 +191,37 @@ export function repairConfig(input: unknown): { config: unknown; warnings: strin
     names.push(typeof r.name === 'string' && r.name !== '' ? r.name : String(r.id));
     return { ...r, enabled: false };
   });
-  if (!names.length) return { config: input, warnings: [] };
-  return {
-    config: { ...input, rules },
-    warnings: [`${names.length} rule(s) disabled: ${names.join(', ')} — fix them on the Rules page.`],
-  };
+  const recipes = repairRecipes(input.recipes);
+  const warnings: string[] = [];
+  if (names.length) warnings.push(`${names.length} rule(s) disabled: ${names.join(', ')} — fix them on the Rules page.`);
+  if (recipes.disabled.length) warnings.push(`${recipes.disabled.length} recipe(s) disabled: ${recipes.disabled.join(', ')} — fix them, then re-enable.`);
+  if (!warnings.length) return { config: input, warnings };
+  return { config: { ...input, rules, ...(recipes.disabled.length ? { recipes: recipes.recipes } : {}) }, warnings };
+}
+
+/** Problems of a stored recipe entry's body, as config-relative "<path> <message>" strings (none when it has no body). */
+function recipeBodyErrors(body: unknown, i: number): string[] {
+  if (body === undefined) return [];
+  const v = validateRecipe(body);
+  return v.ok ? [] : v.errors.map((e) => `/recipes/${i}/body${e.path === '/' ? '' : e.path} ${e.message}`);
+}
+
+/**
+ * R41: stored config keeps `recipes[].body` loose in the schema; each enabled entry's body is checked here with
+ * validateRecipe. An invalid one is DISABLED (kept, never dropped), and its errors go into the warning, the way
+ * repairConfig handles rules. Built-in entries carry no body and are left alone.
+ */
+function repairRecipes(input: unknown): { recipes: unknown; disabled: string[] } {
+  if (!Array.isArray(input)) return { recipes: input, disabled: [] };
+  const disabled: string[] = [];
+  const recipes = input.map((r: unknown) => {
+    if (!isObj(r) || r.enabled !== true || r.body === undefined) return r;
+    const v = validateRecipe(r.body);
+    if (v.ok) return r;
+    disabled.push(`${String(r.id)} (${v.errors.map((e) => `${e.path} ${e.message}`).join('; ')})`);
+    return { ...r, enabled: false };
+  });
+  return { recipes, disabled };
 }
 
 /** An ajv error as a Problem: its JSON pointer, and its message with the offending property or allowed values. */
@@ -226,6 +254,7 @@ export function validateConfig(input: unknown): ValidationResult {
     seen.add(r.id);
     if (r.enabled) for (const p of ruleProblems(r, config.tables)) errors.push(`/rules/${i}${p.path} ${p.message}`);
   });
+  config.recipes.forEach((r, i) => { if (r.enabled) errors.push(...recipeBodyErrors(r.body, i)); });
   config.order.forEach((k, i) => { if (config.order.indexOf(k) !== i) errors.push(`/order/${i} duplicate key: ${k}`); });
   for (const t of config.dedupe.urlTransforms) {
     if (regexProblem(t.pattern, t.flags)) errors.push(`invalid urlTransform pattern: ${t.pattern}`);

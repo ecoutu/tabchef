@@ -206,3 +206,45 @@ describe('config schema: repairing stored configs (CR#1)', () => {
     expect(repairConfig({ rules: [null, { enabled: true }] }).warnings).toEqual([]);
   });
 });
+
+describe('config schema: stored user recipe bodies (R41)', () => {
+  const body = (over: Record<string, unknown> = {}) => ({
+    recipe: 'mine', version: 1, name: 'Mine', description: 'My recipe', rules: [v2({ id: 'x' })], ...over,
+  });
+  const ref = (id: string, b: unknown, enabled = true) => ({ id, enabled, params: {}, source: 'user' as const, body: { ...(b as object), recipe: id } });
+  const stored = (recipes: unknown[]) => ({ ...cfg([rule({ id: 'ok', name: 'Fine' })]), recipes });
+
+  it('a body that fails the recipe schema (over-long string, unknown field) loads: that recipe is disabled with its error, the rest untouched', () => {
+    const input = stored([
+      ref('long', body({ description: 'x'.repeat(5000) })),
+      ref('extra', body({ eval: 'x' })),
+      ref('good', body()),
+      { id: 'duplicates', enabled: true, params: {}, source: 'builtin' },
+    ]);
+    const r = repairConfig(input);
+    expect(validateConfig(r.config).ok).toBe(true);
+    const out = r.config as Config;
+    expect(out.recipes.map((x) => [x.id, x.enabled])).toEqual([['long', false], ['extra', false], ['good', true], ['duplicates', true]]);
+    expect(out.recipes[0]!.body).toEqual((input.recipes[0] as { body: unknown }).body); // kept, not dropped
+    expect(out.rules).toEqual(input.rules);
+    expect(r.warnings).toEqual([expect.stringMatching(/2 recipe\(s\) disabled: long \(\/description .*2048.*\), extra \(\/ .*eval.*\)/)]);
+    expect((input.recipes[0] as { enabled: boolean }).enabled).toBe(true); // input not mutated
+  });
+  it('a body that fails the TS post-checks (regex that does not compile) is disabled too', () => {
+    const r = repairConfig(stored([ref('re', body({ rules: [v2({ extract: { n: { from: 'url', regex: '((' } } })] }))]));
+    expect((r.config as Config).recipes[0]!.enabled).toBe(false);
+    expect(r.warnings.join()).toMatch(/re \(\/rules\/0\/extract\/n\/regex invalid regex/);
+  });
+  it('a valid body stays enabled with no warning', () => {
+    const input = stored([ref('good', body())]);
+    expect(repairConfig(input)).toEqual({ config: input, warnings: [] });
+  });
+  it('stored config keeps recipes[].body loose: an invalid body never fails the config schema', () => {
+    expect(validateConfig(stored([ref('long', body({ description: 'x'.repeat(5000) }), false)])).ok).toBe(true);
+  });
+  it('validateConfig (saves, imports) rejects an enabled recipe whose body is invalid', () => {
+    const r = validateConfig(stored([ref('extra', body({ eval: 'x' }))]));
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.errors).toEqual([expect.stringMatching(/^\/recipes\/0\/body .*eval/)]);
+  });
+});
