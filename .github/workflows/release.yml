@@ -9,17 +9,34 @@ permissions:
   issues: write
   pull-requests: write
 
+# One release at a time; never cancel a release that is mid-flight.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   ci:
+    # The release commit carries [skip ci]; guard here too so it can never re-trigger a release.
+    if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
     uses: ./.github/workflows/ci.yml
 
   release:
     needs: ci
     runs-on: ubuntu-latest
     steps:
+      # main is protected by the `protect-main` ruleset. A GitHub App that is on the
+      # ruleset bypass list (mode: always) mints a token so semantic-release can push
+      # the CHANGELOG.md / version commit and the tag.
+      - uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+          persist-credentials: true
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -27,6 +44,6 @@ jobs:
       - run: npm ci
       - run: npx semantic-release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
 
 # Task 19: submit-chrome job
