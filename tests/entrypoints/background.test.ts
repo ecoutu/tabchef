@@ -8,6 +8,8 @@ type Fake = Record<string, ReturnType<typeof vi.fn>> & { args: unknown[] };
 const h = vi.hoisted(() => {
   const instances: Record<string, Fake> = {};
   const listeners: Record<string, Fn[]> = {};
+  /** `notificationsAbsent`: browser.notifications is undefined, as before the optional permission is granted. */
+  const flags = { notificationsAbsent: false };
   // A class whose instances record their constructor args; any method not given in `extra` is an async vi.fn.
   const fake = (name: string, extra: () => object = () => ({})) => class {
     constructor(...args: unknown[]) {
@@ -31,13 +33,14 @@ const h = vi.hoisted(() => {
     get: (_t, p) => {
       if (p === 'then' || typeof p === 'symbol') return undefined;
       if (path.join('.') === 'runtime' && p === 'id') return 'ext-id';
+      if (path.length === 0 && p === 'notifications' && flags.notificationsAbsent) return undefined;
       if (p === 'addListener') return (fn: Fn) => { (listeners[path.join('.')] ??= []).push(fn); };
       if (p === 'removeListener') return () => {};
       return node([...path, p]);
     },
     apply: (_t, _this, a: never[]) => (returns[path.join('.')] ?? (() => Promise.resolve(undefined)))(...a),
   });
-  return { instances, listeners, fake, browser: node([]) };
+  return { instances, listeners, flags, fake, browser: node([]) };
 });
 
 vi.mock('wxt/browser', () => ({ browser: h.browser }));
@@ -86,15 +89,21 @@ const { createAskController } = await import('../../src/engine/ask');
 const { createOnMessage, refreshBadge } = await import('../../src/engine/messages');
 const background = (await import('../../src/entrypoints/background')).default;
 
-/** Every event a test fired: afterAll checks that each listener background.ts registers is among them. */
-const fired = new Set<string>();
+/**
+ * Listeners by `<event>#<position>` (each main() registers them in the same order): `registered` collects every one
+ * a test saw registered, `invoked` every one a test fired. afterAll checks that each registered listener was invoked,
+ * so a second listener on an event that is already tested still needs a test of its own.
+ */
+const registered = new Set<string>();
+const invoked = new Set<string>();
 const fire = async (event: string, ...a: unknown[]) => {
-  fired.add(event);
   const fns = h.listeners[event] ?? [];
   expect(fns.length, `no listener on ${event}`).toBeGreaterThan(0);
-  for (const fn of fns) (fn as (...x: unknown[]) => unknown)(...a);
+  fns.forEach((fn, i) => { invoked.add(`${event}#${i}`); (fn as (...x: unknown[]) => unknown)(...a); });
   await vi.advanceTimersByTimeAsync(0);
 };
+/** Tests of this file that ran: when fewer than declared (`-t`, `.only`), the afterAll guard does not apply. */
+let ran = 0;
 const I = (name: string) => h.instances[name] as Fake;
 const ask = () => vi.mocked(createAskController).mock.results[0]!.value as Record<string, ReturnType<typeof vi.fn>>;
 const deps = (name: string, i: number) => I(name).args[i] as Record<string, () => Promise<void>>;
@@ -113,11 +122,19 @@ const deferred = () => {
 
 beforeEach(() => {
   vi.useFakeTimers();
+  h.flags.notificationsAbsent = false;
   for (const k of Object.keys(h.listeners)) delete h.listeners[k];
   vi.clearAllMocks();
   background.main();
 });
-afterEach(() => { vi.useRealTimers(); });
+afterEach(() => {
+  for (const [event, fns] of Object.entries(h.listeners)) fns.forEach((_, i) => registered.add(`${event}#${i}`));
+  ran++;
+  vi.useRealTimers();
+});
+interface TaskTree { type: string; tasks?: readonly TaskTree[] }
+/** The tests declared under a suite (vitest's task tree), whether or not they ran. */
+const testsIn = (t: TaskTree): number => (t.tasks ? t.tasks.reduce((n, x) => n + testsIn(x), 0) : t.type === 'suite' ? 0 : 1);
 
 describe('background wiring', () => {
   it('a config change schedules the reconciler and runs afterConfigChange (needs → close re-evaluation → badge)', async () => {
@@ -127,8 +144,53 @@ describe('background wiring', () => {
     expect(afterConfigChange).toHaveBeenCalledTimes(1);
     const [needs, executor] = vi.mocked(afterConfigChange).mock.calls[0]!;
     expect(executor).toBe(I('closeExecutor'));
+    I('permissions').onChanged!.mockClear(); // main() synced the permissions at startup
     await (needs as () => Promise<void>)();
-    expect(I('permissions').onChanged).toHaveBeenCalled();
+    expect(I('permissions').onChanged).toHaveBeenCalledTimes(1);
+  });
+
+  it('registers exactly these listeners (per event: a second one needs a test too)', () => {
+    expect(Object.fromEntries(Object.entries(h.listeners).map(([e, fns]) => [e, fns.length]))).toEqual({
+      'alarms.onAlarm': 1, 'contextMenus.onClicked': 1, 'notifications.onButtonClicked': 1, 'notifications.onClosed': 1,
+      'permissions.onAdded': 2, 'permissions.onRemoved': 1, 'runtime.onInstalled': 1, 'runtime.onMessage': 1,
+      'runtime.onStartup': 1, 'runtime.onSuspend': 1, 'storage.onChanged': 1, 'tabGroups.onRemoved': 1,
+      'tabGroups.onUpdated': 1, 'tabs.onActivated': 1, 'tabs.onAttached': 2, 'tabs.onCreated': 2, 'tabs.onMoved': 1,
+      'tabs.onRemoved': 2, 'tabs.onReplaced': 2, 'tabs.onUpdated': 2, 'webNavigation.onCommitted': 1,
+      'windows.onCreated': 1, 'windows.onFocusChanged': 1,
+    });
+  });
+
+  it.each([
+    ['tabs.onCreated', [{ id: 3, url: 'https://b.test/', windowId: 1, discarded: false, status: 'loading' }]],
+    ['tabs.onRemoved', [5, { isWindowClosing: false, windowId: 1 }]],
+    ['tabs.onUpdated', [4, { title: 'C' }, { id: 4, windowId: 1, url: 'https://c.test/', active: false }]],
+    ['tabs.onReplaced', [10, 9]],
+    ['tabs.onAttached', [1, {}]],
+  ] as const)('%s recounts the badge (after the debounce)', async (event, args) => {
+    await vi.advanceTimersByTimeAsync(3000); // the startup badge refresh
+    vi.mocked(refreshBadge).mockClear();
+    await fire(event, ...args);
+    expect(refreshBadge).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(refreshBadge).toHaveBeenCalledTimes(1);
+  });
+
+  it('notifications granted later: wired once on permissions.onAdded, never twice', async () => {
+    for (const k of Object.keys(h.listeners)) delete h.listeners[k];
+    vi.clearAllMocks();
+    h.flags.notificationsAbsent = true;
+    background.main();
+    expect(h.listeners['notifications.onButtonClicked']).toBeUndefined();
+    expect(h.listeners['notifications.onClosed']).toBeUndefined();
+    h.flags.notificationsAbsent = false; // the user granted the optional permission
+    await fire('permissions.onAdded', { permissions: ['notifications'] });
+    expect(h.listeners['notifications.onButtonClicked']).toHaveLength(1);
+    expect(h.listeners['notifications.onClosed']).toHaveLength(1);
+    await fire('permissions.onAdded', { permissions: ['scripting'] });
+    expect(h.listeners['notifications.onButtonClicked']).toHaveLength(1);
+    expect(h.listeners['notifications.onClosed']).toHaveLength(1);
+    await fire('notifications.onClosed', 'dedupe:5');
+    expect(ask().onNotificationClosed).toHaveBeenCalledWith('dedupe:5');
   });
 
   it.each([['Reconciler', 'reconciler', 2], ['CloseExecutor', 'closeExecutor', 2]])(
@@ -301,8 +363,9 @@ describe('background wiring', () => {
     expect(onMenuClick).toHaveBeenCalledWith({ menuItemId: 'tc-lock' }, { id: 8 }, expect.objectContaining({ openPage: expect.any(Function) }));
   });
 
-  afterAll(() => {
-    // A listener added to background.ts without a test here fails this suite.
-    expect(Object.keys(h.listeners).filter((e) => !fired.has(e)).sort()).toEqual([]);
+  afterAll(({}, suite) => {
+    // A listener added to background.ts without a test here fails this suite; not when only some tests ran.
+    if (ran < testsIn(suite)) return;
+    expect([...registered].filter((k) => !invoked.has(k)).sort()).toEqual([]);
   });
 });

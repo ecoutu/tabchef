@@ -4,6 +4,17 @@ import svelte from 'eslint-plugin-svelte';
 // Layering: core is pure; engine/storage/platform/recipes may use core but never the UI or entrypoints.
 const UPWARD = { group: ['**/ui', '**/ui/**', '**/entrypoints', '**/entrypoints/**'], message: 'Lower layers must not import ui/ or entrypoints/.' };
 const FROM_CORE = { group: ['**/engine', '**/engine/**', '**/storage', '**/storage/**', '**/platform', '**/platform/**', '**/recipes', '**/recipes/**'], message: 'core/ must not import engine/, storage/, platform/ or recipes/.' };
+// no-restricted-imports sees only static imports: the same layers for `import('…')` and `import('…').T` types. A
+// specifier matches when one of its path segments is the layer (as the globs above); `\x2F` is "/" (esquery regex).
+const segment = (dirs) => `/(^|\\x2F)(${dirs.join('|')})(\\x2F|$)/`;
+const dynamicImports = ({ dirs, message }) => [
+  { selector: `ImportExpression[source.value=${segment(dirs)}]`, message },
+  // A template-literal specifier (import(`../ui/${x}`)): any of its literal parts naming the layer.
+  { selector: `ImportExpression > TemplateLiteral > TemplateElement[value.cooked=${segment(dirs)}]`, message },
+  { selector: `TSImportType[argument.literal.value=${segment(dirs)}]`, message },
+];
+const UPWARD_DYNAMIC = dynamicImports({ dirs: ['ui', 'entrypoints'], message: UPWARD.message });
+const FROM_CORE_DYNAMIC = dynamicImports({ dirs: ['engine', 'storage', 'platform', 'recipes'], message: FROM_CORE.message });
 
 export default tseslint.config(
   { ignores: ['.output/**', '.wxt/**', 'node_modules/**', 'fixtures/**', 'scripts/**', 'spikes/**', '**/*.generated.js'] },
@@ -15,10 +26,16 @@ export default tseslint.config(
   },
   {
     files: ['src/engine/**', 'src/storage/**', 'src/platform/**', 'src/recipes/**'],
-    rules: { 'no-restricted-imports': ['error', { patterns: [UPWARD] }] },
+    rules: {
+      'no-restricted-imports': ['error', { patterns: [UPWARD] }],
+      'no-restricted-syntax': ['error', ...UPWARD_DYNAMIC],
+    },
   },
   {
     files: ['src/core/**'],
-    rules: { 'no-restricted-imports': ['error', { patterns: [UPWARD, FROM_CORE] }] },
+    rules: {
+      'no-restricted-imports': ['error', { patterns: [UPWARD, FROM_CORE] }],
+      'no-restricted-syntax': ['error', ...UPWARD_DYNAMIC, ...FROM_CORE_DYNAMIC],
+    },
   },
 );

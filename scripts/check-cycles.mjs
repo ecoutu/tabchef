@@ -2,6 +2,7 @@
 // are erased at build time and ignored; `import { type A, b }` still counts (b is a runtime import).
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
+import ts from 'typescript';
 
 const root = resolve(process.argv[2] ?? 'src');
 const files = [];
@@ -13,12 +14,37 @@ const files = [];
   }
 })(root);
 
-const SPEC = /(?:^|[\s;])(import|export)\s+(type\s+)?(?:[^'";]*?\sfrom\s+)?['"]([^'"]+)['"]|import\(\s*['"]([^'"]+)['"]\s*\)/g;
+/** A relative specifier as the bundler resolves it: the file, +.ts, /index.ts, or a NodeNext-style ./x.js naming x.ts. */
 function resolveSpec(from, spec) {
   if (!spec.startsWith('.')) return undefined;
   const base = resolve(dirname(from), spec);
-  for (const c of [base, `${base}.ts`, join(base, 'index.ts')]) if (existsSync(c) && statSync(c).isFile()) return c;
+  const candidates = [base, `${base}.ts`, join(base, 'index.ts')];
+  if (base.endsWith('.js')) candidates.push(`${base.slice(0, -3)}.ts`);
+  for (const c of candidates) if (existsSync(c) && statSync(c).isFile()) return c;
   return undefined;
+}
+
+/**
+ * The runtime import specifiers of a module, read from its TypeScript AST (comments, strings and regex literals are
+ * the parser's problem): import declarations (not `import type`), re-exports with a source (not `export type`) and
+ * `import('…')` calls with a literal argument. `import { type A, b }` still counts; `import('…').T` types do not.
+ */
+function runtimeSpecs(fileName, text) {
+  const sf = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, false, ts.ScriptKind.TS);
+  const out = [];
+  const literal = (n) => (n && (ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n)) ? n.text : undefined);
+  const visit = (n) => {
+    if (ts.isImportDeclaration(n)) {
+      if (!n.importClause?.isTypeOnly) out.push(literal(n.moduleSpecifier));
+    } else if (ts.isExportDeclaration(n)) {
+      if (n.moduleSpecifier && !n.isTypeOnly) out.push(literal(n.moduleSpecifier));
+    } else if (ts.isCallExpression(n) && n.expression.kind === ts.SyntaxKind.ImportKeyword) {
+      out.push(literal(n.arguments[0]));
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(sf);
+  return out.filter((x) => x !== undefined);
 }
 
 const graph = new Map();
@@ -26,9 +52,8 @@ for (const f of files) {
   let src = readFileSync(f, 'utf8');
   if (f.endsWith('.svelte')) src = [...src.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
   const deps = new Set();
-  for (const m of src.matchAll(SPEC)) {
-    if (m[2]) continue; // import type / export type
-    const to = resolveSpec(f, m[3] ?? m[4]);
+  for (const spec of runtimeSpecs(f, src)) {
+    const to = resolveSpec(f, spec);
     if (to && /\.(ts|svelte)$/.test(to)) deps.add(to);
   }
   graph.set(f, deps);
