@@ -589,6 +589,53 @@ describe('CloseExecutor robustness (M2 polish P1)', () => {
   });
 });
 
+describe('locked and pinned tabs are never offered for closing (ruling R71)', () => {
+  beforeEach(() => {
+    fakeBrowser.reset();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    vi.setSystemTime(1_000_000);
+  });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it.each([
+    ['locked', (w: ReturnType<typeof worker>) => { w.safety.lock(2); }, {}],
+    ['pinned', () => {}, { pinned: true }],
+  ] as const)('a %s tab gets no banner: it is listed as a suggestion', async (why, prep, o) => {
+    const e = env();
+    e.port.addTab(tab(2, CB, o));
+    const w = worker(e);
+    await w.safety.ready;
+    prep(w);
+    await w.ex.onCommitted(2);
+    await w.ex.evaluate(2);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(w.closes()).toEqual([]);
+    expect(w.banner).not.toHaveBeenCalled();
+    expect(w.ex.suggestions()).toEqual([{ tabId: 2, url: CB, ruleKey: 'user/cb', reason: 'Callback' }]);
+    expect(w.logs).toContainEqual(expect.objectContaining({ tabId: 2, action: 'close-suggested', detail: `Not closed (${why}): suggested instead` }));
+  });
+
+  it('a tab locked or pinned while its banner was up is kept when the banner answers Close', async () => {
+    const e = env();
+    e.port.addTab(tab(2, CB));
+    e.port.addTab(tab(3, CB));
+    const w = worker(e);
+    await w.safety.ready;
+    for (const id of [2, 3]) {
+      await w.ex.onCommitted(id);
+      await w.ex.evaluate(id);
+      w.safety.markFormEdited(id, CB);
+    }
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(w.banner).toHaveBeenCalledTimes(2);
+    w.safety.lock(2);
+    e.port.state.tabs.find((t) => t.id === 3)!.pinned = true;
+    await w.ex.onCloseChoice(2, 'close');
+    await w.ex.onCloseChoice(3, 'close');
+    expect(w.closes()).toEqual([]);
+  });
+});
+
 describe('config change re-evaluates open tabs (ruling R51)', () => {
   beforeEach(() => {
     fakeBrowser.reset();

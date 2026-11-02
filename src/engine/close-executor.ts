@@ -7,7 +7,8 @@
 //  2. the tab is gone, its normalized URL changed or the rule no longer wins -> drop
 //  3. (dry-run rules never win here: they fall through, R48; see below)
 //  4. anchor (T11 seam) or undo-exempt (R24) -> skip
-//  5. isProtected or isActiveFocused -> protected-close banner if eligible, else a suggestion; never close
+//  5. locked or pinned -> a suggestion, never a banner (ruling R71: never offered for closing);
+//     other isProtected or isActiveFocused -> protected-close banner if eligible, else a suggestion; never close
 //  6. form state unobservable (no watch at that URL) -> close only if the tab was not active since its commit
 // An entry is deleted (and the deletion stored) before the tab is closed or bannered, so it never fires twice.
 //
@@ -63,7 +64,7 @@ export async function afterConfigChange(
 }
 
 export interface CloseExecutorDeps {
-  safety: Pick<SafetyService, 'isPaused' | 'isProtected' | 'isActiveFocused' | 'toast'>;
+  safety: Pick<SafetyService, 'isPaused' | 'isLocked' | 'isProtected' | 'isActiveFocused' | 'toast'>;
   recentlyClosed: Pick<RecentlyClosed, 'add' | 'take'>;
   log: { add(e: WhyEntry): void };
   facts: Pick<PageFacts, 'get'>;
@@ -289,6 +290,8 @@ export class CloseExecutor {
       const [snap, p] = await Promise.all([this.port.snapshot(), this.getProgram()]);
       const tab = snap.tabs.find((t) => t.id === tabId);
       if (!tab || normOf(tab.url, p) !== ask.url) return;
+      // R71: locked or pinned since the banner asked: the lock / pin wins over the earlier answer.
+      if (tab.pinned || this.deps.safety.isLocked(tabId)) return;
       await this.close(snap, p, tab, ask.ruleKey, 'close-confirmed', 'Closed from the banner', false);
     });
   }
@@ -461,10 +464,12 @@ export class CloseExecutor {
       await this.save();
       return;
     }
-    // 5./6. In use: ask in a banner where it can be shown, else list it as a suggestion. Never close.
+    // 5./6. In use: ask in a banner where it can be shown, else list it as a suggestion. Never close. Locked and pinned
+    // tabs are never offered for closing, not even in a banner (R71): only listed, for the user to act on.
     const why = this.inUse(snap, tab, e);
     if (why) {
-      if (await this.deps.banner(tabId, 'protected-close', r.key).catch(() => false)) {
+      const ask = why !== 'locked' && why !== 'pinned';
+      if (ask && await this.deps.banner(tabId, 'protected-close', r.key).catch(() => false)) {
         this.asking.set(tabId, { url, ruleKey: r.key });
         this.settled.set(tabId, { url, ruleKey: r.key });
         this.deps.log.add({ tabId, ruleId: r.key, action: 'close-held', detail: `Not closed (${why}): asked in a banner`, at: this.now() });
@@ -480,6 +485,8 @@ export class CloseExecutor {
   /** Why the tab must not be closed now, or undefined. */
   private inUse(snap: Snapshot, tab: TabSnap, e: PendingClose): string | undefined {
     const s = this.deps.safety;
+    if (s.isLocked(tab.id)) return 'locked';
+    if (tab.pinned) return 'pinned';
     if (s.isProtected(tab)) return 'protected';
     if (s.isActiveFocused(tab, snap.windows)) return 'active';
     // I1: observable only on evidence: the watch is known to run at this URL AND it reported for this tab's document.
