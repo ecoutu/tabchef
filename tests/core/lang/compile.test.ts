@@ -232,6 +232,35 @@ describe('compileProgram: tables, dedupe, views, needs', () => {
     expect(program.views).toEqual([{ ...v, recipeId: 'a' }]);
     expect(program.needs).toEqual({ a: { origins: ['https://meet.google.com/*'], permissions: [] }, b: { origins: [], permissions: [] } });
   });
+  it('rule-level needs are keyed by rule key, listed for paused rules too, and not for disabled rules (T10)', () => {
+    const MEET = 'https://meet.google.com/*';
+    const b = {
+      f: recipe('f', [
+        rule('oauth'),
+        rule('meet', { needs: { hosts: [MEET] } }),
+        rule('off', { enabled: false, needs: { hosts: ['https://x.com/*'] } }),
+        rule('perm', { needs: { permissions: ['notifications'] } }),
+      ]),
+    };
+    const { program, errors } = compileProgram(config({ recipes: [ref('f')] }), b, { paused: new Set(['f/meet']) });
+    expect(errors).toEqual([]);
+    expect(program.rules.map((r) => r.key)).toEqual(['f/oauth', 'f/perm']);
+    expect(program.needs).toEqual({
+      f: { origins: [], permissions: [] },
+      'f/meet': { origins: [MEET], permissions: [] },
+      'f/perm': { origins: [], permissions: ['notifications'] },
+    });
+  });
+  it('rule-level needs hosts may come from a string[] param (whole array)', () => {
+    const b = { f: recipe('f', [rule('m', { needs: { hosts: '{params.h}' as unknown as string[] } })], { params: { h: { type: 'string[]', default: ['https://a.com/*'], label: 'h' } } }) };
+    expect(compileProgram(config({ recipes: [ref('f')] }), b).program.needs['f/m']).toEqual({ origins: ['https://a.com/*'], permissions: [] });
+  });
+  it('a user rule cannot declare needs (R44): it is reported and skipped', () => {
+    const { program, errors } = compileProgram(config({ rules: [rule('u', { needs: { hosts: ['https://a.com/*'] } }), rule('v')] }), {});
+    expect(errors).toEqual([{ key: 'user/u', error: expect.stringMatching(/needs/) }]);
+    expect(program.rules.map((r) => r.key)).toEqual(['user/v']);
+    expect(program.needs).toEqual({});
+  });
   it('is pure: does not mutate the config or the built-ins', () => {
     const b = { r: recipe('r', [rule('x', { match: { url: '{params.p}' } })], { params: { p: { type: 'string[]', default: ['a.com/*'], label: 'p' } } }) };
     const c = config({ rules: [rule('u')], recipes: [ref('r')] });

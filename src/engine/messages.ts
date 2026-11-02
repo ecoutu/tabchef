@@ -134,10 +134,15 @@ export type Request =
   | { type: 'recipes.disable'; id: string; baseRev?: string }
   | { type: 'recipes.setParams'; id: string; params: Record<string, unknown>; baseRev?: string };
 
-/** One recipe as listed to the UI: its ref, header, effective needs (host needs add `scripting`) and their status. */
+/**
+ * One recipe as listed to the UI: its ref, header, effective needs (host needs add `scripting`) and their status.
+ * `rules` has the same per rule key (`<recipeId>/<ruleId>`) for rules with their own needs (T10): an unmet one is
+ * that rule's "Paused: needs access to <host>" (R45) while the recipe itself stays ok.
+ */
 export interface RecipeListItem {
   id: string; source: RecipeRef['source']; enabled: boolean; params: Record<string, unknown>;
   name: string; description: string; paramDefs: NonNullable<Recipe['params']>; needs: Needs; status: NeedStatus;
+  rules: Record<string, { needs: Needs; status: NeedStatus }>;
 }
 
 export type ImportSource = 'auto-group-tabs' | 'tab-deduper';
@@ -349,12 +354,13 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
     return findDuplicateSets(snap.tabs, settings);
   }
 
-  /** The recipe `id` compiled as if enabled with `over` applied: its needs and its own compile errors. */
+  /** The recipe `id` compiled as if enabled with `over` applied: its needs, its rules' own needs and its compile errors. */
   function compileRecipe(cfg: Config, id: string, builtins: Record<string, Recipe>, over: Partial<RecipeRef> = {}) {
     const recipes = cfg.recipes.map((r) => (r.id === id ? { ...r, enabled: true, ...over } : r));
     const { program, errors } = compileProgram({ ...cfg, recipes }, builtins);
     const own = errors.filter((e) => e.key === id || e.key.startsWith(`${id}/`)).map((e) => `${e.key}: ${e.error}`);
-    return { needs: program.needs[id] ?? { origins: [], permissions: [] }, errors: own };
+    const rules = Object.entries(program.needs).filter(([k]) => k.startsWith(`${id}/`));
+    return { needs: program.needs[id] ?? { origins: [], permissions: [] }, rules, errors: own };
   }
 
   /** Changes one recipe ref in a single store update (conflict when `baseRev` is stale or the ref is gone). */
@@ -379,10 +385,12 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
       const recipes: RecipeListItem[] = [];
       for (const r of cfg.recipes) {
         const body = bodyOf(r);
-        const { needs } = compileRecipe(cfg, r.id, d.builtins);
+        const { needs, rules } = compileRecipe(cfg, r.id, d.builtins);
+        const ruleItems: RecipeListItem['rules'] = {};
+        for (const [k, n] of rules) ruleItems[k] = { needs: effectiveNeeds(n), status: await d.permissions.check(n) };
         recipes.push({
           id: r.id, source: r.source, enabled: r.enabled, params: r.params, name: body?.name ?? r.id, description: body?.description ?? '',
-          paramDefs: body?.params ?? {}, needs: effectiveNeeds(needs), status: await d.permissions.check(needs),
+          paramDefs: body?.params ?? {}, needs: effectiveNeeds(needs), status: await d.permissions.check(needs), rules: ruleItems,
         });
       }
       return ok({ recipes, rev: configRev(cfg) });

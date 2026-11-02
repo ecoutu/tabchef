@@ -128,8 +128,9 @@ const duplicates = <T>(items: T[], key: (t: T) => string, path: (i: number) => s
 
 /**
  * One recipe: schema, then the post-checks: reserved id, param defaults and enums, unknown placeholders,
- * `needs.hosts` match patterns, urlTransform regexes, view `show` values, duplicate rule and view ids, and each rule
- * (with the param defaults substituted) through the same checks as validateRule. Paths are JSON pointers into `x`;
+ * `needs.hosts` match patterns (recipe-level, and rule-level after substitution), urlTransform regexes, view `show`
+ * values, duplicate rule and view ids, and each rule (with the param defaults substituted) through the same checks
+ * as validateRule. Paths are JSON pointers into `x`;
  * after a list param is spliced into an array, indices inside that array are post-substitution.
  */
 export function validateRecipe(x: unknown): RecipeResult {
@@ -154,7 +155,11 @@ export function validateRecipe(x: unknown): RecipeResult {
   unknownPlaceholders(body, new Set(Object.keys(params)), '', unknown);
   out.push(...unknown);
 
-  r.needs?.hosts?.forEach((h, i) => { const m = matchPatternProblem(h); if (m) out.push({ path: `/needs/hosts/${i}`, message: m }); });
+  const hosts = (list: unknown, base: string) => {
+    if (!Array.isArray(list)) return; // a {params.x} placeholder: checked after substitution, below
+    list.forEach((h, i) => { const m = typeof h === 'string' ? matchPatternProblem(h) : undefined; if (m) out.push({ path: `${base}/${i}`, message: m }); });
+  };
+  hosts(r.needs?.hosts, '/needs/hosts');
   r.dedupe?.urlTransforms?.forEach((t, i) => {
     const m = regexProblem(t.pattern, t.flags, true);
     if (m) out.push({ path: `/dedupe/urlTransforms/${i}/pattern`, message: m });
@@ -176,6 +181,7 @@ export function validateRecipe(x: unknown): RecipeResult {
       }
       const res = validateRule(sub);
       if (!res.ok) for (const p of res.errors) out.push({ path: `/rules/${i}${p.path === '/' ? '' : p.path}`, message: p.message });
+      else hosts(res.rule.needs?.hosts, `/rules/${i}/needs/hosts`);
     });
   }
   return out.length ? { ok: false, errors: out } : { ok: true, recipe: r };

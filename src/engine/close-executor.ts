@@ -37,6 +37,17 @@ export interface PendingClose {
 export interface CloseSuggestion { tabId: number; ruleKey: string; reason: string }
 interface StoredSuggestion extends CloseSuggestion { url: string }
 
+/**
+ * Ruling R51: after a config change, re-evaluate every open tab, so enabling a close rule also applies to tabs that
+ * are already open (what preview.change reports). `syncPermissions` (PermissionsManager.onChanged) runs first, so the
+ * paused set, and with it the ProgramCache key, is current. Re-evaluating a pending entry of the same rule keeps its
+ * fire time (evaluateIn); the R13 fire-time checks are unchanged.
+ */
+export async function afterConfigChange(syncPermissions: () => Promise<void>, closes: Pick<CloseExecutor, 'evaluateAll'>): Promise<void> {
+  await syncPermissions();
+  await closes.evaluateAll();
+}
+
 export interface CloseExecutorDeps {
   safety: Pick<SafetyService, 'isPaused' | 'isProtected' | 'isActiveFocused' | 'toast'>;
   recentlyClosed: Pick<RecentlyClosed, 'add' | 'take'>;
@@ -191,7 +202,7 @@ export class CloseExecutor {
     return this.evaluate(tabId);
   }
 
-  /** Every open tab (browser startup). */
+  /** Every open tab (browser startup, and every config / Program change: afterConfigChange, R51). */
   evaluateAll(): Promise<void> {
     return this.run(async () => {
       const [snap, p] = await Promise.all([this.port.snapshot(), this.getProgram()]);

@@ -455,6 +455,41 @@
         }
       ]
     },
+    "needs": {
+      "$comment": "Rule-level needs (T10, R5): an unmet one pauses this rule key only. Recipe rules only; compileProgram rejects them on user rules (R44).",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "hosts": {
+          "oneOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2048
+              }
+            },
+            {
+              "$ref": "recipe.json#/$defs/placeholder"
+            }
+          ]
+        },
+        "permissions": {
+          "oneOf": [
+            {
+              "type": "array",
+              "items": {
+                "$ref": "recipe.json#/$defs/permission"
+              }
+            },
+            {
+              "$ref": "recipe.json#/$defs/placeholder"
+            }
+          ]
+        }
+      }
+    },
     "trigger": {
       "type": "object",
       "required": [
