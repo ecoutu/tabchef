@@ -22,4 +22,17 @@ describe('mergeDedupe', () => {
     expect(changes).toEqual(['scope: all-windows \u2192 same-window']);
     expect(mergeDedupe(cur, {}).changes).toEqual([]);
   });
+
+  it('carries the M2 dedupe fields: overrides merge by pattern (current wins), matchTitle is a scalar', () => {
+    const cur = { ...defaultConfig().dedupe, fragmentOverrides: [{ pattern: 'a.com/*', keepFragment: true }] };
+    const { merged, changes } = mergeDedupe(cur, {
+      fragmentOverrides: [{ pattern: 'a.com/*', keepFragment: false }, { pattern: 'b.com/*', keepFragment: true }],
+      titleOverrides: [{ pattern: 'c.com/*', matchTitle: true }],
+      matchTitle: true,
+    });
+    expect(merged.fragmentOverrides).toEqual([{ pattern: 'a.com/*', keepFragment: true }, { pattern: 'b.com/*', keepFragment: true }]);
+    expect(merged.titleOverrides).toEqual([{ pattern: 'c.com/*', matchTitle: true }]);
+    expect(merged.matchTitle).toBe(true);
+    expect(changes).toEqual(expect.arrayContaining(['fragmentOverrides: +1', 'titleOverrides: +1', 'matchTitle: false → true']));
+  });
 });

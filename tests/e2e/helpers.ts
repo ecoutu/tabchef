@@ -5,6 +5,7 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { Config, GroupRule } from '../../src/core/types';
+import { groupRuleToRule, userKey } from '../../src/core/config/migrate';
 import { defaultConfig } from '../../src/core/config/defaults';
 import { STARTUP_GRACE_MS, SESSION_MARKER } from '../../src/engine/dedupe-handler';
 
@@ -75,9 +76,13 @@ export function rule(id: string, url: string, title: string, color: GroupRule['g
   return { id, name: title, enabled: true, match: { url }, group: { title, color } };
 }
 
+/** A v2 config whose user rules are the given M1-shaped rules (in priority order). */
 export function config(groupRules: GroupRule[], dedupe: Partial<Config['dedupe']> = {}): Config {
   const c = defaultConfig();
-  return { ...c, groupRules, dedupe: { ...c.dedupe, ...dedupe } };
+  return {
+    ...c, rules: groupRules.map((r) => groupRuleToRule(r)), order: groupRules.map((r) => userKey(r.id)),
+    dedupe: { ...c.dedupe, ...dedupe },
+  };
 }
 
 /**

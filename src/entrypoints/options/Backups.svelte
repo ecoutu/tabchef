@@ -2,7 +2,8 @@
   import { onMount } from 'svelte';
   import { send } from '../../ui/send';
   import { validateConfig } from '../../core/config/schema';
-  import type { Config } from '../../core/types';
+  import { fillConfigDefaults, migrateConfig } from '../../core/config/migrate';
+  import type { Config, ConfigV1 } from '../../core/types';
   import type { Backup } from '../../storage/config-store';
 
   const MAX_IMPORT_BYTES = 5 * 1024 * 1024;
@@ -42,14 +43,19 @@
     URL.revokeObjectURL(url);
   }
 
+  const ruleCount = (c: ConfigV1 | Config): number => (c.version === 1 ? c.groupRules : c.rules)?.length ?? 0;
+
   /** Rough change count: rules added/removed/changed plus whether dedupe settings changed. */
   function diffCount(a: Config, b: Config): number {
-    const byId = new Map(a.groupRules.map((r) => [r.id, JSON.stringify(r)]));
+    const byId = new Map(a.rules.map((r) => [r.id, JSON.stringify(r)]));
     let n = 0;
-    for (const r of b.groupRules) if (byId.get(r.id) !== JSON.stringify(r)) n++;
-    const bIds = new Set(b.groupRules.map((r) => r.id));
+    for (const r of b.rules) if (byId.get(r.id) !== JSON.stringify(r)) n++;
+    const bIds = new Set(b.rules.map((r) => r.id));
     for (const id of byId.keys()) if (!bIds.has(id)) n++;
+    // A pure reorder counts once; added/removed rules already account for their order keys.
+    if (n === 0 && JSON.stringify(a.order) !== JSON.stringify(b.order)) n++;
     if (JSON.stringify(a.dedupe) !== JSON.stringify(b.dedupe)) n++;
+    if (JSON.stringify([a.recipes, a.tables, a.dryRun]) !== JSON.stringify([b.recipes, b.tables, b.dryRun])) n++;
     return n;
   }
 
@@ -60,7 +66,10 @@
     if (file.size > MAX_IMPORT_BYTES) { error = 'File too large (max 5 MB).'; return; }
     let parsed: unknown;
     try { parsed = JSON.parse(await file.text()); } catch { error = 'Not valid JSON.'; return; }
-    const v = validateConfig(parsed);
+    // An exported M1 (v1) file is migrated first, as stored configs are.
+    const m = migrateConfig(parsed);
+    if (!m.ok) { error = `Invalid config: ${m.errors.join('; ')}`; return; }
+    const v = validateConfig(fillConfigDefaults(m.config));
     if (!v.ok) { error = `Invalid config: ${v.errors.join('; ')}`; return; }
     pendingImport = { config: v.config, changes: diffCount(saved, v.config) };
   }
@@ -98,7 +107,7 @@
   <ul>
     {#each backups as b (b.at)}
       <li>
-        <span>{time(b.at)} · {b.config.groupRules.length} rules</span>
+        <span>{time(b.at)} · {ruleCount(b.config)} rules{b.config.version === 1 ? ' (v1, upgraded on restore)' : ''}</span>
         <button type="button" aria-label={`Restore backup from ${time(b.at)}`} onclick={() => restore(b)}>Restore</button>
       </li>
     {/each}

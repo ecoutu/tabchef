@@ -1,6 +1,10 @@
 <script lang="ts">
   import type { Config, DedupeMode, GroupColor, GroupRule, TabSnap } from '../../core/types';
-  import { addRule, configPatternErrors, errorsForPath, patternError, previewMatches, removeRule, reorderRules, updateRule } from '../../ui/rules-model';
+  import type { Rule } from '../../core/lang/types';
+  import {
+    actionPaths, addRule, configPatternErrors, errorsForPath, formRule, orderedUserRules, patternError, previewMatches, removeRule,
+    reorderRules, ruleIndex, updateRule,
+  } from '../../ui/rules-model';
   import LinesField from './LinesField.svelte';
 
   let { config, tabs, dirty, saving, serverErrors, onChange, onSave }: {
@@ -11,6 +15,7 @@
   const COLORS: GroupColor[] = ['grey', 'blue', 'red', 'yellow', 'green', 'pink', 'purple', 'cyan', 'orange'];
   const hasErrors = $derived(configPatternErrors(config).length > 0);
   let dragFrom = $state<number | null>(null);
+  const shown = $derived(orderedUserRules(config).map((rule) => ({ rule, form: formRule(rule) })));
 
   const lines = (r: GroupRule): string[] => (Array.isArray(r.match.url) ? r.match.url : r.match.url === '' ? [] : [r.match.url]);
   const toUrl = (l: string[]): string | string[] => (l.length > 1 ? l : (l[0] ?? ''));
@@ -20,13 +25,19 @@
   };
   const patch = (id: string, p: Partial<GroupRule>): void => onChange(updateRule(config, id, p));
   const move = (from: number, to: number): void => onChange(reorderRules(config, from, to));
-  const sErr = (i: number, sub: string): string[] => errorsForPath(serverErrors, `/groupRules/${i}/${sub}`);
+  /** Server errors for a form field: `sub` is an M1 field path (name, match/url, group/title, group/color, dedupe). */
+  const sErr = (r: Rule, sub: string): string[] => {
+    const p = actionPaths(r);
+    const path = sub === 'dedupe' ? p.dedupe : sub.startsWith('group/') ? `${p.group}/${sub.slice(6)}` : sub;
+    return errorsForPath(serverErrors, `/rules/${ruleIndex(config, r.id)}/${path}`);
+  };
 </script>
 
 <section>
   <p class="help">Order is priority and tab-bar order: the first rule that matches a tab wins, and groups appear in the tab bar in this order. Drag the handle or use Move up / Move down.</p>
 
-  {#each config.groupRules as r, i (r.id)}
+  {#each shown as { rule: v2, form }, i (v2.id)}
+    {@const r = form ?? { id: v2.id, name: v2.name, enabled: v2.enabled, match: { url: '' }, group: { title: '', color: 'grey' } } as GroupRule}
     <div class="rule" class:dragging={dragFrom === i} role="group" aria-label={`Rule ${i + 1}: ${r.name}`}
       ondragover={(e) => { if (dragFrom !== null) e.preventDefault(); }}
       ondrop={(e) => { e.preventDefault(); if (dragFrom !== null) move(dragFrom, i); dragFrom = null; }}>
@@ -34,29 +45,38 @@
         <span class="handle" role="img" aria-label="Drag to reorder" title="Drag to reorder" draggable="true"
           ondragstart={(e) => { dragFrom = i; if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', r.id); } }}
           ondragend={() => (dragFrom = null)}>⠿</span>
-        <label class="inline"><input type="checkbox" checked={r.enabled} onchange={(e) => patch(r.id, { enabled: e.currentTarget.checked })} /> Enabled</label>
-        <input class="name" aria-label="Rule name" value={r.name} oninput={(e) => patch(r.id, { name: e.currentTarget.value })} />
-        <span class="count">{count(r)}</span>
+        {#if form}
+          <label class="inline"><input type="checkbox" checked={r.enabled} onchange={(e) => patch(r.id, { enabled: e.currentTarget.checked })} /> Enabled</label>
+          <input class="name" aria-label="Rule name" value={r.name} oninput={(e) => patch(r.id, { name: e.currentTarget.value })} />
+          <span class="count">{count(r)}</span>
+        {:else}
+          <span class="name">{v2.name}</span><span class="count">{v2.enabled ? 'Enabled' : 'Disabled'}</span>
+        {/if}
         <button type="button" aria-label="Move up" disabled={i === 0} onclick={() => move(i, i - 1)}>↑</button>
-        <button type="button" aria-label="Move down" disabled={i === config.groupRules.length - 1} onclick={() => move(i, i + 1)}>↓</button>
+        <button type="button" aria-label="Move down" disabled={i === shown.length - 1} onclick={() => move(i, i + 1)}>↓</button>
         <button type="button" class="danger" onclick={() => onChange(removeRule(config, r.id))}>Delete</button>
       </div>
-      {#each sErr(i, 'name') as m (m)}<p class="err" role="alert">name {m}</p>{/each}
+      {#if !form}
+        <p class="help">This rule uses features this form cannot edit yet; it is shown read-only.</p>
+        <pre class="readonly">{JSON.stringify(v2, null, 2)}</pre>
+        {#each errorsForPath(serverErrors, `/rules/${ruleIndex(config, v2.id)}`) as m (m)}<p class="err" role="alert">{m}</p>{/each}
+      {:else}
+      {#each sErr(v2, 'name') as m (m)}<p class="err" role="alert">name {m}</p>{/each}
 
       <LinesField label="URL patterns (one per line: glob, /regex/, or :param)" value={lines(r)} rows={2}
-        check={patternError} onChange={(l) => patch(r.id, { match: { ...r.match, url: toUrl(l) } })} extraErrors={sErr(i, 'match/url')} />
+        check={patternError} onChange={(l) => patch(r.id, { match: { ...r.match, url: toUrl(l) } })} extraErrors={sErr(v2, 'match/url')} />
 
       <div class="grid">
         <label>Group title template
           <input value={r.group.title} oninput={(e) => patch(r.id, { group: { ...r.group, title: e.currentTarget.value } })} />
         </label>
-        {#each sErr(i, 'group/title') as m (m)}<p class="err" role="alert">title {m}</p>{/each}
+        {#each sErr(v2, 'group/title') as m (m)}<p class="err" role="alert">title {m}</p>{/each}
         <label>Color
           <select value={r.group.color} onchange={(e) => patch(r.id, { group: { ...r.group, color: e.currentTarget.value as GroupColor } })}>
             {#each COLORS as c (c)}<option value={c}>{c}</option>{/each}
           </select>
         </label>
-        {#each sErr(i, 'group/color') as m (m)}<p class="err" role="alert">color {m}</p>{/each}
+        {#each sErr(v2, 'group/color') as m (m)}<p class="err" role="alert">color {m}</p>{/each}
         <label>Group order
           <select value={r.sortGroups ?? 'creation'} onchange={(e) => patch(r.id, { sortGroups: e.currentTarget.value as 'creation' | 'alphabetical' })}>
             <option value="creation">creation</option><option value="alphabetical">alphabetical</option>
@@ -68,12 +88,13 @@
           </select>
         </label>
       </div>
-      {#each sErr(i, 'dedupe') as m (m)}<p class="err" role="alert">dedupe {m}</p>{/each}
+      {#each sErr(v2, 'dedupe') as m (m)}<p class="err" role="alert">dedupe {m}</p>{/each}
       <div class="checks">
         <label class="inline"><input type="checkbox" checked={r.group.collapsed ?? false} onchange={(e) => patch(r.id, { group: { ...r.group, collapsed: e.currentTarget.checked } })} /> Collapsed</label>
         <label class="inline"><input type="checkbox" checked={r.strict ?? true} onchange={(e) => patch(r.id, { strict: e.currentTarget.checked })} /> Strict (ungroup when URL stops matching)</label>
         <label class="inline"><input type="checkbox" checked={r.merge ?? false} onchange={(e) => patch(r.id, { merge: e.currentTarget.checked })} /> Merge across windows</label>
       </div>
+      {/if}
     </div>
   {:else}
     <p class="empty">No group rules yet.</p>
@@ -101,4 +122,5 @@
   .actions { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
   .err { color: var(--danger); font-size: 12px; margin: 2px 0 0; }
   .empty { color: var(--muted); }
+  .readonly { margin: 0; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--muted); }
 </style>

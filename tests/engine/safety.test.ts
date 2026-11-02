@@ -9,6 +9,7 @@ import { WhyLog } from '../../src/core/safety/why-log';
 import { defaultConfig } from '../../src/core/config/defaults';
 import { FakeBrowserPort } from '../../src/platform/fake-port';
 import type { Config, TabSnap } from '../../src/core/types';
+import { withGroupRules } from '../helpers/config';
 
 type NewTab = Omit<TabSnap, 'index' | 'groupId'> & Partial<Pick<TabSnap, 'index' | 'groupId'>>;
 const PR = 'https://github.com/acme/api/pull/1';
@@ -253,10 +254,7 @@ describe('SafetyService', () => {
 
     it('a locked tab reaches the planner as leaveAlone (not persisted in rt)', async () => {
       const w = setup();
-      const cfg: Config = {
-        ...defaultConfig(),
-        groupRules: [{ id: 'a', name: 'a', enabled: true, match: { url: 'https://a.com/**' }, group: { title: 'A', color: 'red' } }],
-      };
+      const cfg: Config = withGroupRules([{ id: 'a', name: 'a', enabled: true, match: { url: 'https://a.com/**' }, group: { title: 'A', color: 'red' } }]);
       w.port.addTab(tab(1, 'https://a.com/1'));
       w.port.addTab(tab(2, 'https://a.com/2'));
       w.svc.lock(1);
@@ -398,10 +396,7 @@ describe('SafetyService', () => {
 
     it('end-to-end: restoring a closed duplicate is not closed again, then regrouped', async () => {
       const w = setup();
-      const cfg: Config = {
-        ...defaultConfig(),
-        groupRules: [{ id: 'gh', name: 'gh', enabled: true, match: { url: 'https://github.com/**' }, group: { title: 'GH', color: 'blue' } }],
-      };
+      const cfg: Config = withGroupRules([{ id: 'gh', name: 'gh', enabled: true, match: { url: 'https://github.com/**' }, group: { title: 'GH', color: 'blue' } }]);
       w.port.addTab(tab(1, PR, { windowId: 1 }));
       const handler = new DedupeHandler(w.port, async () => cfg, {
         recentlyClosed: w.recentlyClosed, log: new WhyLog(), ask: async () => {},

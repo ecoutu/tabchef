@@ -3,9 +3,9 @@ import { fakeBrowser } from 'wxt/testing/fake-browser';
 import { browser } from 'wxt/browser';
 import { Reconciler } from '../../src/engine/reconciler';
 import type { RuntimeState } from '../../src/engine/state';
-import { defaultConfig } from '../../src/core/config/defaults';
 import { FakeBrowserPort } from '../../src/platform/fake-port';
 import type { Config, GroupColor, GroupRule, TabSnap } from '../../src/core/types';
+import { withGroupRules } from '../helpers/config';
 
 type NewTab = Omit<TabSnap, 'index' | 'groupId'> & Partial<Pick<TabSnap, 'index' | 'groupId'>>;
 
@@ -18,10 +18,7 @@ const MUTATING = new Set(['group', 'ungroup', 'moveTabs', 'moveGroup', 'updateGr
 const rule = (id: string, url: string, title: string, color: GroupColor): GroupRule => ({
   id, name: id, enabled: true, match: { url }, group: { title, color },
 });
-const config: Config = {
-  ...defaultConfig(),
-  groupRules: [rule('a', 'https://a.com/**', 'A', 'red'), rule('b', 'https://b.com/**', 'B', 'blue')],
-};
+const config: Config = withGroupRules([rule('a', 'https://a.com/**', 'A', 'red'), rule('b', 'https://b.com/**', 'B', 'blue')]);
 const tab = (id: number, url: string, o: Partial<NewTab> = {}): NewTab => ({
   id, windowId: 1, url, title: `t${id}`, pinned: false, incognito: false, discarded: false,
   active: false, audible: false, ...o,
@@ -295,7 +292,7 @@ describe('Reconciler', () => {
   describe('expectations expire after 2 s', () => {
     const merged = (): { f: FakeBrowserPort; r: Reconciler } => {
       const f = world([1, 2]);
-      const merge: Config = { ...defaultConfig(), groupRules: [{ ...rule('a', 'https://a.com/**', 'A', 'red'), merge: true }] };
+      const merge: Config = withGroupRules([{ ...rule('a', 'https://a.com/**', 'A', 'red'), merge: true }]);
       f.addTab(tab(1, A, { groupId: 70 }));
       f.addGroup({ id: 70, windowId: 1, title: 'A', color: 'red', collapsed: false });
       f.addTab(tab(2, A, { windowId: 2 }));
@@ -336,7 +333,7 @@ describe('Reconciler', () => {
 
   it('applies merge moveTabs by moving then regrouping into the home group', async () => {
     const f = world([1, 2]);
-    const merge: Config = { ...defaultConfig(), groupRules: [{ ...rule('a', 'https://a.com/**', 'A', 'red'), merge: true }] };
+    const merge: Config = withGroupRules([{ ...rule('a', 'https://a.com/**', 'A', 'red'), merge: true }]);
     f.addTab(tab(1, A, { groupId: 70 }));
     f.addGroup({ id: 70, windowId: 1, title: 'A', color: 'red', collapsed: false });
     f.addTab(tab(2, A, { windowId: 2 }));
@@ -362,7 +359,7 @@ describe('Reconciler', () => {
     expect(groupOf(f, 1)).toBe('A');
   });
   describe('restored groups without Tabchef state (I2, I3)', () => {
-    const repoCfg: Config = { ...defaultConfig(), groupRules: [{ ...rule('gh', 'github.com/:org/:repo/*', '{repo}', 'blue'), name: 'Repos' }] };
+    const repoCfg: Config = withGroupRules([{ ...rule('gh', 'github.com/:org/:repo/*', '{repo}', 'blue'), name: 'Repos' }]);
     const GH = (r: string) => `https://github.com/acme/${r}/pulls`;
 
     it('detects a drag-out of a restored, already-correct group (no managedTitles)', async () => {
@@ -410,7 +407,7 @@ describe('Reconciler', () => {
 
   it('why-log: one entry per tab per real membership change, with the rule (I7)', async () => {
     const f = world();
-    const named: Config = { ...defaultConfig(), groupRules: [{ ...rule('a', 'https://a.com/**', 'A', 'red'), name: 'Alpha rule' }] };
+    const named: Config = withGroupRules([{ ...rule('a', 'https://a.com/**', 'A', 'red'), name: 'Alpha rule' }]);
     f.addTab(tab(1, A));
     f.addTab(tab(2, A));
     const entries: { tabId?: number; ruleId?: string; action: string; detail: string }[] = [];
@@ -418,15 +415,15 @@ describe('Reconciler', () => {
     emitGroupEvents(f, r);
     await r.flush();
     expect(entries.filter((e) => e.action === 'grouped')).toEqual([
-      expect.objectContaining({ tabId: 1, ruleId: 'a', detail: 'Moved to A by rule Alpha rule' }),
-      expect.objectContaining({ tabId: 2, ruleId: 'a', detail: 'Moved to A by rule Alpha rule' }),
+      expect.objectContaining({ tabId: 1, ruleId: 'user/a', detail: 'Moved to A by rule Alpha rule' }),
+      expect.objectContaining({ tabId: 2, ruleId: 'user/a', detail: 'Moved to A by rule Alpha rule' }),
     ]);
     await r.flush();
     expect(entries.filter((e) => e.action === 'grouped')).toHaveLength(2);
     setUrl(f, 1, OTHER);
     await r.flush();
     expect(entries.filter((e) => e.action === 'ungrouped')).toEqual([
-      expect.objectContaining({ tabId: 1, ruleId: 'a', detail: 'Removed from A (no longer matches Alpha rule)' }),
+      expect.objectContaining({ tabId: 1, ruleId: 'user/a', detail: 'Removed from A (no longer matches Alpha rule)' }),
     ]);
   });
 
@@ -447,7 +444,7 @@ describe('Reconciler', () => {
 
   it('the expectation window starts again when the mutating call resolves (M2)', async () => {
     const f = world([1, 2]);
-    const merge: Config = { ...defaultConfig(), groupRules: [{ ...rule('a', 'https://a.com/**', 'A', 'red'), merge: true }] };
+    const merge: Config = withGroupRules([{ ...rule('a', 'https://a.com/**', 'A', 'red'), merge: true }]);
     f.addTab(tab(1, A, { groupId: 70 }));
     f.addGroup({ id: 70, windowId: 1, title: 'A', color: 'red', collapsed: false });
     f.addTab(tab(2, A, { windowId: 2 }));
@@ -546,8 +543,8 @@ describe('Reconciler', () => {
 
     it('merge rule in window 1 and a non-merge rule with the same title in window 2 converge to one group (CR#9)', async () => {
       const f = world([1, 2]);
-      const mixed: Config = { ...defaultConfig(), groupRules: [
-        { ...rule('m', 'https://a.com/m*', 'api', 'blue'), merge: true }, rule('n', 'https://a.com/n*', 'api', 'blue')] };
+      const mixed: Config = withGroupRules([
+        { ...rule('m', 'https://a.com/m*', 'api', 'blue'), merge: true }, rule('n', 'https://a.com/n*', 'api', 'blue')]);
       f.addTab(tab(1, 'https://a.com/m'));
       f.addTab(tab(2, 'https://a.com/n', { windowId: 2 }));
       const log = { add: vi.fn() };

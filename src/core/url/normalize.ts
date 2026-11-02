@@ -22,8 +22,8 @@ export function isExemptUrl(url: string | undefined): boolean {
 
 type NormSettings = Pick<
   DedupeSettings,
-  'stripParams' | 'stripFragment' | 'ignoreTrailingSlash' | 'canonicalizers' | 'urlTransforms'
->;
+  'stripParams' | 'stripFragment' | 'ignoreTrailingSlash' | 'canonicalizers' | 'urlTransforms' | 'fragmentOverrides'
+>; // fragmentOverrides: carried for M2 T18 (per-pattern keepFragment); not applied yet
 
 function shouldStrip(name: string, patterns: string[]): boolean {
   return patterns.some((p) => (p.endsWith('*') ? name.startsWith(p.slice(0, -1)) : name === p));

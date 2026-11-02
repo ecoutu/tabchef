@@ -1,5 +1,6 @@
 import { findDuplicate, tabUrl } from '../core/dedupe/find';
 import { evaluateGroupRules } from '../core/group/evaluate';
+import { groupView } from '../core/config/group-view';
 import { normalizeUrl } from '../core/url/normalize';
 import type { Config, TabSnap } from '../core/types';
 import type { BrowserPort } from '../platform/browser-port';
@@ -197,8 +198,9 @@ export function createAskController(port: BrowserPort, deps: AskDeps) {
     const cur: TabSnap = { ...cand, url: tabUrl(cand) };
     delete cur.pendingUrl;
     const isLocked = deps.isLocked ?? (() => false);
-    const ruleId = evaluateGroupRules(cur, cfg.groupRules)?.ruleId;
-    const ruleMode = ruleId !== undefined ? cfg.groupRules.find((r) => r.id === ruleId)?.dedupe : undefined;
+    const rules = groupView(cfg);
+    const ruleId = evaluateGroupRules(cur, rules)?.ruleId;
+    const ruleMode = ruleId !== undefined ? rules.find((r) => r.id === ruleId)?.dedupe : undefined;
     const dup = findDuplicate(cur, [existing], s, ruleMode, new Set(isLocked(newTabId) ? [newTabId] : []));
     if (!dup) return;
     const at = now();

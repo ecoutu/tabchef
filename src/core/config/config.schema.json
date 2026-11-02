@@ -1,108 +1,73 @@
 {
+  "$id": "https://schemas.tabchef.invalid/config.json",
   "type": "object",
   "required": [
     "version",
-    "groupRules",
-    "dedupe"
+    "rules",
+    "recipes",
+    "order",
+    "tables",
+    "dedupe",
+    "dryRun"
   ],
   "additionalProperties": false,
   "properties": {
     "version": {
-      "const": 1
+      "const": 2
     },
-    "groupRules": {
+    "rules": {
+      "type": "array",
+      "items": {
+        "$ref": "rule.json"
+      }
+    },
+    "recipes": {
       "type": "array",
       "items": {
         "type": "object",
         "required": [
           "id",
-          "name",
           "enabled",
-          "match",
-          "group"
+          "params",
+          "source"
         ],
         "additionalProperties": false,
         "properties": {
           "id": {
-            "type": "string",
-            "minLength": 1
-          },
-          "name": {
-            "type": "string"
+            "$ref": "rule.json#/$defs/id"
           },
           "enabled": {
             "type": "boolean"
           },
-          "match": {
-            "type": "object",
-            "required": [
-              "url"
-            ],
-            "additionalProperties": false,
-            "properties": {
-              "url": {
-                "oneOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "array",
-                    "items": {
-                      "type": "string"
-                    }
-                  }
-                ]
-              }
-            }
+          "params": {
+            "type": "object"
           },
-          "group": {
-            "type": "object",
-            "required": [
-              "title",
-              "color"
-            ],
-            "additionalProperties": false,
-            "properties": {
-              "title": {
-                "type": "string"
-              },
-              "color": {
-                "enum": [
-                  "grey",
-                  "blue",
-                  "red",
-                  "yellow",
-                  "green",
-                  "pink",
-                  "purple",
-                  "cyan",
-                  "orange"
-                ]
-              },
-              "collapsed": {
-                "type": "boolean"
-              }
-            }
-          },
-          "sortGroups": {
+          "source": {
             "enum": [
-              "creation",
-              "alphabetical"
+              "builtin",
+              "user"
             ]
           },
-          "dedupe": {
-            "enum": [
-              "always-switch",
-              "ask",
-              "off"
-            ]
-          },
-          "strict": {
-            "type": "boolean"
-          },
-          "merge": {
-            "type": "boolean"
+          "body": {
+            "type": "object",
+            "$comment": "Recipe body; schema lands with recipe.schema.json (M2 T5)."
           }
+        }
+      }
+    },
+    "order": {
+      "type": "array",
+            "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9][a-z0-9_-]{0,63}/[a-z0-9][a-z0-9_-]{0,63}$"
+      }
+    },
+    "tables": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "string"
         }
       }
     },
@@ -120,7 +85,10 @@
         "alwaysSwitchSites",
         "includeIncognito",
         "scope",
-        "urlTransforms"
+        "urlTransforms",
+        "fragmentOverrides",
+        "matchTitle",
+        "titleOverrides"
       ],
       "additionalProperties": false,
       "properties": {
@@ -197,8 +165,52 @@
               }
             }
           }
+        },
+        "fragmentOverrides": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "pattern",
+              "keepFragment"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "pattern": {
+                "type": "string"
+              },
+              "keepFragment": {
+                "type": "boolean"
+              }
+            }
+          }
+        },
+        "matchTitle": {
+          "type": "boolean"
+        },
+        "titleOverrides": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "pattern",
+              "matchTitle"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "pattern": {
+                "type": "string"
+              },
+              "matchTitle": {
+                "type": "boolean"
+              }
+            }
+          }
         }
       }
+    },
+    "dryRun": {
+      "type": "boolean"
     }
   }
 }

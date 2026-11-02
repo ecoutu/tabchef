@@ -7,4 +7,7 @@ describe('generated validator', () => {
   it('matches the committed file (run `npm run gen:validator` after editing config.schema.json)', () => {
     expect(generate()).toBe(committed);
   });
+  it('is self-contained: no require() of ajv runtime helpers (the extension bundles it as ESM)', () => {
+    expect(committed).not.toMatch(/\brequire\(/);
+  });
 });

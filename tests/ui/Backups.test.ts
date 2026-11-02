@@ -1,15 +1,15 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/svelte';
-import { defaultConfig } from '../../src/core/config/defaults';
 import type { Config } from '../../src/core/types';
+import { v1Config, withGroupRules } from '../helpers/config';
 
 const send = vi.fn();
 vi.mock('../../src/ui/send', () => ({ send: (r: unknown) => send(r) }));
 import Backups from '../../src/entrypoints/options/Backups.svelte';
 
 const rule = (id: string) => ({ id, name: id, enabled: true, match: { url: 'a.com/*' }, group: { title: id, color: 'blue' as const } });
-const cfgWith = (...ids: string[]): Config => ({ ...defaultConfig(), groupRules: ids.map(rule) });
+const cfgWith = (...ids: string[]): Config => withGroupRules(ids.map(rule));
 const UNSAVED = 'You have unsaved changes on this page; they will be discarded.';
 
 beforeEach(() => {
@@ -47,6 +47,18 @@ describe('Backups', () => {
     await pick(file(JSON.stringify(cfgWith('a', 'b'))));
     await fireEvent.click(await screen.findByRole('button', { name: 'Apply import' }));
     expect(confirm.mock.calls[0]![0]).toContain(UNSAVED);
+  });
+
+  it('an exported v1 (M1) file is migrated before the diff', async () => {
+    render(Backups, props({ saved: cfgWith('a') }));
+    await pick(file(JSON.stringify(v1Config([rule('a'), rule('b')]))));
+    await screen.findByText(/changes 1 item compared with your current config/);
+  });
+
+  it('lists v1 backups with their rule count', async () => {
+    send.mockImplementation(async (req: { type: string }) => req.type === 'config.backups' ? { ok: true, data: [{ at: 1000, config: v1Config([rule('x'), rule('y')]) }] } : { ok: true, data: null });
+    render(Backups, props());
+    await screen.findByText(/2 rules \(v1, upgraded on restore\)/);
   });
 
   it('import diff is computed against the saved config, not the draft', async () => {

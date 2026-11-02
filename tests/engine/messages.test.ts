@@ -3,6 +3,7 @@ import { configRev, badgeCount, createDebounce, createHandler, createOnMessage, 
 import { defaultConfig } from '../../src/core/config/defaults';
 import { FakeBrowserPort } from '../../src/platform/fake-port';
 import type { Config } from '../../src/core/types';
+import { withGroupRules } from '../helpers/config';
 
 type Loose = { ok: boolean; data: { sets: { key: string }[]; pending: unknown[] }; errors: string[] };
 const A = 'https://a.example/x';
@@ -109,7 +110,7 @@ describe('messages', () => {
     const g = (await s.handle({ type: 'config.get' }, ui)) as { ok: boolean; data: { config: Config; rev: string } };
     expect(g.data.config).toEqual(defaultConfig());
     expect(typeof g.data.rev).toBe('string');
-    const changed = { ...defaultConfig(), groupRules: [{ id: 'r', name: 'r', enabled: true, match: { url: 'a.com/*' }, group: { title: 'r', color: 'blue' as const } }] };
+    const changed = withGroupRules([{ id: 'r', name: 'r', enabled: true, match: { url: 'a.com/*' }, group: { title: 'r', color: 'blue' as const } }]);
     expect(await s.handle({ type: 'config.set', config: changed, baseRev: g.data.rev }, ui)).toEqual({ ok: true, data: null });
     expect(s.set).toHaveBeenCalledTimes(1);
     expect(await s.handle({ type: 'config.set', config: defaultConfig(), baseRev: g.data.rev }, ui)).toEqual({ ok: false, error: 'conflict' });
@@ -262,8 +263,7 @@ describe('import.*', () => {
     { id: 'old', title: 'Dup', color: 'red', matchers: ['https://d.example/*'] },
   ] };
   const seed = (s: ReturnType<typeof setup>) => {
-    const cfg = defaultConfig();
-    cfg.groupRules = [{ id: 'old', name: 'Old', enabled: true, match: { url: 'o.example/*' }, group: { title: 'Old', color: 'green' } }];
+    const cfg = withGroupRules([{ id: 'old', name: 'Old', enabled: true, match: { url: 'o.example/*' }, group: { title: 'Old', color: 'green' } }]);
     s.deps.store.get = async () => cfg;
     return cfg;
   };
@@ -278,21 +278,33 @@ describe('import.*', () => {
     expect(s.set).not.toHaveBeenCalled();
   });
 
+  it('apply maps imported ids to the v2 id pattern', async () => {
+    const s = setup();
+    const cfg = seed(s);
+    const data = { groups: [{ id: 'Not A Valid/Id', title: 'X', color: 'blue', matchers: ['https://x.example/*'] }] };
+    expect((await s.handle({ type: 'import.apply', source: 'auto-group-tabs', data, baseRev: configRev(cfg) }, ui)).ok).toBe(true);
+    const saved = s.set.mock.calls[0]![0] as Config;
+    expect(saved.rules[1]!.id).toBe('not-a-valid-id');
+    expect(saved.order).toEqual(['user/old', 'user/not-a-valid-id']);
+  });
+
   it('apply appends after existing rules, renames colliding ids, merges dedupe', async () => {
     const s = setup();
     const cfg = seed(s);
     const r = await s.handle({ type: 'import.apply', source: 'auto-group-tabs', data: agt, baseRev: configRev(cfg) }, ui);
     expect(r.ok).toBe(true);
     const saved = s.set.mock.calls[0]![0] as Config;
-    expect(saved.groupRules.map((x) => x.group.title)).toEqual(['Old', 'New', 'Dup']);
-    expect(saved.groupRules[1]!.id).toBe('n1');
-    expect(saved.groupRules[2]!.id).not.toBe('old');
-    expect(new Set(saved.groupRules.map((x) => x.id)).size).toBe(3);
+    expect(saved.rules.map((x) => x.name)).toEqual(['Old', 'New', 'Dup']);
+    expect(saved.rules[1]!.actions[0]).toEqual({ group: { title: 'New', color: 'blue', strict: true, merge: false } });
+    expect(saved.rules[1]!.id).toBe('n1');
+    expect(saved.rules[2]!.id).not.toBe('old');
+    expect(new Set(saved.rules.map((x) => x.id)).size).toBe(3);
+    expect(saved.order).toEqual(saved.rules.map((x) => `user/${x.id}`));
     const t = await s.handle({ type: 'import.apply', source: 'tab-deduper', data: { local: { dedupAllWindows: false, urlExempts: 'a.com' } }, baseRev: configRev(cfg) }, ui);
     expect(t.ok).toBe(true);
     const saved2 = s.set.mock.calls[1]![0] as Config;
     expect(saved2.dedupe).toMatchObject({ scope: 'same-window', allowDuplicates: ['a.com*'], mode: 'always-switch' });
-    expect(saved2.groupRules).toHaveLength(1);
+    expect(saved2.rules).toHaveLength(1);
   });
 
   it('apply reports conflict on stale baseRev and nothing-to-import on garbage; rejects non-UI senders', async () => {
