@@ -1,5 +1,6 @@
 import { browser } from 'wxt/browser';
 import type { Config } from '../core/types';
+import { AnchorService } from '../engine/anchors';
 import { createAskController } from '../engine/ask';
 import { RecentlyClosed } from '../core/safety/recently-closed';
 import { WhyLog } from '../core/safety/why-log';
@@ -63,12 +64,19 @@ export default defineBackground(() => {
     covers: (url) => permissions.covers(url),
   });
   // `safety` is used lazily by the closures below (it needs the reconciler and dedupe handler, which need it).
-  const reconciler = new Reconciler(port, getProgram, {
+  const reconciler: Reconciler = new Reconciler(port, getProgram, {
     log: whyLog,
     isPaused: () => safety.isPaused(),
     beforeRun: async () => { await Promise.all([safety.ready, pageFacts.ready, permissions.ready]); },
     extraLeaveAlone: () => safety.lockedTabIds(),
     pageFacts,
+    anchors: { onGroupCreated: (...a) => anchors.onGroupCreated(...a) },
+  });
+  // Anchor tabs (M2 T11): opened when Tabchef creates a group; their state is the reconciler's RuntimeState.
+  const anchors: AnchorService = new AnchorService(port, {
+    state: () => reconciler.liveState(),
+    armExemption: (url, windowId) => dedupe.armExemption(url, windowId),
+    log: whyLog,
   });
   const schedule = (reason: string) => () => reconciler.schedule(reason);
   store.onChange((c) => {
@@ -130,7 +138,8 @@ export default defineBackground(() => {
     ask: askController.ask,
     isPaused: () => safety.isPaused(),
     isLocked: (id) => safety.isLocked(id),
-    beforeDecide: () => safety.ready,
+    isAnchor: (id) => anchors.isAnchor(id),
+    beforeDecide: async () => { await Promise.all([safety.ready, anchors.ready]); },
     onClosed: (id, entry, focused) => { safety.toast(id, entry, focused).catch(warn('undo toast')); },
     // Cleared on browser restart: a missing marker at worker start opens the startup grace (order-independent).
     session: {
@@ -180,8 +189,8 @@ export default defineBackground(() => {
     },
     isRulePaused: (key) => permissions.paused().has(key),
     observesForm: (url) => permissions.covers(url),
-    beforeRun: async () => { await Promise.all([safety.ready, pageFacts.ready, permissions.ready]); },
-    // isAnchor: AnchorService arrives with M2 T11.
+    beforeRun: async () => { await Promise.all([safety.ready, pageFacts.ready, permissions.ready, anchors.ready]); },
+    isAnchor: (id) => anchors.isAnchor(id),
   });
   // A restarted worker re-arms its stored pending closes (timers die with the worker; overdue ones fire now).
   void closeExecutor.rearm();
@@ -234,6 +243,7 @@ export default defineBackground(() => {
     pageFacts.clear(tabId);
     void closeExecutor.onTabRemoved(tabId);
     dedupe.onRemoved(tabId);
+    anchors.onTabRemoved(tabId, info.isWindowClosing).catch(warn('anchor cleanup'));
     askController.onTabRemoved(tabId).catch((e: unknown) => console.warn('[tabchef] pending ask cleanup failed', e));
     reconciler.schedule('tab-removed');
   });
@@ -241,9 +251,13 @@ export default defineBackground(() => {
     pageFacts.clear(removed);
     void closeExecutor.onTabRemoved(removed);
     dedupe.onReplaced(added, removed);
+    anchors.onTabReplaced(added, removed).catch(warn('anchor replace'));
   });
   browser.tabGroups.onUpdated.addListener(schedule('group-updated'));
-  browser.tabGroups.onRemoved.addListener(schedule('group-removed'));
+  browser.tabGroups.onRemoved.addListener((g) => {
+    anchors.onGroupRemoved(g).catch(warn('anchor group cleanup')); // the group may be created again with its anchors
+    reconciler.schedule('group-removed');
+  });
   browser.windows.onCreated.addListener(schedule('window-created'));
   browser.runtime.onStartup.addListener(() => {
     dedupe.noteStartup();
@@ -253,7 +267,8 @@ export default defineBackground(() => {
   const session = { get: async (k: string) => (await browser.storage.session.get(k))[k] };
   const badgeDeps = {
     port,
-    isLocked: (id: number) => safety.isLocked(id),
+    // Anchors are never closed by dupes.close* (R11), so they are not counted as closable extras.
+    isLocked: (id: number) => safety.isLocked(id) || anchors.isAnchor(id),
     // Effective settings (config dedupe + recipe urlTransforms), so the popup and badge agree with the engine.
     getSettings: async () => (await getProgram()).dedupe,
     ask: {
@@ -275,6 +290,7 @@ export default defineBackground(() => {
     recentlyClosed,
     whyLog,
     recipes: { builtins: builtinRecipes(), permissions },
+    isAnchor: (id) => anchors.isAnchor(id),
   });
   // Watch content script (ruling R12): its own sender-checked channel, never createHandler.
   const handleContent = createContentHandler({

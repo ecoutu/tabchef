@@ -3,6 +3,7 @@ import type { Op, Snapshot } from '../core/types';
 import type { Program } from '../core/lang/types';
 import type { BrowserPort } from '../platform/browser-port';
 import { DragRetryExhausted, withDragRetry } from '../platform/retry';
+import { anchorLeaveAlone, type AnchorService } from './anchors';
 import { EXPECTATION_TTL_MS, loadState, saveState, type LiveState } from './state';
 
 /** Structural why-log (Task 12 provides the real ring buffer). */
@@ -21,6 +22,8 @@ export interface ReconcilerOptions {
   /** Page facts per tab (background PageFacts, M2 T7): page conditions and selector extracts, and the page hold. */
   pageFacts?: PageLookup;
   now?: () => number;
+  /** Anchor tabs (M2 T11): told about every group this reconciler creates (never adopted ones, ruling R9). */
+  anchors?: Pick<AnchorService, 'onGroupCreated'>;
   /** Console-level warnings (a rule whose color renders outside Chrome's 9 colors). Default: console.warn. */
   warn?: (message: string) => void;
 }
@@ -130,6 +133,11 @@ export class Reconciler {
     this.schedule('after-drag');
   }
 
+  /** The live runtime state, shared with the AnchorService (anchors live in RuntimeState). */
+  liveState(): Promise<LiveState> {
+    return this.load();
+  }
+
   private load(): Promise<LiveState> {
     this.state ??= loadState();
     return this.state;
@@ -155,8 +163,9 @@ export class Reconciler {
       await this.retitlePending(st);
       for (let pass = 0; ; pass++) {
         const snap = await this.port.snapshot();
-        const extra = this.opts.extraLeaveAlone?.();
-        const ctx: PlanContext = extra ? { ...st, leaveAlone: new Set([...st.leaveAlone, ...extra]) } : st;
+        // Locked tabs and anchors still at their anchor URL (R21: strict would ungroup an anchor outside the rule).
+        const extra = [...(this.opts.extraLeaveAlone?.() ?? []), ...anchorLeaveAlone(st.anchors, snap, program)];
+        const ctx: PlanContext = extra.length ? { ...st, leaveAlone: new Set([...st.leaveAlone, ...extra]) } : st;
         const pre = planTargets(snap, program, ctx, this.now(), this.opts.pageFacts); // once per pass, shared by tracking and planning
         this.warnInvalidColors(pre);
         this.track(snap, st, pre, pass === 0);
@@ -166,7 +175,7 @@ export class Reconciler {
           this.log({ action: 'reconcile-not-converged', detail: `${ops.length} op(s) still planned after ${MAX_PASSES} passes` });
           break;
         }
-        for (const op of ops) await this.apply(op, snap, st, program);
+        for (const op of ops) await this.apply(op, snap, st, program, pre);
       }
     } catch (e) {
       if (e instanceof DragRetryExhausted) {
@@ -300,7 +309,20 @@ export class Reconciler {
     }
   }
 
-  private async apply(op: Op, snap: Snapshot, st: LiveState, program: Program): Promise<void> {
+  /** A group was just created (not adopted): open its anchors (rendered by the rule for the tabs that formed it). */
+  private async openAnchors(op: Extract<Op, { kind: 'group' }>, gid: number, snap: Snapshot, st: LiveState, program: Program, pre: Targets): Promise<void> {
+    if (!this.opts.anchors) return;
+    const m = op.tabIds.map((id) => pre.matches.get(id))
+      .find((x) => x !== undefined && x.title === op.title && (op.ruleId === undefined || x.ruleId === op.ruleId));
+    if (!m || m.anchors.length === 0) return;
+    const more = await this.opts.anchors.onGroupCreated(st, {
+      groupId: gid, windowId: op.windowId, title: op.title, color: op.color, tabIds: op.tabIds, urls: m.anchors,
+      ...(op.ruleId !== undefined && { ruleId: op.ruleId }),
+    }, snap, program);
+    for (const o of more) await this.apply(o, snap, st, program, pre);
+  }
+
+  private async apply(op: Op, snap: Snapshot, st: LiveState, program: Program, pre: Targets): Promise<void> {
     const titleOf = (gid: number) => snap.groups.find((g) => g.id === gid)?.title;
     switch (op.kind) {
       case 'group': {
@@ -324,6 +346,7 @@ export class Reconciler {
         }
         this.adopt(st, gid, title, op.tabIds);
         this.logJoined(snap, program, op.tabIds, title, op.ruleId);
+        if (op.existingGroupId === undefined) await this.openAnchors(op, gid, snap, st, program, pre);
         return;
       }
       case 'ungroup': {

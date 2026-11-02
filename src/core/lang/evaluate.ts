@@ -18,7 +18,9 @@ import type { CloseMode, CompiledRule, ExtractSpec, Program, TabFacts } from './
 
 export interface GroupResult {
   key: string; index: number; title: string; color: GroupColor; collapsed: boolean;
-  sortGroups: 'creation' | 'alphabetical'; strict: boolean; merge: boolean; anchors: string[]; dryRun: boolean;
+  sortGroups: 'creation' | 'alphabetical'; strict: boolean; merge: boolean; dryRun: boolean;
+  /** Anchor URLs rendered with the tab's vars (not yet checked: the AnchorService opens only http(s) ones). */
+  anchors: string[];
   /** The color rendered outside the 9 Chrome colors and fell back to grey; the engine logs it (T6). */
   invalidColor?: true;
 }
@@ -118,7 +120,7 @@ export function evaluateTab(p: Program, f: TabFacts, now: number): EvalResult {
         out.group = {
           key: r.key, index: r.index, title, color: (valid ? rendered : 'grey') as GroupColor,
           collapsed: a.group.collapsed ?? false, sortGroups: a.group.sortGroups ?? 'creation',
-          strict: a.group.strict ?? true, merge: a.group.merge ?? false, anchors: [...(a.group.anchors ?? [])],
+          strict: a.group.strict ?? true, merge: a.group.merge ?? false, anchors: (a.group.anchors ?? []).map((u) => renderTemplate(u, vars, p.tables)),
           dryRun: r.dryRun,
           ...(valid ? {} : { invalidColor: true as const }),
         };
