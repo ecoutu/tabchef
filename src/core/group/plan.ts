@@ -1,8 +1,8 @@
 import { evaluateGroupRules, type GroupMatch } from './evaluate';
-import { groupView } from '../config/group-view';
 import { parseTemplateLenient } from '../match/template';
 import { isExemptUrl } from '../url/normalize';
-import type { Config, GroupRule, GroupSnap, Op, Snapshot, TabSnap } from '../types';
+import type { Program } from '../lang/types';
+import type { GroupSnap, Op, Snapshot, TabSnap } from '../types';
 
 export interface PlanContext {
   /** Tabs the user dragged out of a Tabchef group; untouched until their URL changes. */
@@ -89,17 +89,30 @@ export interface Targets {
   managed: Set<number>;
 }
 
-export function planTargets(snap: Snapshot, config: Config, ctx: ManagedCtx): Targets {
+/**
+ * Evaluates every eligible tab against `p` at time `now`. Facts come from the snapshot (opener tab, current group
+ * title); page facts and creation times are not known here yet (M2 T7).
+ *
+ * A tab whose winning group rule is a dry-run rule is held: not eligible, so this pass neither groups, moves nor
+ * ungroups it (M2 T12 logs what it would do). planGroups also never strict-ungroups a dry-run rule's group.
+ */
+export function planTargets(snap: Snapshot, p: Program, ctx: ManagedCtx, now: number = Date.now()): Targets {
   const normal = new Set(snap.windows.filter((w) => w.type === 'normal').map((w) => w.id));
   const tabs = snap.tabs.filter((t) => normal.has(t.windowId)).sort(byPos);
-  const eligible = (t: TabSnap): boolean => !t.pinned && !ctx.leaveAlone.has(t.id) && !isExemptUrl(urlOf(t));
+  const held = new Set<number>();
+  const baseEligible = (t: TabSnap): boolean => !t.pinned && !ctx.leaveAlone.has(t.id) && !isExemptUrl(urlOf(t));
+  const eligible = (t: TabSnap): boolean => baseEligible(t) && !held.has(t.id);
   const matches = new Map<number, GroupMatch>();
   const titleMatch = new Map<string, GroupMatch>();
-  const rules = groupView(config);
+  const byId = new Map(snap.tabs.map((t) => [t.id, t]));
+  const groupTitles = new Map(snap.groups.map((g) => [g.id, g.title]));
   for (const t of tabs) {
-    if (!eligible(t)) continue;
-    const m = evaluateGroupRules(t, rules);
+    if (!baseEligible(t)) continue;
+    const opener = t.openerTabId !== undefined ? byId.get(t.openerTabId) : undefined;
+    const groupTitle = t.groupId !== -1 ? groupTitles.get(t.groupId) : undefined;
+    const m = evaluateGroupRules(t, p, { ...(opener && { opener }), ...(groupTitle !== undefined && { groupTitle }) }, now);
     if (!m) continue;
+    if (m.dryRun) { held.add(t.id); continue; }
     matches.set(t.id, m);
     const prev = titleMatch.get(m.title);
     if (!prev || m.ruleIndex < prev.ruleIndex) titleMatch.set(m.title, m);
@@ -115,8 +128,8 @@ export function planTargets(snap: Snapshot, config: Config, ctx: ManagedCtx): Ta
  * Ids of groups Tabchef manages: titled groups (normal windows) whose title Tabchef created/adopted or that some
  * eligible tab currently targets. The planner and the reconciler's membership tracking share this definition.
  */
-export function managedGroupIds(snap: Snapshot, config: Config, ctx: ManagedCtx, pre?: Targets): Set<number> {
-  return (pre ?? planTargets(snap, config, ctx)).managed;
+export function managedGroupIds(snap: Snapshot, p: Program, ctx: ManagedCtx, pre?: Targets): Set<number> {
+  return (pre ?? planTargets(snap, p, ctx)).managed;
 }
 
 /** Options for syncCreationOrder's deletion of numbers whose group is not live. */
@@ -161,14 +174,14 @@ export function syncCreationOrder(snap: Snapshot, managed: Set<number>, order: M
 /**
  * Plans grouping ops for a snapshot. Pure. Groups are matched by title + window, never by stored id.
  * Windows that get structural ops (group/ungroup/moveTabs) get no moveGroup ops this pass; the reconciler re-plans.
- * `pre` is planTargets(snap, config, ctx) when the caller already computed it this pass.
+ * `pre` is planTargets(snap, p, ctx) when the caller already computed it this pass.
  *
  * Merge titles are global: a title that any merge rule claims (some eligible tab matched it via a merge rule) gets
  * one group across all windows (per incognito-ness), and every tab targeting that title joins it, including tabs
  * matched by a non-merge rule with the same title. Titles no merge rule claims get one group per window.
  */
-export function planGroups(snap: Snapshot, config: Config, ctx: PlanContext, pre?: Targets): Op[] {
-  const { normal, tabs, eligible, matches, titleMatch, managed } = pre ?? planTargets(snap, config, ctx);
+export function planGroups(snap: Snapshot, p: Program, ctx: PlanContext, pre?: Targets): Op[] {
+  const { normal, tabs, eligible, matches, titleMatch, managed } = pre ?? planTargets(snap, p, ctx);
   const mergeTitles = new Set([...matches.values()].filter((m) => m.merge).map((m) => m.title));
   const groupsById = new Map(snap.groups.map((g) => [g.id, g]));
   const incognitoWindows = new Set(tabs.filter((t) => t.incognito).map((t) => t.windowId));
@@ -181,12 +194,19 @@ export function planGroups(snap: Snapshot, config: Config, ctx: PlanContext, pre
   }
 
   const isManaged = (g: GroupSnap): boolean => managed.has(g.id);
-  /** The rule a managed group belongs to: one of its targeting tabs' rule, else the first whose template produces it. */
+  /**
+   * The rule a managed group belongs to: one of its targeting tabs' rule, else the first program rule with a group
+   * action whose title template produces it. A dry-run rule's group is never strict (it must not ungroup live tabs).
+   */
   const ruleFor = (g: GroupSnap): { strict: boolean; ruleId?: string } => {
     const m = titleMatch.get(g.title);
     if (m) return { strict: m.strict, ruleId: m.ruleId };
-    const rule = groupView(config).find((r: GroupRule) => r.enabled && templateProduces(r.group.title, g.title));
-    return rule ? { strict: rule.strict ?? true, ruleId: rule.id } : { strict: true };
+    for (const r of p.rules) {
+      for (const a of r.rule.actions) {
+        if ('group' in a && templateProduces(a.group.title, g.title)) return { strict: !r.dryRun && (a.group.strict ?? true), ruleId: r.key };
+      }
+    }
+    return { strict: true };
   };
   const strictFor = (g: GroupSnap): boolean => ruleFor(g).strict;
 

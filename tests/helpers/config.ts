@@ -1,5 +1,8 @@
 import { defaultConfig } from '../../src/core/config/defaults';
-import { groupRuleToRule, v1DedupeDefaults } from '../../src/core/config/migrate';
+import { groupRuleToRule, migrateConfig, v1DedupeDefaults } from '../../src/core/config/migrate';
+import { compileProgram } from '../../src/core/lang/compile';
+import { builtinRecipes } from '../../src/recipes/load';
+import type { Program, Recipe } from '../../src/core/lang/types';
 import type { Config, ConfigV1, GroupRule } from '../../src/core/types';
 
 /** An M1 (v1) config: the given group rules plus M1's dedupe defaults (no M2 fields). */
@@ -14,4 +17,18 @@ export function withGroupRules(groupRules: GroupRule[], base: Config = defaultCo
     rules: [...base.rules, ...groupRules.map((g) => groupRuleToRule(g))],
     order: [...base.order, ...groupRules.map((g) => `user/${g.id}`)],
   };
+}
+
+/** The compiled Program of `c` (built-in recipe bodies included); compile errors fail the test. */
+export function programOf(c: Config, builtins: Record<string, Recipe> = builtinRecipes()): Program {
+  const { program, errors } = compileProgram(c, builtins);
+  if (errors.length) throw new Error(`compile errors: ${JSON.stringify(errors)}`);
+  return program;
+}
+
+/** M1 group rules as a v1 config, migrated with migrateConfig and compiled: what the engine runs for an M1 user. */
+export function programFromGroupRules(groupRules: GroupRule[], dedupe: Partial<ConfigV1['dedupe']> = {}): Program {
+  const r = migrateConfig(v1Config(groupRules, dedupe));
+  if (!r.ok) throw new Error(r.errors.join('; '));
+  return programOf(r.config);
 }

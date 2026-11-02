@@ -1,11 +1,11 @@
 import { findDuplicate, tabUrl } from '../core/dedupe/find';
-import { evaluateGroupRules } from '../core/group/evaluate';
-import { groupView } from '../core/config/group-view';
+import { evaluateTab } from '../core/lang/evaluate';
 import { normalizeUrl } from '../core/url/normalize';
 import type { Config, TabSnap } from '../core/types';
+import type { Program } from '../core/lang/types';
 import type { BrowserPort } from '../platform/browser-port';
 import type { BannerChoice, BannerShowMessage } from './messages';
-import { withFragment, type LogEntry, type RecentlyClosedEntry } from './dedupe-handler';
+import { dedupeDecision, openerOf, withFragment, type LogEntry, type RecentlyClosedEntry } from './dedupe-handler';
 
 export const PENDING_KEY = 'dedupe.pending';
 export const NOTIFICATION_PREFIX = 'dedupe:';
@@ -32,7 +32,9 @@ export interface AskDeps {
   api: AskApi;
   /** Built path of the runtime-registered banner content script, e.g. '/content-scripts/banner.js'. */
   bannerFile: string;
-  getConfig: () => Promise<Config>;
+  /** The shared compiled Program (background ProgramCache.get, ruling R4); rules and dedupe settings come from it. */
+  getProgram: () => Promise<Program>;
+  /** Config mutations (always-switch sites) still go through the store. */
   updateConfig: (fn: (c: Config) => Config) => Promise<void>;
   recentlyClosed: { add(e: RecentlyClosedEntry): string };
   log: { add(e: LogEntry): void };
@@ -172,8 +174,8 @@ export function createAskController(port: BrowserPort, deps: AskDeps) {
 
   /** Records the pair as pending (badge), resolves, and delivers the prompt in the background. */
   async function ask(newTab: TabSnap, existing: TabSnap): Promise<void> {
-    const cfg = await deps.getConfig();
-    const key = normalizeUrl(newTab.url, cfg.dedupe)?.key ?? newTab.url;
+    const program = await deps.getProgram();
+    const key = normalizeUrl(newTab.url, program.dedupe)?.key ?? newTab.url;
     await mutatePending((l) => [
       ...l.filter((p) => !(p.newTabId === newTab.id && p.existingTabId === existing.id)),
       { newTabId: newTab.id, existingTabId: existing.id, key, at: now() },
@@ -189,8 +191,8 @@ export function createAskController(port: BrowserPort, deps: AskDeps) {
 
   /** Re-checks with dedupe semantics, then closes the new tab and focuses the existing one. Skips silently on mismatch. */
   async function switchTo(newTabId: number, existingTabId: number): Promise<void> {
-    const cfg = await deps.getConfig();
-    const s = cfg.dedupe;
+    const program = await deps.getProgram();
+    const s = program.dedupe;
     const snap = await port.snapshot();
     const cand = snap.tabs.find((t) => t.id === newTabId);
     const existing = snap.tabs.find((t) => t.id === existingTabId);
@@ -198,10 +200,9 @@ export function createAskController(port: BrowserPort, deps: AskDeps) {
     const cur: TabSnap = { ...cand, url: tabUrl(cand) };
     delete cur.pendingUrl;
     const isLocked = deps.isLocked ?? (() => false);
-    const rules = groupView(cfg);
-    const ruleId = evaluateGroupRules(cur, rules)?.ruleId;
-    const ruleMode = ruleId !== undefined ? rules.find((r) => r.id === ruleId)?.dedupe : undefined;
-    const dup = findDuplicate(cur, [existing], s, ruleMode, new Set(isLocked(newTabId) ? [newTabId] : []));
+    // The winning rule's dedupe override (R25), decided as in DedupeHandler.
+    const { o, ruleId } = dedupeDecision(program, evaluateTab(program, { tab: cur, ...openerOf(snap, cur) }, now()));
+    const dup = findDuplicate(cur, [existing], s, o, new Set(isLocked(newTabId) ? [newTabId] : []));
     if (!dup) return;
     const at = now();
     const groupTitle = snap.groups.find((g) => g.id === cand.groupId)?.title;
@@ -212,7 +213,7 @@ export function createAskController(port: BrowserPort, deps: AskDeps) {
     };
     const entryId = deps.recentlyClosed.add(entry);
     await port.closeTab(newTabId);
-    await port.focusTab(existing.id, existing.windowId, s.followFragment ? withFragment(tabUrl(existing), dup.fragment) : undefined);
+    await port.focusTab(existing.id, existing.windowId, (o?.followFragment ?? s.followFragment) ? withFragment(tabUrl(existing), dup.fragment) : undefined);
     deps.log.add({
       tabId: newTabId, action: 'dedupe-close', detail: `Closed duplicate of tab ${existing.id} (${existing.title}) after ask`, at,
       ...(ruleId !== undefined ? { ruleId } : {}),

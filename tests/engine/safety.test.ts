@@ -9,7 +9,7 @@ import { WhyLog } from '../../src/core/safety/why-log';
 import { defaultConfig } from '../../src/core/config/defaults';
 import { FakeBrowserPort } from '../../src/platform/fake-port';
 import type { Config, TabSnap } from '../../src/core/types';
-import { withGroupRules } from '../helpers/config';
+import { withGroupRules, programOf } from '../helpers/config';
 
 type NewTab = Omit<TabSnap, 'index' | 'groupId'> & Partial<Pick<TabSnap, 'index' | 'groupId'>>;
 const PR = 'https://github.com/acme/api/pull/1';
@@ -89,7 +89,7 @@ describe('SafetyService', () => {
       const w = setup();
       w.port.addTab(tab(1, PR, { windowId: 2 }));
       w.port.addTab(tab(2, PR));
-      const h = new DedupeHandler(w.port, async () => defaultConfig(), {
+      const h = new DedupeHandler(w.port, async () => programOf(defaultConfig()), {
         recentlyClosed: w.recentlyClosed, log: new WhyLog(), ask: async () => {},
         isPaused: () => w.svc.isPaused(), isLocked: (id) => w.svc.isLocked(id),
         beforeDecide: () => w.svc.ready,
@@ -259,7 +259,7 @@ describe('SafetyService', () => {
       w.port.addTab(tab(2, 'https://a.com/2'));
       w.svc.lock(1);
       await w.svc.idle();
-      const r = new Reconciler(w.port, async () => cfg, { extraLeaveAlone: () => w.svc.lockedTabIds(), debounceMs: 0 });
+      const r = new Reconciler(w.port, async () => programOf(cfg), { extraLeaveAlone: () => w.svc.lockedTabIds(), debounceMs: 0 });
       await r.flush();
       expect(w.port.state.tabs.find((t) => t.id === 1)!.groupId).toBe(-1);
       expect(w.port.state.tabs.find((t) => t.id === 2)!.groupId).not.toBe(-1);
@@ -273,7 +273,7 @@ describe('SafetyService', () => {
       w.port.addTab(tab(1, PR, { windowId: 2 }));
       w.port.addTab(tab(2, `${PR}/files`));
       w.svc.lock(2);
-      const h = new DedupeHandler(w.port, async () => defaultConfig(), {
+      const h = new DedupeHandler(w.port, async () => programOf(defaultConfig()), {
         recentlyClosed: w.recentlyClosed, log: new WhyLog(), ask: async () => {},
         isPaused: () => w.svc.isPaused(), isLocked: (id) => w.svc.isLocked(id),
       });
@@ -287,7 +287,7 @@ describe('SafetyService', () => {
       w.port.addTab(tab(1, PR, { windowId: 2 }));
       w.port.addTab(tab(2, `${PR}/files`));
       w.svc.lock(1);
-      const h = new DedupeHandler(w.port, async () => defaultConfig(), {
+      const h = new DedupeHandler(w.port, async () => programOf(defaultConfig()), {
         recentlyClosed: w.recentlyClosed, log: new WhyLog(), ask: async () => {},
         isPaused: () => false, isLocked: (id) => w.svc.isLocked(id),
       });
@@ -357,7 +357,7 @@ describe('SafetyService', () => {
           const cfg: Config = { ...base, dedupe: { ...base.dedupe, mode } };
           w.port.addTab(tab(1, PR, { windowId: 1 }));
           const ask = vi.fn(async () => {});
-          const handler = new DedupeHandler(w.port, async () => cfg, {
+          const handler = new DedupeHandler(w.port, async () => programOf(cfg), {
             recentlyClosed: w.recentlyClosed, log: new WhyLog(), ask, isPaused: () => false, isLocked: () => false,
           });
           const svc = new SafetyService(w.port, {
@@ -398,11 +398,11 @@ describe('SafetyService', () => {
       const w = setup();
       const cfg: Config = withGroupRules([{ id: 'gh', name: 'gh', enabled: true, match: { url: 'https://github.com/**' }, group: { title: 'GH', color: 'blue' } }]);
       w.port.addTab(tab(1, PR, { windowId: 1 }));
-      const handler = new DedupeHandler(w.port, async () => cfg, {
+      const handler = new DedupeHandler(w.port, async () => programOf(cfg), {
         recentlyClosed: w.recentlyClosed, log: new WhyLog(), ask: async () => {},
         isPaused: () => false, isLocked: () => false,
       });
-      const rec = new Reconciler(w.port, async () => cfg, { debounceMs: 0 });
+      const rec = new Reconciler(w.port, async () => programOf(cfg), { debounceMs: 0 });
       const svc = new SafetyService(w.port, {
         recentlyClosed: w.recentlyClosed, log: new WhyLog(), schedule: (r) => rec.schedule(r),
         exemptOnce: (id) => handler.exemptOnce(id), armExemption: (u, win) => handler.armExemption(u, win), api: w.api, bannerFile: 'b.js',

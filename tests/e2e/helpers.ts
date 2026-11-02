@@ -7,7 +7,7 @@ import { join, resolve } from 'node:path';
 import type { Config, GroupRule } from '../../src/core/types';
 import { groupRuleToRule, userKey } from '../../src/core/config/migrate';
 import { defaultConfig } from '../../src/core/config/defaults';
-import { STARTUP_GRACE_MS, SESSION_MARKER } from '../../src/engine/dedupe-handler';
+import { STARTUP_GRACE_MS, SESSION_MARKER } from '../../src/engine/dedupe-constants';
 
 export const EXT_PATH = resolve(import.meta.dirname, '../../.output/chrome-mv3');
 

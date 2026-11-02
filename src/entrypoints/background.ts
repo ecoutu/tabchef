@@ -8,6 +8,7 @@ import {
 } from '../engine/messages';
 import { listPendingAsks } from '../engine/ask';
 import { DedupeHandler } from '../engine/dedupe-handler';
+import { ProgramCache } from '../engine/program-cache';
 import { Reconciler } from '../engine/reconciler';
 import { SafetyService } from '../engine/safety';
 import { ChromePort } from '../platform/chrome-port';
@@ -15,7 +16,10 @@ import { ConfigStore } from '../storage/config-store';
 
 export default defineBackground(() => {
   const store = new ConfigStore();
-  const getConfig = () => store.get();
+  // One compiled Program for every engine consumer (ruling R4); recompiled when the config revision changes.
+  // The paused set (rules waiting for a permission) arrives with the PermissionsManager (M2 T8).
+  const programs = new ProgramCache(() => store.get());
+  const getProgram = () => programs.get();
   const updateConfig = async (fn: (c: Config) => Config) => {
     await store.update(fn);
   };
@@ -24,7 +28,7 @@ export default defineBackground(() => {
   const recentlyClosed = new RecentlyClosed();
   const warn = (what: string) => (e: unknown) => console.warn(`[tabchef] ${what} failed`, e);
   // `safety` is used lazily by the closures below (it needs the reconciler and dedupe handler, which need it).
-  const reconciler = new Reconciler(port, getConfig, {
+  const reconciler = new Reconciler(port, getProgram, {
     log: whyLog,
     isPaused: () => safety.isPaused(),
     beforeRun: () => safety.ready,
@@ -72,7 +76,7 @@ export default defineBackground(() => {
       },
     },
     bannerFile: 'content-scripts/banner.js',
-    getConfig,
+    getProgram,
     updateConfig,
     recentlyClosed,
     log: whyLog,
@@ -81,7 +85,7 @@ export default defineBackground(() => {
     isLocked: (id) => safety.isLocked(id),
     onClosed: (id, entry, focused) => { safety.toast(id, entry, focused).catch(warn('undo toast')); },
   });
-  const dedupe: DedupeHandler = new DedupeHandler(port, getConfig, {
+  const dedupe: DedupeHandler = new DedupeHandler(port, getProgram, {
     recentlyClosed,
     log: whyLog,
     ask: askController.ask,
@@ -170,7 +174,8 @@ export default defineBackground(() => {
   const badgeDeps = {
     port,
     isLocked: (id: number) => safety.isLocked(id),
-    getSettings: async () => (await store.get()).dedupe,
+    // Effective settings (config dedupe + recipe urlTransforms), so the popup and badge agree with the engine.
+    getSettings: async () => (await getProgram()).dedupe,
     ask: {
       listPending: () => listPendingAsks(session),
       resolvePending: (n: number, e: number, c: 'switch' | 'keep') => askController.resolvePending(n, e, c),

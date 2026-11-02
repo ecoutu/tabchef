@@ -1,4 +1,4 @@
-import type { DedupeSettings } from '../types';
+import type { DedupeOverride, DedupeSettings } from '../types';
 import { canonicalizers } from './canonicalizers';
 
 const EXEMPT_PROTOCOLS = new Set([
@@ -29,9 +29,11 @@ function shouldStrip(name: string, patterns: string[]): boolean {
   return patterns.some((p) => (p.endsWith('*') ? name.startsWith(p.slice(0, -1)) : name === p));
 }
 
+/** Dedupe key of `url` and its #fragment, or null for exempt/unparseable URLs. `o.keepFragment` wins over s.stripFragment. */
 export function normalizeUrl(
   url: string,
   s: NormSettings,
+  o?: Pick<DedupeOverride, 'keepFragment'>,
 ): { key: string; fragment: string } | null {
   try {
     let u = parse(url);
@@ -54,7 +56,7 @@ export function normalizeUrl(
       u.pathname = u.pathname.replace(/\/+$/, '') || '/';
     }
 
-    if (s.stripFragment) u.hash = '';
+    if (o?.keepFragment !== undefined ? !o.keepFragment : s.stripFragment) u.hash = '';
 
     let key = u.href;
     for (const t of s.urlTransforms) {

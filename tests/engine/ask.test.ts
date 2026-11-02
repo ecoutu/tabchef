@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { programOf } from '../helpers/config';
 import { createAskController, listPendingAsks, PENDING_KEY, type AskApi, type AskDeps } from '../../src/engine/ask';
 import { compilePattern } from '../../src/core/match/pattern';
 import { defaultConfig } from '../../src/core/config/defaults';
@@ -38,7 +39,7 @@ function setup(over: Partial<AskDeps> = {}) {
   const deps: AskDeps = {
     api,
     bannerFile: '/content-scripts/banner.js',
-    getConfig: async () => cfg,
+    getProgram: async () => programOf(cfg),
     updateConfig: async (fn) => { cfg = fn(cfg); },
     recentlyClosed: { add: (e) => { closed.push(e); return 'rc'; } },
     log: { add: (e) => { logs.push(e); } },

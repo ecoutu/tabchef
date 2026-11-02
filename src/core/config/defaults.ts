@@ -13,7 +13,7 @@ export function defaultConfig(): Config {
     version: 2,
     rules: [],
     recipes: builtinRecipeRefs(),
-    // Built-in recipe rules are appended at compile time (M2 T4); their bodies land in T5/T6.
+    // Built-in recipe rules are appended at compile time (M2 T4); their bodies are src/recipes/builtin/*.yaml.
     order: [],
     tables: {},
     dedupe: {
@@ -22,7 +22,7 @@ export function defaultConfig(): Config {
       stripParams: ['utm_*', 'fbclid', 'gclid', 'mc_cid', 'mc_eid'],
       stripFragment: true,
       ignoreTrailingSlash: true,
-      canonicalizers: ['githubPr'],
+      canonicalizers: [], // github-prs is a recipe now (M2 T6)
       followFragment: true,
       allowDuplicates: [],
       alwaysSwitchSites: [],

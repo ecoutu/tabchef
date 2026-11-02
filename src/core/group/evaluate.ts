@@ -1,54 +1,25 @@
-import { isExemptUrl } from '../url/normalize';
-import { compilePattern, PatternError } from '../match/pattern';
-import { renderTemplate } from '../match/template';
-import type { GroupColor, GroupRule, TabSnap } from '../types';
+// The group target of one tab under a compiled Program (M2 T6): a thin wrapper over evaluateTab(...).group.
+// The pinned/exempt skips and "an empty rendered title is no match" invariants live in evaluateTab (ruling R7).
+import { evaluateTab, type GroupResult } from '../lang/evaluate';
+import type { Program, TabFacts } from '../lang/types';
+import type { TabSnap } from '../types';
 
-export interface GroupMatch {
+/**
+ * M1's GroupMatch plus the M2 fields. `ruleId` is the rule key (= `key`, ruling R19) and `ruleIndex` its priority
+ * (= `index`), so the planner keeps using the M1 names.
+ */
+export interface GroupTarget extends GroupResult {
   ruleId: string;
   ruleIndex: number;
-  title: string;
-  color: GroupColor;
-  collapsed: boolean;
-  sortGroups: 'creation' | 'alphabetical';
-  strict: boolean;
-  merge: boolean;
 }
+/** M1 name, kept for the planner. */
+export type GroupMatch = GroupTarget;
 
-function firstCaptures(patterns: string[], url: string): Record<string, string> | null {
-  for (const p of patterns) {
-    try {
-      const caps = compilePattern(p)(url);
-      if (caps) return caps;
-    } catch (e) {
-      if (!(e instanceof PatternError)) throw e;
-    }
-  }
-  return null;
-}
-
-/** First enabled rule (array order = priority) matching the tab with a non-empty title, or null. Pure. */
-export function evaluateGroupRules(tab: TabSnap, rules: GroupRule[]): GroupMatch | null {
-  if (tab.pinned) return null;
-  const url = tab.pendingUrl ? tab.pendingUrl : tab.url;
-  if (isExemptUrl(url)) return null;
-  for (let i = 0; i < rules.length; i++) {
-    const rule = rules[i] as GroupRule;
-    if (!rule.enabled) continue;
-    const patterns = Array.isArray(rule.match.url) ? rule.match.url : [rule.match.url];
-    const caps = firstCaptures(patterns, url);
-    if (!caps) continue;
-    const title = renderTemplate(rule.group.title, caps);
-    if (title === '') continue; // an empty title would adopt the user's untitled groups: no match
-    return {
-      ruleId: rule.id,
-      ruleIndex: i,
-      title,
-      color: rule.group.color,
-      collapsed: rule.group.collapsed ?? false,
-      sortGroups: rule.sortGroups ?? 'creation',
-      strict: rule.strict ?? true,
-      merge: rule.merge ?? false,
-    };
-  }
-  return null;
+/**
+ * The winning group action for `tab` (highest-priority matching rule with a non-empty title), or null. Pure.
+ * `facts` adds what the snapshot alone does not say (opener, current group title, creation time, page facts).
+ */
+export function evaluateGroupRules(tab: TabSnap, p: Program, facts?: Partial<TabFacts>, now: number = Date.now()): GroupTarget | null {
+  const g = evaluateTab(p, { ...facts, tab }, now).group;
+  return g ? { ...g, ruleId: g.key, ruleIndex: g.index } : null;
 }

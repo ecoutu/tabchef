@@ -44,7 +44,8 @@ const M2_DEDUPE_FIELDS = new Set(['fragmentOverrides', 'matchTitle', 'titleOverr
 
 /** M1's dedupe defaults: the current defaults without the M2 fields. */
 export function v1DedupeDefaults(): DedupeSettingsV1 {
-  return Object.fromEntries(Object.entries(defaultConfig().dedupe).filter(([k]) => !M2_DEDUPE_FIELDS.has(k))) as unknown as DedupeSettingsV1;
+  const d = Object.fromEntries(Object.entries(defaultConfig().dedupe).filter(([k]) => !M2_DEDUPE_FIELDS.has(k))) as unknown as DedupeSettingsV1;
+  return { ...d, canonicalizers: ['githubPr'] }; // M1's default; M2 defaults name none (github-prs is a recipe)
 }
 
 /**
@@ -86,7 +87,8 @@ function fromV1(c: ConfigV1): ConfigV2 {
     // User rules keep their M1 priority; built-in recipe keys are appended at compile time (M2 T4).
     order: rules.map((r) => userKey(r.id)),
     tables: {},
-    dedupe: { ...c.dedupe, fragmentOverrides: d.dedupe.fragmentOverrides, matchTitle: d.dedupe.matchTitle, titleOverrides: d.dedupe.titleOverrides },
+    // 'githubPr' became the github-prs recipe (enabled above), so it is dropped from the canonicalizers.
+    dedupe: { ...c.dedupe, canonicalizers: c.dedupe.canonicalizers.filter((id) => id !== 'githubPr'), fragmentOverrides: d.dedupe.fragmentOverrides, matchTitle: d.dedupe.matchTitle, titleOverrides: d.dedupe.titleOverrides },
     dryRun: false,
   };
 }

@@ -1,0 +1,22 @@
+# GitHub pull requests: a PR's sub-pages (files, commits, checks) de-duplicate to the PR itself.
+# Replaces M1's built-in `githubPr` canonicalizer (M2 T6). The pattern is anchored to the github.com host, as M1
+# checked the hostname exactly; the query is kept (strip params such as `w` with dedupe.stripParams).
+recipe: github-prs
+version: 1
+name: GitHub pull requests
+description: Treats a pull request's Files, Commits and Checks pages as the same tab as the pull request.
+dedupe:
+  urlTransforms:
+    - pattern: '^(https?://github\.com/[^/?#]+/[^/?#]+/pull/\d+)(?:/(?:files|commits|checks)(?:/[^?#]*)?)?/?(?=[?#]|$)'
+      replacement: '$1'
+rules:
+  - id: group-by-repo
+    name: Group GitHub tabs by repository
+    enabled: false
+    match:
+      url: 'github.com/:owner/:repo*'
+    actions:
+      - group:
+          title: '{repo}'
+          color: grey
+          merge: true

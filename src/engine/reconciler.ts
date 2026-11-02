@@ -1,6 +1,6 @@
 import { planGroups, planTargets, syncCreationOrder, type PlanContext, type Targets } from '../core/group/plan';
-import type { Config, Op, Snapshot } from '../core/types';
-import { userKey } from '../core/config/migrate';
+import type { Op, Snapshot } from '../core/types';
+import type { Program } from '../core/lang/types';
 import type { BrowserPort } from '../platform/browser-port';
 import { DragRetryExhausted, withDragRetry } from '../platform/retry';
 import { EXPECTATION_TTL_MS, loadState, saveState, type LiveState } from './state';
@@ -19,6 +19,8 @@ export interface ReconcilerOptions {
   /** Tab ids (e.g. locked tabs) merged into the planner's leaveAlone at plan time; never persisted. */
   extraLeaveAlone?: () => Iterable<number>;
   now?: () => number;
+  /** Console-level warnings (a rule whose color renders outside Chrome's 9 colors). Default: console.warn. */
+  warn?: (message: string) => void;
 }
 
 const MAX_PASSES = 3;
@@ -46,10 +48,13 @@ export class Reconciler {
   private again = false;
   private pendingAfterDrag = false;
   private readonly now: () => number;
+  /** Rule keys already warned about an invalid rendered color (once per key, not per tab). */
+  private readonly warnedColor = new Set<string>();
 
   constructor(
     private readonly port: BrowserPort,
-    private readonly getConfig: () => Promise<Config>,
+    /** The shared compiled Program (background ProgramCache.get, ruling R4). */
+    private readonly getProgram: () => Promise<Program>,
     private readonly opts: ReconcilerOptions = {},
   ) {
     this.debounceMs = opts.debounceMs ?? 150;
@@ -144,21 +149,22 @@ export class Reconciler {
     const st = await this.load();
     this.clearPendingDrag();
     try {
-      const config = await this.getConfig();
+      const program = await this.getProgram();
       await this.retitlePending(st);
       for (let pass = 0; ; pass++) {
         const snap = await this.port.snapshot();
         const extra = this.opts.extraLeaveAlone?.();
         const ctx: PlanContext = extra ? { ...st, leaveAlone: new Set([...st.leaveAlone, ...extra]) } : st;
-        const pre = planTargets(snap, config, ctx); // once per pass, shared by tracking and planning
+        const pre = planTargets(snap, program, ctx, this.now()); // once per pass, shared by tracking and planning
+        this.warnInvalidColors(pre);
         this.track(snap, st, pre, pass === 0);
-        const ops = planGroups(snap, config, ctx, pre);
+        const ops = planGroups(snap, program, ctx, pre);
         if (ops.length === 0) break;
         if (pass === MAX_PASSES) {
           this.log({ action: 'reconcile-not-converged', detail: `${ops.length} op(s) still planned after ${MAX_PASSES} passes` });
           break;
         }
-        for (const op of ops) await this.apply(op, snap, st, config);
+        for (const op of ops) await this.apply(op, snap, st, program);
       }
     } catch (e) {
       if (e instanceof DragRetryExhausted) {
@@ -176,6 +182,15 @@ export class Reconciler {
     } finally {
       this.pruneExpectations(st);
       await saveState(st);
+    }
+  }
+
+  /** evaluateTab flags a color that rendered outside Chrome's colors (grey is used); warn once per rule key. */
+  private warnInvalidColors(pre: Targets): void {
+    for (const m of pre.matches.values()) {
+      if (!m.invalidColor || this.warnedColor.has(m.key)) continue;
+      this.warnedColor.add(m.key);
+      (this.opts.warn ?? console.warn)(`[tabchef] rule ${m.key}: group color is not a Chrome color; using grey`);
     }
   }
 
@@ -267,15 +282,15 @@ export class Reconciler {
     return withDragRetry(fn);
   }
 
-  private ruleName(config: Config, ruleId: string | undefined): string | undefined {
+  private ruleName(p: Program, ruleId: string | undefined): string | undefined {
     if (ruleId === undefined) return undefined;
     // ruleId is a rule key (R19); M1 why-log entries may still hold a bare id.
-    return config.rules.find((r) => userKey(r.id) === ruleId)?.name || ruleId;
+    return p.rules.find((r) => r.key === ruleId)?.rule.name || ruleId;
   }
 
   /** One why-log entry per tab that really joined `title` (tabs already in a group of that title are skipped). */
-  private logJoined(snap: Snapshot, config: Config, tabIds: number[], title: string, ruleId: string | undefined): void {
-    const name = this.ruleName(config, ruleId);
+  private logJoined(snap: Snapshot, p: Program, tabIds: number[], title: string, ruleId: string | undefined): void {
+    const name = this.ruleName(p, ruleId);
     for (const tabId of tabIds) {
       const from = snap.tabs.find((t) => t.id === tabId)?.groupId ?? -1;
       if (from !== -1 && snap.groups.find((g) => g.id === from)?.title === title) continue;
@@ -283,7 +298,7 @@ export class Reconciler {
     }
   }
 
-  private async apply(op: Op, snap: Snapshot, st: LiveState, config: Config): Promise<void> {
+  private async apply(op: Op, snap: Snapshot, st: LiveState, program: Program): Promise<void> {
     const titleOf = (gid: number) => snap.groups.find((g) => g.id === gid)?.title;
     switch (op.kind) {
       case 'group': {
@@ -306,7 +321,7 @@ export class Reconciler {
           st.pendingTitles.delete(gid);
         }
         this.adopt(st, gid, title, op.tabIds);
-        this.logJoined(snap, config, op.tabIds, title, op.ruleId);
+        this.logJoined(snap, program, op.tabIds, title, op.ruleId);
         return;
       }
       case 'ungroup': {
@@ -314,7 +329,7 @@ export class Reconciler {
         await this.call(() => this.port.ungroup(op.tabIds));
         this.refresh(st, expected);
         for (const id of op.tabIds) st.managedTabs.delete(id);
-        const name = this.ruleName(config, op.ruleId);
+        const name = this.ruleName(program, op.ruleId);
         for (const tabId of op.tabIds) {
           const gid = snap.tabs.find((t) => t.id === tabId)?.groupId ?? -1;
           const from = gid === -1 ? undefined : titleOf(gid);
@@ -334,7 +349,7 @@ export class Reconciler {
         this.refresh(st, expected);
         const title = titleOf(op.groupId);
         this.adopt(st, op.groupId, title, op.tabIds);
-        if (title !== undefined) this.logJoined(snap, config, op.tabIds, title, op.ruleId);
+        if (title !== undefined) this.logJoined(snap, program, op.tabIds, title, op.ruleId);
         return;
       }
       case 'moveGroup':

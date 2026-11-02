@@ -3,7 +3,8 @@ import { DedupeHandler, SESSION_MARKER, type DedupeDeps } from '../../src/engine
 import { defaultConfig } from '../../src/core/config/defaults';
 import { FakeBrowserPort } from '../../src/platform/fake-port';
 import type { Config, TabSnap } from '../../src/core/types';
-import { withGroupRules } from '../helpers/config';
+import type { Rule } from '../../src/core/lang/types';
+import { withGroupRules, programOf } from '../helpers/config';
 
 type NewTab = Omit<TabSnap, 'index' | 'groupId'> & Partial<Pick<TabSnap, 'index' | 'groupId'>>;
 const PR = 'https://github.com/acme/api/pull/1';
@@ -30,7 +31,7 @@ function setup(cfg: Config = defaultConfig(), over: Partial<DedupeDeps> = {}) {
     now: clock.now,
     ...over,
   };
-  const h = new DedupeHandler(port, async () => cfg, deps);
+  const h = new DedupeHandler(port, async () => programOf(cfg), deps);
   const calls = (m: string) => port.calls.filter((c) => c.method === m).map((c) => c.args);
   return { port, h, clock, closed, logs, ask, calls };
 }
@@ -663,5 +664,67 @@ describe('DedupeHandler onClosed / exemptOnce', () => {
     w.port.state.tabs.find((t) => t.id === 2)!.url = 'https://example.com/a';
     await w.h.onCandidate(2, 'https://example.com/a', 'pending');
     expect(w.calls('closeTab')).toEqual([[2]]);
+  });
+});
+
+describe('DedupeHandler: compiled program (M2 T6)', () => {
+  const v2 = (rules: Rule[], o: Partial<Config> = {}): Config => ({ ...defaultConfig(), rules, ...o });
+  const dd = (dedupe: Rule['actions'][number] & { dedupe: object }): Rule => ({ id: 'd', name: 'D', enabled: true, match: { url: 'github.com/**' }, actions: [dedupe] });
+
+  it('without the github-prs recipe, /pull/1/files is not a duplicate of /pull/1', async () => {
+    const c = defaultConfig();
+    const w = setup({ ...c, recipes: c.recipes.map((r) => (r.id === 'github-prs' ? { ...r, enabled: false } : r)) });
+    w.port.addTab(tab(1, PR));
+    w.port.addTab(tab(2, `${PR}/files`));
+    w.h.recordCreated(2);
+    await w.h.onCandidate(2, `${PR}/files`, 'pending');
+    expect(w.calls('closeTab')).toEqual([]);
+  });
+
+  it('a dedupe-only rule override applies (R8: first dedupe action wins) and is recorded as the rule', async () => {
+    const w = setup(v2([dd({ dedupe: { followFragment: false } })]));
+    w.port.addTab(tab(1, PR));
+    w.port.addTab(tab(2, `${PR}#discussion_r1`));
+    w.h.recordCreated(2);
+    await w.h.onCandidate(2, `${PR}#discussion_r1`, 'pending');
+    expect(w.calls('focusTab')).toEqual([[1, 1, undefined]]);
+    expect(w.closed[0]).toMatchObject({ ruleId: 'user/d' });
+  });
+
+  it('keepFragment override: tabs on different fragments are not duplicates', async () => {
+    const w = setup(v2([dd({ dedupe: { keepFragment: true } })]));
+    w.port.addTab(tab(1, `${PR}#a`));
+    w.port.addTab(tab(2, `${PR}#b`));
+    w.port.addTab(tab(3, `${PR}#a`));
+    w.h.recordCreated(2);
+    w.h.recordCreated(3);
+    await w.h.onCandidate(2, `${PR}#b`, 'pending');
+    expect(w.calls('closeTab')).toEqual([]);
+    await w.h.onCandidate(3, `${PR}#a`, 'pending');
+    expect(w.calls('closeTab')).toEqual([[3]]);
+  });
+
+  it('mode override from a rule matched only through its opener', async () => {
+    const r: Rule = { id: 'o', name: 'o', enabled: true, match: { opener: { url: 'a.com/*' } }, actions: [{ dedupe: { mode: 'off' } }] };
+    const w = setup(v2([r]));
+    w.port.addTab(tab(9, 'https://a.com/x'));
+    w.port.addTab(tab(1, PR));
+    w.port.addTab(tab(2, PR, { openerTabId: 9 }));
+    w.h.recordCreated(2);
+    await w.h.onCandidate(2, PR, 'pending');
+    expect(w.calls('closeTab')).toEqual([]);
+  });
+});
+
+describe('DedupeHandler: dry-run dedupe actions', () => {
+  it('a dry-run rule with dedupe mode off has no live effect: the global always-switch applies', async () => {
+    const r: Rule = { id: 'd', name: 'D', enabled: true, dryRun: true, match: { url: 'github.com/**' }, actions: [{ dedupe: { mode: 'off' } }] };
+    const w = setup({ ...defaultConfig(), rules: [r] });
+    w.port.addTab(tab(1, PR));
+    w.port.addTab(tab(2, PR));
+    w.h.recordCreated(2);
+    await w.h.onCandidate(2, PR, 'pending');
+    expect(w.calls('closeTab')).toEqual([[2]]);
+    expect(w.closed[0]?.ruleId).toBeUndefined();
   });
 });

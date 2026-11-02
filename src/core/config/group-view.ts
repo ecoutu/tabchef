@@ -1,5 +1,5 @@
-// Narrow M1-engine shim (ruling R3): the v2 rules the M1 grouping/dedupe engine can run, as M1 GroupRules.
-// Replaced by the compiled Program in M2 T6.
+// The v2 rules the M1 rule form can edit, as M1 GroupRules (ruling R3). The engine runs the compiled Program since
+// M2 T6; the options UI uses this until the M2 rule editor (T15).
 import type { Config, DedupeMode, GroupColor, GroupRule } from '../types';
 import type { Rule } from '../lang/types';
 import { userKey } from './migrate';
@@ -42,15 +42,4 @@ export function orderedUserRules(c: Config): Rule[] {
     if (r) { out.push(r); byKey.delete(k); }
   }
   return [...out, ...byKey.values()];
-}
-
-/**
- * The rules the M1 engine runs, in priority order, with `id` = the rule key ('user/<id>', ruling R19) so every
- * ruleId the engine records is a key. Rules asGroupRule rejects are skipped (they wait for the T6 engine).
- */
-export function groupView(c: Config): GroupRule[] {
-  return orderedUserRules(c).flatMap((r) => {
-    const g = asGroupRule(r);
-    return g ? [{ ...g, id: userKey(r.id) }] : [];
-  });
 }
