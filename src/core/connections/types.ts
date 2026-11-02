@@ -12,6 +12,7 @@ export interface ConnectionDef {
   scopes: string[];
   jira?: { site: string; email?: string; tokenKind: 'scoped' | 'classic'; cloudId?: string; tokenExpiresAt?: number };
   revokeUrl?: string; // shown on the Connections page
+  login?: string; // account name shown on the Connections page (metadata only)
 }
 export type ConnectionState = 'not-configured' | 'ok' | 'needs-reauth' | 'rate-limited' | 'error';
 export interface ConnectionStatus {

@@ -70,6 +70,11 @@ export class SecretStore {
     await this.local.set({ [secretKey(id)]: s });
   }
 
+  /** Drops only the short-lived access token (e.g. when a device-flow connection switches to a PAT). */
+  async clearAccess(id: string): Promise<void> {
+    await this.session.remove(accessKey(id));
+  }
+
   async clear(id: string): Promise<void> {
     await Promise.all([this.local.remove(secretKey(id)), this.session.remove(accessKey(id))]);
   }
