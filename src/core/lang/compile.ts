@@ -16,8 +16,8 @@
 // every rule goes through the same checks as a user rule (validateRule + ruleProblems).
 //
 // Needs (R5, T10): `Program.needs` has an entry per enabled recipe, keyed by recipe id (recipe-level needs, empty
-// lists when none), plus one per enabled recipe rule that declares `needs`, keyed by rule key (a rule off in its body or
-// in RecipeRef.disabledRules, R55, has none). Paused recipes and
+// lists when none), plus one per enabled recipe rule that declares `needs`, keyed by rule key. "Enabled" is effective
+// (R56): RecipeRef.ruleEnabled[ruleId] overrides the body's `enabled` in both directions. Paused recipes and
 // rules keep their entries (PermissionsManager reads needs from the program it pauses). User rules may not declare
 // needs (R44); one that does is reported and skipped.
 //
@@ -154,7 +154,7 @@ function ruleErrors(rule: unknown, tables: Tables): string[] {
   return ruleProblems(rule as Rule, tables).map((p) => `${p.path} ${p.message}`);
 }
 
-interface Candidate { id: string; source: RecipeRef['source']; body: Recipe; disabled: Set<string> }
+interface Candidate { id: string; source: RecipeRef['source']; body: Recipe; overrides: Map<string, boolean> }
 
 /** Enabled recipes with their params substituted; failures go to `errors`. */
 function resolveRecipes(config: Config, builtins: Record<string, Recipe>, errors: CompileError[]): Candidate[] {
@@ -199,8 +199,8 @@ function resolveRecipes(config: Config, builtins: Record<string, Recipe>, errors
       continue;
     }
     if (body.views !== undefined && !(Array.isArray(body.views) && body.views.every(isObj))) { errors.push({ key: id, error: 'malformed views' }); continue; }
-    const disabled = new Set(Array.isArray(ref.disabledRules) ? ref.disabledRules.filter((x): x is string => typeof x === 'string') : []);
-    out.push({ id, source: ref.source, body, disabled });
+    const overrides = new Map(isObj(ref.ruleEnabled) ? Object.entries(ref.ruleEnabled).filter((e): e is [string, boolean] => typeof e[1] === 'boolean') : []);
+    out.push({ id, source: ref.source, body, overrides });
   }
   return out;
 }
@@ -244,14 +244,17 @@ export function compileProgram(
     const errs: CompileError[] = [];
     const ids = new Set<string>();
     const rules: Rule[] = [];
-    c.body.rules.forEach((r, i) => {
-      const key = `${c.id}/${isObj(r) && typeof r.id === 'string' ? r.id : `#${i}`}`;
-      if (!isObj(r) || r.enabled === false || c.disabled.has(r.id)) return; // R55: user-disabled rules too (no needs)
+    c.body.rules.forEach((raw, i) => {
+      const key = `${c.id}/${isObj(raw) && typeof raw.id === 'string' ? raw.id : `#${i}`}`;
+      if (!isObj(raw)) return;
+      // R56: the user's override, else the body default. An effectively-off rule is skipped (no needs, never compiled).
+      if (!(c.overrides.get(raw.id) ?? raw.enabled !== false)) return;
+      const r: Rule = raw.enabled === true ? raw : { ...raw, enabled: true };
       const es = ruleErrors(r, checkTables);
       if (ids.has(r.id)) es.push('duplicate rule id');
       ids.add(r.id);
       if (es.length) errs.push({ key, error: es.join('; ') });
-      else if (r.enabled) rules.push(r);
+      else rules.push(r);
     });
     if (errs.length) errors.push(...errs);
     else recipes.push({ c, rules });

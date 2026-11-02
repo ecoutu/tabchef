@@ -100,12 +100,18 @@ describe('Recipes: cards', () => {
     ]);
   });
 
-  it('a rule turned off in #/rules (disabledRules, R55) shows Off', async () => {
+  it('a rule turned off in #/rules (ruleEnabled, R56) shows Off; one turned on shows Active', async () => {
     items = [finishedItem({ enabled: true }, true)];
-    const saved = { ...defaultConfig(), recipes: defaultConfig().recipes.map((r) => (r.id === 'finished' ? { ...r, enabled: true, disabledRules: ['redirect'] } : r)) };
+    const saved = { ...defaultConfig(), recipes: defaultConfig().recipes.map((r) => (r.id === 'finished' ? { ...r, enabled: true, ruleEnabled: { redirect: false } } : r)) };
     render(Recipes, props({ saved }));
     const c = await card('Finished');
     expect(c.querySelector('[data-rule="finished/redirect"]')!.textContent).toBe('Close redirect landing tabs: Off');
+    cleanup();
+    items = [{ ...finishedItem({ enabled: true }, true), id: 'github-prs', name: 'GitHub pull requests', paramDefs: {}, rules: {} }];
+    const gh = { ...defaultConfig(), recipes: defaultConfig().recipes.map((r) => (r.id === 'github-prs' ? { ...r, ruleEnabled: { 'group-by-repo': true } } : r)) };
+    render(Recipes, props({ saved: gh }));
+    const g = await card('GitHub pull requests');
+    expect(g.querySelector('[data-rule="github-prs/group-by-repo"]')!.textContent).toBe('Group GitHub tabs by repository: Active');
   });
 
   it('shows a paused recipe\'s own reason', async () => {

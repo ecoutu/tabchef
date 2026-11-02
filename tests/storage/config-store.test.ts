@@ -38,11 +38,11 @@ describe('ConfigStore', () => {
     expect(await mk().get()).toEqual(defaultConfig());
   });
 
-  it('R55: a stored v2 config without disabledRules loads unchanged; one with it round-trips', async () => {
+  it('R56: a stored v2 config without ruleEnabled loads unchanged; one with it round-trips', async () => {
     const old = withGroupRules([{ id: 'a', name: 'A', enabled: true, match: { url: 'a.com/*' }, group: { title: 'A', color: 'blue' } }]);
     await putSync(JSON.stringify(old));
     expect(await mk().get()).toEqual(old);
-    const off: Config = { ...old, recipes: old.recipes.map((r) => (r.id === 'finished' ? { ...r, disabledRules: ['meet-ended'] } : r)) };
+    const off: Config = { ...old, recipes: old.recipes.map((r) => (r.id === 'finished' ? { ...r, ruleEnabled: { 'meet-ended': false } } : r)) };
     const a = mk();
     await a.set(off);
     await a.flush();

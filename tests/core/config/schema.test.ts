@@ -249,13 +249,14 @@ describe('config schema: stored user recipe bodies (R41)', () => {
   });
 });
 
-describe('RecipeRef.disabledRules (R55)', () => {
+describe('RecipeRef.ruleEnabled (R56)', () => {
   it('an old config without the field validates; the field takes a list of rule ids', () => {
     expect(validateConfig(defaultConfig()).ok).toBe(true);
     const c = defaultConfig();
-    c.recipes = c.recipes.map((r) => (r.id === 'finished' ? { ...r, disabledRules: ['meet-ended'] } : r));
+    c.recipes = c.recipes.map((r) => (r.id === 'finished' ? { ...r, ruleEnabled: { 'meet-ended': false } } : r));
     expect(validateConfig(c).ok).toBe(true);
-    const bad = { ...c, recipes: c.recipes.map((r) => ({ ...r, disabledRules: ['Bad Id!'] })) };
-    expect(validateConfig(bad).ok).toBe(false);
+    expect(validateConfig({ ...c, recipes: c.recipes.map((r) => ({ ...r, ruleEnabled: { 'Bad Id!': true } })) }).ok).toBe(false);
+    expect(validateConfig({ ...c, recipes: c.recipes.map((r) => ({ ...r, ruleEnabled: { ok: 'yes' } })) }).ok).toBe(false);
+    expect(validateConfig({ ...c, recipes: c.recipes.map((r) => ({ ...r, disabledRules: ['x'] })) }).ok).toBe(false); // R55 field removed
   });
 });

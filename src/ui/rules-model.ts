@@ -148,7 +148,7 @@ export function unclaimedErrors(errors: string[]): string[] {
 export type RuleRow =
   | { key: string; kind: 'user'; rule: Rule }
   | { key: string; kind: 'recipe'; recipeId: string; recipeName: string; rule: Rule; error?: string;
-      /** Runs: on in the recipe body and not in RecipeRef.disabledRules (R55). */
+      /** Effective state (R56): RecipeRef.ruleEnabled[ruleId], else the body's `enabled`. */
       on: boolean };
 
 const own = (o: object, k: string): boolean => Object.prototype.hasOwnProperty.call(o, k);
@@ -173,7 +173,7 @@ export function ruleRows(c: Config, builtins: Record<string, Recipe> = builtinRe
     if (!body) continue;
     const values = paramValues(body, ref.params);
     for (const raw of body.rules) {
-      const on = raw.enabled && !(ref.disabledRules ?? []).includes(raw.id);
+      const on = ref.ruleEnabled?.[raw.id] ?? raw.enabled !== false;
       const row: RuleRow = { key: `${ref.id}/${raw.id}`, kind: 'recipe', recipeId: ref.id, recipeName: body.name, rule: raw, on };
       try {
         row.rule = substitute(raw, values) as Rule;
@@ -243,7 +243,7 @@ export function customizeRule(c: Config, key: string, builtins: Record<string, R
   const copy: Rule = JSON.parse(JSON.stringify(row.rule));
   delete copy.needs;
   const id = sanitizeRuleId(`${row.recipeId}-${row.rule.id}`, new Set(c.rules.map((r) => r.id)));
-  const rule: Rule = { ...copy, id, name: `${row.rule.name} (custom)` };
+  const rule: Rule = { ...copy, id, name: `${row.rule.name} (custom)`, enabled: row.on };
   const full = fullOrder(c, rows.map((r) => r.key));
   const at = full.indexOf(key);
   const order = [...full.slice(0, at), userKey(id), ...full.slice(at)];
@@ -251,25 +251,24 @@ export function customizeRule(c: Config, key: string, builtins: Record<string, R
 }
 
 /**
- * Turns one recipe rule on or off (R55): edits that recipe's `disabledRules` (rule ids; an empty list is dropped, so
- * an untouched ref keeps no field). Only a rule that is on in its body can be turned on. Unknown keys → `c`.
+ * Turns one recipe rule on or off (R56): writes `ruleEnabled[ruleId]` on that recipe's ref, overriding the body's
+ * `enabled` in either direction. Going back to the body default deletes the entry (and an empty map), so the config
+ * stays minimal. Unknown recipes or rules → `c`.
  */
-export function setRecipeRuleOn(c: Config, key: string, on: boolean): Config {
+export function setRecipeRuleOn(c: Config, key: string, on: boolean, builtins: Record<string, Recipe> = builtinRecipes()): Config {
   const slash = key.indexOf('/');
   const recipeId = key.slice(0, slash);
   const ruleId = key.slice(slash + 1);
-  if (slash <= 0 || recipeId === 'user' || !c.recipes.some((r) => r.id === recipeId)) return c;
-  return {
-    ...c,
-    recipes: c.recipes.map((r) => {
-      if (r.id !== recipeId) return r;
-      const rest = (r.disabledRules ?? []).filter((x) => x !== ruleId);
-      const disabledRules = on ? rest : [...rest, ruleId];
-      const ref = { ...r };
-      delete ref.disabledRules;
-      return disabledRules.length ? { ...ref, disabledRules } : ref;
-    }),
-  };
+  const ref = slash > 0 ? c.recipes.find((r) => r.id === recipeId) : undefined;
+  const raw = ref ? recipeBody(ref, builtins)?.rules.find((r) => r.id === ruleId) : undefined;
+  if (!ref || !raw) return c;
+  const map = { ...ref.ruleEnabled };
+  if (on === (raw.enabled !== false)) delete map[ruleId];
+  else map[ruleId] = on;
+  const next: RecipeRef = { ...ref };
+  delete next.ruleEnabled;
+  if (Object.keys(map).length) next.ruleEnabled = map;
+  return { ...c, recipes: c.recipes.map((r) => (r === ref ? next : r)) };
 }
 
 /** Replaces user rule `id` with `rule` (from the YAML view); a new id renames its `order` key. */

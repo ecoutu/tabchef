@@ -217,36 +217,52 @@ describe('Rules: recipe rules as locked rows (M2 T15)', () => {
     expect(req.config.recipes.find((r: { id: string }) => r.id === 'finished').enabled).toBe(true);
   });
 
-  it('R55: the On toggle of a locked row edits the recipe\'s disabledRules (and back)', async () => {
+  it('R56: the On toggle of a locked row writes a ruleEnabled override; back to the default deletes it', async () => {
     const p = props(withFinished(cfg(rule('a', 'a.com/*'))));
     const r = render(Rules, p);
     const toggle = () => screen.getByRole('group', { name: 'Rule 3: Close OAuth callback tabs' }).querySelector('input[type="checkbox"]') as HTMLInputElement;
     expect(toggle().checked).toBe(true);
     await fireEvent.click(toggle());
     const off = p.onChange.mock.calls.at(-1)![0] as Config;
-    expect(off.recipes.find((x) => x.id === 'finished')!.disabledRules).toEqual(['oauth-callback']);
+    expect(off.recipes.find((x) => x.id === 'finished')!.ruleEnabled).toEqual({ 'oauth-callback': false });
     await r.rerender({ config: off });
     expect(toggle().checked).toBe(false);
     await fireEvent.click(toggle());
-    expect((p.onChange.mock.calls.at(-1)![0] as Config).recipes.find((x) => x.id === 'finished')).not.toHaveProperty('disabledRules');
+    expect((p.onChange.mock.calls.at(-1)![0] as Config).recipes.find((x) => x.id === 'finished')).not.toHaveProperty('ruleEnabled');
   });
 
-  it('R55: a rule that is off in its recipe body cannot be toggled on (Customize instead)', () => {
+  it('R56: github-prs group-by-repo (off by default) can be turned on: the toggle works', async () => {
+    const p = props(cfg(rule('a', 'a.com/*')));
+    render(Rules, p);
+    const box = screen.getByRole('group', { name: 'Rule 2: Group GitHub tabs by repository' }).querySelector('input[type="checkbox"]') as HTMLInputElement;
+    expect(box.disabled).toBe(false);
+    expect(box.checked).toBe(false);
+    await fireEvent.click(box);
+    expect((p.onChange.mock.calls.at(-1)![0] as Config).recipes.find((x) => x.id === 'github-prs')!.ruleEnabled).toEqual({ 'group-by-repo': true });
+  });
+
+  it('R56: Test on a default-off recipe rule turns it on in the config it sends', async () => {
+    send.mockReset();
+    send.mockResolvedValue({ ok: true, data: { moves: [], closes: [], groupsCreated: [], unchanged: 0, anchorsOpened: 0, dryRun: false } });
     render(Rules, props(cfg(rule('a', 'a.com/*'))));
-    const row = screen.getByRole('group', { name: 'Rule 2: Group GitHub tabs by repository' });
-    expect((row.querySelector('input[type="checkbox"]') as HTMLInputElement).disabled).toBe(true);
+    const btn = screen.getByRole('group', { name: 'Rule 2: Group GitHub tabs by repository' }).querySelector('button.test') as HTMLButtonElement;
+    expect(btn.disabled).toBe(false);
+    await fireEvent.click(btn);
+    await screen.findByText('0 tabs would move · 0 would close');
+    const req = send.mock.calls.map((x) => x[0]).find((x) => x.type === 'preview.change');
+    expect(req.config.recipes.find((x: { id: string }) => x.id === 'github-prs').ruleEnabled).toEqual({ 'group-by-repo': true });
   });
 
-  it('R55: Test on a user-disabled recipe rule re-enables it in the config it sends', async () => {
+  it('R56: Test on a user-disabled recipe rule re-enables it in the config it sends', async () => {
     send.mockReset();
     send.mockResolvedValue({ ok: true, data: { moves: [], closes: [], groupsCreated: [], unchanged: 0, anchorsOpened: 0, dryRun: false } });
     const c = withFinished(cfg(rule('a', 'a.com/*')));
-    const config = { ...c, recipes: c.recipes.map((x) => (x.id === 'finished' ? { ...x, disabledRules: ['oauth-callback'] } : x)) };
+    const config = { ...c, recipes: c.recipes.map((x) => (x.id === 'finished' ? { ...x, ruleEnabled: { 'oauth-callback': false } } : x)) };
     render(Rules, props(config));
     await fireEvent.click(screen.getByRole('group', { name: 'Rule 3: Close OAuth callback tabs' }).querySelector('button.test')!);
     await screen.findByText('0 tabs would move · 0 would close');
     const req = send.mock.calls.map((x) => x[0]).find((x) => x.type === 'preview.change');
-    expect(req.config.recipes.find((x: { id: string }) => x.id === 'finished').disabledRules ?? []).toEqual([]);
+    expect(req.config.recipes.find((x: { id: string }) => x.id === 'finished').ruleEnabled ?? {}).toEqual({});
   });
 
   it('Test on a read-only (non-form) user rule (R53)', async () => {

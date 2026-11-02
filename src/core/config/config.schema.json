@@ -48,11 +48,14 @@
               "user"
             ]
           },
-          "disabledRules": {
-            "type": "array",
-            "$comment": "R55: ids of this recipe's rules turned off by the user (Rules page toggle). Absent = all on; no migration. Unknown ids and duplicates are ignored (no uniqueItems: it needs an ajv runtime helper).",
-            "items": {
-              "$ref": "rule.json#/$defs/id"
+          "ruleEnabled": {
+            "type": "object",
+            "$comment": "R56: per-rule overrides of the recipe body's `enabled`, in both directions, keyed by rule id. No entry = the body default. Unknown ids are ignored.",
+            "propertyNames": {
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+            },
+            "additionalProperties": {
+              "type": "boolean"
             }
           },
           "body": {
