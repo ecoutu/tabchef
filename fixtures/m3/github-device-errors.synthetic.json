@@ -1,0 +1,29 @@
+{
+  "_comment": "Hand-written (M3-R26) from GitHub's documented device-flow error responses (HTTP 200, JSON {error, error_description, error_uri}); slow_down also carries the new interval.",
+  "authorization_pending": {
+    "error": "authorization_pending",
+    "error_description": "The authorization request is still pending.",
+    "error_uri": "https://docs.github.com/developers/apps/authorizing-oauth-apps#error-codes-for-the-device-flow"
+  },
+  "slow_down": {
+    "error": "slow_down",
+    "error_description": "Too many requests have been made in the same timeframe.",
+    "error_uri": "https://docs.github.com/developers/apps/authorizing-oauth-apps#error-codes-for-the-device-flow",
+    "interval": 10
+  },
+  "expired_token": {
+    "error": "expired_token",
+    "error_description": "This 'device_code' has expired.",
+    "error_uri": "https://docs.github.com/developers/apps/authorizing-oauth-apps#error-codes-for-the-device-flow"
+  },
+  "access_denied": {
+    "error": "access_denied",
+    "error_description": "The authorization request was denied.",
+    "error_uri": "https://docs.github.com/developers/apps/authorizing-oauth-apps#error-codes-for-the-device-flow"
+  },
+  "incorrect_device_code": {
+    "error": "incorrect_device_code",
+    "error_description": "The device_code provided is not valid.",
+    "error_uri": "https://docs.github.com/developers/apps/authorizing-oauth-apps#error-codes-for-the-device-flow"
+  }
+}

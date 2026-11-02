@@ -1,0 +1,6 @@
+{
+  "_comment": "Hand-written (M3-R26) from GitHub's documented POST https://github.com/login/oauth/access_token success for a GitHub App with user-token expiry off: no expires_in, no refresh_token, empty scope. Synthetic values.",
+  "access_token": "ghu_16C7e42F292c6912E7710c838347Ae178B4a",
+  "token_type": "bearer",
+  "scope": ""
+}

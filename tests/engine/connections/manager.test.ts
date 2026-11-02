@@ -4,7 +4,7 @@ import { browser } from 'wxt/browser';
 import { SecretStore } from '../../../src/engine/connections/secret-store';
 import { RateLimiter } from '../../../src/engine/connections/rate-limiter';
 import {
-  CONCURRENCY_PER_CONNECTION, ConnectionManager, REQUEST_TIMEOUT_MS, type AuthProvider,
+  CONCURRENCY_PER_CONNECTION, ConnectionManager, REQUEST_TIMEOUT_MS, ReauthRequiredError, type AuthProvider,
 } from '../../../src/engine/connections/manager';
 import { builtinConnectionDefs, jiraDef } from '../../../src/core/connections/builtin';
 import type { AuthStyle, ConnectionDef, ConnectionStatus } from '../../../src/core/connections/types';
@@ -419,6 +419,30 @@ describe('ConnectionManager', () => {
       await connected(r);
       expect(await r.mgr.fetch('github', { method: 'POST', path: '/graphql', json: {} })).toEqual({ ok: true, status: 200, data: body });
       expect(await st(r)).toMatchObject({ state: 'ok', ssoRequired: [] });
+    });
+  });
+
+  describe('ReauthRequiredError and status snapshots', () => {
+    it('headers() throwing ReauthRequiredError → unauthorized + needs-reauth, no request, no refresh', async () => {
+      const refresh = vi.fn(async () => true);
+      const r = rig({ provider: { headers: async () => { throw new ReauthRequiredError(); }, refresh } });
+      await connected(r);
+      const res = await r.mgr.fetch('github', GET);
+      expect(res).toMatchObject({ ok: false, kind: 'unauthorized', status: 401 });
+      expect(r.fetch).not.toHaveBeenCalled();
+      expect(refresh).not.toHaveBeenCalled();
+      expect((await st(r)).state).toBe('needs-reauth');
+    });
+
+    it('restoreStatus puts back a snapshot that a later save cleared', async () => {
+      const r = rig({ fetch: async () => json(401, {}) });
+      await connected(r);
+      await r.mgr.fetch('github', GET);
+      const snap = await r.mgr.snapshotStatus('github');
+      await r.mgr.save(github());
+      expect((await st(r)).state).toBe('ok');
+      await r.mgr.restoreStatus(snap);
+      expect((await st(r)).state).toBe('needs-reauth');
     });
   });
 

@@ -23,6 +23,22 @@ export interface AuthProvider {
   credentials?: RequestCredentials;
 }
 
+/**
+ * Thrown by `AuthProvider.headers()` when the stored credentials can no longer work (e.g. a rejected or expired
+ * refresh token): the manager answers unauthorized and marks needs-reauth without sending a request or refreshing.
+ */
+export class ReauthRequiredError extends Error {
+  constructor(message = 'Sign in again') {
+    super(message);
+    this.name = 'ReauthRequiredError';
+  }
+}
+
+declare const SNAPSHOT: unique symbol;
+/** Opaque copy of one connection's runtime status (needs-reauth, last error, SSO), from `snapshotStatus`. */
+export type StatusSnapshot = { readonly [SNAPSHOT]: true };
+interface SnapshotData { id: string; rt?: Runtime }
+
 /** Structural why-log (engine/reconciler WhyLog shape). */
 export interface ConnLog { add(e: { action: string; detail: string; at: number }): void }
 
@@ -173,6 +189,21 @@ export class ConnectionManager {
     await this.emit(id);
   }
 
+  /** Snapshot of a connection's runtime status, taken before a credential switch that may need rolling back. */
+  async snapshotStatus(id: string): Promise<StatusSnapshot> {
+    const rt = await this.runtime(id);
+    return { id, ...(rt && { rt: structuredClone(rt) }) } satisfies SnapshotData as unknown as StatusSnapshot;
+  }
+
+  /**
+   * Rollback only: puts back a status from `snapshotStatus` after a failed credential switch (whose `save` of the
+   * previous def cleared needs-reauth / the last error). Accepts nothing but a snapshot, so it cannot invent a state.
+   */
+  async restoreStatus(snapshot: StatusSnapshot): Promise<void> {
+    const { id, rt } = snapshot as unknown as SnapshotData;
+    if (await this.updateRuntime(id, () => (rt ? structuredClone(rt) : undefined))) await this.emit(id);
+  }
+
   onStatusChange(cb: (s: ConnectionStatus) => void): () => void {
     this.listeners.add(cb);
     return () => { this.listeners.delete(cb); };
@@ -260,7 +291,7 @@ export class ConnectionManager {
     if (!provider) return notConfigured(`Unsupported sign-in method for ${def.label}`);
     const extraSecrets: string[] = [];
     let attempt = await this.attempt(def, provider, url, req, extraSecrets);
-    if (is401(attempt.result)) {
+    if (is401(attempt.result) && !attempt.reauthRequired) {
       // Credentials changed since this request was sent (another request's refresh, or a re-auth save): retry with
       // them. Otherwise refresh, sharing one refresh per generation, and retry once if it succeeded.
       if (this.gen(def.id) !== attempt.gen) attempt = await this.attempt(def, provider, url, req, extraSecrets);
@@ -281,12 +312,13 @@ export class ConnectionManager {
   }
 
   private async attempt(def: ConnectionDef, provider: AuthProvider, url: string, req: ApiRequest, extraSecrets: string[]):
-    Promise<{ result: ApiResult; headers?: Headers; gen: number }> {
+    Promise<{ result: ApiResult; headers?: Headers; gen: number; reauthRequired?: true }> {
     const gen = this.gen(def.id);
     let auth: Record<string, string> | null | typeof TIMED_OUT;
     try {
       auth = await withTimeout(provider.headers(def, this.deps.secrets));
     } catch (e) {
+      if (e instanceof ReauthRequiredError) return { gen, reauthRequired: true, result: this.unauthorized(def) };
       return { gen, result: notConfigured(`Could not sign in to ${def.label}: ${e instanceof Error ? e.message : String(e)}`) };
     }
     if (auth === TIMED_OUT) return { gen, result: { ok: false, kind: 'timeout', message: `${def.label} sign-in did not respond within ${REQUEST_TIMEOUT_MS / 1000} s` } };

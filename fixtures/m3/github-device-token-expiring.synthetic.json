@@ -1,0 +1,9 @@
+{
+  "_comment": "Hand-written (M3-R26) from GitHub's documented access_token success with user-token expiry on: 8 h access token, 6 month single-use refresh token. Synthetic values.",
+  "access_token": "ghu_expiring16C7e42F292c6912E7710c8383",
+  "expires_in": 28800,
+  "refresh_token": "ghr_1B4a2e77838347a7E420ce178F2E7c6912E1",
+  "refresh_token_expires_in": 15724800,
+  "token_type": "bearer",
+  "scope": ""
+}

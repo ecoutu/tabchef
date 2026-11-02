@@ -190,6 +190,47 @@ describe('setGitHubToken hardening', () => {
     expect((await r.manager.defs())[0]!.auth).toBe('device-code');
   });
 
+  it('save failure over a needs-reauth connection keeps it in needs-reauth', async () => {
+    const r = rig();
+    await withOld(r);
+    await r.manager.save({ ...builtinConnectionDefs().github, auth: 'token' });
+    r.fetch.mockImplementation(async () => json(401, { message: 'Bad credentials' }));
+    await r.manager.fetch('github', { method: 'GET', path: '/user' });
+    expect((await r.manager.status('github'))[0]!.state).toBe('needs-reauth');
+    r.fetch.mockImplementation(async () => json(200, { login: 'octo' }));
+    vi.spyOn(r.secrets, 'clearAccess').mockRejectedValueOnce(new Error('disk'));
+    const out = await setGitHubToken(r.deps, TOKEN);
+    expect(!out.ok && out.error).toContain('previous connection was kept');
+    const [s] = await r.manager.status('github');
+    expect(s!.state).toBe('needs-reauth');
+    expect(await r.secrets.getSecret('github')).toEqual({ token: OLD });
+  });
+
+  it('a failed snapshotStatus or getSecret capture keeps the old def and secret (no rollback delete)', async () => {
+    for (const fail of ['snapshotStatus', 'getSecret', 'getAccess', 'defs'] as const) {
+      vi.restoreAllMocks();
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      fakeBrowser.reset();
+      const r = rig();
+      await withOld(r);
+      const boom = new Error(`${fail} broke`);
+      if (fail === 'snapshotStatus') vi.spyOn(r.manager, 'snapshotStatus').mockRejectedValueOnce(boom);
+      if (fail === 'defs') vi.spyOn(r.manager, 'defs').mockRejectedValueOnce(boom);
+      if (fail === 'getSecret') vi.spyOn(r.secrets, 'getSecret').mockRejectedValueOnce(boom);
+      if (fail === 'getAccess') vi.spyOn(r.secrets, 'getAccess').mockRejectedValueOnce(boom);
+      const removeSpy = vi.spyOn(r.manager, 'remove');
+      const clearSpy = vi.spyOn(r.secrets, 'clear');
+      const out = await setGitHubToken(r.deps, TOKEN);
+      expect(out.ok, fail).toBe(false);
+      expect(!out.ok && out.error, fail).toContain(`${fail} broke`);
+      expect(removeSpy, fail).not.toHaveBeenCalled();
+      expect(clearSpy, fail).not.toHaveBeenCalled();
+      expect(await r.secrets.getSecret('github'), fail).toEqual({ token: OLD });
+      expect(await r.secrets.getAccess('github'), fail).toEqual({ token: 'gho_old_access' });
+      expect((await r.manager.defs())[0]!.auth, fail).toBe('device-code');
+    }
+  });
+
   it('save failure with no previous connection leaves nothing stored', async () => {
     const r = rig();
     vi.spyOn(r.manager, 'save').mockRejectedValueOnce(new Error('disk'));

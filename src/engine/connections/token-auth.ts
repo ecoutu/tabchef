@@ -2,21 +2,24 @@ import { builtinConnectionDefs } from '../../core/connections/builtin';
 import { redact } from '../../core/connections/redact';
 import type { ConnectionDef, ConnectionStatus } from '../../core/connections/types';
 import type { BrowserPort } from '../../platform/browser-port';
-import { REQUEST_TIMEOUT_MS, type AuthProvider, type ConnectionManager } from './manager';
-import type { SecretStore } from './secret-store';
+import { REQUEST_TIMEOUT_MS, type AuthProvider, type ConnectionManager, type StatusSnapshot } from './manager';
+import type { AccessToken, SecretStore, StoredSecret } from './secret-store';
 
 type HeaderBuilder = (token: string) => Record<string, string>;
+
+/** GitHub REST headers for a bearer token (PAT, or a GitHub App user token from the device flow). */
+export const githubHeaders: HeaderBuilder = (token) => ({
+  Authorization: `Bearer ${token}`,
+  Accept: 'application/vnd.github+json',
+  'X-GitHub-Api-Version': '2022-11-28',
+});
 
 /**
  * Per-kind header builders for personal access tokens. Task 6 adds `jira` (Basic base64(email:token)) here; Jira's
  * secret is the email:token pair, so its builder will read more than the bare token.
  */
 const BUILDERS: Partial<Record<ConnectionDef['kind'], HeaderBuilder>> = {
-  github: (token) => ({
-    Authorization: `Bearer ${token}`,
-    Accept: 'application/vnd.github+json',
-    'X-GitHub-Api-Version': '2022-11-28',
-  }),
+  github: githubHeaders,
 };
 
 /** Sends the stored personal access token. No `refresh`: a rejected PAT leads to needs-reauth. */
@@ -43,6 +46,56 @@ const GITHUB_LOGIN = /^[A-Za-z0-9-]{1,100}$/;
 const PRINTABLE_ASCII = /^[\x21-\x7e]+$/;
 const fail = (error: string): SetTokenResult => ({ ok: false, error });
 
+/** Only GitHub's login charset is stored; anything else becomes undefined rather than an arbitrary string. */
+export const githubLogin = (raw: unknown): string | undefined =>
+  typeof raw === 'string' && GITHUB_LOGIN.test(raw) ? raw : undefined;
+
+/** `x-oauth-scopes` as a list; absent (fine-grained PATs, GitHub App user tokens) → [] (M3-R47). */
+export const githubScopes = (headers: Headers): string[] =>
+  (headers.get('x-oauth-scopes') ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+
+export interface ReplaceCredentialsDeps {
+  manager: Pick<ConnectionManager, 'defs' | 'save' | 'remove' | 'snapshotStatus' | 'restoreStatus'>;
+  secrets: SecretStore;
+}
+
+/**
+ * Switches a connection to new credentials: new values first, stale ones last, with rollback, so a storage failure
+ * never drops the previous working credentials. Order: setSecret(new) → setAccess(new) if given → save(def) →
+ * clearAccess when no new access token was given. On failure the previous def, status (needs-reauth, last error),
+ * secret and access token are restored (best effort) and the original error is rethrown; callers redact it.
+ */
+export async function replaceCredentials(
+  deps: ReplaceCredentialsDeps, def: ConnectionDef, secret: StoredSecret, access?: AccessToken,
+): Promise<void> {
+  // Captures run before the try: if one throws, nothing has been written yet, so there is nothing to roll back — and
+  // rolling back with an undefined capture would delete the working connection.
+  const prevStatus: StatusSnapshot = await deps.manager.snapshotStatus(def.id);
+  const prevSecret: StoredSecret | undefined = await deps.secrets.getSecret(def.id);
+  const prevAccess: AccessToken | undefined = await deps.secrets.getAccess(def.id);
+  const prevDef: ConnectionDef | undefined = (await deps.manager.defs()).find((d) => d.id === def.id);
+  try {
+    await deps.secrets.setSecret(def.id, secret);
+    if (access) await deps.secrets.setAccess(def.id, access);
+    await deps.manager.save(def);
+    if (!access) await deps.secrets.clearAccess(def.id);
+  } catch (e) {
+    try {
+      if (prevDef) await deps.manager.save(prevDef); else await deps.manager.remove(def.id);
+    } catch { /* best effort */ }
+    try {
+      await deps.manager.restoreStatus(prevStatus);
+    } catch { /* best effort */ }
+    try {
+      if (prevSecret) await deps.secrets.setSecret(def.id, prevSecret); else await deps.secrets.clear(def.id);
+    } catch { /* best effort */ }
+    try {
+      if (prevAccess) await deps.secrets.setAccess(def.id, prevAccess); else if (access) await deps.secrets.clearAccess(def.id);
+    } catch { /* best effort */ }
+    throw e;
+  }
+}
+
 /**
  * Validates a GitHub personal access token with `GET /user`, then stores it and switches the github connection to
  * `auth: 'token'`. Validate-before-store: the candidate token goes out in a direct request here (same
@@ -56,7 +109,8 @@ export async function setGitHubToken(deps: SetTokenDeps, rawToken: string): Prom
   if (!PRINTABLE_ASCII.test(token)) return fail('The token contains spaces or invalid characters');
 
   const def: ConnectionDef = { ...builtinConnectionDefs().github, auth: 'token' };
-  const known = async () => [token, ...(await deps.secrets.knownSecrets())];
+  // A storage read failure must not turn an honest error result into a rejection; the candidate is always redacted.
+  const known = async () => [token, ...(await deps.secrets.knownSecrets().catch(() => [] as string[]))];
   const clean = async (m: string) => redact(m, await known());
 
   if (!(await deps.port.hasPermission({ origins: def.hosts }))) {
@@ -70,7 +124,7 @@ export async function setGitHubToken(deps: SetTokenDeps, rawToken: string): Prom
   try {
     res = await deps.fetch(`${def.apiBaseUrl}/user`, {
       method: 'GET',
-      headers: { ...BUILDERS.github!(token) },
+      headers: githubHeaders(token),
       credentials: 'omit',
       signal: ctrl.signal,
     });
@@ -94,26 +148,11 @@ export async function setGitHubToken(deps: SetTokenDeps, rawToken: string): Prom
     rawLogin = undefined;
   }
   if (typeof rawLogin !== 'string' || rawLogin === '') return fail('GitHub returned an unexpected response');
-  // Only GitHub's login charset is stored; anything else is dropped rather than kept as an arbitrary string.
-  const login = GITHUB_LOGIN.test(rawLogin) ? rawLogin : undefined;
+  const login = githubLogin(rawLogin);
 
-  const scopes = (res.headers.get('x-oauth-scopes') ?? '').split(',').map((s) => s.trim()).filter(Boolean);
-  // New values first, stale ones last, with rollback: a storage failure must not drop the previous working credentials.
-  let prevSecret: Awaited<ReturnType<SecretStore['getSecret']>>;
-  let prevDef: ConnectionDef | undefined;
   try {
-    prevSecret = await deps.secrets.getSecret(def.id);
-    prevDef = (await deps.manager.defs()).find((d) => d.id === def.id);
-    await deps.secrets.setSecret(def.id, { token });
-    await deps.manager.save({ ...def, scopes, ...(login !== undefined && { login }) });
-    await deps.secrets.clearAccess(def.id);
+    await replaceCredentials(deps, { ...def, scopes: githubScopes(res.headers), ...(login !== undefined && { login }) }, { token });
   } catch (e) {
-    try {
-      if (prevDef) await deps.manager.save(prevDef); else await deps.manager.remove(def.id);
-    } catch { /* best effort */ }
-    try {
-      if (prevSecret) await deps.secrets.setSecret(def.id, prevSecret); else await deps.secrets.clear(def.id);
-    } catch { /* best effort */ }
     return fail(await clean(`Could not save the token; the previous connection was kept: ${e instanceof Error ? e.message : String(e)}`));
   }
   const [status] = await deps.manager.status(def.id);
