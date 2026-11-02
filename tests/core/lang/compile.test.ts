@@ -327,3 +327,33 @@ describe('compileProgram: fix round 1 (R37, reserved user id)', () => {
     expect(program.rules.map((r) => [r.key, r.recipeId])).toEqual([['user/a', undefined]]);
   });
 });
+
+describe('compileProgram: disabledRules (R55)', () => {
+  const meet = recipe('m', [
+    rule('a'),
+    rule('b', { needs: { hosts: ['https://meet.google.com/*'] }, match: { url: 'meet.google.com/*' } }),
+  ]);
+
+  it('skips a disabled recipe rule like a disabled user rule; absent field = all on', () => {
+    expect(keys(config({ recipes: [ref('m')] }), { m: meet })).toEqual(['m/a', 'm/b']);
+    expect(keys(config({ recipes: [ref('m', { disabledRules: ['a'] })] }), { m: meet })).toEqual(['m/b']);
+  });
+
+  it('a disabled recipe rule contributes no needs; unknown ids are ignored', () => {
+    const on = compileProgram(config({ recipes: [ref('m')] }), { m: meet });
+    expect(Object.keys(on.program.needs)).toEqual(['m', 'm/b']);
+    const off = compileProgram(config({ recipes: [ref('m', { disabledRules: ['b', 'nope'] })] }), { m: meet });
+    expect(Object.keys(off.program.needs)).toEqual(['m']);
+    expect(off.errors).toEqual([]);
+  });
+
+  it('a disabled recipe rule is neither a winner nor a shadower (explain / findShadowed)', async () => {
+    const { explainTab, findShadowed } = await import('../../../src/core/lang/explain');
+    const shadower = recipe('s', [rule('wide', { match: { url: 'x.com/*' } })]);
+    const c = config({ recipes: [ref('s', { disabledRules: ['wide'] })], rules: [rule('narrow', { match: { url: 'x.com/a/*' } })] });
+    const p = compileProgram(c, { s: shadower }).program;
+    expect(findShadowed(p)).toEqual([]);
+    const tab = { id: 1, windowId: 1, index: 0, url: 'https://x.com/a/1', title: '', pinned: false, groupId: -1, incognito: false, discarded: false, active: false, audible: false };
+    expect(explainTab(p, { tab }, 0).map((e) => e.key)).not.toContain('s/wide');
+  });
+});

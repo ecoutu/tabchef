@@ -2,12 +2,13 @@
   // The Rules page (M2 T15, formerly GroupRules): user rules and the rules of enabled recipes in one priority order
   // (`order`), reordered by drag or Move up / Move down across both. A user rule is edited in the form (RuleFields)
   // or as YAML (RuleYaml), toggled per rule; one the form cannot show is a read-only summary with "Edit in YAML".
-  // Recipe rules are locked rows: reorder, test and Customize (copy into a user rule), never edit.
+  // Recipe rules are locked rows: reorder, turn on/off (RecipeRef.disabledRules, R55; saved through the normal Save),
+  // test and Customize (copy into a user rule), never edit.
   import type { Config, TabSnap } from '../../core/types';
   import type { Rule } from '../../core/lang/types';
   import {
     addRule, configPatternErrors, customizeRule, errorsForPath, patchRuleForm, removeRule, reorder, replaceRule, ruleForm, ruleIndex,
-    ruleRows, ruleSummary, type RuleForm, type RuleRow,
+    ruleRows, ruleSummary, setRecipeRuleOn, type RuleForm, type RuleRow,
   } from '../../ui/rules-model';
   import { withRecipe } from '../../ui/recipes-model';
   import { builtinRecipes } from '../../recipes/load';
@@ -58,7 +59,8 @@
   async function test(row: RuleRow): Promise<void> {
     const rule = JSON.stringify(row.rule);
     const draft = $state.snapshot(config) as Config;
-    const cfg = row.kind === 'recipe' ? withRecipe(draft, row.recipeId, { enabled: true }) : draft;
+    // A recipe rule is tested as if on: its recipe enabled, the rule out of disabledRules (R55).
+    const cfg = row.kind === 'recipe' ? setRecipeRuleOn(withRecipe(draft, row.recipeId, { enabled: true }), row.key, true) : draft;
     const res = await send({ type: 'preview.change', config: cfg, only: row.key });
     const n = res.ok ? previewCounts(res.data) : undefined;
     tested[row.key] = { rule, text: n ? `${n.moves} tabs would move · ${n.closes} would close` : `Could not test: ${res.ok ? '' : res.error}` };
@@ -83,7 +85,7 @@
 </script>
 
 <section>
-  <p class="help">Order is priority and tab-bar order: the first rule that matches a tab wins, and groups appear in the tab bar in this order. Drag the handle or use Move up / Move down. Recipe rules are locked: move them, or Customize to edit a copy.</p>
+  <p class="help">Order is priority and tab-bar order: the first rule that matches a tab wins, and groups appear in the tab bar in this order. Drag the handle or use Move up / Move down. Recipe rules are locked: move them, turn them on or off, or Customize to edit a copy.</p>
 
   {#each rows as row, i (row.key)}
     {@const form = row.kind === 'user' ? ruleForm(row.rule) : null}
@@ -103,9 +105,11 @@
             <span class="name">{row.rule.name}</span>
           {/if}
         {:else}
-          <span class="chip" title="Recipe rules can be moved, tested and customized, not edited">🔒 Locked · {row.recipeName}</span>
+          <span class="chip" title="Recipe rules can be moved, turned on or off, tested and customized, not edited">🔒 Locked · {row.recipeName}</span>
+          <label class="inline" title={row.rule.enabled ? 'Turn this recipe rule on or off' : 'Off in its recipe; use Customize to run a copy'}>
+            <input type="checkbox" checked={row.on} disabled={!row.rule.enabled} onchange={(e) => onChange(setRecipeRuleOn(config, row.key, e.currentTarget.checked))} /> On
+          </label>
           <span class="name">{row.rule.name}</span>
-          <span class="count">{row.rule.enabled ? 'On' : 'Off'}</span>
         {/if}
         <button type="button" class="test" disabled={!row.rule.enabled && row.kind === 'recipe'} onclick={() => test(row)}>Test against my open tabs</button>
         {#if testText(row)}<span class="count" role="status">{testText(row)}</span>{/if}

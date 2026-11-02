@@ -50,7 +50,11 @@ export interface Recipe {
   dedupe?: { urlTransforms?: DedupeSettings['urlTransforms'] };
   rules: Rule[]; views?: View[];
 }
-export interface RecipeRef { id: string; enabled: boolean; params: Record<string, unknown>; source: 'builtin' | 'user'; body?: Recipe }
+export interface RecipeRef {
+  id: string; enabled: boolean; params: Record<string, unknown>; source: 'builtin' | 'user'; body?: Recipe;
+  /** R55: ids of this recipe's rules the user turned off; skipped like disabled rules (no needs). Absent = all on. */
+  disabledRules?: string[];
+}
 export interface TabFacts {
   tab: TabSnap; opener?: TabSnap; groupTitle?: string; createdAt?: number;
   page?: { texts: string[]; extracts: Record<string, string>; formEdited: boolean };

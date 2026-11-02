@@ -65,7 +65,8 @@
   }
   const recipeStatus = (i: RecipeListItem): string => (!i.enabled ? 'Off' : i.status.ok ? 'On' : (i.status.reason ?? 'Paused'));
   function ruleStatus(i: RecipeListItem, ruleId: string, enabledInBody: boolean): string {
-    if (!i.enabled || !enabledInBody) return 'Off';
+    const off = saved.recipes.find((r) => r.id === i.id)?.disabledRules ?? []; // turned off in #/rules (R55)
+    if (!i.enabled || !enabledInBody || off.includes(ruleId)) return 'Off';
     if (!i.status.ok) return i.status.reason ?? 'Paused';
     const st = i.rules[`${i.id}/${ruleId}`]?.status;
     return st && !st.ok ? (st.reason ?? 'Paused') : 'Active';

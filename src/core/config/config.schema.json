@@ -48,6 +48,13 @@
               "user"
             ]
           },
+          "disabledRules": {
+            "type": "array",
+            "$comment": "R55: ids of this recipe's rules turned off by the user (Rules page toggle). Absent = all on; no migration. Unknown ids and duplicates are ignored (no uniqueItems: it needs an ajv runtime helper).",
+            "items": {
+              "$ref": "rule.json#/$defs/id"
+            }
+          },
           "body": {
             "type": "object",
             "$comment": "Loose on purpose (R41): stored bodies are checked in TS with validateRecipe (src/core/lang/schema.ts); an invalid one disables its recipe (repairConfig) instead of failing the whole config."

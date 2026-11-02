@@ -217,6 +217,38 @@ describe('Rules: recipe rules as locked rows (M2 T15)', () => {
     expect(req.config.recipes.find((r: { id: string }) => r.id === 'finished').enabled).toBe(true);
   });
 
+  it('R55: the On toggle of a locked row edits the recipe\'s disabledRules (and back)', async () => {
+    const p = props(withFinished(cfg(rule('a', 'a.com/*'))));
+    const r = render(Rules, p);
+    const toggle = () => screen.getByRole('group', { name: 'Rule 3: Close OAuth callback tabs' }).querySelector('input[type="checkbox"]') as HTMLInputElement;
+    expect(toggle().checked).toBe(true);
+    await fireEvent.click(toggle());
+    const off = p.onChange.mock.calls.at(-1)![0] as Config;
+    expect(off.recipes.find((x) => x.id === 'finished')!.disabledRules).toEqual(['oauth-callback']);
+    await r.rerender({ config: off });
+    expect(toggle().checked).toBe(false);
+    await fireEvent.click(toggle());
+    expect((p.onChange.mock.calls.at(-1)![0] as Config).recipes.find((x) => x.id === 'finished')).not.toHaveProperty('disabledRules');
+  });
+
+  it('R55: a rule that is off in its recipe body cannot be toggled on (Customize instead)', () => {
+    render(Rules, props(cfg(rule('a', 'a.com/*'))));
+    const row = screen.getByRole('group', { name: 'Rule 2: Group GitHub tabs by repository' });
+    expect((row.querySelector('input[type="checkbox"]') as HTMLInputElement).disabled).toBe(true);
+  });
+
+  it('R55: Test on a user-disabled recipe rule re-enables it in the config it sends', async () => {
+    send.mockReset();
+    send.mockResolvedValue({ ok: true, data: { moves: [], closes: [], groupsCreated: [], unchanged: 0, anchorsOpened: 0, dryRun: false } });
+    const c = withFinished(cfg(rule('a', 'a.com/*')));
+    const config = { ...c, recipes: c.recipes.map((x) => (x.id === 'finished' ? { ...x, disabledRules: ['oauth-callback'] } : x)) };
+    render(Rules, props(config));
+    await fireEvent.click(screen.getByRole('group', { name: 'Rule 3: Close OAuth callback tabs' }).querySelector('button.test')!);
+    await screen.findByText('0 tabs would move · 0 would close');
+    const req = send.mock.calls.map((x) => x[0]).find((x) => x.type === 'preview.change');
+    expect(req.config.recipes.find((x: { id: string }) => x.id === 'finished').disabledRules ?? []).toEqual([]);
+  });
+
   it('Test on a read-only (non-form) user rule (R53)', async () => {
     send.mockReset();
     send.mockResolvedValue({ ok: true, data: { moves: [], closes: [], groupsCreated: [], unchanged: 0, anchorsOpened: 0, dryRun: false } });
