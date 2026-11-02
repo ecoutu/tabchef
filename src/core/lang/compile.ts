@@ -1,0 +1,273 @@
+// Compiles a ConfigV2 plus its recipes into a prioritized Program (M2 T4). Pure: never throws, never mutates its input.
+//
+// Rule keys (R19): user rules are `user/<id>`, recipe rules `<recipeId>/<ruleId>`.
+//
+// Priority: position in `config.order`. Keys missing from it are appended: user rules first (config.rules order),
+// then recipe rules (config.recipes order, then each recipe's rule order). Migration writes only user keys and
+// defaultConfig().order is [], so this append is what places recipe rules after the user's own.
+//
+// Typed placeholders (R14): in a recipe, any leaf that is exactly the string `{params.<name>}` is replaced by the
+// param's value with its type (the user's value from RecipeRef.params, else the ParamDef default): a `string[]`
+// param in `match.url` becomes the whole pattern list, a boolean param in `collapsed` becomes a boolean. Inside an
+// array, an exact placeholder holding an array is spliced in (`url: ['a/*', '{params.more}']`). A placeholder inside
+// a larger string (`'PR {params.prefix}'`) is plain string interpolation. Substitution runs before anything
+// compiles; afterwards every rule goes through the same checks as a user rule (validateRule + ruleProblems).
+//
+// Errors: a broken recipe (unknown body, bad param, unknown placeholder, invalid rule, bad urlTransform) is reported
+// in `errors` and skipped as a whole (rules, tables, views, needs); a broken user rule is reported and skipped alone.
+//
+// Pattern matchers are compiled once per pattern string and cached by compilePattern / compileTextPattern
+// (src/core/match/pattern.ts); validation here warms the URL pattern cache. Memoizing whole Programs is the
+// engine's job (ProgramCache, T6).
+import { formatSchemaError, regexProblem, ruleProblems, type Tables } from '../config/schema';
+import { validateRule } from '../config/validate-config.generated.js';
+import { DURATION } from './duration';
+import type { Config, DedupeSettings } from '../types';
+import type { CompiledRule, ParamDef, Program, Recipe, RecipeRef, Rule } from './types';
+
+export interface CompileError { key: string; error: string }
+export interface CompileOptions {
+  /** Rule keys and/or recipe ids to leave out of the program (e.g. waiting for a permission, T8). */
+  paused?: Set<string>;
+}
+
+const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x);
+const own = (o: object, k: string): boolean => Object.prototype.hasOwnProperty.call(o, k);
+
+class ParamError extends Error {}
+
+// ---- params ----
+
+const EXACT = /^\{params\.([A-Za-z_]\w*)\}$/;
+const INNER = /\{params\.([A-Za-z_]\w*)\}/g;
+
+/** Why `v` is not a valid value for `def`, or undefined. */
+function paramProblem(def: ParamDef, v: unknown): string | undefined {
+  switch (def.type) {
+    case 'string':
+    case 'pattern':
+      if (typeof v !== 'string') return `must be a string`;
+      break;
+    case 'regex':
+      if (typeof v !== 'string') return `must be a regex string`;
+      { const m = regexProblem(v, undefined, true); if (m) return m; }
+      break;
+    case 'number':
+      if (typeof v !== 'number' || !Number.isFinite(v)) return 'must be a number';
+      break;
+    case 'boolean':
+      if (typeof v !== 'boolean') return 'must be a boolean';
+      break;
+    case 'duration':
+      if (typeof v !== 'string' || !DURATION.test(v)) return 'must be a duration like 500ms, 30s, 15m, 2h or 1d';
+      break;
+    case 'string[]':
+      if (!Array.isArray(v) || !v.every((x) => typeof x === 'string')) return 'must be a list of strings';
+      break;
+    default:
+      return `unknown param type: ${String((def as { type: unknown }).type)}`;
+  }
+  if (def.enum !== undefined) {
+    const key = JSON.stringify(v);
+    if (!Array.isArray(def.enum) || !def.enum.some((e) => JSON.stringify(e) === key)) return `must be one of ${JSON.stringify(def.enum)}`;
+  }
+  return undefined;
+}
+
+/** Resolved param values of one recipe (user value, else default), each checked against its ParamDef. */
+function resolveParams(body: Recipe, given: Record<string, unknown>): { values: Record<string, unknown>; errors: string[] } {
+  const values: Record<string, unknown> = {};
+  const errors: string[] = [];
+  const defs = isObj(body.params) ? (body.params as Record<string, ParamDef>) : {};
+  for (const [name, def] of Object.entries(defs)) {
+    if (!isObj(def)) { errors.push(`param ${name}: invalid definition`); continue; }
+    const v = isObj(given) && own(given, name) ? given[name] : def.default;
+    const m = paramProblem(def, v);
+    if (m) errors.push(`param ${name}: ${m}`);
+    else values[name] = v;
+  }
+  return { values, errors };
+}
+
+/** Deep copy of `x` with `{params.<name>}` placeholders substituted (see the header). Throws ParamError. */
+function substitute(x: unknown, values: Record<string, unknown>): unknown {
+  const lookup = (name: string): unknown => {
+    if (!own(values, name)) throw new ParamError(`unknown param: {params.${name}}`);
+    return values[name];
+  };
+  if (typeof x === 'string') {
+    const m = EXACT.exec(x);
+    if (m) {
+      const v = lookup(m[1] as string);
+      return Array.isArray(v) ? [...v] : v;
+    }
+    return x.replace(INNER, (_s, name: string) => {
+      const v = lookup(name);
+      if (typeof v !== 'string' && typeof v !== 'number' && typeof v !== 'boolean') throw new ParamError(`{params.${name}} is a list and cannot be part of a larger string`);
+      return String(v);
+    });
+  }
+  if (Array.isArray(x)) {
+    return x.flatMap((el) => {
+      const m = typeof el === 'string' ? EXACT.exec(el) : null;
+      if (m) {
+        const v = lookup(m[1] as string);
+        return Array.isArray(v) ? [...v] : [v];
+      }
+      return [substitute(el, values)];
+    });
+  }
+  if (isObj(x)) {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(x)) out[k] = substitute(v, values);
+    return out;
+  }
+  return x;
+}
+
+// ---- rules ----
+
+/** Schema + post-check problems of one rule, as "<path> <message>" strings (empty when valid). Reported joined, one entry per rule. */
+function ruleErrors(rule: unknown, tables: Tables): string[] {
+  if (!validateRule(rule)) return (validateRule.errors ?? []).map(formatSchemaError);
+  return ruleProblems(rule as Rule, tables).map((p) => `${p.path} ${p.message}`);
+}
+
+interface Candidate { id: string; source: RecipeRef['source']; body: Recipe }
+
+/** Enabled recipes with their params substituted; failures go to `errors`. */
+function resolveRecipes(config: Config, builtins: Record<string, Recipe>, errors: CompileError[]): Candidate[] {
+  const out: Candidate[] = [];
+  const seen = new Set<string>();
+  for (const ref of Array.isArray(config.recipes) ? config.recipes : []) {
+    if (!isObj(ref) || !ref.enabled) continue;
+    const id = String(ref.id);
+    if (seen.has(id)) { errors.push({ key: id, error: 'duplicate recipe id' }); continue; }
+    seen.add(id);
+    const raw = ref.source === 'builtin' ? (own(builtins, id) ? builtins[id] : undefined) : ref.body;
+    if (!isObj(raw) || !Array.isArray(raw.rules)) {
+      errors.push({ key: id, error: raw === undefined ? (ref.source === 'builtin' ? 'unknown built-in recipe' : 'recipe has no body') : 'malformed recipe' });
+      continue;
+    }
+    const { values, errors: perr } = resolveParams(raw, ref.params);
+    if (perr.length) { for (const e of perr) errors.push({ key: id, error: e }); continue; }
+    const rest: Record<string, unknown> = { ...raw };
+    delete rest.params; // param defaults are values, never substituted
+    let body: Recipe;
+    try {
+      body = substitute(rest, values) as Recipe;
+    } catch (e) {
+      if (!(e instanceof ParamError)) throw e;
+      errors.push({ key: id, error: e.message });
+      continue;
+    }
+    if (body.tables !== undefined && !isObj(body.tables)) { errors.push({ key: id, error: 'malformed tables' }); continue; }
+    const transforms: unknown = isObj(body.dedupe) ? body.dedupe.urlTransforms : undefined;
+    if (transforms !== undefined && !Array.isArray(transforms)) { errors.push({ key: id, error: 'malformed dedupe.urlTransforms' }); continue; }
+    const strs = (x: unknown) => x === undefined || (Array.isArray(x) && x.every((s) => typeof s === 'string'));
+    if (body.needs !== undefined && !(isObj(body.needs) && strs(body.needs.hosts) && strs(body.needs.permissions))) {
+      errors.push({ key: id, error: 'malformed needs' });
+      continue;
+    }
+    const list = (transforms ?? []) as unknown[];
+    const badAt = list.findIndex((t) => !isObj(t) || typeof t.pattern !== 'string' || typeof t.replacement !== 'string' || (t.flags !== undefined && typeof t.flags !== 'string') || regexProblem(t.pattern, t.flags as string | undefined) !== undefined);
+    if (badAt >= 0) {
+      const bad = list[badAt];
+      errors.push({ key: id, error: `invalid urlTransform pattern: ${String(isObj(bad) ? bad.pattern : bad)}` });
+      continue;
+    }
+    if (body.views !== undefined && !(Array.isArray(body.views) && body.views.every(isObj))) { errors.push({ key: id, error: 'malformed views' }); continue; }
+    out.push({ id, source: ref.source, body });
+  }
+  return out;
+}
+
+/** Tables merged builtin recipes → user recipes → config.tables; later wins per entry. */
+function mergeTables(recipes: Candidate[], config: Config): Tables {
+  const out: Tables = {};
+  const add = (t: Tables | undefined) => {
+    for (const [name, entries] of Object.entries(t ?? {})) if (isObj(entries)) out[name] = { ...(out[name] ?? {}), ...entries };
+  };
+  for (const src of ['builtin', 'user'] as const) for (const r of recipes) if (r.source === src) add(r.body.tables);
+  add(isObj(config.tables) ? config.tables : undefined);
+  return out;
+}
+
+/** Compile `config` (+ built-in recipe bodies) into a prioritized Program. Pure; never throws on bad data. */
+export function compileProgram(
+  config: Config, builtins: Record<string, Recipe>, opts: CompileOptions = {},
+): { program: Program; errors: CompileError[] } {
+  const errors: CompileError[] = [];
+  const paused = opts.paused ?? new Set<string>();
+  const candidates = resolveRecipes(config, builtins, errors);
+  const checkTables = mergeTables(candidates, config);
+
+  // Recipe rules: any invalid enabled rule (or a duplicate id) skips the whole recipe.
+  const recipes: { c: Candidate; rules: Rule[] }[] = [];
+  for (const c of candidates) {
+    const errs: CompileError[] = [];
+    const ids = new Set<string>();
+    const rules: Rule[] = [];
+    c.body.rules.forEach((r, i) => {
+      const key = `${c.id}/${isObj(r) && typeof r.id === 'string' ? r.id : `#${i}`}`;
+      if (!isObj(r) || r.enabled === false) return;
+      const es = ruleErrors(r, checkTables);
+      if (ids.has(r.id)) es.push('duplicate rule id');
+      ids.add(r.id);
+      if (es.length) errs.push({ key, error: es.join('; ') });
+      else if (r.enabled) rules.push(r);
+    });
+    if (errs.length) errors.push(...errs);
+    else recipes.push({ c, rules });
+  }
+
+  // User rules: an invalid one is skipped alone.
+  const userRules: Rule[] = [];
+  const userIds = new Set<string>();
+  for (const r of Array.isArray(config.rules) ? config.rules : []) {
+    if (!isObj(r) || !r.enabled) continue;
+    const key = `user/${String(r.id)}`;
+    const es = ruleErrors(r, checkTables);
+    if (userIds.has(r.id)) es.push('duplicate rule id');
+    userIds.add(r.id);
+    if (es.length) errors.push({ key, error: es.join('; ') });
+    else userRules.push(r);
+  }
+
+  // Priority.
+  type Entry = Omit<CompiledRule, 'index'>;
+  const entries: Entry[] = [];
+  const dry = (r: Rule) => r.dryRun === true || config.dryRun === true;
+  for (const r of userRules) entries.push({ key: `user/${r.id}`, rule: r, dryRun: dry(r) });
+  for (const { c, rules } of recipes) for (const r of rules) entries.push({ key: `${c.id}/${r.id}`, rule: r, recipeId: c.id, dryRun: dry(r) });
+  const byKey = new Map(entries.filter((e) => !paused.has(e.key) && !(e.recipeId && paused.has(e.recipeId))).map((e) => [e.key, e]));
+  const ordered: Entry[] = [];
+  const placed = new Set<string>();
+  const place = (k: string) => {
+    const e = byKey.get(k);
+    if (!e || placed.has(k)) return;
+    placed.add(k);
+    ordered.push(e);
+  };
+  for (const k of Array.isArray(config.order) ? config.order : []) place(k);
+  for (const e of entries) place(e.key); // missing keys: user rules, then recipe rules (entries order)
+
+  const survivors = recipes.map((x) => x.c);
+  const dedupe: DedupeSettings = {
+    ...config.dedupe,
+    urlTransforms: [...(config.dedupe?.urlTransforms ?? []), ...survivors.flatMap((c) => c.body.dedupe?.urlTransforms ?? [])],
+  };
+  const needs: Program['needs'] = {};
+  for (const c of survivors) needs[c.id] = { origins: [...(c.body.needs?.hosts ?? [])], permissions: [...(c.body.needs?.permissions ?? [])] };
+
+  return {
+    program: {
+      rules: ordered.map((e, index) => ({ ...e, index })),
+      views: survivors.flatMap((c) => (c.body.views ?? []).map((v) => ({ ...v, recipeId: c.id }))),
+      tables: mergeTables(survivors, config),
+      dedupe,
+      needs,
+    },
+    errors,
+  };
+}
