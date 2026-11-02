@@ -1,4 +1,5 @@
 import { evaluateGroupRules, type GroupMatch } from './evaluate';
+import { groupView } from '../config/group-view';
 import { isExemptUrl } from '../url/normalize';
 import type { Config, GroupRule, GroupSnap, Op, Snapshot, TabSnap } from '../types';
 
@@ -94,9 +95,10 @@ export function planTargets(snap: Snapshot, config: Config, ctx: ManagedCtx): Ta
   const eligible = (t: TabSnap): boolean => !t.pinned && !ctx.leaveAlone.has(t.id) && !isExemptUrl(urlOf(t));
   const matches = new Map<number, GroupMatch>();
   const titleMatch = new Map<string, GroupMatch>();
+  const rules = groupView(config);
   for (const t of tabs) {
     if (!eligible(t)) continue;
-    const m = evaluateGroupRules(t, config.groupRules);
+    const m = evaluateGroupRules(t, rules);
     if (!m) continue;
     matches.set(t.id, m);
     const prev = titleMatch.get(m.title);
@@ -183,7 +185,7 @@ export function planGroups(snap: Snapshot, config: Config, ctx: PlanContext, pre
   const ruleFor = (g: GroupSnap): { strict: boolean; ruleId?: string } => {
     const m = titleMatch.get(g.title);
     if (m) return { strict: m.strict, ruleId: m.ruleId };
-    const rule = config.groupRules.find((r: GroupRule) => r.enabled && templateProduces(r.group.title, g.title));
+    const rule = groupView(config).find((r: GroupRule) => r.enabled && templateProduces(r.group.title, g.title));
     return rule ? { strict: rule.strict ?? true, ruleId: rule.id } : { strict: true };
   };
   const strictFor = (g: GroupSnap): boolean => ruleFor(g).strict;

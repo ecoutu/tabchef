@@ -4,6 +4,7 @@ import { compilePattern } from '../../src/core/match/pattern';
 import { defaultConfig } from '../../src/core/config/defaults';
 import { FakeBrowserPort } from '../../src/platform/fake-port';
 import type { Config, TabSnap } from '../../src/core/types';
+import { groupRuleToRule } from '../../src/core/config/migrate';
 
 type NewTab = Omit<TabSnap, 'index' | 'groupId'> & Partial<Pick<TabSnap, 'index' | 'groupId'>>;
 const PR = 'https://github.com/acme/api/pull/1';
@@ -320,10 +321,12 @@ describe('ask: switch re-check semantics', () => {
 
   it('skips when a matching group rule sets dedupe off', async () => {
     const w = setup();
-    w.cfg().groupRules.push({
+    const c = w.cfg();
+    c.rules.push(groupRuleToRule({
       id: 'r', name: 'r', enabled: true, match: { url: 'https://github.com/*' },
       group: { title: 'G', color: 'blue' }, dedupe: 'off',
-    });
+    }));
+    c.order.push('user/r');
     await w.ctl.handleChoice(2, 1, 'switch');
     expect(w.calls('closeTab')).toEqual([]);
   });

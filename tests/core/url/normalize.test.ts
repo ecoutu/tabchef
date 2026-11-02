@@ -7,6 +7,7 @@ const base = {
   ignoreTrailingSlash: true,
   canonicalizers: ['githubPr'],
   urlTransforms: [] as { pattern: string; replacement: string; flags?: string }[],
+  fragmentOverrides: [] as { pattern: string; keepFragment: boolean }[],
 };
 const key = (u: string, s = base) => normalizeUrl(u, s)?.key;
 

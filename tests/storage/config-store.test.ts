@@ -3,7 +3,8 @@ import { fakeBrowser } from 'wxt/testing/fake-browser';
 import { browser } from 'wxt/browser';
 import { ConfigStore, QUOTA_WARNING } from '../../src/storage/config-store';
 import { defaultConfig } from '../../src/core/config/defaults';
-import type { Config } from '../../src/core/types';
+import type { Config, ConfigV1, GroupRule } from '../../src/core/types';
+import { v1Config, withGroupRules } from '../helpers/config';
 
 const big = (kb: number, tag = 'x'): Config => {
   const c = defaultConfig();
@@ -477,14 +478,14 @@ describe('ConfigStore', () => {
   });
 
   describe('stored configs from laxer versions are repaired, not discarded (CR#1)', () => {
-    const okRule = { id: 'ok', name: 'Fine', enabled: true, match: { url: 'https://a.com/*' }, group: { title: 'A', color: 'blue' } };
-    const badRule = { id: 'gh', name: 'GH repos', enabled: true, match: { url: ['github.com/:org/:repo/*', 'example.com/*'] }, group: { title: 'GH {repo}', color: 'red' } };
-    const legacy = () => ({ ...defaultConfig(), groupRules: [okRule, badRule] });
+    const okRule: GroupRule = { id: 'ok', name: 'Fine', enabled: true, match: { url: 'https://a.com/*' }, group: { title: 'A', color: 'blue' } };
+    const badRule: GroupRule = { id: 'gh', name: 'GH repos', enabled: true, match: { url: ['github.com/:org/:repo/*', 'example.com/*'] }, group: { title: 'GH {repo}', color: 'red' } };
+    const legacy = () => v1Config([okRule, badRule]);
     const WARN = '1 rule(s) disabled: GH repos — fix them on the Rules page.';
     const expectRepaired = (c: Config) => {
-      expect(c.groupRules.map((r) => [r.id, r.enabled])).toEqual([['ok', true], ['gh', false]]);
-      expect(c.groupRules[1]!.group.title).toBe('GH {repo}');
-      expect(c.groupRules[0]).toEqual(okRule);
+      expect(c.rules.map((r) => [r.id, r.enabled])).toEqual([['ok', true], ['gh', false]]);
+      expect(c.rules[1]!.actions[0]).toEqual({ group: { title: 'GH {repo}', color: 'red' } });
+      expect(c.rules[0]).toEqual(withGroupRules([okRule]).rules[0]);
     };
     it('from sync: the bad rule is disabled with a warning; other rules intact; no fallback to defaults', async () => {
       await putSync(JSON.stringify(legacy()));
@@ -508,7 +509,7 @@ describe('ConfigStore', () => {
       const s = mk();
       expectRepaired(await s.get());
       const [b] = await s.backups();
-      expect(b!.config.groupRules.map((r) => [r.id, r.enabled])).toEqual([['ok', true], ['gh', true]]);
+      expect((b!.config as ConfigV1).groupRules.map((r) => [r.id, r.enabled])).toEqual([['ok', true], ['gh', true]]);
       await s.set(withSite('x.com'));
       await s.restore(b!.at);
       expectRepaired(await s.get());
@@ -558,6 +559,92 @@ describe('ConfigStore', () => {
       await s.flush();
       expect(await s.get()).toEqual(mine);
       expect(await mk().get()).toEqual(mine);
+    });
+  });
+
+  describe('v1 -> v2 migration on load (M2 T1, R2)', () => {
+    const r1: GroupRule = { id: 'r1', name: 'One', enabled: true, match: { url: 'https://a.com/*' }, group: { title: 'A', color: 'blue' }, strict: true, merge: true };
+    const r2: GroupRule = { id: 'R 2', name: 'Two', enabled: true, match: { url: 'https://b.com/*' }, group: { title: 'B', color: 'red' } };
+    const old = () => v1Config([r1, r2]);
+    const v1Backups = async (s: ConfigStore) => (await s.backups()).filter((b) => (b.config as { version: number }).version === 1);
+    const syncJson = async () => {
+      const all = await sync().get(null);
+      const n = (all['cfg:meta'] as { n: number }).n;
+      return Array.from({ length: n }, (_, i) => all[`cfg:${i}`] as string).join('');
+    };
+
+    it('from sync: get() returns v2; exactly one backup holds the v1 JSON; lastGood and then sync become v2', async () => {
+      await putSync(JSON.stringify(old()));
+      const s = mk();
+      const c = await s.get();
+      expect(c.version).toBe(2);
+      expect(c.rules.map((r) => r.id)).toEqual(['r1', 'r-2']);
+      expect(c.order).toEqual(['user/r1', 'user/r-2']);
+      const v1 = await v1Backups(s);
+      expect(v1).toHaveLength(1);
+      expect(v1[0]!.config).toEqual(old());
+      expect((await local().get('cfg:lastGood'))['cfg:lastGood']).toEqual(c);
+      expect((await local().get('cfg:pending'))['cfg:pending']).toBe(true);
+      await s.flush();
+      expect(JSON.parse(await syncJson())).toEqual(c);
+      expect((await local().get('cfg:pending'))['cfg:pending']).toBe(false);
+      // A second load reads v2 and adds no further v1 backup.
+      const s2 = mk();
+      expect(await s2.get()).toEqual(c);
+      expect(await v1Backups(s2)).toHaveLength(1);
+    });
+
+    it('from a PENDING lastGood: backs up the v1, lastGood becomes v2, and the write is scheduled', async () => {
+      await local().set({ 'cfg:lastGood': old(), 'cfg:pending': true });
+      const s = mk();
+      const c = await s.get();
+      expect(c.version).toBe(2);
+      expect((await v1Backups(s)).map((b) => b.config)).toEqual([old()]);
+      expect((await local().get('cfg:lastGood'))['cfg:lastGood']).toEqual(c);
+      expect((await s.status()).syncing).toBe(true);
+      await s.flush();
+      expect(JSON.parse(await syncJson())).toEqual(c);
+    });
+
+    it('from a LOCAL_ONLY lastGood: backs up the v1 and stores v2 locally', async () => {
+      await local().set({ 'cfg:lastGood': old(), 'cfg:localOnly': true });
+      const s = mk();
+      const c = await s.get();
+      expect(c.version).toBe(2);
+      expect((await v1Backups(s)).map((b) => b.config)).toEqual([old()]);
+      expect((await local().get('cfg:lastGood'))['cfg:lastGood']).toEqual(c);
+    });
+
+    it('invalid v1 in sync: get() returns lastGood and nothing is written', async () => {
+      const a = mk();
+      const good = withSite('a.com');
+      await a.set(good);
+      await a.flush();
+      await putSync('{"version":1,"groupRules":[{"id":"x"}]}');
+      const before = await sync().get(null);
+      const s = mk();
+      expect(await s.get()).toEqual(good);
+      await s.flush();
+      expect(await sync().get(null)).toEqual(before);
+      expect(await v1Backups(s)).toHaveLength(0);
+    });
+
+    it('migration does not call set(): concurrent update() during the first load completes (no deadlock)', async () => {
+      await putSync(JSON.stringify(old()));
+      const s = mk();
+      const next = await s.update((c) => ({ ...c, dryRun: true }));
+      expect(next.dryRun).toBe(true);
+      expect(next.rules).toHaveLength(2);
+    });
+
+    it('restore() of a v1 backup migrates it', async () => {
+      const s = mk();
+      await s.get();
+      await local().set({ 'cfg:backups': [{ at: 5, config: old() }] });
+      await s.restore(5);
+      const c = await s.get();
+      expect(c.version).toBe(2);
+      expect(c.rules.map((r) => r.id)).toEqual(['r1', 'r-2']);
     });
   });
 });

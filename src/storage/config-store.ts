@@ -1,7 +1,8 @@
 import { browser } from 'wxt/browser';
 import { defaultConfig } from '../core/config/defaults';
+import { fillConfigDefaults, fillConfigV1, migrateConfig } from '../core/config/migrate';
 import { repairConfig, validateConfig } from '../core/config/schema';
-import type { Config } from '../core/types';
+import type { Config, ConfigV1 } from '../core/types';
 
 export const QUOTA_WARNING = 'Config too large to sync; saved on this device only.';
 export const ADOPTED_REMOTE_WARNING = 'Synced settings were found and loaded; your change on this device was saved as a backup.';
@@ -18,13 +19,14 @@ const MAX_BACKUPS = 20;
 const MAX_RETRIES = 3;
 
 interface Meta { v: 1; n: number; sha: string; at: number }
-export interface Backup { at: number; config: Config }
+/** Backups are mixed: a v1 copy is kept when a stored M1 config is migrated (restore() migrates it again). */
+export interface Backup { at: number; config: ConfigV1 | Config }
 export interface ConfigStoreOptions { debounceMs?: number; retryMs?: number; backoffMs?: number }
 const MAX_BACKOFF_MS = 600_000;
 
 type ReadResult =
   | { kind: 'none' }
-  | { kind: 'ok'; config: Config; original: Config; sha: string; warnings: string[] }
+  | { kind: 'ok'; config: Config; original: ConfigV1 | Config; sha: string; warnings: string[]; migratedFrom?: 1 }
   | { kind: 'bad'; reason: string };
 
 const enc = new TextEncoder();
@@ -56,21 +58,24 @@ export function splitChunks(json: string): string[] {
 
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x);
 
-/** Forward-compatible: fill fields missing from an older stored config with current defaults (stored values win). */
-function migrate(raw: unknown): unknown {
-  if (!isObj(raw)) return raw;
-  const d = defaultConfig();
-  return { ...d, ...raw, dedupe: { ...d.dedupe, ...(isObj(raw.dedupe) ? raw.dedupe : {}) } };
-}
+type Loaded =
+  | { ok: true; config: Config; original: ConfigV1 | Config; warnings: string[]; migratedFrom?: 1 }
+  | { ok: false; reason: string };
 
-type Loaded = { ok: true; config: Config; original: Config; warnings: string[] } | { ok: false; reason: string };
-
-/** Load path for any stored config (sync, lastGood, backups): migrate, repair (see repairConfig), then validate. */
+/**
+ * Load path for any stored config (sync, lastGood, backups): migrateConfig (v1 -> v2), fill defaults, repair (see
+ * repairConfig), then validate. `original` is what a backup must hold: the default-filled v1 when it migrated (so
+ * the only v1 copy is never lost), else the pre-repair v2. Never writes (ruling R2).
+ */
 function loadStored(raw: unknown): Loaded {
-  const original = migrate(raw);
-  const { config, warnings } = repairConfig(original);
+  const m = migrateConfig(raw);
+  if (!m.ok) return { ok: false, reason: `invalid: ${m.errors[0] ?? ''}` };
+  const filled = fillConfigDefaults(m.config);
+  const { config, warnings } = repairConfig(filled);
   const r = validateConfig(config);
-  return r.ok ? { ok: true, config: r.config, original: original as Config, warnings } : { ok: false, reason: `invalid: ${r.errors[0] ?? ''}` };
+  if (!r.ok) return { ok: false, reason: `invalid: ${r.errors[0] ?? ''}` };
+  const original = (m.migratedFrom === 1 ? fillConfigV1(raw) : filled) as ConfigV1 | Config;
+  return { ok: true, config: r.config, original, warnings, ...(m.migratedFrom && { migratedFrom: m.migratedFrom }) };
 }
 
 function parseConfig(json: string): Loaded {
@@ -247,7 +252,7 @@ export class ConfigStore {
     return Array.isArray(v) ? (v as Backup[]) : [];
   }
 
-  private async readLastGood(): Promise<{ config: Config; warnings: string[] } | undefined> {
+  private async readLastGood(): Promise<{ config: Config; original: ConfigV1 | Config; warnings: string[]; migratedFrom?: 1 } | undefined> {
     const v = (await browser.storage.local.get(LAST_GOOD_KEY))[LAST_GOOD_KEY];
     if (v === undefined) return undefined;
     const r = loadStored(v);
@@ -271,7 +276,9 @@ export class ConfigStore {
     const sha = await sha256(json);
     if (sha !== meta.sha) return { kind: 'bad', reason: 'checksum mismatch' };
     const p = parseConfig(json);
-    return p.ok ? { kind: 'ok', config: p.config, original: p.original, sha, warnings: p.warnings } : { kind: 'bad', reason: p.reason };
+    return p.ok
+      ? { kind: 'ok', config: p.config, original: p.original, sha, warnings: p.warnings, ...(p.migratedFrom && { migratedFrom: p.migratedFrom }) }
+      : { kind: 'bad', reason: p.reason };
   }
 
   private async load(): Promise<Config> {
@@ -285,6 +292,8 @@ export class ConfigStore {
       this.localOnly = true;
       this.warning = QUOTA_WARNING;
       this.repairWarning = lastGoodWarning;
+      // Too large for sync: keep the migrated copy local only (no PENDING; the next fitting save syncs).
+      if (stored?.migratedFrom === 1) await this.keepMigrated(stored.original, lastGood, false);
       return (this.current = lastGood);
     }
     if (lastGood && local[PENDING_KEY] === true) {
@@ -292,6 +301,7 @@ export class ConfigStore {
       this.dirty = JSON.stringify(lastGood);
       this.freshDevice = local[FRESH_KEY] === true; // persisted: first save of a fresh device whose sync write was lost
       this.repairWarning = lastGoodWarning;
+      if (stored?.migratedFrom === 1) await this.keepMigrated(stored.original, lastGood, true);
       this.scheduleWrite();
       return (this.current = lastGood);
     }
@@ -299,27 +309,56 @@ export class ConfigStore {
     if (r.kind === 'ok') {
       this.syncedSha = r.sha;
       this.repairWarning = r.warnings.join(' ') || undefined;
+      const migrated = r.migratedFrom === 1;
+      // Migrated from v1: write the v2 back to sync (PENDING + dirty, never write(): it awaits get(), ruling R2).
+      if (migrated) this.dirty = JSON.stringify(r.config);
       await this.enqueueLocal(async () => {
         // Keep the loaded version restorable: a later set() replaces it.
         const backups = await this.readBackups();
-        // Back up the original (pre-repair) config so restoring gives back exactly what the user had.
+        // Back up the original (pre-repair; pre-migration v1) config so restoring gives back exactly what the user had.
         if (JSON.stringify(backups[0]?.config) !== JSON.stringify(r.original)) {
           backups.unshift({ at: this.nextAt(backups), config: r.original });
           backups.length = Math.min(backups.length, MAX_BACKUPS);
         }
-        await browser.storage.local.set({ [LAST_GOOD_KEY]: r.config, [BACKUPS_KEY]: backups, [SYNCED_SHA_KEY]: r.sha, [FRESH_KEY]: false });
+        await browser.storage.local.set({
+          [LAST_GOOD_KEY]: r.config, [BACKUPS_KEY]: backups, [SYNCED_SHA_KEY]: r.sha, [FRESH_KEY]: false,
+          ...(migrated && { [PENDING_KEY]: true }),
+        });
       });
+      if (migrated) this.scheduleWrite();
       return (this.current = r.config);
     }
     this.repairWarning = lastGood ? lastGoodWarning : undefined;
     if (r.kind === 'none') {
       this.freshDevice = this.syncedSha === undefined && lastGood === undefined && !hasLocalFlag;
       if (this.freshDevice) await this.enqueueLocal(() => browser.storage.local.set({ [FRESH_KEY]: true }));
+      if (lastGood && stored?.migratedFrom === 1) {
+        this.dirty = JSON.stringify(lastGood);
+        await this.keepMigrated(stored.original, lastGood, true);
+        this.scheduleWrite();
+      }
       return (this.current = lastGood ?? defaultConfig());
     }
     this.warning = `Synced config failed verification (${r.reason}); using the last good copy on this device.`;
+    // Sync is unreadable: migrate the local copy only; writing it could overwrite a partially synced newer config.
+    if (lastGood && stored?.migratedFrom === 1) await this.keepMigrated(stored.original, lastGood, false);
     this.scheduleRetry(1);
     return (this.current = lastGood ?? defaultConfig());
+  }
+
+  /**
+   * After a load migrated a v1 lastGood: back up the v1 (unless it is already the newest backup) and store the v2 as
+   * lastGood, optionally marking it PENDING for sync. Local-only; never write()/set() (they await get(): deadlock).
+   */
+  private keepMigrated(v1: ConfigV1 | Config, v2: Config, pending: boolean): Promise<void> {
+    return this.enqueueLocal(async () => {
+      const backups = await this.readBackups();
+      if (JSON.stringify(backups[0]?.config) !== JSON.stringify(v1)) {
+        backups.unshift({ at: this.nextAt(backups), config: v1 });
+        backups.length = Math.min(backups.length, MAX_BACKUPS);
+      }
+      await browser.storage.local.set({ [LAST_GOOD_KEY]: v2, [BACKUPS_KEY]: backups, ...(pending && { [PENDING_KEY]: true }) });
+    });
   }
 
   private scheduleRetry(attempt: number): void {
@@ -336,7 +375,7 @@ export class ConfigStore {
     if (r.kind !== 'ok') return;
     // Repaired to the version this device already has: nothing to apply, the verification warning is stale.
     if (r.sha === this.syncedSha && this.dirty === undefined && !this.localOnly) this.warning = undefined;
-    else await this.applyRemote(r.config, r.sha, r.warnings);
+    else await this.applyRemote(r.config, r.sha, r.warnings, r.original);
   }
 
   private async onRemote(): Promise<void> {
@@ -344,14 +383,15 @@ export class ConfigStore {
     if (this.dirty !== undefined || this.localOnly) return; // our pending local write supersedes
     const r = await this.readSync();
     if (r.kind === 'ok') {
-      await this.applyRemote(r.config, r.sha, r.warnings);
+      await this.applyRemote(r.config, r.sha, r.warnings, r.original);
     } else if (r.kind === 'bad') {
       this.warning = `Synced config failed verification (${r.reason}); keeping the current config.`;
       this.scheduleRetry(1);
     }
   }
 
-  private async applyRemote(config: Config, sha: string, warnings: string[]): Promise<void> {
+  /** `original` (default: config) is what the backup holds: the v1 when another, older device wrote one to sync. */
+  private async applyRemote(config: Config, sha: string, warnings: string[], original: ConfigV1 | Config = config): Promise<void> {
     if (this.dirty !== undefined || this.localOnly || sha === this.syncedSha) return;
     this.syncedSha = sha;
     this.freshDevice = false;
@@ -360,7 +400,7 @@ export class ConfigStore {
     this.current = config;
     await this.enqueueLocal(async () => {
       const backups = await this.readBackups();
-      backups.unshift({ at: this.nextAt(backups), config });
+      backups.unshift({ at: this.nextAt(backups), config: original });
       backups.length = Math.min(backups.length, MAX_BACKUPS);
       await browser.storage.local.set({ [LAST_GOOD_KEY]: config, [BACKUPS_KEY]: backups, [SYNCED_SHA_KEY]: sha, [FRESH_KEY]: false });
     });

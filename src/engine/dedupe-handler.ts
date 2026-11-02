@@ -1,6 +1,7 @@
 import { compilePattern, PatternError } from '../core/match/pattern';
 import { findDuplicate, tabUrl } from '../core/dedupe/find';
 import { evaluateGroupRules } from '../core/group/evaluate';
+import { groupView } from '../core/config/group-view';
 import { isExemptUrl, normalizeUrl } from '../core/url/normalize';
 import type { Config, TabSnap } from '../core/types';
 import type { BrowserPort } from '../platform/browser-port';
@@ -247,9 +248,10 @@ export class DedupeHandler {
     if (this.exemptNow(tabId, key, live.windowId, cfg)) return;
     const newTab: TabSnap = { ...live, url };
     delete newTab.pendingUrl;
-    const match = evaluateGroupRules(newTab, cfg.groupRules);
+    const rules = groupView(cfg);
+    const match = evaluateGroupRules(newTab, rules);
     const ruleId = match?.ruleId;
-    const ruleMode = ruleId !== undefined ? cfg.groupRules.find((r) => r.id === ruleId)?.dedupe : undefined;
+    const ruleMode = ruleId !== undefined ? rules.find((r) => r.id === ruleId)?.dedupe : undefined;
     const locked = new Set(snap.tabs.filter((t) => this.deps.isLocked(t.id)).map((t) => t.id));
     // Another new tab may be "existing" only if it is older (lower id): of two new duplicates, the newer one closes.
     const pool = snap.tabs.filter((t) => t.id < tabId || !this.isCandidateLike(t.id));

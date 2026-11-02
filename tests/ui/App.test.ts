@@ -2,14 +2,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/svelte';
 import { fakeBrowser } from 'wxt/testing/fake-browser';
-import { defaultConfig } from '../../src/core/config/defaults';
 import type { Config } from '../../src/core/types';
+import { withGroupRules } from '../helpers/config';
 
 const send = vi.fn();
 vi.mock('../../src/ui/send', () => ({ send: (r: unknown) => send(r) }));
 import App from '../../src/entrypoints/options/App.svelte';
 
-const withRule = (): Config => ({ ...defaultConfig(), groupRules: [{ id: 'a', name: 'Alpha', enabled: true, match: { url: 'a.com/*' }, group: { title: 'A', color: 'blue' } }] });
+const withRule = (name = 'Alpha'): Config => withGroupRules([{ id: 'a', name, enabled: true, match: { url: 'a.com/*' }, group: { title: 'A', color: 'blue' } }]);
 let stored: Config; let rev: string; let status: { syncing: boolean; warning?: string };
 const changed = (r: string) => (fakeBrowser.runtime.onMessage as unknown as { trigger: (m: unknown) => Promise<unknown> }).trigger({ type: 'config.changed', rev: r });
 
@@ -37,7 +37,7 @@ describe('App config concurrency', () => {
   it('reloads silently when a remote change arrives and nothing is dirty', async () => {
     render(App);
     await screen.findByDisplayValue('Alpha');
-    stored = { ...withRule(), groupRules: [{ ...withRule().groupRules[0]!, name: 'Remote' }] }; rev = 'r2';
+    stored = withRule('Remote'); rev = 'r2';
     await changed('r2');
     await screen.findByDisplayValue('Remote');
     expect(screen.queryByText('Settings changed elsewhere.')).toBeNull();
@@ -46,7 +46,7 @@ describe('App config concurrency', () => {
   it('shows a banner when dirty; Reload discards edits', async () => {
     render(App);
     await edit();
-    rev = 'r2'; stored = { ...withRule(), groupRules: [{ ...withRule().groupRules[0]!, name: 'Remote' }] };
+    rev = 'r2'; stored = withRule('Remote');
     await changed('r2');
     await screen.findByText('Settings changed elsewhere.');
     await fireEvent.click(screen.getByRole('button', { name: 'Reload (discard my edits)' }));
@@ -66,7 +66,7 @@ describe('App config concurrency', () => {
     const set = send.mock.calls.map((c) => c[0]).filter((r) => r.type === 'config.set');
     expect(set).toHaveLength(1);
     expect(set[0].baseRev).toBe('r2');
-    expect(set[0].config.groupRules[0].name).toBe('Edited');
+    expect(set[0].config.rules[0].name).toBe('Edited');
   });
 
   it('Save sends baseRev, and a conflict response shows the banner', async () => {

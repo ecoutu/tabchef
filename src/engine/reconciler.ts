@@ -1,5 +1,6 @@
 import { planGroups, planTargets, syncCreationOrder, type PlanContext, type Targets } from '../core/group/plan';
 import type { Config, Op, Snapshot } from '../core/types';
+import { userKey } from '../core/config/migrate';
 import type { BrowserPort } from '../platform/browser-port';
 import { DragRetryExhausted, withDragRetry } from '../platform/retry';
 import { EXPECTATION_TTL_MS, loadState, saveState, type LiveState } from './state';
@@ -268,7 +269,8 @@ export class Reconciler {
 
   private ruleName(config: Config, ruleId: string | undefined): string | undefined {
     if (ruleId === undefined) return undefined;
-    return config.groupRules.find((r) => r.id === ruleId)?.name || ruleId;
+    // ruleId is a rule key (R19); M1 why-log entries may still hold a bare id.
+    return config.rules.find((r) => userKey(r.id) === ruleId)?.name || ruleId;
   }
 
   /** One why-log entry per tab that really joined `title` (tabs already in a group of that title are skipped). */

@@ -8,14 +8,11 @@ vi.mock('../../src/core/group/evaluate', async (importOriginal) => {
 
 import { evaluateGroupRules } from '../../src/core/group/evaluate';
 import { Reconciler } from '../../src/engine/reconciler';
-import { defaultConfig } from '../../src/core/config/defaults';
 import { FakeBrowserPort } from '../../src/platform/fake-port';
 import type { Config } from '../../src/core/types';
+import { withGroupRules } from '../helpers/config';
 
-const config: Config = {
-  ...defaultConfig(),
-  groupRules: [{ id: 'a', name: 'a', enabled: true, match: { url: 'https://a.com/**' }, group: { title: 'A', color: 'red' } }],
-};
+const config: Config = withGroupRules([{ id: 'a', name: 'a', enabled: true, match: { url: 'https://a.com/**' }, group: { title: 'A', color: 'red' } }]);
 
 describe('Reconciler: targets computed once per pass (CR#8)', () => {
   beforeEach(() => { fakeBrowser.reset(); vi.mocked(evaluateGroupRules).mockClear(); });

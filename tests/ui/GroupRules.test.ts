@@ -4,11 +4,12 @@ import { render, screen, fireEvent, cleanup } from '@testing-library/svelte';
 import GroupRules from '../../src/entrypoints/options/GroupRules.svelte';
 import { defaultConfig } from '../../src/core/config/defaults';
 import type { Config, GroupRule, TabSnap } from '../../src/core/types';
+import { withGroupRules } from '../helpers/config';
 
 afterEach(cleanup);
 
 const rule = (id: string, url: string | string[]): GroupRule => ({ id, name: `Rule ${id}`, enabled: true, match: { url }, group: { title: id, color: 'blue' } });
-const cfg = (...rules: GroupRule[]): Config => ({ ...defaultConfig(), groupRules: rules });
+const cfg = (...rules: GroupRule[]): Config => withGroupRules(rules);
 const tab = (id: number, url: string): TabSnap => ({ id, windowId: 1, index: id, url, title: '', pinned: false, groupId: -1, incognito: false, discarded: false, active: false, audible: false });
 const props = (config: Config, over = {}) => ({ config, tabs: [] as TabSnap[], dirty: true, saving: false, serverErrors: [] as string[], onChange: vi.fn(), onSave: vi.fn(), ...over });
 
@@ -46,19 +47,36 @@ describe('GroupRules', () => {
     expect(ups[0]!.disabled).toBe(true);
     expect(downs[1]!.disabled).toBe(true);
     await fireEvent.click(downs[0]!);
-    expect(p.onChange.mock.calls[0]![0].groupRules.map((r: GroupRule) => r.id)).toEqual(['b', 'a']);
+    expect(p.onChange.mock.calls[0]![0].order).toEqual(['user/b', 'user/a']);
   });
 
   it('Add rule appends a rule', async () => {
     const p = props(cfg());
     render(GroupRules, p);
     await fireEvent.click(screen.getByRole('button', { name: 'Add rule' }));
-    expect(p.onChange.mock.calls[0]![0].groupRules).toHaveLength(1);
+    expect(p.onChange.mock.calls[0]![0].rules).toHaveLength(1);
   });
 
   it('shows server errors inline next to the matching field', () => {
-    render(GroupRules, props(cfg(rule('a', 'a.com/*')), { serverErrors: ['/groupRules/0/group/color must be equal to one of the allowed values'] }));
+    render(GroupRules, props(cfg(rule('a', 'a.com/*')), { serverErrors: ['/rules/0/actions/0/group/color must be equal to one of the allowed values'] }));
     expect(screen.getByText(/must be equal to one of the allowed values/)).toBeTruthy();
+  });
+
+  it('lists rules in order (priority), not array order', () => {
+    render(GroupRules, props({ ...cfg(rule('a', 'a.com/*'), rule('b', 'b.com/*')), order: ['user/b', 'user/a'] }));
+    const names = (screen.getAllByRole('textbox', { name: 'Rule name' }) as HTMLInputElement[]).map((x) => x.value);
+    expect(names).toEqual(['Rule b', 'Rule a']);
+  });
+
+  it('shows a rule the form cannot express read-only, still deletable', async () => {
+    const odd = { id: 'odd', name: 'Odd rule', enabled: true, match: { title: '*x*' }, actions: [{ showInView: { view: 'v' } }] };
+    const p = props({ ...defaultConfig(), rules: [odd], order: ['user/odd'] } as Config);
+    render(GroupRules, p);
+    expect(screen.getByText('Odd rule')).toBeTruthy();
+    expect(screen.getByText(/cannot edit yet/)).toBeTruthy();
+    expect(screen.queryByRole('textbox', { name: 'Rule name' })).toBeNull();
+    await fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    expect(p.onChange.mock.calls[0]![0].rules).toEqual([]);
   });
 
   it('help text states order is priority', () => {

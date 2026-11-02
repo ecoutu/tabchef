@@ -3,6 +3,7 @@ import { DedupeHandler, SESSION_MARKER, type DedupeDeps } from '../../src/engine
 import { defaultConfig } from '../../src/core/config/defaults';
 import { FakeBrowserPort } from '../../src/platform/fake-port';
 import type { Config, TabSnap } from '../../src/core/types';
+import { withGroupRules } from '../helpers/config';
 
 type NewTab = Omit<TabSnap, 'index' | 'groupId'> & Partial<Pick<TabSnap, 'index' | 'groupId'>>;
 const PR = 'https://github.com/acme/api/pull/1';
@@ -50,17 +51,14 @@ describe('DedupeHandler', () => {
   });
 
   it('records the new tab group title and rule id', async () => {
-    const cfg: Config = {
-      ...defaultConfig(),
-      groupRules: [{ id: 'gh', name: 'gh', enabled: true, match: { url: 'github.com/**' }, group: { title: 'GH', color: 'blue' } }],
-    };
+    const cfg: Config = withGroupRules([{ id: 'gh', name: 'gh', enabled: true, match: { url: 'github.com/**' }, group: { title: 'GH', color: 'blue' } }]);
     const w = setup(cfg);
     w.port.addTab(tab(1, PR));
     w.port.addGroup({ id: 50, windowId: 1, title: 'GH', color: 'blue', collapsed: false });
     w.port.addTab(tab(2, PR, { groupId: 50 }));
     w.h.recordCreated(2);
     await w.h.onCandidate(2, PR, 'pending');
-    expect(w.closed[0]).toMatchObject({ groupTitle: 'GH', ruleId: 'gh' });
+    expect(w.closed[0]).toMatchObject({ groupTitle: 'GH', ruleId: 'user/gh' });
   });
 
   it('followFragment navigates the existing tab to the new fragment', async () => {
@@ -147,10 +145,7 @@ describe('DedupeHandler', () => {
   });
 
   it('rule dedupe override (off) wins over global always-switch', async () => {
-    const cfg: Config = {
-      ...defaultConfig(),
-      groupRules: [{ id: 'gh', name: 'gh', enabled: true, match: { url: 'github.com/**' }, group: { title: 'GH', color: 'blue' }, dedupe: 'off' }],
-    };
+    const cfg: Config = withGroupRules([{ id: 'gh', name: 'gh', enabled: true, match: { url: 'github.com/**' }, group: { title: 'GH', color: 'blue' }, dedupe: 'off' }]);
     const w = setup(cfg);
     w.port.addTab(tab(1, PR));
     w.port.addTab(tab(2, PR));

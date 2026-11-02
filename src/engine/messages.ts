@@ -1,5 +1,6 @@
 import type { Config, DedupeSettings, GroupRule, TabSnap } from '../core/types';
 import { ruleTitleProblems, validateConfig } from '../core/config/schema';
+import { groupRuleToRule, sanitizeRuleId, userKey } from '../core/config/migrate';
 import { importAutoGroupTabs } from '../core/import/auto-group-tabs';
 import { mergeDedupe } from '../core/import/merge';
 import { importTabDeduper } from '../core/import/tab-deduper';
@@ -148,12 +149,12 @@ async function runImport(source: ImportSource, data: unknown, current: Config): 
   const raw = source === 'auto-group-tabs' ? { dedupe: {}, ...(await importAutoGroupTabs(data)) } : { rules: [] as GroupRule[], ...importTabDeduper(data) };
   const skipped: string[] = [];
   const rules = raw.rules.filter((x) => {
-    const problems = ruleTitleProblems(x);
+    const problems = ruleTitleProblems(groupRuleToRule(x));
     if (problems.length) skipped.push(`Rule "${x.group.title}" skipped: ${problems.map((m) => `title ${m}`).join('; ')}.`);
     return problems.length === 0;
   });
   const r = { ...raw, rules };
-  const titles = new Set(current.groupRules.map((x) => x.group.title));
+  const titles = new Set(current.rules.flatMap((x) => x.actions.flatMap((a) => ('group' in a ? [a.group.title] : []))));
   const warnings = [...r.warnings, ...skipped, ...r.rules.filter((x) => titles.has(x.group.title)).map((x) => `Already have a rule titled "${x.group.title}"`)];
   return { ...r, warnings, changes: mergeDedupe(current.dedupe, r.dedupe).changes };
 }
@@ -306,13 +307,13 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
         try {
           await deps.store.update((cur) => {
             if (configRev(cur) !== req.baseRev) throw new Conflict();
-            const ids = new Set(cur.groupRules.map((r) => r.id));
-            const rules = imp.rules.map((r) => {
-              const id = ids.has(r.id) ? crypto.randomUUID() : r.id;
-              ids.add(id);
-              return { ...r, id };
-            });
-            const next: Config = { ...cur, groupRules: [...cur.groupRules, ...rules], dedupe: mergeDedupe(cur.dedupe, imp.dedupe).merged };
+            // Imported ids are mapped to the v2 id pattern, unique among the user rules; keys append to order.
+            const ids = new Set(cur.rules.map((r) => r.id));
+            const rules = imp.rules.map((r) => groupRuleToRule(r, sanitizeRuleId(r.id, ids)));
+            const next: Config = {
+              ...cur, rules: [...cur.rules, ...rules], order: [...new Set([...cur.order, ...rules.map((r) => userKey(r.id))])],
+              dedupe: mergeDedupe(cur.dedupe, imp.dedupe).merged,
+            };
             const v = validateConfig(next);
             if (!v.ok) { invalid = v.errors; throw new Conflict(); }
             added = rules.length;

@@ -1,4 +1,8 @@
+import type { RecipeRef, Rule } from './lang/types';
+export type { Action, Cond, RecipeRef, Rule } from './lang/types';
+
 export type GroupColor = 'grey'|'blue'|'red'|'yellow'|'green'|'pink'|'purple'|'cyan'|'orange';
+/** M1 group rule: the v1 config's rule shape and the Auto-Group Tabs importer's output (see migrate.ts groupRuleToRule). */
 export interface GroupRule {
   id: string; name: string; enabled: boolean;
   match: { url: string | string[] };          // glob, /regex/, or :param patterns
@@ -19,8 +23,21 @@ export interface DedupeSettings {
   includeIncognito: boolean;
   scope: 'all-windows' | 'same-window';       // default 'all-windows' (Tab Deduper dedupAllWindows)
   urlTransforms: { pattern: string; replacement: string; flags?: string }[];  // regex replace applied to the dedupe key, after canonicalizers
+  fragmentOverrides: { pattern: string; keepFragment: boolean }[];  // per-URL-pattern override of stripFragment (M2 T18)
+  matchTitle: boolean;                                              // duplicates must also have equal titles (M2 T18)
+  titleOverrides: { pattern: string; matchTitle: boolean }[];       // per-URL-pattern override of matchTitle (M2 T18)
 }
-export interface Config { version: 1; groupRules: GroupRule[]; dedupe: DedupeSettings; }
+/** Dedupe settings as stored by M1 (before the M2 fields). */
+export type DedupeSettingsV1 = Omit<DedupeSettings, 'fragmentOverrides' | 'matchTitle' | 'titleOverrides'>;
+/** M1 config; kept for migration (migrate.ts) and old backups only. */
+export interface ConfigV1 { version: 1; groupRules: GroupRule[]; dedupe: DedupeSettingsV1; }
+export interface ConfigV2 {
+  version: 2; rules: Rule[]; recipes: RecipeRef[];
+  /** Rule keys ('user/<id>' | '<recipeId>/<id>'); priority = tab-bar order. Missing keys are appended at compile time. */
+  order: string[];
+  tables: Record<string, Record<string, string>>; dedupe: DedupeSettings; dryRun: boolean;
+}
+export type Config = ConfigV2;
 export interface TabSnap { id: number; windowId: number; index: number; url: string; pendingUrl?: string;
   title: string; pinned: boolean; groupId: number; incognito: boolean; discarded: boolean; frozen?: boolean;
   active: boolean; audible: boolean; lastAccessed?: number;
@@ -30,6 +47,7 @@ export interface GroupSnap { id: number; windowId: number; title: string; color:
 export interface WindowSnap { id: number; type: 'normal'|'popup'|'app'|'devtools'; focused: boolean; }
 export interface Snapshot { tabs: TabSnap[]; groups: GroupSnap[]; windows: WindowSnap[]; }
 export type Op =
+  // ruleId is a rule key ('user/<id>' | '<recipeId>/<id>', ruling R19).
   // ruleId (group/ungroup/moveTabs): the rule that moved the tabs in, or whose group they no longer match (why-log).
   | { kind: 'group'; tabIds: number[]; windowId: number; title: string; color: GroupColor; existingGroupId?: number; collapsed?: boolean; ruleId?: string }
   | { kind: 'ungroup'; tabIds: number[]; ruleId?: string }
