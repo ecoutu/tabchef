@@ -10,6 +10,8 @@ export class ChromePort implements BrowserPort {
   constructor(
     private readonly api: ChromeApi = browser,
     private readonly delays?: number[],
+    /** Applied to every snapshot (background: TabAges.annotate sets `TabSnap.created`, M3-R2). */
+    private readonly annotate?: (s: Snapshot) => Promise<Snapshot>,
   ) {}
 
   private retry<T>(fn: () => Promise<T>): Promise<T> {
@@ -24,7 +26,7 @@ export class ChromePort implements BrowserPort {
     ]);
     const normal = wins.filter((w) => w.type === 'normal' && w.id !== undefined);
     const ids = new Set(normal.map((w) => w.id as number));
-    return {
+    const result: Snapshot = {
       windows: normal.map((w) => ({ id: w.id as number, type: 'normal', focused: !!w.focused })),
       tabs: tabs.filter((t) => t.id !== undefined && ids.has(t.windowId)).map((t): TabSnap => {
         const snap: TabSnap = {
@@ -42,6 +44,7 @@ export class ChromePort implements BrowserPort {
         id: g.id, windowId: g.windowId, title: g.title ?? '', color: g.color as GroupColor, collapsed: g.collapsed,
       })),
     };
+    return this.annotate ? this.annotate(result) : result;
   }
 
   group(tabIds: number[], opts: { groupId?: number; windowId: number }): Promise<number> {

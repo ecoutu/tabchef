@@ -11,6 +11,8 @@ import {
 import { listPendingAsks } from '../engine/ask';
 import { afterConfigChange, CLOSE_ALARM_PREFIX, CLOSE_SUGGESTIONS_KEY, CloseExecutor } from '../engine/close-executor';
 import { DedupeHandler } from '../engine/dedupe-handler';
+import { AGE_TICK_ALARM, TabAges } from '../engine/tab-ages';
+import { usesAge } from '../core/lang/cond';
 import { PageFacts } from '../engine/page-facts';
 import { createWatchScripting, WATCH_FILE, WATCH_SCRIPT_ID } from '../engine/watch-registration';
 import { PermissionsManager } from '../engine/permissions';
@@ -31,7 +33,8 @@ export default defineBackground(() => {
   const updateConfig = async (fn: (c: Config) => Config) => {
     await store.update(fn);
   };
-  const port = new ChromePort();
+  // Every snapshot carries tab creation times (TabSnap.created, M3-R2). tabAges is declared below (it needs dedupe).
+  const port = new ChromePort(browser, undefined, (s) => tabAges.annotate(s));
   const whyLog = new WhyLog();
   const recentlyClosed = new RecentlyClosed();
   // storage.session (cleared on browser restart) as the engine's key-value seam.
@@ -55,6 +58,7 @@ export default defineBackground(() => {
   }), {
     onPausedChanged: () => {
       reconciler.schedule('permissions');
+      syncAgeTick(); // a paused or resumed rule may use age
       void closeExecutor.rearm(); // closes kept pending while their recipe waited for a permission
       void closeExecutor.evaluateAll(); // the Program changed (R51): a resumed close rule applies to open tabs
     },
@@ -90,6 +94,7 @@ export default defineBackground(() => {
     // for close rules against the new Program (R51), so a newly enabled close rule applies to tabs already open.
     // Then the badge, which counts the shown views (R60): they depend on the config. scheduleBadge is declared below.
     void afterConfigChange(() => permissions.onChanged(), closeExecutor, () => scheduleBadge()).catch(warn('close re-evaluation'));
+    syncAgeTick(); // declared below
     // Tell open extension pages (options) the config changed; "no receiver" rejections are expected.
     Promise.resolve(browser.runtime.sendMessage({ type: 'config.changed', rev: configRev(c) })).catch(() => {});
   });
@@ -148,6 +153,16 @@ export default defineBackground(() => {
     // Cleared on browser restart: a missing marker at worker start opens the startup grace (order-independent).
     session,
   });
+  // Tab creation times for `age` conditions (R66, M3-R4); a tab created in the startup grace is a lower bound.
+  const tabAges = new TabAges({ session, inStartupGrace: (at) => dedupe.inStartupGrace(at), graceReady: dedupe.ready });
+  // While a Program rule uses age, a 1-minute alarm re-evaluates it (M3-R5): nothing else fires when a tab gets old.
+  // A running alarm is left alone, so frequent config changes never postpone its next tick.
+  const syncAgeTick = () => {
+    (async () => {
+      if (!(await getProgram()).rules.some((r) => usesAge(r.rule))) await browser.alarms.clear(AGE_TICK_ALARM);
+      else if (!(await browser.alarms.get(AGE_TICK_ALARM))) await browser.alarms.create(AGE_TICK_ALARM, { periodInMinutes: 1 });
+    })().catch(warn('age alarm sync'));
+  };
   const safety: SafetyService = new SafetyService(port, {
     recentlyClosed,
     log: whyLog,
@@ -219,6 +234,7 @@ export default defineBackground(() => {
       // A new tab's url is '' until its navigation commits: use the pending URL, so a parked lock reattaches now.
       safety.onTabSeen({ id: tab.id, url: tab.url || tab.pendingUrl || '', windowId: tab.windowId });
       dedupe.recordCreated(tab.id, { discarded: tab.discarded, status: tab.status });
+      tabAges.onCreated(tab);
       const url = tab.pendingUrl || tab.url;
       if (url) candidate(tab.id, url, 'pending');
     }
@@ -266,6 +282,7 @@ export default defineBackground(() => {
     pageFacts.clear(tabId);
     void closeExecutor.onTabRemoved(tabId);
     dedupe.onRemoved(tabId);
+    tabAges.onRemoved(tabId);
     anchors.onTabRemoved(tabId, info.isWindowClosing).catch(warn('anchor cleanup'));
     askController.onTabRemoved(tabId).catch((e: unknown) => console.warn('[tabchef] pending ask cleanup failed', e));
     reconciler.schedule('tab-removed');
@@ -274,6 +291,7 @@ export default defineBackground(() => {
     pageFacts.clear(removed);
     void closeExecutor.onTabRemoved(removed);
     dedupe.onReplaced(added, removed);
+    tabAges.onReplaced(added, removed);
     anchors.onTabReplaced(added, removed).catch(warn('anchor replace'));
   });
   browser.tabGroups.onUpdated.addListener((g) => {
@@ -391,11 +409,16 @@ export default defineBackground(() => {
       return true;
     },
   }));
-  // Alarms are routed by name prefix: `close:<tabId>` to the CloseExecutor, the rest (resume) to SafetyService.
+  // Alarms are routed by name prefix: `close:<tabId>` to the CloseExecutor, `age.tick` re-evaluates age conditions
+  // (M3-R5), the rest (resume) to SafetyService.
   browser.alarms.onAlarm.addListener((alarm) => {
     if (alarm.name.startsWith(CLOSE_ALARM_PREFIX)) void closeExecutor.onAlarm(alarm.name);
-    else safety.onAlarm(alarm);
+    else if (alarm.name === AGE_TICK_ALARM) {
+      reconciler.schedule('age');
+      void closeExecutor.evaluateAll();
+    } else safety.onAlarm(alarm);
   });
+  syncAgeTick();
   // notifications is an optional permission: its events exist only once granted, so (re)register on grant as well.
   let notificationsWired = false;
   const wireNotifications = () => {

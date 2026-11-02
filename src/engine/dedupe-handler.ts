@@ -114,8 +114,8 @@ export class DedupeHandler {
     return this.deps.isLocked(tabId) || (this.deps.isAnchor?.(tabId) ?? false);
   }
 
-  private inStartupGrace(): boolean {
-    const t = this.now();
+  /** Whether time `t` (default now) falls in the startup grace. Public for TabAges (restored tabs are not new). */
+  inStartupGrace(t: number = this.now()): boolean {
     return this.graceStart !== undefined && this.graceEnd !== undefined && t >= this.graceStart && t < this.graceEnd;
   }
 

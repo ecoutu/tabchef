@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { DedupeHandler, SESSION_MARKER, type DedupeDeps } from '../../src/engine/dedupe-handler';
+import { DedupeHandler, SESSION_MARKER, STARTUP_GRACE_MS, type DedupeDeps } from '../../src/engine/dedupe-handler';
 import { defaultConfig } from '../../src/core/config/defaults';
 import { FakeBrowserPort } from '../../src/platform/fake-port';
 import type { Config, TabSnap } from '../../src/core/types';
@@ -295,6 +295,21 @@ describe('DedupeHandler', () => {
     w.h.recordCreated(2);
     await w.h.onCandidate(2, PR, 'pending');
     expect(w.calls('closeTab')).toEqual([[2]]);
+  });
+
+  it('inStartupGrace (public, for TabAges): the grace window [start, start + STARTUP_GRACE_MS), now or at a given time', async () => {
+    const w = setup(defaultConfig(), { session: { get: async () => undefined, set: async () => {} } });
+    await w.h.ready;
+    const start = w.clock.now();
+    expect(w.h.inStartupGrace()).toBe(true);
+    expect(w.h.inStartupGrace(start - 1)).toBe(false);
+    expect(w.h.inStartupGrace(start + STARTUP_GRACE_MS - 1)).toBe(true);
+    w.clock.advance(STARTUP_GRACE_MS);
+    expect(w.h.inStartupGrace()).toBe(false);
+    expect(w.h.inStartupGrace(start)).toBe(true);
+    const marked = setup(defaultConfig(), { session: { get: async () => 1, set: async () => {} } }); // worker restart
+    await marked.h.ready;
+    expect(marked.h.inStartupGrace()).toBe(false);
   });
 
   describe('order-independent startup grace (session marker)', () => {

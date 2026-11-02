@@ -31,6 +31,7 @@ const h = vi.hoisted(() => {
     'tabs.get': (id: number) => Promise.resolve({ id, url: 'https://a.test/', windowId: 1 }),
     'notifications.getAll': () => Promise.resolve({}),
   };
+  const calls: [string, unknown[]][] = [];
   const node = (path: string[]): unknown => new Proxy(() => {}, {
     get: (_t, p) => {
       if (p === 'then' || typeof p === 'symbol') return undefined;
@@ -40,9 +41,14 @@ const h = vi.hoisted(() => {
       if (p === 'removeListener') return () => {};
       return node([...path, p]);
     },
-    apply: (_t, _this, a: never[]) => (returns[path.join('.')] ?? (() => Promise.resolve(undefined)))(...a),
+    apply: (_t, _this, a: never[]) => {
+      calls.push([path.join('.'), a]);
+      return (returns[path.join('.')] ?? (() => Promise.resolve(undefined)))(...a);
+    },
   });
-  return { instances, listeners, flags, fake, browser: node([]) };
+  /** What ProgramCache.get resolves to (the age.tick gate reads it). */
+  const state: { program: unknown } = { program: { rules: [] } };
+  return { instances, listeners, flags, fake, returns, calls, state, browser: node([]) };
 });
 
 vi.mock('wxt/browser', () => ({ browser: h.browser }));
@@ -50,12 +56,16 @@ vi.mock('../../src/storage/config-store', () => ({ ConfigStore: h.fake('store') 
 vi.mock('../../src/platform/chrome-port', () => ({
   ChromePort: h.fake('port', () => ({ snapshot: vi.fn(async () => ({ tabs: [], groups: [], windows: [] })) })),
 }));
-vi.mock('../../src/engine/program-cache', () => ({ ProgramCache: h.fake('programs') }));
+vi.mock('../../src/engine/program-cache', () => ({ ProgramCache: h.fake('programs', () => ({ get: vi.fn(async () => h.state.program) })) }));
 vi.mock('../../src/engine/permissions', () => ({ PermissionsManager: h.fake('permissions', () => ({ ready: Promise.resolve() })) }));
 vi.mock('../../src/engine/page-facts', () => ({ PageFacts: h.fake('pageFacts', () => ({ ready: Promise.resolve() })) }));
 vi.mock('../../src/engine/reconciler', () => ({ Reconciler: h.fake('reconciler') }));
 vi.mock('../../src/engine/anchors', () => ({ AnchorService: h.fake('anchors', () => ({ ready: Promise.resolve() })) }));
-vi.mock('../../src/engine/dedupe-handler', () => ({ DedupeHandler: h.fake('dedupe') }));
+vi.mock('../../src/engine/dedupe-handler', () => ({ DedupeHandler: h.fake('dedupe', () => ({ ready: Promise.resolve(), inStartupGrace: vi.fn(() => true) })) }));
+vi.mock('../../src/engine/tab-ages', async (orig) => ({
+  ...(await orig<typeof import('../../src/engine/tab-ages')>()),
+  TabAges: h.fake('tabAges', () => ({ ready: Promise.resolve(), annotate: vi.fn(async (s: unknown) => ({ annotated: s })) })),
+}));
 vi.mock('../../src/engine/safety', () => ({
   SafetyService: h.fake('safety', () => ({ ready: Promise.resolve(), isLocked: vi.fn(() => false) })),
 }));
@@ -143,10 +153,17 @@ const deferred = () => {
   return { promise, resolve };
 };
 
+/** A compiled-Program stand-in: only `rules[].rule.match` is read by the age.tick gate. */
+const programWith = (...matches: unknown[]) => ({ rules: matches.map((match, i) => ({ key: `user/r${i}`, rule: { id: `r${i}`, match, actions: [] } })) });
+const alarmCalls = () => h.calls.filter(([p]) => p.startsWith('alarms.'));
+
 beforeEach(() => {
   vi.useFakeTimers();
   h.flags.notificationsAbsent = false;
   for (const k of Object.keys(h.listeners)) delete h.listeners[k];
+  h.calls.length = 0;
+  delete h.returns['alarms.get'];
+  h.state.program = programWith();
   vi.clearAllMocks();
   background.main();
 });
@@ -249,6 +266,7 @@ describe('background wiring', () => {
     expect(I('pageFacts').clear).toHaveBeenCalledWith(5);
     expect(I('closeExecutor').onTabRemoved).toHaveBeenCalledWith(5);
     expect(I('dedupe').onRemoved).toHaveBeenCalledWith(5);
+    expect(I('tabAges').onRemoved).toHaveBeenCalledWith(5);
     expect(I('reconciler').schedule).toHaveBeenCalledWith('tab-removed');
   });
 
@@ -274,6 +292,61 @@ describe('background wiring', () => {
     expect(I('closeExecutor').onFacts).toHaveBeenCalledWith(7);
   });
 
+  it('ChromePort snapshots go through TabAges.annotate; TabAges reads the dedupe startup grace once it is known', async () => {
+    const annotate = I('port').args[2] as (s: unknown) => Promise<unknown>;
+    expect(await annotate({ tabs: [] })).toEqual({ annotated: { tabs: [] } });
+    expect(I('tabAges').annotate).toHaveBeenCalledWith({ tabs: [] });
+    const d = I('tabAges').args[0] as { session: unknown; inStartupGrace: (at: number) => boolean; graceReady: unknown };
+    expect(d.inStartupGrace(42)).toBe(true);
+    expect(I('dedupe').inStartupGrace).toHaveBeenCalledWith(42);
+    expect(d.graceReady).toBe(I('dedupe').ready);
+    expect(d.session).toEqual({ get: expect.any(Function), set: expect.any(Function) });
+  });
+
+  it('the age.tick alarm re-plans and re-evaluates closes; it does not reach safety', async () => {
+    await fire('alarms.onAlarm', { name: 'age.tick' });
+    expect(I('reconciler').schedule).toHaveBeenCalledWith('age');
+    expect(I('closeExecutor').evaluateAll).toHaveBeenCalled();
+    expect(I('safety').onAlarm).not.toHaveBeenCalled();
+  });
+
+  it('worker start without age rules clears the age.tick alarm', async () => {
+    await vi.advanceTimersByTimeAsync(0);
+    expect(alarmCalls()).toContainEqual(['alarms.clear', ['age.tick']]);
+    expect(alarmCalls().some(([p]) => p === 'alarms.create')).toBe(false);
+  });
+
+  it('a config change to a Program with an age rule (nested, under opener) creates age.tick once; without one clears it', async () => {
+    await vi.advanceTimersByTimeAsync(0);
+    const onChange = I('store').onChange!.mock.calls[0]![0] as (c: unknown) => void;
+    h.calls.length = 0;
+    h.state.program = programWith({ url: 'a.com/*' }, { all: [{ url: 'b.com/*' }, { opener: { not: { age: { lt: '1h' } } } }] });
+    onChange({ version: 2, rules: [] });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(alarmCalls()).toEqual([['alarms.get', ['age.tick']], ['alarms.create', ['age.tick', { periodInMinutes: 1 }]]]);
+    // Already running: left alone, so frequent config changes never postpone its next tick.
+    h.calls.length = 0;
+    h.returns['alarms.get'] = () => Promise.resolve({ name: 'age.tick', periodInMinutes: 1 });
+    onChange({ version: 2, rules: [] });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(alarmCalls()).toEqual([['alarms.get', ['age.tick']]]);
+    h.calls.length = 0;
+    h.state.program = programWith({ url: 'a.com/*' });
+    onChange({ version: 2, rules: [] });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(alarmCalls()).toEqual([['alarms.clear', ['age.tick']]]);
+  });
+
+  it('a paused-set change (the Program changed) re-checks the age.tick alarm', async () => {
+    await vi.advanceTimersByTimeAsync(0);
+    h.calls.length = 0;
+    h.state.program = programWith({ age: { gt: '1d' } });
+    const { onPausedChanged } = I('permissions').args[3] as { onPausedChanged: () => void };
+    onPausedChanged();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(alarmCalls()).toContainEqual(['alarms.create', ['age.tick', { periodInMinutes: 1 }]]);
+  });
+
   it('close alarms go to the close executor, others to safety', async () => {
     await fire('alarms.onAlarm', { name: 'close:4' });
     await fire('alarms.onAlarm', { name: 'resume' });
@@ -285,6 +358,7 @@ describe('background wiring', () => {
     await fireAt('tabs.onCreated', TAB, { id: 3, url: '', pendingUrl: 'https://b.test/', windowId: 1, discarded: false, status: 'loading' });
     expect(I('safety').onTabSeen).toHaveBeenCalledWith({ id: 3, url: 'https://b.test/', windowId: 1 });
     expect(I('dedupe').recordCreated).toHaveBeenCalledWith(3, { discarded: false, status: 'loading' });
+    expect(I('tabAges').onCreated).toHaveBeenCalledWith(expect.objectContaining({ id: 3, discarded: false, status: 'loading' }));
     expect(I('dedupe').onCandidate).toHaveBeenCalledWith(3, 'https://b.test/', 'pending');
     expect(I('reconciler').schedule).toHaveBeenCalledWith('tab-created');
   });
@@ -314,6 +388,7 @@ describe('background wiring', () => {
     expect(I('pageFacts').clear).toHaveBeenCalledWith(9);
     expect(I('closeExecutor').onTabRemoved).toHaveBeenCalledWith(9);
     expect(I('dedupe').onReplaced).toHaveBeenCalledWith(10, 9);
+    expect(I('tabAges').onReplaced).toHaveBeenCalledWith(10, 9);
     expect(I('anchors').onTabReplaced).toHaveBeenCalledWith(10, 9);
   });
 

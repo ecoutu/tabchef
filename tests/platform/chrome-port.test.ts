@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { ChromePort } from '../../src/platform/chrome-port';
+import type { Snapshot } from '../../src/core/types';
 
 const base = { index: 0, pinned: false, incognito: false, discarded: false, active: false, groupId: -1 };
 
@@ -41,6 +42,20 @@ describe('ChromePort', () => {
     const s = await new ChromePort(api).snapshot();
     expect(s.tabs.map((t) => t.openerTabId)).toEqual([undefined, 1]);
     expect('openerTabId' in s.tabs[0]!).toBe(false);
+  });
+
+  it('snapshot applies the optional annotate hook to its output (TabAges, M3-R2)', async () => {
+    const api = {
+      windows: { getAll: async () => [{ id: 1, type: 'normal', focused: true }] },
+      tabs: { query: async () => [{ ...base, id: 1, windowId: 1, url: 'https://a' }] },
+      tabGroups: { query: async () => [] },
+    } as unknown as ConstructorParameters<typeof ChromePort>[0];
+    const plain = await new ChromePort(api).snapshot();
+    expect('created' in plain.tabs[0]!).toBe(false);
+    const annotate = vi.fn(async (s: Snapshot) => ({ ...s, tabs: s.tabs.map((t) => ({ ...t, created: { at: 5, exact: true } })) }));
+    const s = await new ChromePort(api, undefined, annotate).snapshot();
+    expect(annotate).toHaveBeenCalledWith(plain);
+    expect(s).toEqual({ ...plain, tabs: [{ ...plain.tabs[0], created: { at: 5, exact: true } }] });
   });
 
   it('mutating calls go through drag retry', async () => {
