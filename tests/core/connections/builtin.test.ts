@@ -35,7 +35,7 @@ describe('builtinConnectionDefs', () => {
     const g = builtinConnectionDefs().github;
     expect(g).toMatchObject({
       id: 'github', kind: 'github', baseUrl: 'https://github.com', apiBaseUrl: 'https://api.github.com',
-      hosts: ['https://github.com/*', 'https://api.github.com/*'], auth: 'device-code', scopes: ['repo'],
+      hosts: ['https://github.com/*', 'https://api.github.com/*'], auth: 'device-code', scopes: [],
       revokeUrl: 'https://github.com/settings/applications',
     });
   });
@@ -51,8 +51,8 @@ describe('builtinConnectionDefs', () => {
     expect(builtinConnectionDefs().github.hosts).toHaveLength(2);
   });
 
-  it('has no client id until the user supplies one (M3-R36)', () => {
-    expect(GITHUB_CLIENT_ID).toBe('');
+  it('uses the registered GitHub App client id (M3-R47)', () => {
+    expect(GITHUB_CLIENT_ID).toBe('Iv23liQTWp7D0YtIccKH');
   });
 });
 

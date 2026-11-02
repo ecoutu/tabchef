@@ -1,10 +1,10 @@
 import type { ConnectionDef } from './types';
 
 /**
- * Public OAuth client id for the GitHub device flow. Empty until the user registers the app (M3-R36); the device flow
- * refuses an empty id. Never add a client secret anywhere.
+ * Public client id of the registered Tabchef GitHub App (device flow; read-only Pull requests + Metadata) (M3-R47).
+ * Never add a client secret anywhere.
  */
-export const GITHUB_CLIENT_ID = '';
+export const GITHUB_CLIENT_ID = 'Iv23liQTWp7D0YtIccKH';
 
 /** v1 API hosts. `*.atlassian.net` means exactly one label below atlassian.net. */
 export const ALLOWED_API_HOSTS = ['github.com', 'api.github.com', '*.atlassian.net', 'api.atlassian.com'] as const;
@@ -37,7 +37,8 @@ export function builtinConnectionDefs(): Record<'github' | 'jira', ConnectionDef
       id: 'github', kind: 'github', label: 'GitHub',
       baseUrl: 'https://github.com', apiBaseUrl: 'https://api.github.com',
       hosts: ['https://github.com/*', 'https://api.github.com/*'],
-      auth: 'device-code', scopes: ['repo'],
+      // GitHub App: permissions come from the app settings, not OAuth scopes (M3-R47).
+      auth: 'device-code', scopes: [],
       revokeUrl: 'https://github.com/settings/applications',
     },
     // Template: jiraDef fills baseUrl, apiBaseUrl and hosts once the user names a site.
