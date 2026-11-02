@@ -40,8 +40,9 @@ export interface PendingClose {
   /** The tab was active at some point since `committedAt`. */
   activated: boolean;
 }
-export interface CloseSuggestion { tabId: number; ruleKey: string; reason: string }
-interface StoredSuggestion extends CloseSuggestion { url: string }
+/** `url`: the page the suggestion was made for; a view acts on it only while the tab is still there (R61). */
+export interface CloseSuggestion { tabId: number; url: string; ruleKey: string; reason: string }
+type StoredSuggestion = CloseSuggestion;
 
 /**
  * Ruling R51: after a config change, re-evaluate every open tab, so enabling a close rule also applies to tabs that
@@ -49,9 +50,16 @@ interface StoredSuggestion extends CloseSuggestion { url: string }
  * paused set, and with it the ProgramCache key, is current. Re-evaluating a pending entry of the same rule keeps its
  * fire time (evaluateIn); the R13 fire-time checks are unchanged.
  */
-export async function afterConfigChange(syncPermissions: () => Promise<void>, closes: Pick<CloseExecutor, 'evaluateAll'>): Promise<void> {
-  await syncPermissions();
-  await closes.evaluateAll();
+export async function afterConfigChange(
+  syncPermissions: () => Promise<void>, closes: Pick<CloseExecutor, 'evaluateAll'>, refreshBadge?: () => void,
+): Promise<void> {
+  try {
+    await syncPermissions();
+    await closes.evaluateAll();
+  } finally {
+    // The toolbar badge counts the shown views (R60), which depend on the config: recount even if a step failed.
+    refreshBadge?.();
+  }
 }
 
 export interface CloseExecutorDeps {
@@ -159,7 +167,7 @@ export class CloseExecutor {
 
   /** Tabs the Finished view lists: closes the rule only suggests, or that protection turned into a suggestion. */
   suggestions(): CloseSuggestion[] {
-    return [...this.suggested.values()].map(({ tabId, ruleKey, reason }) => ({ tabId, ruleKey, reason }));
+    return [...this.suggested.values()].map(({ tabId, url, ruleKey, reason }) => ({ tabId, url, ruleKey, reason }));
   }
 
   /** Resolves when queued work has finished (tests). */

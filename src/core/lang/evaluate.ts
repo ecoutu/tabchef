@@ -32,6 +32,11 @@ export interface EvalResult {
   dedupe?: DedupeResult;
   close?: CloseResult;
   views: string[];
+  /**
+   * Per view in `views`: the template vars (condition captures + extract values) of the first rule that put the tab
+   * there. A view's `show`, `groupBy` and `sort` read them as `extract.<name>` (M2 T17). Absent when `views` is empty.
+   */
+  viewVars?: Record<string, Record<string, string>>;
   /** Every matching rule key, in priority order (the conflict view). */
   matched: string[];
   /** Some rule's outcome depends on page facts (pageText or a selector extract) that `f.page` does not have yet. */
@@ -129,7 +134,10 @@ export function evaluateTab(p: Program, f: TabFacts, now: number): EvalResult {
       } else if ('close' in a) {
         if (!out.close) out.close = { key: r.key, afterMs: afterMs(a.close.after), mode: a.close.mode ?? 'auto', dryRun: r.dryRun };
       } else if ('showInView' in a) {
-        if (!out.views.includes(a.showInView.view)) out.views.push(a.showInView.view);
+        if (!out.views.includes(a.showInView.view)) {
+          out.views.push(a.showInView.view);
+          (out.viewVars ??= {})[a.showInView.view] = vars;
+        }
       }
     }
   }

@@ -164,11 +164,11 @@ describe('CloseExecutor', () => {
     await w.ex.evaluate(2);
     await vi.advanceTimersByTimeAsync(60_000);
     expect(w.closes()).toEqual([]);
-    expect(w.ex.suggestions()).toEqual([{ tabId: 2, ruleKey: 'user/cb', reason: 'Callback' }]);
+    expect(w.ex.suggestions()).toEqual([{ tabId: 2, url: CB, ruleKey: 'user/cb', reason: 'Callback' }]);
     expect(e.store.get(CLOSE_SUGGESTIONS_KEY)).toEqual([expect.objectContaining({ tabId: 2, ruleKey: 'user/cb' })]);
     const w2 = worker(e);
     await w2.ex.ready;
-    expect(w2.ex.suggestions()).toEqual([{ tabId: 2, ruleKey: 'user/cb', reason: 'Callback' }]);
+    expect(w2.ex.suggestions()).toEqual([{ tabId: 2, url: CB, ruleKey: 'user/cb', reason: 'Callback' }]);
   });
 
   it('a suggestion goes away when its tab navigates away or closes', async () => {
@@ -212,7 +212,7 @@ describe('CloseExecutor', () => {
     await w.ex.evaluate(2);
     await vi.advanceTimersByTimeAsync(3_000);
     expect(w.closes()).toEqual([]);
-    expect(w.ex.suggestions()).toEqual([{ tabId: 2, ruleKey: 'user/cb', reason: 'Callback' }]);
+    expect(w.ex.suggestions()).toEqual([{ tabId: 2, url: CB, ruleKey: 'user/cb', reason: 'Callback' }]);
     await w.ex.onFacts(2); // a protected tab is not re-armed by later facts
     await vi.advanceTimersByTimeAsync(10_000);
     expect(w.closes()).toEqual([]);
@@ -543,5 +543,14 @@ describe('config change re-evaluates open tabs (ruling R51)', () => {
     const order: string[] = [];
     await afterConfigChange(async () => { await Promise.resolve(); order.push('sync'); }, { evaluateAll: async () => { order.push('evaluate'); } });
     expect(order).toEqual(['sync', 'evaluate']);
+  });
+
+  it('then refreshes the badge (R60: it depends on config), also when the sync or re-evaluation fails (T17 fix 1)', async () => {
+    const order: string[] = [];
+    await afterConfigChange(async () => { order.push('sync'); }, { evaluateAll: async () => { order.push('evaluate'); } }, () => order.push('badge'));
+    expect(order).toEqual(['sync', 'evaluate', 'badge']);
+    const badge = vi.fn();
+    await expect(afterConfigChange(async () => { throw new Error('x'); }, { evaluateAll: async () => {} }, badge)).rejects.toThrow('x');
+    expect(badge).toHaveBeenCalledTimes(1);
   });
 });

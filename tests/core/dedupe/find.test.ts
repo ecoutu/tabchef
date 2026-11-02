@@ -106,4 +106,12 @@ describe('findDuplicateSets', () => {
     expect(findDuplicateSets(tabs, s())).toEqual([]);
     expect(findDuplicateSets([tab(1, PR), tab(2, PR)], s({ allowDuplicates: ['github.com/**'] }))).toEqual([]);
   });
+
+  it('per-tab dedupe overrides (R25, T17): mode off leaves the tab out; keepFragment keys that tab with its fragment', () => {
+    const tabs = [tab(1, 'https://a.com/x'), tab(2, 'https://a.com/x'), tab(3, 'https://a.com/x#f'), tab(4, 'https://a.com/x#f')];
+    const off = findDuplicateSets(tabs, s(), (t) => (t.id === 2 ? { mode: 'off' } : undefined));
+    expect(off.map((x) => x.tabs.map((t) => t.id))).toEqual([[1, 3, 4]]);
+    const frag = findDuplicateSets(tabs, s(), (t) => (t.id >= 3 ? { keepFragment: true } : undefined));
+    expect(frag.map((x) => x.tabs.map((t) => t.id))).toEqual([[1, 2], [3, 4]]);
+  });
 });

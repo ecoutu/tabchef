@@ -9,7 +9,7 @@ import {
   UNDO_NOTIFICATION_PREFIX,
 } from '../engine/messages';
 import { listPendingAsks } from '../engine/ask';
-import { afterConfigChange, CLOSE_ALARM_PREFIX, CloseExecutor } from '../engine/close-executor';
+import { afterConfigChange, CLOSE_ALARM_PREFIX, CLOSE_SUGGESTIONS_KEY, CloseExecutor } from '../engine/close-executor';
 import { DedupeHandler } from '../engine/dedupe-handler';
 import { PageFacts } from '../engine/page-facts';
 import { createWatchScripting, WATCH_FILE, WATCH_SCRIPT_ID } from '../engine/watch-registration';
@@ -84,7 +84,8 @@ export default defineBackground(() => {
     reconciler.schedule('config');
     // Enabled recipes changed: their needs, the paused set and the watch origins. Then every open tab is re-evaluated
     // for close rules against the new Program (R51), so a newly enabled close rule applies to tabs already open.
-    void afterConfigChange(() => permissions.onChanged(), closeExecutor).catch(warn('close re-evaluation'));
+    // Then the badge, which counts the shown views (R60): they depend on the config. scheduleBadge is declared below.
+    void afterConfigChange(() => permissions.onChanged(), closeExecutor, () => scheduleBadge()).catch(warn('close re-evaluation'));
     // Tell open extension pages (options) the config changed; "no receiver" rejections are expected.
     Promise.resolve(browser.runtime.sendMessage({ type: 'config.changed', rev: configRev(c) })).catch(() => {});
   });
@@ -140,7 +141,8 @@ export default defineBackground(() => {
     isPaused: () => safety.isPaused(),
     isLocked: (id) => safety.isLocked(id),
     isAnchor: (id) => anchors.isAnchor(id),
-    beforeDecide: async () => { await Promise.all([safety.ready, anchors.ready]); },
+    // M3: the paused set (rule keys waiting for a permission) is loaded too before any dedupe decision.
+    beforeDecide: async () => { await Promise.all([safety.ready, anchors.ready, permissions.ready]); },
     onClosed: (id, entry, focused) => { safety.toast(id, entry, focused).catch(warn('undo toast')); },
     // Cleared on browser restart: a missing marker at worker start opens the startup grace (order-independent).
     session: {
@@ -292,6 +294,22 @@ export default defineBackground(() => {
     isLocked: (id: number) => safety.isLocked(id) || anchors.isAnchor(id),
     // Effective settings (config dedupe + recipe urlTransforms), so the popup and badge agree with the engine.
     getSettings: async () => (await getProgram()).dedupe,
+    // Per-rule dedupe overrides (R25) for duplicate sets, as the engine decides them (M2 T17).
+    getProgram,
+    // Which views are shown (R58 / R59): the badge counts only those (R60).
+    getConfig: () => store.get(),
+    // Recipe views (M2 T17): the popup tabs, and the list views' counts in the toolbar badge (R20).
+    views: {
+      builtins: builtinRecipes(),
+      getProgram,
+      facts: (id: number) => { const page = pageFacts.get(id); return page ? { page } : {}; },
+      permissions,
+      closes: {
+        ready: closeExecutor.ready,
+        suggestions: () => closeExecutor.suggestions(),
+        exempt: (id: number, url: string) => closeExecutor.exempt(id, url),
+      },
+    },
     ask: {
       listPending: () => listPendingAsks(session),
       resolvePending: (n: number, e: number, c: 'switch' | 'keep') => askController.resolvePending(n, e, c),
@@ -301,6 +319,10 @@ export default defineBackground(() => {
   for (const ev of [browser.tabs.onCreated, browser.tabs.onRemoved, browser.tabs.onUpdated, browser.tabs.onReplaced, browser.tabs.onAttached]) {
     ev.addListener(scheduleBadge);
   }
+  // Finished suggestions are counted in the badge: recount when CloseExecutor stores a change to them.
+  browser.storage.onChanged.addListener((changes, area) => {
+    if (area === 'session' && CLOSE_SUGGESTIONS_KEY in changes) scheduleBadge();
+  });
   scheduleBadge();
   const handleRequest = createHandler({
     ...badgeDeps,
@@ -318,6 +340,8 @@ export default defineBackground(() => {
     whyLog,
     recipes: { builtins: builtinRecipes(), permissions },
     isAnchor: (id) => anchors.isAnchor(id),
+    // M3: dupes.close* / view.close decide on loaded locks and anchors, never on empty sets.
+    beforeClose: async () => { await Promise.all([safety.ready, anchors.ready]); },
     // preview.change (M2 T13): read-only views of the engine (Program, planner state, page facts); nothing is applied.
     preview: {
       builtins: builtinRecipes(),
@@ -341,7 +365,8 @@ export default defineBackground(() => {
     pageFacts,
     safety,
     schedule: (r) => reconciler.schedule(r),
-    onFacts: (id) => { void closeExecutor.onFacts(id); },
+    // New page facts can change list views (pageText showInView), hence the badge (R60).
+    onFacts: (id) => { void closeExecutor.onFacts(id); scheduleBadge(); },
     onCloseChoice: (id, choice) => { void closeExecutor.onCloseChoice(id, choice); },
   });
   // UI requests (popup / options), banner choices (content script in the duplicate tab) and the watch script.
