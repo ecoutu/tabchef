@@ -166,6 +166,16 @@ describe('config schema: group titles (I1)', () => {
     expect(ruleTitleProblems(groupRuleToRule({ ...rule(), group: { title: '', color: 'blue' } }))).toEqual(['must not be empty']);
     expect(ruleTitleProblems(groupRuleToRule(rule()))).toEqual([]);
   });
+  it('accepts template variables named by a title regex group (T3 captures)', () => {
+    const match = { all: [{ url: 'a.com/*' }, { title: '/^(?<num>\\d+)/' }] };
+    expect(validateConfig(cfgRaw([v2({ match, actions: [{ group: { title: '#{num}', color: 'blue' } }] })])).ok).toBe(true);
+  });
+  it('rejects a color {var} that nothing provides, accepts a captured one', () => {
+    const bad = validateConfig(cfgRaw([v2({ actions: [{ group: { title: 'A', color: '{repo|default:grey}' } }] })]));
+    expect(bad.ok).toBe(false);
+    if (!bad.ok) expect(bad.errors).toEqual(['/rules/0/actions/0/group/color uses {repo}, which pattern "a.com/*" does not capture']);
+    expect(validateConfig(cfgRaw([v2({ match: { url: 'a.com/:repo/*' }, actions: [{ group: { title: 'A', color: '{repo|default:grey}' } }] })])).ok).toBe(true);
+  });
 });
 
 describe('config schema: repairing stored configs (CR#1)', () => {

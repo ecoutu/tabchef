@@ -10,14 +10,15 @@ export const configJsonSchema = schema;
 
 export type ValidationResult = { ok: true; config: Config } | { ok: false; errors: string[] };
 
-const COLORS = new Set<string>(['grey', 'blue', 'red', 'yellow', 'green', 'pink', 'purple', 'cyan', 'orange'] satisfies GroupColor[]);
+/** The 9 Chrome tab-group colors. */
+export const COLORS: ReadonlySet<string> = new Set<string>(['grey', 'blue', 'red', 'yellow', 'green', 'pink', 'purple', 'cyan', 'orange'] satisfies GroupColor[]);
 const DURATION_MSG = 'must be a duration like 500ms, 30s, 15m, 2h or 1d';
 
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x);
 const list = <T>(x: T | T[]): T[] => (Array.isArray(x) ? x : [x]);
 
 /** A problem at a JSON pointer relative to the rule (e.g. '/match/url/1'). */
-interface Problem { path: string; message: string }
+export interface Problem { path: string; message: string }
 
 function patternProblem(p: string): string | undefined {
   try {
@@ -33,7 +34,7 @@ function patternProblem(p: string): string | undefined {
  * MAX_REGEX_LEN. Rule regexes are capped; dedupe urlTransforms are not (M1 stored data never had a cap, and a
  * failing stored config would fall back to defaults).
  */
-function regexProblem(source: string, flags?: string, capped = false, measured = source): string | undefined {
+export function regexProblem(source: string, flags?: string, capped = false, measured = source): string | undefined {
   if (capped && measured.length > MAX_REGEX_LEN) return `regex too long (max ${MAX_REGEX_LEN} characters)`;
   try {
     new RegExp(source, flags);
@@ -43,7 +44,7 @@ function regexProblem(source: string, flags?: string, capped = false, measured =
   }
 }
 
-type Tables = Record<string, Record<string, string>>;
+export type Tables = Record<string, Record<string, string>>;
 
 /** Template syntax problem (unknown filter, bad arguments) or a `map:` table that is not defined (when tables are known). */
 function templateProblem(t: string, tables?: Tables): string | undefined {
@@ -66,6 +67,19 @@ function urlPatterns(c: Cond): string[] {
   if ('all' in c) return c.all.flatMap(urlPatterns);
   if ('any' in c) return c.any.flatMap(urlPatterns);
   if ('not' in c) return urlPatterns(c.not);
+  return [];
+}
+
+/** Named groups of `/regex/` title patterns anywhere in a condition tree (they add captures, M2 T3/R6). */
+function titleRegexGroups(c: Cond): string[] {
+  if ('title' in c) {
+    const t = c.title;
+    if (!(t.length >= 2 && t.startsWith('/') && t.lastIndexOf('/') > 0)) return [];
+    return [...t.slice(1, t.lastIndexOf('/')).matchAll(/\(\?<([A-Za-z_$][\w$]*)>/g)].map((m) => m[1] as string);
+  }
+  if ('all' in c) return c.all.flatMap(titleRegexGroups);
+  if ('any' in c) return c.any.flatMap(titleRegexGroups);
+  if ('not' in c) return titleRegexGroups(c.not);
   return [];
 }
 
@@ -92,18 +106,25 @@ function condProblems(c: Cond, path: string, out: Problem[]): void {
 }
 
 /**
- * Title problems of one group action: an empty title, or a `{var}` that neither the rule's url patterns nor its
- * `extract` names provide. For an M1-shaped url-only match every pattern must capture the var (any of them may be
- * the one that matched); for other conditions any url pattern capturing it is enough. Patterns that do not compile
- * are reported elsewhere and skipped here.
+ * Title problems of one group action: an empty title, or a `{var}` that the rule does not provide (varProblems).
  */
 function titleProblems(rule: Rule, title: string, tables?: Tables): string[] {
   if (title === '') return ['must not be empty'];
   const tp = templateProblem(title, tables);
   if (tp) return [tp];
+  return varProblems(rule, title);
+}
+
+/**
+ * `{var}`s of a template that neither the rule's url patterns, its title-regex named groups nor its `extract` names
+ * provide. For an M1-shaped url-only match every pattern must capture the var (any of them may be the one that
+ * matched); for other conditions any url pattern or title regex capturing it is enough. Patterns that do not compile
+ * are reported elsewhere and skipped here.
+ */
+function varProblems(rule: Rule, template: string): string[] {
   const extracted = new Set(Object.keys(rule.extract ?? {}));
   const out: string[] = [];
-  const vars = templateVars(title).filter((v) => !extracted.has(v));
+  const vars = templateVars(template).filter((v) => !extracted.has(v));
   if ('url' in rule.match) {
     for (const v of vars) {
       for (const p of list(rule.match.url)) {
@@ -113,8 +134,8 @@ function titleProblems(rule: Rule, title: string, tables?: Tables): string[] {
     }
     return out;
   }
-  const caps = new Set(urlPatterns(rule.match).flatMap((p) => [...(patternCaptures(p) ?? [])]));
-  for (const v of vars) if (!caps.has(v)) out.push(`uses {${v}}, which no url pattern or extract provides`);
+  const caps = new Set([...urlPatterns(rule.match).flatMap((p) => [...(patternCaptures(p) ?? [])]), ...titleRegexGroups(rule.match)]);
+  for (const v of vars) if (!caps.has(v)) out.push(`uses {${v}}, which no url pattern, title regex or extract provides`);
   return out;
 }
 
@@ -123,8 +144,11 @@ export function ruleTitleProblems(rule: Rule, tables?: Tables): string[] {
   return rule.actions.flatMap((a) => ('group' in a ? titleProblems(rule, a.group.title, tables) : []));
 }
 
-/** Post-schema problems of a structurally valid rule: patterns, regexes, durations, colors and titles. */
-function ruleProblems(rule: Rule, tables?: Tables): Problem[] {
+/**
+ * Post-schema problems of a structurally valid rule: patterns, regexes, durations, colors and titles (and the
+ * `{var}`s titles and colors use). Shared by validateConfig, repairConfig and the compiler (src/core/lang/compile.ts).
+ */
+export function ruleProblems(rule: Rule, tables?: Tables): Problem[] {
   const out: Problem[] = [];
   condProblems(rule.match, '/match', out);
   if (rule.trigger?.every !== undefined && !DURATION.test(rule.trigger.every)) out.push({ path: '/trigger/every', message: DURATION_MSG });
@@ -140,7 +164,7 @@ function ruleProblems(rule: Rule, tables?: Tables): Problem[] {
       if (cp) out.push({ path: `/actions/${j}/group/color`, message: cp });
       else if (!COLORS.has(a.group.color) && templateVars(a.group.color).length === 0) {
         out.push({ path: `/actions/${j}/group/color`, message: `must be one of ${[...COLORS].join(', ')}, or a {template}` });
-      }
+      } else for (const m of varProblems(rule, a.group.color)) out.push({ path: `/actions/${j}/group/color`, message: m });
     } else if ('close' in a && a.close.after !== undefined && !DURATION.test(a.close.after)) {
       out.push({ path: `/actions/${j}/close/after`, message: DURATION_MSG });
     }

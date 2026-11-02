@@ -34,7 +34,11 @@ export interface View {
   id: string; tab: string; kind: 'list' | 'duplicates'; rules?: string[];
   show?: Show; groupBy?: string; sort?: { field: string; dir: 'asc' | 'desc' }; actions: ('focus' | 'close' | 'close-all' | 'keep')[];
 }
-export interface ParamDef { type: 'string' | 'pattern' | 'regex' | 'number' | 'boolean' | 'duration' | 'string[]'; default: unknown; label: string }
+export interface ParamDef {
+  type: 'string' | 'pattern' | 'regex' | 'number' | 'boolean' | 'duration' | 'string[]'; default: unknown; label: string;
+  /** Allowed values (compared by JSON equality); the schema keyword lands with the recipe schema (T5). */
+  enum?: unknown[];
+}
 export interface Recipe {
   recipe: string; version: number; name: string; description: string;
   params?: Record<string, ParamDef>; needs?: { hosts?: string[]; permissions?: string[] };
