@@ -65,7 +65,7 @@ export default defineBackground(() => {
   const reconciler = new Reconciler(port, getProgram, {
     log: whyLog,
     isPaused: () => safety.isPaused(),
-    beforeRun: async () => { await Promise.all([safety.ready, pageFacts.ready]); },
+    beforeRun: async () => { await Promise.all([safety.ready, pageFacts.ready, permissions.ready]); },
     extraLeaveAlone: () => safety.lockedTabIds(),
     pageFacts,
   });
@@ -177,7 +177,7 @@ export default defineBackground(() => {
     },
     isRulePaused: (key) => permissions.paused().has(key),
     observesForm: (url) => permissions.covers(url),
-    beforeRun: async () => { await Promise.all([safety.ready, pageFacts.ready]); },
+    beforeRun: async () => { await Promise.all([safety.ready, pageFacts.ready, permissions.ready]); },
     // isAnchor: AnchorService arrives with M2 T11.
   });
   // A restarted worker re-arms its stored pending closes (timers die with the worker; overdue ones fire now).

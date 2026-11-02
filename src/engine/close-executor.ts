@@ -298,10 +298,13 @@ export class CloseExecutor {
       return true;
     }
     const now = this.now();
-    const committedAt = this.commits.get(tabId) ?? now;
+    // A commit this worker did not see (it restarted since, or the page loaded before it ran) leaves the tab's activity
+    // unknown: count it as used since load (R46), as for stored entries without these fields. onCommitted resets it.
+    const seen = this.commits.get(tabId);
+    const committedAt = seen ?? now;
     const e: PendingClose = {
       tabId, url: tab.url, ruleKey: r.key, fireAt: now + r.afterMs, committedAt,
-      activated: tab.active || (this.activations.get(tabId) ?? -Infinity) >= committedAt,
+      activated: seen === undefined || tab.active || (this.activations.get(tabId) ?? -Infinity) >= committedAt,
     };
     this.pending.set(tabId, e);
     this.arm(e);

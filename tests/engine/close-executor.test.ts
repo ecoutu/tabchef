@@ -69,6 +69,7 @@ describe('CloseExecutor', () => {
     e.port.addTab(tab(1, 'https://other.test/', { active: true }));
     e.port.addTab(tab(2, CB));
     const w = worker(e);
+    await w.ex.onCommitted(2);
     await w.ex.evaluate(2);
     expect(e.store.get(PENDING_CLOSES_KEY)).toEqual([expect.objectContaining({ tabId: 2, url: CB, ruleKey: 'user/cb', fireAt: 1_003_000 })]);
     await vi.advanceTimersByTimeAsync(2_999);
@@ -87,6 +88,7 @@ describe('CloseExecutor', () => {
     const e = env();
     e.port.addTab(tab(2, CB));
     const w = worker(e);
+    await w.ex.onCommitted(2);
     await w.ex.evaluate(2);
     await vi.advanceTimersByTimeAsync(2_000);
     w.safety.markFormEdited(2, CB);
@@ -100,6 +102,7 @@ describe('CloseExecutor', () => {
     const e = env();
     e.port.addTab(tab(2, CB));
     const w = worker(e);
+    await w.ex.onCommitted(2);
     await w.ex.evaluate(2);
     e.port.state.tabs.find((t) => t.id === 2)!.active = true;
     await vi.advanceTimersByTimeAsync(3_000);
@@ -111,6 +114,7 @@ describe('CloseExecutor', () => {
     const e = env();
     e.port.addTab(tab(2, CB));
     const w = worker(e);
+    await w.ex.onCommitted(2);
     await w.ex.evaluate(2);
     e.port.state.tabs.find((t) => t.id === 2)!.url = 'https://example.com/cb?code=2';
     await vi.advanceTimersByTimeAsync(3_000);
@@ -123,6 +127,7 @@ describe('CloseExecutor', () => {
     const e = env();
     e.port.addTab(tab(2, CB));
     const w1 = worker(e);
+    await w1.ex.onCommitted(2);
     await w1.ex.evaluate(2);
     vi.clearAllTimers(); // the worker dies with its timers (this also resets the fake clock)
     vi.setSystemTime(1_005_000);
@@ -138,7 +143,9 @@ describe('CloseExecutor', () => {
   it('rearm() before the fire time re-arms the remaining delay', async () => {
     const e = env();
     e.port.addTab(tab(2, CB));
-    await worker(e).ex.evaluate(2);
+    const w0 = worker(e);
+    await w0.ex.onCommitted(2);
+    await w0.ex.evaluate(2);
     vi.clearAllTimers(); // the worker dies with its timers (this also resets the fake clock)
     vi.setSystemTime(1_001_000);
     const w2 = worker(e);
@@ -153,6 +160,7 @@ describe('CloseExecutor', () => {
     const e = env([closeRule({ mode: 'suggest' })]);
     e.port.addTab(tab(2, CB));
     const w = worker(e);
+    await w.ex.onCommitted(2);
     await w.ex.evaluate(2);
     await vi.advanceTimersByTimeAsync(60_000);
     expect(w.closes()).toEqual([]);
@@ -168,10 +176,13 @@ describe('CloseExecutor', () => {
     e.port.addTab(tab(2, CB));
     e.port.addTab(tab(3, `${CB}3`));
     const w = worker(e);
+    await w.ex.onCommitted(2);
     await w.ex.evaluate(2);
+    await w.ex.onCommitted(3);
     await w.ex.evaluate(3);
     expect(w.ex.suggestions().map((s) => s.tabId)).toEqual([2, 3]);
     e.port.state.tabs.find((t) => t.id === 2)!.url = 'https://other.test/';
+    await w.ex.onCommitted(2);
     await w.ex.evaluate(2);
     await w.ex.onTabRemoved(3);
     expect(w.ex.suggestions()).toEqual([]);
@@ -182,6 +193,7 @@ describe('CloseExecutor', () => {
     const e = env([closeRule({ after: '3s' }, { dryRun: true })]);
     e.port.addTab(tab(2, CB));
     const w = worker(e);
+    await w.ex.onCommitted(2);
     await w.ex.evaluate(2);
     await vi.advanceTimersByTimeAsync(3_000);
     expect(w.closes()).toEqual([]);
@@ -196,6 +208,7 @@ describe('CloseExecutor', () => {
     e.port.addTab(tab(2, CB, { pinned: true }));
     const w = worker(e);
     w.banner.mockResolvedValue(false);
+    await w.ex.onCommitted(2);
     await w.ex.evaluate(2);
     await vi.advanceTimersByTimeAsync(3_000);
     expect(w.closes()).toEqual([]);
@@ -209,6 +222,7 @@ describe('CloseExecutor', () => {
     const e = env([closeRule({ after: '2m' })]);
     e.port.addTab(tab(2, CB));
     const w = worker(e);
+    await w.ex.onCommitted(2);
     await w.ex.evaluate(2);
     expect(w.alarms.get(`${CLOSE_ALARM_PREFIX}2`)).toBe(1_000_000 + 120_000);
     await vi.advanceTimersByTimeAsync(120_000);
@@ -221,6 +235,7 @@ describe('CloseExecutor', () => {
     const e = env([closeRule({ after: '25s' })]);
     e.port.addTab(tab(2, CB));
     const w = worker(e);
+    await w.ex.onCommitted(2);
     await w.ex.evaluate(2);
     expect(w.alarmApi.create).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(25_000);
@@ -232,6 +247,7 @@ describe('CloseExecutor', () => {
     e.port.addTab(tab(2, CB));
     const paused = new Set<string>();
     const w = worker(e, { isRulePaused: (k) => paused.has(k) });
+    await w.ex.onCommitted(2);
     await w.ex.evaluate(2);
     w.safety.pause('15m');
     await vi.advanceTimersByTimeAsync(3_000);
@@ -254,6 +270,7 @@ describe('CloseExecutor', () => {
     e.port.addTab(tab(2, CB));
     const paused = new Set<string>();
     const w = worker(e, { isRulePaused: (k) => paused.has(k) });
+    await w.ex.onCommitted(2);
     await w.ex.evaluate(2);
     paused.add('user/cb');
     e.cfg.c = cfgOf([]); // as compiled without the paused rule
@@ -265,6 +282,7 @@ describe('CloseExecutor', () => {
     const e = env();
     e.port.addTab(tab(2, CB));
     const w = worker(e);
+    await w.ex.onCommitted(2);
     await w.ex.evaluate(2);
     e.cfg.c = cfgOf([closeRule({ after: '3s' }, { id: 'other' }), closeRule()]);
     await vi.advanceTimersByTimeAsync(3_000);
@@ -277,6 +295,7 @@ describe('CloseExecutor', () => {
     e.port.addTab(tab(2, CB));
     const anchor = { on: false };
     const w = worker(e, { isAnchor: () => anchor.on });
+    await w.ex.onCommitted(2);
     await w.ex.evaluate(2);
     anchor.on = true;
     await vi.advanceTimersByTimeAsync(3_000);
@@ -288,13 +307,16 @@ describe('CloseExecutor', () => {
     const e = env();
     e.port.addTab(tab(2, CB));
     const w = worker(e);
+    await w.ex.onCommitted(2);
     await w.ex.evaluate(2);
     await w.ex.exempt(2, CB);
     await vi.advanceTimersByTimeAsync(3_000);
+    await w.ex.onCommitted(2);
     await w.ex.evaluate(2);
     await vi.advanceTimersByTimeAsync(3_000);
     expect(w.closes()).toEqual([]);
     e.port.state.tabs.find((t) => t.id === 2)!.url = 'https://example.com/cb?code=9';
+    await w.ex.onCommitted(2);
     await w.ex.evaluate(2);
     await vi.advanceTimersByTimeAsync(3_000);
     expect(w.closes()).toEqual([2]);
@@ -317,9 +339,11 @@ describe('CloseExecutor', () => {
     const e = env();
     e.port.addTab(tab(2, CB));
     const w = worker(e, { observesForm: () => false });
+    await w.ex.onCommitted(2);
     await w.ex.evaluate(2);
     await w.ex.onActivated(2);
     await w.ex.onCommitted(2); // reloaded in the background
+    await w.ex.onCommitted(2);
     await w.ex.evaluate(2);
     await vi.advanceTimersByTimeAsync(3_000);
     expect(w.closes()).toEqual([2]);
@@ -329,6 +353,7 @@ describe('CloseExecutor', () => {
     const e = env();
     e.port.addTab(tab(2, CB));
     const w = worker(e, { observesForm: () => true });
+    await w.ex.onCommitted(2);
     await w.ex.evaluate(2);
     await w.ex.onActivated(2);
     await vi.advanceTimersByTimeAsync(3_000);
@@ -340,7 +365,9 @@ describe('CloseExecutor', () => {
     e.port.addTab(tab(2, CB, { audible: true }));
     e.port.addTab(tab(3, `${CB}3`, { audible: true }));
     const w = worker(e);
+    await w.ex.onCommitted(2);
     await w.ex.evaluate(2);
+    await w.ex.onCommitted(3);
     await w.ex.evaluate(3);
     await vi.advanceTimersByTimeAsync(3_000);
     expect(w.banner).toHaveBeenCalledTimes(2);
@@ -356,6 +383,7 @@ describe('CloseExecutor', () => {
     const e = env();
     e.port.addTab(tab(2, CB, { audible: true }));
     const w = worker(e);
+    await w.ex.onCommitted(2);
     await w.ex.evaluate(2);
     await vi.advanceTimersByTimeAsync(3_000);
     e.port.state.tabs.find((t) => t.id === 2)!.url = 'https://other.test/';
@@ -367,6 +395,7 @@ describe('CloseExecutor', () => {
     const e = env();
     e.port.addTab(tab(2, CB));
     const w = worker(e);
+    await w.ex.onCommitted(2);
     await w.ex.evaluate(2);
     await vi.advanceTimersByTimeAsync(2_000);
     await w.ex.onFacts(2);
@@ -378,6 +407,7 @@ describe('CloseExecutor', () => {
     const e = env([closeRule({ after: '1m' })]);
     e.port.addTab(tab(2, CB));
     const w = worker(e);
+    await w.ex.onCommitted(2);
     await w.ex.evaluate(2);
     await w.ex.onTabRemoved(2);
     expect(w.alarms.size).toBe(0);
@@ -398,11 +428,54 @@ describe('CloseExecutor', () => {
     expect(e.store.get(PENDING_CLOSES_KEY)).toHaveLength(1);
   });
 
+  it('restart before the permissions sync: a rule paused meanwhile stays pending (beforeRun awaits PermissionsManager.ready)', async () => {
+    const e = env();
+    e.port.addTab(tab(2, CB));
+    const w0 = worker(e);
+    await w0.ex.onCommitted(2);
+    await w0.ex.evaluate(2);
+    vi.clearAllTimers();
+    vi.setSystemTime(1_005_000); // overdue
+    // The new worker's paused set is empty until its first sync, which finds the rule's permission revoked.
+    let paused = new Set<string>();
+    let synced!: () => void;
+    const ready = new Promise<void>((r) => { synced = () => { paused = new Set(['user/cb']); r(); }; });
+    const w2 = worker(e, { isRulePaused: (k) => paused.has(k), beforeRun: () => ready });
+    const rearmed = w2.ex.rearm();
+    await vi.advanceTimersByTimeAsync(0);
+    synced();
+    await rearmed;
+    await vi.advanceTimersByTimeAsync(0);
+    expect(w2.closes()).toEqual([]);
+    expect(e.store.get(PENDING_CLOSES_KEY)).toHaveLength(1);
+  });
+
+  it('restart without a recorded commit: a re-evaluated background tab counts as used since load (unobservable form state)', async () => {
+    const e = env([closeRule({ after: '3s' }, { match: { url: 'example.com/cb*' } })]);
+    e.port.addTab(tab(2, CB));
+    const w = worker(e, { observesForm: () => false });
+    w.banner.mockResolvedValue(false);
+    await w.ex.evaluate(2); // e.g. a tabs.onUpdated hash change seen by a restarted worker: no onCommitted recorded
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(w.closes()).toEqual([]);
+    expect(w.ex.suggestions().map((x) => x.tabId)).toEqual([2]);
+  });
+
+  it('an observed commit of a never-active background tab still closes (unobservable form state)', async () => {
+    const e = env();
+    e.port.addTab(tab(2, CB));
+    const w = worker(e, { observesForm: () => false });
+    await w.ex.onCommitted(2);
+    await w.ex.evaluate(2);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(w.closes()).toEqual([2]);
+  });
+
   it('evaluateAll (browser startup) schedules every matching tab', async () => {
     const e = env();
     e.port.addTab(tab(2, CB));
     e.port.addTab(tab(3, 'https://other.test/'));
-    const w = worker(e);
+    const w = worker(e, { observesForm: () => true }); // no commit seen yet: closes only where form state is known (R46)
     await w.ex.evaluateAll();
     await vi.advanceTimersByTimeAsync(3_000);
     expect(w.closes()).toEqual([2]);

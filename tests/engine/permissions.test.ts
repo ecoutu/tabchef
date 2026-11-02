@@ -217,6 +217,28 @@ describe('PermissionsManager', () => {
     expect(warn).toHaveBeenCalled();
   });
 
+  it('ready resolves after the first sync, with the paused set filled', async () => {
+    const t = setup();
+    let settled = false;
+    void t.pm.ready.then(() => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false); // no sync yet
+    expect(t.pm.paused().size).toBe(0);
+    void t.pm.onChanged();
+    await t.pm.ready;
+    expect([...t.pm.paused()]).toEqual(['meet']);
+  });
+
+  it('ready resolves even when the first sync fails or scripting is missing (nothing waits forever)', async () => {
+    const t = setup();
+    const failing = new PermissionsManager(t.port, async () => { throw new Error('boom'); }, t.scripting.s, { warn: () => {} });
+    void failing.onChanged();
+    await expect(failing.ready).resolves.toBeUndefined();
+    const noScripting = new PermissionsManager(t.port, t.getProgram, createWatchScripting(() => undefined), { warn: () => {} });
+    void noScripting.onChanged();
+    await expect(noScripting.ready).resolves.toBeUndefined();
+  });
+
   it('an unmet rule-level need pauses only that rule key (R5); the recipe itself stays ok', async () => {
     const port = new FakeBrowserPort();
     const program: Program = {
