@@ -12,6 +12,7 @@ import { defaultConfig } from '../../src/core/config/defaults';
 import { FakeBrowserPort } from '../../src/platform/fake-port';
 import type { Program, Recipe, RecipeRef, Rule } from '../../src/core/lang/types';
 import type { Config } from '../../src/core/types';
+import type { ConnectionState } from '../../src/core/connections/types';
 
 const MEET = 'https://meet.google.com/*';
 const ui = { id: 'ext', url: 'chrome-extension://ext/options.html' };
@@ -39,7 +40,12 @@ function scriptingFake() {
   return { s, registered: () => registered };
 }
 
-function setup(recipes: RecipeRef[] = [ref('meet', true), ref('gh', true)], rules: Rule[] = [], builtins: Record<string, Recipe> = BUILTINS) {
+const LABELS: Record<string, string> = { github: 'GitHub', jira: 'Jira' };
+
+function setup(
+  recipes: RecipeRef[] = [ref('meet', true), ref('gh', true)], rules: Rule[] = [], builtins: Record<string, Recipe> = BUILTINS,
+  conn: Record<string, ConnectionState> = {},
+) {
   const port = new FakeBrowserPort();
   port.addWindow(1);
   let cfg: Config = { ...defaultConfig(), recipes, rules, order: rules.map((r) => `user/${r.id}`) };
@@ -55,7 +61,8 @@ function setup(recipes: RecipeRef[] = [ref('meet', true), ref('gh', true)], rule
   const holder: { pm?: PermissionsManager } = {};
   const programs = new ProgramCache(() => store.get(), { builtins, paused: () => holder.pm?.paused() ?? [], warn: () => {} });
   const getProgram = () => programs.get();
-  const pm = new PermissionsManager(port, getProgram, scripting.s, { onPausedChanged });
+  const connections = async () => Object.entries(conn).map(([id, state]) => ({ id, label: LABELS[id] ?? id, state }));
+  const pm = new PermissionsManager(port, getProgram, scripting.s, { onPausedChanged, connections });
   holder.pm = pm;
   const deps: HandlerDeps = {
     runtimeId: 'ext', extensionOrigin: 'chrome-extension://ext', store, port,
@@ -334,6 +341,126 @@ describe('PermissionsManager', () => {
       .toEqual({ ok: false, error: 'invalid params', errors: ['unknown param: bogus'] });
     expect(await t.handle({ type: 'recipes.setParams', id: 'meet', params: { delay: '5s' } }, ui)).toEqual({ ok: true, data: null });
     expect(t.getCfg().recipes.find((x) => x.id === 'meet')!.params).toEqual({ delay: '5s' });
+  });
+});
+
+// M3-R64: a test-only stand-in for T16's Jira-either recipe, with the same levels and needs alternatives.
+const GH_HOST = 'https://github.com/*';
+const JIRA_HOST = 'https://acme.atlassian.net/*';
+const either = groupRecipe('either', 'github.com/*', 'PR', {
+  rules: [
+    { id: 'pr', name: 'PR', enabled: true, match: { url: 'github.com/*/pull/*' }, actions: [{ group: { title: 'PR', color: 'blue' } }],
+      needs: { anyOf: [{ connections: ['github'] }, { hosts: [GH_HOST] }, {}] } },
+    { id: 'ticket', name: 'Ticket', enabled: true, match: { url: 'acme.atlassian.net/browse/*' }, actions: [{ group: { title: 'T', color: 'red' } }],
+      needs: { anyOf: [{ connections: ['jira'] }, { hosts: [JIRA_HOST] }, {}] } },
+  ],
+  levels: [
+    { id: 'titles', label: 'Titles', rules: ['pr', 'ticket'] },
+    { id: 'page', label: 'Page details', rules: ['pr', 'ticket'] },
+    { id: 'connections', label: 'Connections', rules: ['pr', 'ticket'] },
+  ],
+});
+/** A rule whose only alternative is the GitHub connection. */
+const apiOnly = groupRecipe('api', 'github.com/*', 'API', {
+  rules: [{ id: 'a', name: 'A', enabled: true, match: { url: 'github.com/*' }, actions: [{ group: { title: 'A', color: 'blue' } }], needs: { anyOf: [{ connections: ['github'] }] } }],
+});
+
+describe('M3 T12: capability levels from permissions and connections', () => {
+  const levelText = (l: { label: string; available: boolean; needs?: string }) => (l.available ? `${l.label}: available` : `${l.label}: locked, needs ${l.needs}`);
+
+  it('nothing granted: Titles available, Page details and Connections locked with what unlocks them', async () => {
+    const t = setup([ref('either', true)], [], { either }, { github: 'not-configured', jira: 'not-configured' });
+    await t.pm.onChanged();
+    const st = (await t.pm.status()).either!;
+    expect(st.levels!.map(levelText)).toEqual([
+      'Titles: available',
+      'Page details: locked, needs github.com, acme.atlassian.net',
+      'Connections: locked, needs GitHub or Jira connection',
+    ]);
+    expect(st.rules).toEqual({ 'either/pr': { level: 2 }, 'either/ticket': { level: 2 } });
+    expect(st.levels![1]!.missing).toEqual({ origins: [GH_HOST, JIRA_HOST], permissions: ['scripting'], connections: [] });
+    expect(st.levels![2]!.missing).toEqual({ origins: [], permissions: [], connections: ['github', 'jira'] });
+    expect([...t.pm.paused()]).toEqual([]);
+  });
+
+  it('granting github.com makes Page details available; connecting GitHub makes Connections available', async () => {
+    const conn: Record<string, ConnectionState> = { github: 'not-configured', jira: 'not-configured' };
+    const t = setup([ref('either', true)], [], { either }, conn);
+    t.grant(GH_HOST, 'scripting');
+    await t.pm.onChanged();
+    let st = (await t.pm.status()).either!;
+    expect(st.levels!.map(levelText)).toEqual(['Titles: available', 'Page details: available', 'Connections: locked, needs GitHub or Jira connection']);
+    expect(st.rules!['either/pr']).toEqual({ level: 1 });
+    expect(await t.pm.levelFor('either/pr')).toBe('page');
+    expect(await t.pm.levelFor('either/ticket')).toBe('titles');
+    expect(t.scripting.registered()).toEqual([GH_HOST]); // an alternative's granted host runs the watch (page facts)
+    conn.github = 'ok';
+    await t.pm.onChanged();
+    st = (await t.pm.status()).either!;
+    expect(st.levels!.map(levelText)).toEqual(['Titles: available', 'Page details: available', 'Connections: available']);
+    expect(st.rules!['either/pr']).toEqual({ level: 0 });
+    expect(await t.pm.levelFor('either/pr')).toBe('connection');
+  });
+
+  it('a GitHub connection going needs-reauth keeps its rules at the connection level; the level asks to sign in again (M3-R89)', async () => {
+    const conn: Record<string, ConnectionState> = { github: 'ok', jira: 'not-configured' };
+    const t = setup([ref('either', true)], [], { either }, conn);
+    await t.pm.onChanged();
+    expect(await t.pm.levelFor('either/pr')).toBe('connection');
+    conn.github = 'needs-reauth';
+    await expect(t.pm.onChanged()).resolves.toBeUndefined();
+    expect(await t.pm.levelFor('either/pr')).toBe('connection');
+    const st = (await t.pm.status()).either!;
+    expect(st.rules!['either/pr']).toEqual({ level: 0 });
+    expect(st.levels!.map(levelText)).toEqual(['Titles: available', 'Page details: available', 'Connections: available']);
+    expect(st.levels![2]).toMatchObject({ available: true, reauth: ['github'] });
+    expect(st.levels![0]).not.toHaveProperty('reauth');
+    expect([...t.pm.paused()]).toEqual([]);
+    expect(t.onPausedChanged).not.toHaveBeenCalled();
+  });
+
+  it('a connection-only rule stays unpaused while needs-reauth; only not-configured pauses it (M3-R89)', async () => {
+    const conn: Record<string, ConnectionState> = { github: 'needs-reauth' };
+    const t = setup([ref('api', true)], [], { api: apiOnly }, conn);
+    await t.pm.onChanged();
+    expect([...t.pm.paused()]).toEqual([]);
+    expect(await t.pm.levelFor('api/a')).toBe('connection');
+    conn.github = 'not-configured';
+    await t.pm.onChanged();
+    expect([...t.pm.paused()]).toEqual(['api/a']);
+  });
+
+  it('a rule whose only alternative is a connection pauses without it: "Paused: needs the GitHub connection" (M3-R16)', async () => {
+    const conn: Record<string, ConnectionState> = { github: 'not-configured' };
+    const t = setup([ref('api', true)], [], { api: apiOnly }, conn);
+    await t.pm.onChanged();
+    expect([...t.pm.paused()]).toEqual(['api/a']);
+    expect((await t.pm.status()).api!.rules).toEqual({ 'api/a': { level: -1, paused: 'Paused: needs the GitHub connection' } });
+    expect(await t.pm.levelFor('api/a')).toBeUndefined();
+    conn.github = 'ok';
+    await t.pm.onChanged();
+    expect([...t.pm.paused()]).toEqual([]);
+    expect(t.onPausedChanged).toHaveBeenCalledTimes(2);
+  });
+
+  it('without a connections source every connection counts as unusable', async () => {
+    const port = new FakeBrowserPort();
+    const program: Program = {
+      rules: [], views: [], tables: {}, dedupe: defaultConfig().dedupe,
+      needs: { x: { origins: [], permissions: [] }, 'x/a': { origins: [], permissions: [], anyOf: [{ origins: [], permissions: [], connections: ['github'] }, { origins: [], permissions: [] }] } },
+    };
+    const pm = new PermissionsManager(port, async () => program, scriptingFake().s);
+    await pm.onChanged();
+    expect(await pm.levelFor('x/a')).toBe('titles');
+  });
+
+  it('recipes.list returns the levels of each recipe that declares them, enabled or not', async () => {
+    const t = setup([ref('either', false), ref('gh', true)], [], { either, gh }, { github: 'ok', jira: 'not-configured' });
+    const r = await t.handle({ type: 'recipes.list' }, ui) as { ok: true; data: { recipes: RecipeListItem[] } };
+    const [e, g] = r.data.recipes;
+    // GitHub connected: the pr rule runs at its connection, which is at least as good as page (Page details too).
+    expect(e!.levels!.map(levelText)).toEqual(['Titles: available', 'Page details: available', 'Connections: available']);
+    expect(g!.levels).toBeUndefined();
   });
 });
 

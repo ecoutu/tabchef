@@ -39,8 +39,8 @@ export type Action =
   | { assignProject: { key: string; create?: boolean /* default false */ } };
 /**
  * Host match patterns, optional permissions and connections a recipe (or one recipe rule, T10) needs to run.
- * `anyOf` lists alternatives, best first; the first satisfied one is the rule's level (needsLevel, M3-R12).
- * `connections` and `anyOf` are rejected by compileProgram as "not supported yet" until T12 wires them.
+ * `anyOf` lists alternatives, best first; the first satisfied one is the rule's level (needsLevel, M3-R12), which
+ * PermissionsManager computes from the granted permissions and connection states (T12). Alternatives do not nest.
  */
 export interface RecipeNeeds { hosts?: string[]; permissions?: string[]; connections?: string[]; anyOf?: RecipeNeeds[] }
 /** The source queries a rule's `source` may name (= T8's SOURCE_QUERIES keys, M3-R29). */
@@ -87,9 +87,15 @@ export interface Recipe {
   project?: Omit<ProjectDef, 'recipeId'>;
   /** M3: recipe ids that cannot be enabled together with this one (M3-R17). */
   conflicts?: string[];
-  /** M3: named levels; each lists the rule ids whose status decides it. */
-  levels?: { id: string; label: string; rules: string[] }[];
+  /**
+   * M3: named capability levels; each lists the rule ids whose status decides it. The kind is POSITIONAL (M3-R69):
+   * levels[0] = titles, [1] = page (host access), [2] = connection (core/lang/needs.ts LEVEL_KINDS), so at most 3,
+   * and every listed rule needs an alternative of its level's kind (validateRecipe). A level is available when none of
+   * its rules is paused and at least one runs at that kind or better.
+   */
+  levels?: RecipeLevel[];
 }
+export interface RecipeLevel { id: string; label: string; rules: string[] }
 export interface RecipeRef {
   id: string; enabled: boolean; params: Record<string, unknown>; source: 'builtin' | 'user'; body?: Recipe;
   /**
@@ -103,20 +109,23 @@ export interface TabFacts {
   page?: { texts: string[]; extracts: Record<string, string>; formEdited: boolean };
   /**
    * M3: source data per rule key (T8's SourceEntry is assignable). `data` holds the picked `fields`; a field that is
-   * absent (or no entry, or no data) is unknown to `field` conditions (M3-R8).
+   * absent (or no entry, or no data) is unknown to `field` conditions (M3-R8). `stale`: the data could not be
+   * refreshed (kept from an earlier lookup); a close never acts on it (M3-R90).
    */
-  source?: Record<string /* ruleKey */, { data?: Record<string, unknown> }>;
+  source?: Record<string /* ruleKey */, { data?: Record<string, unknown>; stale?: boolean }>;
   /** M3: the project this tab belongs to (T14/T15). */
   projectId?: string;
 }
 /** One Program.needs alternative: origins, permissions and (M3) connection ids. */
 export interface NeedsAlt { origins: string[]; permissions: string[]; connections?: string[] }
-/** A Program.needs entry: base needs, plus (M3, not produced until T12) ordered alternatives. */
+/** A Program.needs entry: base needs, plus (M3) ordered alternatives, best first. */
 export interface NeedsEntry extends NeedsAlt { anyOf?: NeedsAlt[] }
 export interface CompiledRule { key: string /* 'user/<id>' | '<recipeId>/<id>' */; rule: Rule; recipeId?: string; index: number; dryRun: boolean }
 export interface Program {
   rules: CompiledRule[]; views: (View & { recipeId: string })[]; tables: Record<string, Record<string, string>>;
   dedupe: DedupeSettings; needs: Record<string /* recipeId | ruleKey (rule-level, T10; listed while paused too) */, NeedsEntry>;
+  /** M3 T12: the declared capability levels per enabled recipe id (only recipes that declare them). */
+  levels?: Record<string, RecipeLevel[]>;
   /**
    * Global dry run (`config.dryRun`, M2 T12): every rule is dry-run and engine-initiated actions only (R50) are blocked
    * and logged; user-initiated actions (popup close / close-all, banner choices, undo) still apply.

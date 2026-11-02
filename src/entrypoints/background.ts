@@ -63,6 +63,11 @@ export default defineBackground(() => {
       inject: async (tabId) => { await s.executeScript({ target: { tabId }, files: [WATCH_FILE as never] }); },
     };
   }), {
+    // Connection states feed the capability levels (M3 T12). Lazy: the manager is built below; syncs run after start.
+    connections: async () => {
+      const [defs, status] = await Promise.all([connections.defs(), connections.status()]);
+      return status.map((st) => ({ id: st.id, label: defs.find((d) => d.id === st.id)?.label ?? st.id, state: st.state }));
+    },
     onPausedChanged: () => {
       reconciler.schedule('permissions');
       syncAgeTick(); // a paused or resumed rule may use age
@@ -257,14 +262,18 @@ export default defineBackground(() => {
     allowLocalhost,
   });
   // Tell open extension pages (Connections) a status changed; they re-list. "No receiver" rejections are expected.
+  // The capability levels follow (M3 T12): a rule that gains or loses its last alternative pauses / resumes, which
+  // recompiles the Program through onPausedChanged.
   connections.onStatusChange((s) => {
     const m: ConnectionsChangedMessage = { type: 'connections.changed', id: s.id };
     Promise.resolve(browser.runtime.sendMessage(m)).catch(() => {});
+    void permissions.onChanged();
   });
   // Source lookups of recipe rules (M3 T11), cached in storage.local. Changed data re-plans, re-evaluates closes of
   // the changed tabs and recounts the badge (list views may show source fields).
   const sources: SourceService = new SourceService({
     conn: connections, limiter, getProgram, port, facts: pageFacts, local: localArea,
+    levelFor: (ruleKey) => permissions.levelFor(ruleKey),
     onUpdated: (tabIds) => {
       reconciler.schedule('sourceUpdated');
       for (const id of tabIds) void closeExecutor.evaluate(id);
@@ -503,8 +512,13 @@ export default defineBackground(() => {
   wireNotifications();
   browser.permissions.onAdded.addListener(wireNotifications);
   // Permission grants / revocations (also from chrome://extensions) and worker start: re-check needs, pause or resume
-  // recipes and re-register the watch for the granted origins enabled recipes need.
-  const syncPermissions = () => { void permissions.onChanged(); };
+  // recipes and re-register the watch for the granted origins enabled recipes need. A connection's state depends on
+  // its host permissions too (revoked api.github.com → not-configured): every status is re-emitted, so the Connections
+  // page re-lists and the capability levels follow.
+  const syncPermissions = () => {
+    void permissions.onChanged();
+    connections.permissionsChanged().catch(warn('connection status'));
+  };
   browser.permissions.onAdded.addListener(syncPermissions);
   browser.permissions.onRemoved.addListener(syncPermissions);
   syncPermissions();

@@ -3,14 +3,16 @@
 // is no usable connection, and reports tabs whose data changed so rules re-evaluate.
 //
 // Resolution per lookup: 1. the cache (a `final` entry is never refetched, a fresh one not within its TTL); 2. the
-// API, when the source's connection is `ok`; 3. the page adapter (`fallback`) of a loaded, live tab on a granted host;
-// 4. `via: 'none'`. Failures keep the previous data with `stale: true` and `error`: good data never becomes unknown.
+// API, when a rule asking for it runs at its connection alternative (`levelFor`, M3-R65) and the connection is `ok`;
+// 3. the page adapter (`fallback`) of a loaded, live tab on a granted host, for rules whose level allows page access
+// (connection or page); 4. `via: 'none'`. Failures keep the previous data with `stale: true` and `error`: good data never becomes unknown.
 import { adapterOf } from '../core/adapters';
 import type { AdapterId } from '../core/adapters';
 import type { ApiRequest, ApiResult, ConnErrorKind, ConnectionState } from '../core/connections/types';
 import { DEFAULT_KEY_PATTERN } from '../core/keys/jira-key';
 import { evalCond } from '../core/lang/cond';
 import { varsOf } from '../core/lang/evaluate';
+import type { NeedsKind } from '../core/lang/needs';
 import type { CompiledRule, Cond, Program, Rule, SourceQueryKind, TabFacts } from '../core/lang/types';
 import { matchesPattern } from '../core/match/pattern';
 import { renderTemplate } from '../core/match/template';
@@ -51,6 +53,8 @@ export interface SourceServiceDeps {
   /** The background budget check (RateLimiter.canSend): background batches are skipped while it says no. */
   limiter?: Pick<RateLimiter, 'canSend'>;
   getProgram: () => Program | Promise<Program>;
+  /** The kind of alternative a rule key runs at (PermissionsManager.levelFor); undefined while paused. */
+  levelFor: (ruleKey: string) => Promise<NeedsKind | undefined>;
   port: Pick<BrowserPort, 'snapshot' | 'hasPermission'>;
   facts: Pick<PageFacts, 'get'>;
   local: Pick<KeyValueArea, 'get' | 'set'>;
@@ -93,7 +97,7 @@ function targetOf(query: SourceQueryKind, a: Record<string, string>): { target: 
 }
 const cacheKey = (connection: string, query: SourceQueryKind, id: string) => `${connection}|${query}|${id}`;
 
-/** The error of an entry whose connection is not `ok` (M3-R62: stale and none entries always carry one). */
+/** The error of an entry whose connection is not `ok`, or not usable at its rules' level ('ok' → not-configured; M3-R62: stale and none entries always carry one). */
 function stateError(s: ConnectionState | undefined): ConnErrorKind {
   if (s === 'needs-reauth') return 'unauthorized';
   if (s === 'rate-limited') return 'rate-limited';
@@ -254,41 +258,50 @@ export class SourceService {
     const now = this.now();
     const background = reason === 'alarm' || reason === 'tabs';
     const states = new Map((await this.deps.conn.status()).map((s) => [s.id, s.state]));
+    const kinds = new Map<string, NeedsKind | undefined>();
+    for (const r of reqs) if (!kinds.has(r.ruleKey)) kinds.set(r.ruleKey, await this.deps.levelFor(r.ruleKey));
     const byKey = new Map<string, SourceRequest[]>();
     for (const r of reqs) byKey.set(r.key, [...(byKey.get(r.key) ?? []), r]);
-    const api = new Map<string, SourceRequest[]>(); // `${connection}|${query}` -> one request per key
+    const apiGroups = new Map<string, SourceRequest[]>(); // `${connection}|${query}` -> one request per key
     for (const [key, rs] of byKey) {
       const r = rs[0]!;
       const e = this.cache.touch(key, now);
       const state = states.get(r.connection);
       const blocked = (e?.retryAt ?? 0) > now;
+      // M3-R65: the API only for a rule at its connection alternative; the page for one whose level allows page access.
+      const api = state === 'ok' && rs.some((x) => kinds.get(x.ruleKey) === 'connection');
       if (e && (e.final || this.fresh(e, r.query, now))) {
-        if (state !== 'ok') this.cache.markStale(e, stateError(state));
+        if (!api) this.cache.markStale(e, stateError(state));
         else this.cache.unstale(e); // a final entry, usable again
         continue;
       }
-      if (state === 'ok' && !blocked) {
+      if (api && !blocked) {
         const g = `${r.connection}|${r.query}`;
-        api.set(g, [...(api.get(g) ?? []), r]);
+        apiGroups.set(g, [...(apiGroups.get(g) ?? []), r]);
         continue;
       }
-      const page = await this.readPage(rs);
+      const page = await this.readPage(rs.filter((x) => { const k = kinds.get(x.ruleKey); return k === 'connection' || k === 'page'; }));
       if (page) this.cache.putPage(key, page, now);
       else this.fail(key, r.target, blocked ? 'rate-limited' : stateError(state), blocked ? { retryAt: e!.retryAt! } : {}, now);
     }
-    for (const rs of api.values()) {
+    for (const rs of apiGroups.values()) {
       const { connection, query } = rs[0]!;
       if (query === 'github.pull_request') await this.fetchPrs(connection, rs, background, now);
       else await this.fetchIssues(connection, rs.map((r) => (r.target as { issue: string }).issue), background, now);
     }
   }
 
-  /** Per indexed tab, its picked data (JSON; NO_DATA when none): what rules read. A stale or error flag is no change. */
+  /**
+   * Per indexed tab, its picked data and whether it is stale (JSON; NO_DATA when none): what rules and closes read. A
+   * stale flag flipping is a change (M3-R92): a close never acts on stale data (M3-R90), so fresh -> stale must cancel a
+   * pending close and stale -> fresh (same data, e.g. after a re-auth) must re-arm it. The error kind alone is no change.
+   */
   private dataByTab(): Map<number, string> {
     const out = new Map<number, string>();
     for (const id of this.byTab.keys()) {
       const f = this.factsFor(id) ?? {};
-      out.set(id, JSON.stringify(Object.entries(f).filter(([, e]) => e.data && Object.keys(e.data).length).map(([k, e]) => [k, e.data])));
+      out.set(id, JSON.stringify(Object.entries(f).filter(([, e]) => e.data && Object.keys(e.data).length)
+        .map(([k, e]) => (e.stale ? [k, e.data, 'stale'] : [k, e.data]))));
     }
     return out;
   }

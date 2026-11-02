@@ -12,6 +12,7 @@ import { validateRecipe as recipeShape, validateRule as ruleShape } from '../con
 import { COLORS, regexProblem, ruleProblems, schemaProblem, templateProblem, type Problem } from '../config/rule-problems';
 import { templateVars } from '../match/template';
 import { ParamError, paramProblem, placeholderNames, substitute } from './compile';
+import { altKind, kindRank, LEVEL_KINDS, type NeedsKind } from './needs';
 import type { Comparison, ParamDef, Recipe, RecipeNeeds, Rule, Show } from './types';
 
 export const recipeJsonSchema = recipeSchema;
@@ -127,6 +128,16 @@ const duplicates = <T>(items: T[], key: (t: T) => string, path: (i: number) => s
   });
 };
 
+/** The kinds of a rule's needs alternatives (core/lang/needs.ts altKind); an alternative counts with the base needs. */
+function needsKinds(n: RecipeNeeds | undefined): NeedsKind[] {
+  const base = altKind({ origins: n?.hosts, connections: n?.connections });
+  if (!Array.isArray(n?.anyOf) || n.anyOf.length === 0) return [base];
+  return n.anyOf.map((a) => {
+    const k = altKind({ origins: a.hosts, connections: a.connections });
+    return kindRank(k) > kindRank(base) ? k : base;
+  });
+}
+
 /**
  * One recipe: schema, then the post-checks: reserved id, param defaults and enums, unknown placeholders,
  * `needs.hosts` match patterns (recipe-level, and rule-level after substitution), urlTransform regexes, view `show`
@@ -176,8 +187,18 @@ export function validateRecipe(x: unknown): RecipeResult {
     }
   }
   r.conflicts?.forEach((id, i) => { if (id === r.recipe) out.push({ path: `/conflicts/${i}`, message: 'a recipe cannot conflict with itself' }); });
-  const ruleIds = new Set(r.rules.map((x) => x.id));
-  r.levels?.forEach((l, i) => l.rules.forEach((id, j) => { if (!ruleIds.has(id)) out.push({ path: `/levels/${i}/rules/${j}`, message: `unknown rule id: ${id}` }); }));
+  // Levels are positional (M3-R69): levels[i] means LEVEL_KINDS[i], so at most 3, and each listed rule needs an
+  // alternative of that kind (a rule's needs without anyOf are its one alternative; no needs = titles).
+  if ((r.levels?.length ?? 0) > LEVEL_KINDS.length) out.push({ path: '/levels', message: `at most ${LEVEL_KINDS.length} levels (titles, page, connection by position)` });
+  const ruleById = new Map(r.rules.map((x) => [x.id, x]));
+  r.levels?.forEach((l, i) => l.rules.forEach((id, j) => {
+    const rule = ruleById.get(id);
+    if (!rule) { out.push({ path: `/levels/${i}/rules/${j}`, message: `unknown rule id: ${id}` }); return; }
+    const kind = LEVEL_KINDS[i];
+    if (kind && !needsKinds(rule.needs).includes(kind)) {
+      out.push({ path: `/levels/${i}/rules/${j}`, message: `rule ${id} has no ${kind} alternative (level ${i} means ${kind})` });
+    }
+  }));
   duplicates(r.levels ?? [], (l) => l.id, (i) => `/levels/${i}/id`, 'level id', out);
   if (!r.project) {
     r.rules.forEach((x, i) => x.actions.forEach((a, j) => {

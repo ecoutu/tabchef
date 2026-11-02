@@ -22,9 +22,10 @@
 // needs (R44); one that does is reported and skipped.
 //
 // M3 (T1): `source` and `assignProject` are recipe-rule-only (M3-R15); a user rule with one is reported and skipped.
-// Not supported yet, reported for the rule or recipe that uses them: `project.<name>` fields (M3-R11, until T15) and
-// `needs.connections` / `needs.anyOf` (M3-R12, until T12 wires connection state and levels; compile itself stays free
-// of permission and connection state). A recipe rule with `assignProject` needs the recipe's `project`. Recipes that
+// Not supported yet, reported for the rule that uses them: `project.<name>` fields (M3-R11, until T15).
+// `needs.connections` / `needs.anyOf` compile into Program.needs as declared (M3-R63); levels are computed by
+// PermissionsManager, so compile stays free of permission and connection state (R45). A needs alternative with its
+// own `anyOf` is reported. Declared recipe `levels` are carried in Program.levels. A recipe rule with `assignProject` needs the recipe's `project`. Recipes that
 // `conflicts` with each other (either side may list the other) are not both compiled: the later one in
 // config.recipes is reported and skipped (M3-R17).
 //
@@ -38,7 +39,7 @@ import { formatSchemaError, regexProblem, ruleProblems, type Tables } from '../c
 import { validateRule } from '../config/validate-config.generated.js';
 import { DURATION } from './duration';
 import type { Config, DedupeSettings } from '../types';
-import type { CompiledRule, Cond, ParamDef, Program, Recipe, RecipeNeeds, RecipeRef, Rule } from './types';
+import type { CompiledRule, Cond, NeedsAlt, NeedsEntry, ParamDef, Program, Recipe, RecipeLevel, RecipeNeeds, RecipeRef, Rule } from './types';
 
 export interface CompileError { key: string; error: string }
 export interface CompileOptions {
@@ -155,12 +156,10 @@ export function substitute(x: unknown, values: Record<string, unknown>, path: st
 
 // ---- rules ----
 
-/** The first of `needs.connections` / `needs.anyOf` (anywhere in the needs) as "not supported yet" (M3-R12). */
-function unsupportedNeeds(n: unknown): string | undefined {
-  if (!isObj(n)) return undefined;
-  if (own(n, 'anyOf')) return 'needs.anyOf: not supported yet';
-  if (own(n, 'connections')) return 'needs.connections: not supported yet';
-  return undefined;
+/** A needs.anyOf alternative with its own anyOf (alternatives are one level deep; the schema's `$ref` allows nesting). */
+function nestedNeeds(n: unknown): string | undefined {
+  if (!isObj(n) || !Array.isArray(n.anyOf)) return undefined;
+  return n.anyOf.some((a) => isObj(a) && own(a, 'anyOf')) ? 'needs.anyOf: an alternative cannot have its own anyOf' : undefined;
 }
 
 function usesProjectField(c: Cond): boolean {
@@ -182,7 +181,7 @@ function m3Problems(r: Rule, recipe: Pick<Recipe, 'project'> | undefined): strin
     if (assigns) out.push('assignProject: only recipe rules can assign projects');
   } else if (assigns && recipe.project === undefined) out.push('assignProject: the recipe declares no project');
   if (usesProjectField(r.match)) out.push('project fields are not supported yet');
-  const n = unsupportedNeeds(r.needs);
+  const n = nestedNeeds(r.needs);
   if (n) out.push(n);
   return out;
 }
@@ -236,12 +235,13 @@ function resolveRecipes(config: Config, builtins: Record<string, Recipe>, errors
     const transforms: unknown = isObj(body.dedupe) ? body.dedupe.urlTransforms : undefined;
     if (transforms !== undefined && !Array.isArray(transforms)) { errors.push({ key: id, error: 'malformed dedupe.urlTransforms' }); continue; }
     const strs = (x: unknown) => x === undefined || (Array.isArray(x) && x.every((s) => typeof s === 'string'));
-    if (body.needs !== undefined && !(isObj(body.needs) && strs(body.needs.hosts) && strs(body.needs.permissions))) {
+    const needsOk = (n: unknown): boolean => isObj(n) && strs(n.hosts) && strs(n.permissions) && strs(n.connections);
+    if (body.needs !== undefined && !(needsOk(body.needs) && (body.needs.anyOf === undefined || (Array.isArray(body.needs.anyOf) && body.needs.anyOf.every(needsOk))))) {
       errors.push({ key: id, error: 'malformed needs' });
       continue;
     }
-    const unsupported = unsupportedNeeds(body.needs);
-    if (unsupported) { errors.push({ key: id, error: unsupported }); continue; }
+    const nested = nestedNeeds(body.needs);
+    if (nested) { errors.push({ key: id, error: nested }); continue; }
     const list = (transforms ?? []) as unknown[];
     const badAt = list.findIndex((t) => !isObj(t) || typeof t.pattern !== 'string' || typeof t.replacement !== 'string' || (t.flags !== undefined && typeof t.flags !== 'string') || regexProblem(t.pattern, t.flags as string | undefined) !== undefined);
     if (badAt >= 0) {
@@ -365,10 +365,15 @@ export function compileProgram(
     urlTransforms: [...(config.dedupe?.urlTransforms ?? []), ...survivors.flatMap((c) => c.body.dedupe?.urlTransforms ?? [])],
   };
   const needs: Program['needs'] = {};
-  const needsOf = (n: RecipeNeeds | undefined) => ({ origins: [...(n?.hosts ?? [])], permissions: [...(n?.permissions ?? [])] });
+  const altOf = (n: RecipeNeeds | undefined): NeedsAlt => ({
+    origins: [...(n?.hosts ?? [])], permissions: [...(n?.permissions ?? [])], ...(n?.connections && { connections: [...n.connections] }),
+  });
+  const needsOf = (n: RecipeNeeds | undefined): NeedsEntry => ({ ...altOf(n), ...(n?.anyOf && { anyOf: n.anyOf.map(altOf) }) });
+  const levels: Record<string, RecipeLevel[]> = {};
   for (const { c, rules } of recipes) {
     needs[c.id] = needsOf(c.body.needs);
     for (const r of rules) if (r.needs) needs[`${c.id}/${r.id}`] = needsOf(r.needs); // paused rules too
+    if (c.body.levels) levels[c.id] = c.body.levels;
   }
 
   return {
@@ -378,6 +383,7 @@ export function compileProgram(
       tables: mergeTables(survivors, config),
       dedupe,
       needs,
+      ...(Object.keys(levels).length && { levels }),
       dryRun: config.dryRun === true,
     },
     errors,

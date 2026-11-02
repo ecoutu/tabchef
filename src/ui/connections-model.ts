@@ -17,6 +17,10 @@ export interface ConnectionRow {
   /** Task 6 (Jira token expiry). */
   expiryWarning?: string;
   revokeUrl?: string;
+  /** Credentials are stored (connected, or connected but blocked): Disconnect and Revoke apply in every state. */
+  stored: boolean;
+  /** Host patterns to request with Grant access: credentials are stored but these are not granted (M3-R96). */
+  hostsMissing: string[];
 }
 
 /** Local HH:MM. */
@@ -36,7 +40,11 @@ function ago(at: number | undefined, now: number): string {
   return `${d} ${d === 1 ? 'day' : 'days'} ago`;
 }
 
+/** "api.github.com" from "https://api.github.com/*". */
+export const hostName = (origin: string) => origin.replace(/^https?:\/\/|\/\*$/g, '');
+
 function badgeOf(def: ConnectionDef, s: ConnectionStatus): string {
+  if (s.hostsMissing?.length) return `Needs access to ${s.hostsMissing.map(hostName).join(' and ')}`;
   switch (s.state) {
     case 'ok': return 'Connected';
     case 'not-configured': return 'Not connected';
@@ -71,6 +79,8 @@ export function connectionRows(defs: ConnectionDef[], status: ConnectionStatus[]
       ...(s.lastError !== undefined && { lastError: s.lastError }),
       ssoLinks: s.ssoRequired.filter((x) => isHttps(x.url)).map((x) => ({ ...x, text: `Authorize Tabchef for ${x.org} (SAML SSO)` })),
       ...(def.revokeUrl !== undefined && { revokeUrl: def.revokeUrl }),
+      stored: s.state !== 'not-configured' || !!s.hostsMissing?.length,
+      hostsMissing: s.hostsMissing ?? [],
     };
   });
 }

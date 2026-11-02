@@ -151,6 +151,12 @@ export class ConnectionManager {
    */
   private readonly generation = new Map<string, number>();
   private readonly refreshes = new Map<string, { gen: number; p: Promise<boolean> }>();
+  /**
+   * Per connection, the status last emitted (JSON): permissionsChanged emits only what differs. Updated only when a
+   * status is emitted — a status() read (page list, levels, SourceService) between a permission change and its event
+   * must not hide the change. Memory only; a connection never emitted since worker start counts as changed.
+   */
+  private readonly seen = new Map<string, string>();
   private defsChain: Promise<unknown> = Promise.resolve();
   private runtimeChain: Promise<unknown> = Promise.resolve();
 
@@ -243,9 +249,25 @@ export class ConnectionManager {
     if (!def) return { id, state: 'not-configured', ssoRequired: [], scopes: [] };
     const gate = await this.deps.limiter.canSend(id, false);
     let state: ConnectionState;
+    const stored = await this.configured(def);
+    // Revoked host access (chrome://extensions, site access "on click") makes a connection with stored credentials
+    // unusable: not-configured, so its rules drop to their next alternative (M3-R65) and the page fallback is tried.
+    // It wins over needs-reauth: nothing works until the hosts are granted again. `hostsMissing` (origins only, never
+    // a secret) tells the Connections page credentials are stored, so it offers Grant access and Disconnect (M3-R96).
+    const missing = stored ? await this.missingHosts(def) : [];
+    if (missing.length) {
+      return {
+        id, state: 'not-configured',
+        ...(rt?.lastUsedAt !== undefined && { lastUsedAt: rt.lastUsedAt }),
+        ...(rt?.lastError !== undefined && { lastError: rt.lastError }),
+        hostsMissing: missing,
+        ssoRequired: rt?.ssoRequired ?? [],
+        scopes: def.scopes,
+      };
+    }
     // A disconnected connection is not-configured even while an earlier rate-limit block lasts.
     if (rt?.needsReauth) state = 'needs-reauth';
-    else if (!(await this.configured(def))) state = 'not-configured';
+    else if (!stored) state = 'not-configured';
     else if (!gate.ok) state = 'rate-limited';
     else if (rt?.lastKind && ERROR_KINDS.has(rt.lastKind)) state = 'error';
     else state = 'ok';
@@ -257,6 +279,39 @@ export class ConnectionManager {
       ssoRequired: rt?.ssoRequired ?? [],
       scopes: def.scopes,
     };
+  }
+
+  /**
+   * The def's hosts the extension does not hold (callers ask only for a connection with stored credentials). A
+   * failing permission check counts as all missing.
+   */
+  private async missingHosts(def: ConnectionDef): Promise<string[]> {
+    if (!def.hosts.length) return [];
+    const has = async (origins: string[]) => {
+      try {
+        return await this.deps.port.hasPermission({ origins });
+      } catch {
+        return false;
+      }
+    };
+    if (await has(def.hosts)) return [];
+    const missing: string[] = [];
+    for (const o of def.hosts) if (!(await has([o]))) missing.push(o);
+    return missing.length ? missing : def.hosts;
+  }
+
+  /**
+   * Host permissions were granted or revoked (permissions.onAdded / onRemoved): each connection whose status differs
+   * from the one last emitted is emitted, so the Connections page and capability levels re-list (M3-R96). Entries of
+   * removed connections are dropped.
+   */
+  async permissionsChanged(): Promise<void> {
+    const defs = await this.defs();
+    for (const id of [...this.seen.keys()]) if (!defs.some((d) => d.id === id)) this.seen.delete(id);
+    for (const d of defs) {
+      const [st] = await this.status(d.id);
+      if (this.seen.get(d.id) !== JSON.stringify(st)) this.notify(st!);
+    }
   }
 
   /** Has a usable base and stored credentials (session auth needs none). No network. */
@@ -507,8 +562,14 @@ export class ConnectionManager {
   private async emit(id: string): Promise<void> {
     if (!this.listeners.size) return;
     const [s] = await this.status(id);
+    this.notify(s!);
+  }
+
+  /** Delivers a status to the listeners and records it as the last emitted one (only here, never in status()). */
+  private notify(s: ConnectionStatus): void {
+    this.seen.set(s.id, JSON.stringify(s));
     for (const cb of this.listeners) {
-      try { cb(s!); } catch { /* a listener must not break fetch */ }
+      try { cb(s); } catch { /* a listener must not break fetch */ }
     }
   }
 }

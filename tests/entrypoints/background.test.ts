@@ -363,6 +363,16 @@ describe('background wiring', () => {
     expect(alarmCalls()).toEqual([['alarms.clear', ['age.tick']]]);
   });
 
+  it('a field comparison against {ago} (auto-close-merged mergedAt) also creates age.tick (M3-R92)', async () => {
+    await vi.advanceTimersByTimeAsync(0);
+    const onChange = I('store').onChange!.mock.calls[0]![0] as (c: unknown) => void;
+    h.calls.length = 0;
+    h.state.program = programWith({ all: [{ url: 'github.com/*' }, { field: { field: 'source.mergedAt', op: '<', value: { ago: '24h' } } }] });
+    onChange({ version: 2, rules: [] });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(alarmCallsOf('age.tick')).toEqual([['alarms.get', ['age.tick']], ['alarms.create', ['age.tick', { periodInMinutes: 1 }]]]);
+  });
+
   it('a paused-set change (the Program changed) re-checks the age.tick alarm', async () => {
     await vi.advanceTimersByTimeAsync(0);
     h.calls.length = 0;
@@ -400,6 +410,17 @@ describe('background wiring', () => {
     expect(I('closeExecutor').evaluate).toHaveBeenCalledWith(4);
     await vi.advanceTimersByTimeAsync(500);
     expect(refreshBadge).toHaveBeenCalledTimes(1);
+  });
+
+  it('M3 T12: sources take their rules\' levels from the PermissionsManager; it reads connection labels and states', async () => {
+    const d = I('sources').args[0] as { levelFor: (k: string) => Promise<unknown> };
+    I('permissions').levelFor!.mockResolvedValue('page');
+    await expect(d.levelFor('rec/pr')).resolves.toBe('page');
+    expect(I('permissions').levelFor).toHaveBeenCalledWith('rec/pr');
+    const { connections } = I('permissions').args[3] as { connections: () => Promise<unknown> };
+    I('connManager').defs!.mockResolvedValue([{ id: 'github', label: 'GitHub' }]);
+    I('connManager').status!.mockResolvedValue([{ id: 'github', state: 'needs-reauth' }, { id: 'jira', state: 'ok' }]);
+    await expect(connections()).resolves.toEqual([{ id: 'github', label: 'GitHub', state: 'needs-reauth' }, { id: 'jira', label: 'jira', state: 'ok' }]);
   });
 
   it('the planner, close rules and read-only views read source facts from the SourceService; runs wait for it', async () => {
@@ -547,6 +568,13 @@ describe('background wiring', () => {
     expect(I('permissions').onChanged).toHaveBeenCalledTimes(2);
   });
 
+  it('host grants and revocations re-emit every connection status (revoked api host → not-configured)', async () => {
+    I('connManager').permissionsChanged!.mockClear();
+    await fireAt('permissions.onAdded', SYNC_PERMISSIONS, { origins: ['https://api.github.com/*'] });
+    await fire('permissions.onRemoved', { origins: ['https://api.github.com/*'] });
+    expect(I('connManager').permissionsChanged).toHaveBeenCalledTimes(2);
+  });
+
   it('a context menu click waits for safety, then runs onMenuClick for the tab', async () => {
     await fire('contextMenus.onClicked', { menuItemId: 'tc-lock' }, { id: 8 });
     expect(onMenuClick).toHaveBeenCalledWith({ menuItemId: 'tc-lock' }, { id: 8 }, expect.objectContaining({ openPage: expect.any(Function) }));
@@ -609,6 +637,13 @@ describe('background wiring', () => {
         delete h.returns['runtime.sendMessage'];
       }
       expect(h.calls.filter(([p]) => p === 'runtime.sendMessage').map(([, a]) => a[0])).toEqual([{ type: 'connections.changed', id: 'github' }]);
+    });
+
+    it('M3 T12: a status change re-syncs the permissions (capability levels; a pause change recompiles)', async () => {
+      const cb = I('connManager').onStatusChange!.mock.calls[0]![0] as (s: unknown) => void;
+      I('permissions').onChanged!.mockClear();
+      cb({ id: 'github', state: 'needs-reauth', ssoRequired: [], scopes: [] });
+      expect(I('permissions').onChanged).toHaveBeenCalledTimes(1);
     });
   });
 

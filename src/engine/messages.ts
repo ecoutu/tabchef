@@ -15,7 +15,7 @@ import { applyCollapse, suggestCollapse, type CollapseSuggestion } from '../core
 import type { Program, Recipe, RecipeRef, Rule, TabFacts } from '../core/lang/types';
 import { emptyProgram, previewChange, type PreviewContext, type PreviewResult } from '../core/lang/preview';
 import { explainTab, findShadowed, type ExplainEntry } from '../core/lang/explain';
-import { effectiveNeeds, type Needs, type NeedStatus, type PermissionsManager } from './permissions';
+import { effectiveNeeds, type LevelStatus, type Needs, type NeedStatus, type PermissionsManager } from './permissions';
 import type { PendingAsk } from './ask';
 import type { EarlyReport, PageFacts, WatchSelector } from './page-facts';
 import type { PauseDuration, SafetyService } from './safety';
@@ -221,6 +221,8 @@ export interface RecipeListItem {
   id: string; source: RecipeRef['source']; enabled: boolean; params: Record<string, unknown>;
   name: string; description: string; paramDefs: NonNullable<Recipe['params']>; needs: Needs; status: NeedStatus;
   rules: Record<string, { needs: Needs; status: NeedStatus }>;
+  /** M3 T12: the recipe's declared capability levels (compiled as if enabled), when it declares any. */
+  levels?: LevelStatus[];
 }
 
 export type ImportSource = 'auto-group-tabs' | 'tab-deduper';
@@ -429,7 +431,7 @@ export interface HandlerDeps {
   whyLog: Pick<WhyLog, 'all' | 'forTab' | 'add' | 'ready'>;
   ask: { listPending: () => Promise<PendingAsk[]>; resolvePending: (n: number, e: number, c: 'switch' | 'keep') => Promise<void> };
   /** recipes.* requests: built-in recipe bodies and the PermissionsManager. Without it they fail. */
-  recipes?: { builtins: Record<string, Recipe>; permissions: Pick<PermissionsManager, 'check'> };
+  recipes?: { builtins: Record<string, Recipe>; permissions: Pick<PermissionsManager, 'check' | 'levels'> };
   /** preview.change (M2 T13). Without it the request fails. Read-only: nothing here may change engine state. */
   preview?: {
     builtins: Record<string, Recipe>;
@@ -684,7 +686,7 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
     const { program, errors } = compileProgram({ ...cfg, recipes }, builtins);
     const own = errors.filter((e) => e.key === id || e.key.startsWith(`${id}/`)).map((e) => `${e.key}: ${e.error}`);
     const rules = Object.entries(program.needs).filter(([k]) => k.startsWith(`${id}/`));
-    return { needs: program.needs[id] ?? { origins: [], permissions: [] }, rules, errors: own };
+    return { program, needs: program.needs[id] ?? { origins: [], permissions: [] }, rules, errors: own };
   }
 
   /** Changes one recipe ref in a single store update (conflict when `baseRev` is stale or the ref is gone). */
@@ -709,12 +711,14 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
       const recipes: RecipeListItem[] = [];
       for (const r of cfg.recipes) {
         const body = bodyOf(r);
-        const { needs, rules } = compileRecipe(cfg, r.id, d.builtins);
+        const { program, needs, rules } = compileRecipe(cfg, r.id, d.builtins);
         const ruleItems: RecipeListItem['rules'] = {};
         for (const [k, n] of rules) ruleItems[k] = { needs: effectiveNeeds(n), status: await d.permissions.check(n) };
+        const levels = await d.permissions.levels(program, r.id);
         recipes.push({
           id: r.id, source: r.source, enabled: r.enabled, params: r.params, name: body?.name ?? r.id, description: body?.description ?? '',
           paramDefs: body?.params ?? {}, needs: effectiveNeeds(needs), status: await d.permissions.check(needs), rules: ruleItems,
+          ...(levels && { levels }),
         });
       }
       return ok({ recipes, rev: configRev(cfg) });

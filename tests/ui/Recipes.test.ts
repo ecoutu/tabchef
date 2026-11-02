@@ -4,6 +4,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/svelte';
 import { browser } from 'wxt/browser';
+import { fakeBrowser } from 'wxt/testing/fake-browser';
 import { defaultConfig } from '../../src/core/config/defaults';
 import type { Config } from '../../src/core/types';
 import type { Recipe, RecipeRef } from '../../src/core/lang/types';
@@ -329,5 +330,89 @@ describe('Recipes: unsaved param edits survive reloads (fix round 1)', () => {
     items = [finishedItem({ params: { delay: '9s' } })];
     for (const cb of permListeners.list) cb();
     await waitFor(() => expect(delay()).toBe('9s'));
+  });
+});
+
+describe('Recipes: capability levels (M3 T12)', () => {
+  const GH = 'https://github.com/*';
+  const JIRA = 'https://acme.atlassian.net/*';
+  const levels: NonNullable<RecipeListItem['levels']> = [
+    { id: 'titles', label: 'Titles', available: true },
+    { id: 'page', label: 'Page details', available: false, needs: 'github.com, acme.atlassian.net', missing: { origins: [GH, JIRA], permissions: ['scripting'], connections: [] } },
+    { id: 'connections', label: 'Connections', available: false, needs: 'GitHub or Jira connection', missing: { origins: [], permissions: [], connections: ['github', 'jira'] } },
+  ];
+
+  const texts = (c: HTMLElement) => [...c.querySelectorAll('.levels [data-level] .level-text')].map((r) => r.textContent);
+  const lists = () => send.mock.calls.filter(([r]) => (r as { type: string }).type === 'recipes.list').length;
+
+  it('renders each level with the exact copy', async () => {
+    items = [finishedItem({ levels })];
+    render(Recipes, props());
+    const c = await card('Finished');
+    await waitFor(() => expect(texts(c)).toEqual([
+      'Titles: available',
+      'Page details: locked, needs github.com, acme.atlassian.net',
+      'Connections: locked, needs GitHub or Jira connection',
+    ]));
+  });
+
+  it('a locked host level requests its hosts in the click and reloads once (through the permissions event); a locked connection level links to #/connections', async () => {
+    items = [finishedItem({ levels })];
+    render(Recipes, props());
+    const c = await card('Finished');
+    await waitFor(() => expect(c.querySelector('[data-level="page"] button')).not.toBeNull());
+    expect(c.querySelector('[data-level="titles"] button, [data-level="titles"] a')).toBeNull();
+    expect(c.querySelector('[data-level="connections"] button')).toBeNull();
+    expect(c.querySelector('[data-level="connections"] a')!.getAttribute('href')).toBe('#/connections');
+    log = [];
+    const before = lists();
+    await fireEvent.click(c.querySelector('[data-level="page"] button')!);
+    expect(log[0]).toBe(`request ${JSON.stringify({ origins: [GH, JIRA], permissions: ['scripting'] })}`);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(lists()).toBe(before); // the grant itself does not reload ...
+    for (const cb of permListeners.list) cb(); // ... permissions.onAdded does, once
+    await waitFor(() => expect(lists()).toBe(before + 1));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(lists()).toBe(before + 1);
+  });
+
+  it('a locked level missing only a permission (scripting) still has the Allow button, which requests it', async () => {
+    const only = { id: 'page', label: 'Page details', available: false, needs: 'the scripting permission', missing: { origins: [], permissions: ['scripting'], connections: [] } };
+    items = [finishedItem({ levels: [levels[0]!, only] })];
+    render(Recipes, props());
+    const c = await card('Finished');
+    await waitFor(() => expect(c.querySelector('[data-level="page"] button')).not.toBeNull());
+    log = [];
+    await fireEvent.click(c.querySelector('[data-level="page"] button')!);
+    expect(log[0]).toBe(`request ${JSON.stringify({ origins: [], permissions: ['scripting'] })}`);
+  });
+
+  it('an available level whose connection needs a new sign-in reads "available" and links to sign in again (M3-R89)', async () => {
+    items = [finishedItem({ levels: [levels[0]!, { id: 'connections', label: 'Connections', available: true, reauth: ['github'] }] })];
+    render(Recipes, props());
+    const c = await card('Finished');
+    await waitFor(() => expect(texts(c)).toEqual(['Titles: available', 'Connections: available']));
+    const a = c.querySelector('[data-level="connections"] a')!;
+    expect(a.textContent).toBe('Sign in again');
+    expect(a.getAttribute('href')).toBe('#/connections');
+    expect(c.querySelector('[data-level="connections"] .level-text')!.classList.contains('locked')).toBe(false);
+    expect(c.querySelector('[data-level="titles"] a')).toBeNull();
+  });
+
+  it('a connections.changed broadcast reloads the list: the levels re-render; unmounting unsubscribes', async () => {
+    items = [finishedItem({ levels })];
+    const { unmount } = render(Recipes, props());
+    const c = await card('Finished');
+    await waitFor(() => expect(texts(c)[2]).toBe('Connections: locked, needs GitHub or Jira connection'));
+    items = [finishedItem({ levels: levels.map((l) => (l.id === 'connections' ? { id: l.id, label: l.label, available: true } : l)) })];
+    const trigger = (m: unknown) => (fakeBrowser.runtime.onMessage as unknown as { trigger: (m: unknown) => Promise<unknown> }).trigger(m);
+    await trigger({ type: 'other' });
+    await trigger({ type: 'connections.changed', id: 'github' });
+    await waitFor(() => expect(texts(c)[2]).toBe('Connections: available'));
+    const before = lists();
+    unmount();
+    await trigger({ type: 'connections.changed', id: 'github' });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(lists()).toBe(before);
   });
 });

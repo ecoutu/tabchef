@@ -6,7 +6,7 @@
   import Field from './Field.svelte';
   import { send } from '../../ui/send';
   import { requestPermissions } from '../../ui/permissions';
-  import { connectionRows, type ConnectionRow } from '../../ui/connections-model';
+  import { connectionRows, hostName, type ConnectionRow } from '../../ui/connections-model';
   import { isConnectionsChangedMessage } from '../../engine/messages';
   import { builtinConnectionDefs } from '../../core/connections/builtin';
   import type { ConnectionDef, ConnectionStatus } from '../../core/connections/types';
@@ -113,6 +113,22 @@
     })();
   }
 
+  /**
+   * Grant access (M3-R96): credentials are stored but host access was revoked. Requests only the missing hosts and
+   * starts no sign-in. The permission request is the first statement (the click's user gesture).
+   */
+  function grantAccess(row: ConnectionRow): void {
+    const granted = requestPermissions({ origins: [...row.hostsMissing] });
+    error = ''; info = '';
+    void (async () => {
+      let ok: boolean;
+      try { ok = await granted; } catch (e) { ok = false; error = e instanceof Error ? e.message : String(e); }
+      if (!alive) return;
+      if (!ok) { if (!error) error = `Tabchef needs access to ${row.hostsMissing.map(hostName).join(' and ')} to use ${row.label}.`; return; }
+      await load();
+    })();
+  }
+
   function cancelFlow(): void {
     flowGen++;
     stopPolling();
@@ -190,12 +206,12 @@
     <section class="card" aria-labelledby="conn-github">
       <div class="head">
         <h3 id="conn-github">{github.label}</h3>
-        <span class="badge" class:good={github.state === 'ok'} class:bad={github.state === 'needs-reauth' || github.state === 'error' || github.state === 'rate-limited'}>{github.badge}</span>
+        <span class="badge" class:good={github.state === 'ok'} class:bad={github.state === 'needs-reauth' || github.state === 'error' || github.state === 'rate-limited' || github.hostsMissing.length > 0}>{github.badge}</span>
       </div>
       <dl>
         {#if github.login}<div><dt>Account</dt><dd>Signed in as {github.login}{github.auth === 'token' ? ' (personal access token)' : ''}</dd></div>{/if}
         {#if github.scopes}<div><dt>Scopes</dt><dd>{github.scopes}</dd></div>{/if}
-        {#if github.state !== 'not-configured'}<div><dt>Last used</dt><dd>{github.lastUsed}</dd></div>{/if}
+        {#if github.stored}<div><dt>Last used</dt><dd>{github.lastUsed}</dd></div>{/if}
         {#if github.lastError}<div><dt>Last error</dt><dd class="err">{github.lastError}</dd></div>{/if}
       </dl>
       {#each github.ssoLinks as l (l.org)}
@@ -217,14 +233,18 @@
       {/if}
 
       <div class="row">
-        {#if github.state === 'not-configured' || github.state === 'needs-reauth'}
+        {#if github.hostsMissing.length}
+          <button type="button" class="primary" onclick={() => grantAccess(github!)} disabled={busy}>Grant access</button>
+        {:else if github.state === 'not-configured' || github.state === 'needs-reauth'}
           <button type="button" class="primary" onclick={connectGitHub} disabled={busy}>Connect GitHub</button>
         {/if}
         {#if github.state !== 'not-configured'}
           <button type="button" onclick={() => testConnection(github!)} disabled={busy}>Test connection</button>
+        {/if}
+        {#if github.stored}
           <button type="button" class="danger" onclick={() => disconnect(github!)} disabled={busy}>Disconnect</button>
         {/if}
-        {#if github.revokeUrl && github.state !== 'not-configured'}
+        {#if github.revokeUrl && github.stored}
           <a href={github.revokeUrl} target="_blank" rel="noopener noreferrer">Revoke on GitHub</a>
         {/if}
       </div>

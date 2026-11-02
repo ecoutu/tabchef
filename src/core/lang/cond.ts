@@ -199,6 +199,8 @@ function evalField(v: unknown, f: TabFacts, now: number, scope: CondScope | unde
 
 function condUsesAge(c: Cond): boolean {
   if ('age' in c) return true;
+  // A `field` comparison against `{ago: d}` (e.g. mergedAt older than autoCloseAfter) also turns true with time (M3-R92).
+  if ('field' in c) return isObj(c.field.value) && 'ago' in c.field.value;
   if ('all' in c) return c.all.some(condUsesAge);
   if ('any' in c) return c.any.some(condUsesAge);
   if ('not' in c) return condUsesAge(c.not);
@@ -206,7 +208,10 @@ function condUsesAge(c: Cond): boolean {
   return false;
 }
 
-/** Whether a rule has an `age` condition anywhere (opener too): while one is in the Program, age is re-evaluated (M3-R5). */
+/**
+ * Whether a rule has a time-dependent condition anywhere (opener too): an `age` condition, or a `field` comparison with
+ * an `{ago}` value. While one is in the Program, the age tick re-evaluates (M3-R5, M3-R92).
+ */
 export function usesAge(r: Rule): boolean {
   return condUsesAge(r.match);
 }

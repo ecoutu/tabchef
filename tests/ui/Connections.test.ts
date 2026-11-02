@@ -142,7 +142,7 @@ describe('Connections page', () => {
     expect(sent('connections.github.poll')).toHaveLength(3);
     expect(screen.getByRole('status').textContent).toContain('Connected to GitHub.');
     expect(sent('connections.list').length).toBeGreaterThan(lists);
-    expect(screen.getByText('Connected')).toBeTruthy();
+    expect(document.querySelector('.badge')?.textContent).toBe('Connected');
     expect(screen.getByText(/Signed in as octo/)).toBeTruthy();
     expect(screen.queryByText('WDJB-MJHT')).toBeNull();
     await vi.advanceTimersByTimeAsync(60_000);
@@ -201,7 +201,7 @@ describe('Connections page', () => {
     await fireEvent.input(input, { target: { value: PAT } });
     await fireEvent.click(screen.getByRole('button', { name: 'Save token' }));
     await flush();
-    expect(screen.getByText('Connected')).toBeTruthy();
+    expect(document.querySelector('.badge')?.textContent).toBe('Connected');
     expect(document.body.innerHTML).not.toContain(PAT);
   });
 
@@ -230,6 +230,49 @@ describe('Connections page', () => {
     expect(sent('connections.disconnect')).toEqual([{ type: 'connections.disconnect', id: 'github' }]);
     expect(screen.getByText('Not connected')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Connect GitHub' })).toBeTruthy();
+  });
+
+  it('M3-R96: revoked host + stored token: badge names the host; Disconnect and Revoke shown and remove the token; no Connect or Test', async () => {
+    defs = [gh({ login: 'octo' })];
+    status = [st({ hostsMissing: ['https://api.github.com/*'] })];
+    await open();
+    expect(screen.getByText('Needs access to api.github.com')).toBeTruthy();
+    expect(screen.queryByText('Not connected')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Connect GitHub' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Test connection' })).toBeNull();
+    expect(screen.getByRole('link', { name: 'Revoke on GitHub' })).toBeTruthy();
+    status = [st()];
+    defs = [gh()];
+    await fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+    await flush();
+    expect(sent('connections.disconnect')).toEqual([{ type: 'connections.disconnect', id: 'github' }]);
+    expect(screen.getByText('Not connected')).toBeTruthy();
+  });
+
+  it('M3-R96: Grant access requests exactly the missing hosts synchronously and starts no device flow', async () => {
+    defs = [gh({ login: 'octo' })];
+    status = [st({ hostsMissing: ['https://api.github.com/*'] })];
+    await open();
+    log = [];
+    status = [st({ state: 'ok' })]; // what the worker lists once the host is granted
+    await fireEvent.click(screen.getByRole('button', { name: 'Grant access' }));
+    expect(request).toHaveBeenCalledWith({ origins: ['https://api.github.com/*'] });
+    await flush();
+    expect(log[0]).toBe(`request ${JSON.stringify({ origins: ['https://api.github.com/*'] })}`);
+    expect(sent('connections.github.start')).toEqual([]);
+    expect(log).toEqual([`request ${JSON.stringify({ origins: ['https://api.github.com/*'] })}`, 'connections.list']);
+    expect(document.querySelector('.badge')?.textContent).toBe('Connected');
+  });
+
+  it('M3-R96: a denied Grant access shows a message and starts nothing', async () => {
+    defs = [gh({ login: 'octo' })];
+    status = [st({ hostsMissing: ['https://api.github.com/*'] })];
+    granted = false;
+    await open();
+    await fireEvent.click(screen.getByRole('button', { name: 'Grant access' }));
+    await flush();
+    expect(screen.getByRole('alert').textContent).toContain('api.github.com');
+    expect(sent('connections.github.start')).toEqual([]);
   });
 
   it('T7 fix: Disconnect cancels a device flow in progress before sending disconnect; no poll follows', async () => {
@@ -272,7 +315,7 @@ describe('Connections page', () => {
     expect(lists()).toBe(1);
     await vi.advanceTimersByTimeAsync(2_000);
     expect(lists()).toBe(2);
-    expect(screen.getByText('Connected')).toBeTruthy();
+    expect(document.querySelector('.badge')?.textContent).toBe('Connected');
     await vi.advanceTimersByTimeAsync(3_600_000);
     expect(lists()).toBe(2);
     // A far-off block is re-checked at the clamp (1 h), and nothing fires after unmount.

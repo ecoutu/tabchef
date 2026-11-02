@@ -4,6 +4,7 @@ import { CACHE_MAX, POPUP_THROTTLE_MS, SOURCE_CACHE_KEY, SourceService, type Sou
 import type { ApiRequest, ApiResult, ConnectionDef, ConnectionState } from '../../src/core/connections/types';
 import type { CompiledRule, Program, Rule, SourceSpec, TabFacts } from '../../src/core/lang/types';
 import type { Snapshot, TabSnap } from '../../src/core/types';
+import type { NeedsKind } from '../../src/core/lang/needs';
 
 const MIN = 60_000;
 const GITHUB: ConnectionDef = {
@@ -75,6 +76,8 @@ interface Setup {
   tabs?: TabSnap[]; rules?: Rule[]; states?: Map<string, string>; conn?: Record<string, ConnectionState>;
   facts?: Record<number, NonNullable<TabFacts['page']>>; granted?: boolean; canSend?: boolean; local?: ReturnType<typeof memLocal>;
   fetch?: (id: string, req: ApiRequest) => Promise<ApiResult>;
+  /** Per rule key, the kind of alternative it runs at (PermissionsManager.levelFor); default: every rule at its connection. */
+  levels?: Record<string, NeedsKind | undefined>;
 }
 function setup(o: Setup = {}) {
   let now = Date.parse('2026-11-02T10:00:00Z');
@@ -94,6 +97,7 @@ function setup(o: Setup = {}) {
     },
     limiter: { canSend },
     getProgram: async () => program(...(o.rules ?? [prRule])),
+    levelFor: vi.fn(async (k: string) => (o.levels && Object.hasOwn(o.levels, k) ? o.levels[k] : 'connection')),
     port: { snapshot: vi.fn(async () => structuredClone(snap)), hasPermission: vi.fn(async () => o.granted ?? false) },
     facts,
     local,
@@ -172,7 +176,7 @@ describe('SourceService: cache and refresh', () => {
     expect(t.onUpdated).toHaveBeenCalledWith([2]);
   });
 
-  it('Review Focus #1: needs-reauth keeps merged and open data with stale: true, never unknown; no onUpdated for the flag', async () => {
+  it('Review Focus #1: needs-reauth keeps merged and open data with stale: true, never unknown; the flag flip is reported (M3-R92)', async () => {
     const t = setup({ tabs: [prTab(1), prTab(2)], states: new Map([['acme/api#1', 'MERGED']]) });
     await t.svc.refresh('alarm');
     t.onUpdated.mockClear();
@@ -182,7 +186,39 @@ describe('SourceService: cache and refresh', () => {
     expect(t.fetch).toHaveBeenCalledTimes(1);
     expect(stateOf(t.svc, 1)).toMatchObject({ data: { state: 'merged' }, stale: true, error: 'unauthorized', via: 'api' });
     expect(stateOf(t.svc, 2)).toMatchObject({ data: { state: 'open' }, stale: true, error: 'unauthorized', via: 'api' });
+    // fresh -> stale reaches onUpdated, so pending closes on that data are cancelled at evaluation (M3-R90 / M3-R92).
+    expect(t.onUpdated).toHaveBeenCalledWith([1, 2]);
+    t.onUpdated.mockClear();
+    t.advance(6 * MIN);
+    await t.svc.refresh('alarm'); // still stale (same error): no change
     expect(t.onUpdated).not.toHaveBeenCalled();
+  });
+
+  it('M3-R92: a stale entry turning fresh with the same data (a re-auth) is reported, so a skipped close re-arms', async () => {
+    const t = setup({ tabs: [prTab(1)], states: new Map([['acme/api#1', 'MERGED']]) });
+    await t.svc.refresh('alarm');
+    t.conn.github = 'needs-reauth';
+    await t.svc.refresh('alarm');
+    expect(stateOf(t.svc, 1)).toMatchObject({ data: { state: 'merged' }, stale: true });
+    t.onUpdated.mockClear();
+    t.conn.github = 'ok';
+    await t.svc.refresh('alarm');
+    expect(t.fetch).toHaveBeenCalledTimes(1); // final: not refetched, only unstaled
+    expect(stateOf(t.svc, 1)).toMatchObject({ data: { state: 'merged' }, stale: false });
+    expect(t.onUpdated).toHaveBeenCalledWith([1]);
+  });
+
+  it('M3-R89: a rule kept at its connection level while needs-reauth reads the page where granted; the final merged entry stays stale', async () => {
+    const mergedPage = { texts: [], extracts: { 'adapter:github.prPage.state': 'Status: Merged' }, formEdited: false };
+    const t = setup({ tabs: [prTab(1), prTab(2)], states: new Map([['acme/api#1', 'MERGED']]), granted: true, facts: { 2: mergedPage } });
+    await t.svc.refresh('alarm');
+    expect(stateOf(t.svc, 2)).toMatchObject({ via: 'api', data: { state: 'open' } });
+    t.conn.github = 'needs-reauth'; // levelFor still answers 'connection' (PermissionsManager keeps the level)
+    t.advance(6 * MIN);
+    await t.svc.refresh('alarm');
+    expect(t.fetch).toHaveBeenCalledTimes(1);
+    expect(stateOf(t.svc, 1)).toMatchObject({ data: { state: 'merged' }, stale: true, error: 'unauthorized', via: 'api' });
+    expect(stateOf(t.svc, 2)).toMatchObject({ via: 'page', data: { state: 'merged' }, stale: false });
   });
 
   it('an API error keeps the previous data with stale and error set', async () => {
@@ -245,6 +281,34 @@ describe('SourceService: cache and refresh', () => {
 
 describe('SourceService: fallback', () => {
   const merged = { texts: [], extracts: { 'adapter:github.prPage.state': 'Status: Merged' }, formEdited: false };
+
+  it('M3-R65: a rule at its page alternative never calls the API, even with the connection ok; it reads the page', async () => {
+    const t = setup({ tabs: [prTab(1)], granted: true, facts: { 1: merged }, levels: { 'rec/pr': 'page' } });
+    await t.svc.refresh('alarm');
+    expect(t.fetch).not.toHaveBeenCalled();
+    expect(t.deps.levelFor).toHaveBeenCalledWith('rec/pr');
+    expect(stateOf(t.svc, 1)).toMatchObject({ via: 'page', data: { state: 'merged' } });
+  });
+
+  it('M3-R65: a rule at its titles alternative (or paused) neither calls the API nor reads the page', async () => {
+    for (const level of ['titles', undefined] as const) {
+      const t = setup({ tabs: [prTab(1)], granted: true, facts: { 1: merged }, levels: { 'rec/pr': level } });
+      await t.svc.refresh('alarm');
+      expect(t.fetch).not.toHaveBeenCalled();
+      expect(t.deps.port.hasPermission).not.toHaveBeenCalled();
+      expect(stateOf(t.svc, 1)).toMatchObject({ via: 'none' });
+    }
+  });
+
+  it('M3-R65: a fresh API entry is marked stale once its rule drops below the connection alternative', async () => {
+    const t = setup({ tabs: [prTab(1)], states: new Map([['acme/api#1', 'MERGED']]), levels: {} });
+    await t.svc.refresh('alarm');
+    expect(stateOf(t.svc, 1)).toMatchObject({ via: 'api', stale: false });
+    vi.mocked(t.deps.levelFor).mockResolvedValue('page');
+    await t.svc.refresh('alarm');
+    expect(t.fetch).toHaveBeenCalledTimes(1);
+    expect(stateOf(t.svc, 1)).toMatchObject({ via: 'api', data: { state: 'merged' }, stale: true });
+  });
 
   it('no connection and a loaded tab with page facts → via page with the parsed state', async () => {
     const t = setup({ tabs: [prTab(1)], conn: { github: 'not-configured' }, granted: true, facts: { 1: merged } });

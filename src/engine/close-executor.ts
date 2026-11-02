@@ -5,6 +5,9 @@
 // Fire-time order (ruling R13, Review Focus #1):
 //  1. pause-all (safety.isPaused) or the rule / its recipe is paused (PermissionsManager) -> keep pending (rearm on resume)
 //  2. the tab is gone, its normalized URL changed or the rule no longer wins -> drop
+//  2b. the rule has a `source` whose data for the tab is stale or unknown -> drop, logged `close-skipped` (M3-R90:
+//     stale or unknown source data never drives a close; evaluation does not schedule or suggest it either, and the
+//     next live close rule wins instead, as dry-run rules fall through, M3-R92)
 //  3. (dry-run rules never win here: they fall through, R48; see below)
 //  4. anchor (T11 seam) or undo-exempt (R24) -> skip
 //  5. locked or pinned -> a suggestion, never a banner (ruling R71: never offered for closing);
@@ -124,6 +127,8 @@ export class CloseExecutor {
   private readonly settled = new Map<number, { url: string; ruleKey: string }>();
   /** Tab -> {normalized URL, dry-run rule} whose would-close was logged for its current page. Memory only. */
   private readonly wouldLogged = new Map<number, { url: string; ruleKey: string }>();
+  /** Tab -> {normalized URL, rules} whose stale-source skip (M3-R90) was logged for its current page. Memory only. */
+  private readonly staleLogged = new Map<number, { url: string; keys: Set<string> }>();
   /** Protected-close banners awaiting an answer: tab -> {normalized URL, rule}. Memory only (lost = Keep). */
   private readonly asking = new Map<number, { url: string; ruleKey: string }>();
   private readonly timers = new Map<number, ReturnType<typeof setTimeout>>();
@@ -332,13 +337,17 @@ export class CloseExecutor {
     if (this.settled.get(tabId)?.url !== url) this.settled.delete(tabId);
     if (this.asking.get(tabId)?.url !== url) this.asking.delete(tabId);
     if (this.wouldLogged.get(tabId)?.url !== url) this.wouldLogged.delete(tabId);
+    if (this.staleLogged.get(tabId)?.url !== url) this.staleLogged.delete(tabId);
     if (this.exempted.has(tabId)) return changed;
     this.logDryRun(snap, p, tab, url);
 
     const kept = this.pending.get(tabId);
     // A paused rule is left out of the Program: its entry stays pending until resumed (R13).
     if (kept && this.rulePaused(kept.ruleKey)) return changed;
-    const r = this.closeOf(snap, p, tab);
+    // M3-R90: a close on stale or unknown source data is neither scheduled nor suggested (logged once per page);
+    // the next live close rule decides instead (M3-R92).
+    const { r, skipped } = this.liveClose(snap, p, tab);
+    this.logStale(tab, url, skipped);
     const sug = this.suggested.get(tabId);
     if (!r) {
       if (kept) this.cancel(tabId);
@@ -396,6 +405,48 @@ export class CloseExecutor {
     }, this.now()).close;
   }
 
+  /**
+   * Why the close rule `key` must not act on the tab's source data (M3-R90), or undefined: the rule has a `source` and
+   * its entry for the tab at its current URL is stale, or has no data (unknown fields).
+   */
+  private staleSource(p: Program, tab: TabSnap, key: string): string | undefined {
+    if (!p.rules.find((x) => x.key === key)?.rule.source) return undefined;
+    const e = this.deps.sources?.factsFor(tab.id, tab.pendingUrl || tab.url)?.[key];
+    if (!e?.data || !Object.keys(e.data).length) return 'its source data is unknown';
+    return e.stale ? 'its source data is stale' : undefined;
+  }
+
+  /**
+   * The winning live close whose source data may be acted on (M3-R90), and the closes skipped on the way: a rule on
+   * stale or unknown source data falls through to the next live close rule (M3-R92), as dry-run rules do (R48).
+   */
+  private liveClose(snap: Snapshot, p: Program, tab: TabSnap): { r?: CloseResult; skipped: { key: string; why: string }[] } {
+    const skipped: { key: string; why: string }[] = [];
+    let prog = p;
+    for (;;) {
+      const r = this.closeOf(snap, prog, tab);
+      const why = r && this.staleSource(p, tab, r.key);
+      if (!r || !why) return { ...(r && { r }), skipped };
+      skipped.push({ key: r.key, why });
+      prog = { ...prog, rules: prog.rules.filter((x) => x.key !== r.key) };
+    }
+  }
+
+  /**
+   * Logs stale-source skips: once per page and rule while the rule stays skipped (a rule that acts again is forgotten,
+   * so a later skip logs anew), or every one with `always` (a scheduled close dropped at fire time).
+   */
+  private logStale(tab: TabSnap, url: string, skipped: { key: string; why: string }[], always = false): void {
+    const memo = this.staleLogged.get(tab.id);
+    const before = memo?.url === url ? memo.keys : new Set<string>();
+    const keys = always ? new Set([...before, ...skipped.map((s) => s.key)]) : new Set(skipped.map((s) => s.key));
+    if (keys.size) this.staleLogged.set(tab.id, { url, keys }); else this.staleLogged.delete(tab.id);
+    for (const s of skipped) {
+      if (!always && before.has(s.key)) continue;
+      this.deps.log.add({ tabId: tab.id, ruleId: s.key, action: 'close-skipped', detail: `Not closed: ${s.why}`, at: this.now() });
+    }
+  }
+
   private rulePaused(key: string): boolean {
     const paused = this.deps.isRulePaused;
     if (!paused) return false;
@@ -448,6 +499,7 @@ export class CloseExecutor {
     this.settled.delete(tabId);
     this.asking.delete(tabId);
     this.wouldLogged.delete(tabId);
+    this.staleLogged.delete(tabId);
   }
 
   private fire(tabId: number): Promise<void> {
@@ -472,7 +524,10 @@ export class CloseExecutor {
     if (!tab) return;
     const url = normOf(tab.url, p);
     if (url !== normOf(e.url, p)) return;
-    const r = this.closeOf(snap, p, tab);
+    const { r, skipped } = this.liveClose(snap, p, tab);
+    // 2b. The data the close rests on went stale (or unknown) since it was scheduled: fail closed (M3-R90).
+    const stale = skipped.find((s) => s.key === e.ruleKey);
+    if (stale) { this.logStale(tab, url, [stale], true); return; }
     if (r?.key !== e.ruleKey) return;
     // 4. Anchor or undo-exempt.
     if (this.deps.isAnchor?.(tabId) || this.exempted.get(tabId) === url) return;

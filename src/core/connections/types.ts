@@ -24,6 +24,11 @@ export interface ConnectionStatus {
   ssoRequired: { org: string; url: string }[];
   expiresInDays?: number;
   scopes: string[];
+  /**
+   * Credentials are stored but these host patterns are not granted (state is not-configured). Origins only, never a
+   * secret: the Connections page offers Grant access and Disconnect (M3-R96).
+   */
+  hostsMissing?: string[];
 }
 export interface ApiRequest {
   method: 'GET' | 'POST';

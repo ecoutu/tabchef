@@ -28,6 +28,13 @@ describe('connectionRows', () => {
     expect(row(gh(), st({ state: 'rate-limited' })).badge).toBe('GitHub rate limit reached.');
   });
 
+  it('M3-R96: stored credentials with missing hosts → "Needs access to api.github.com", stored, the origins to request', () => {
+    const r = row(gh({ login: 'octo' }), st({ state: 'not-configured', hostsMissing: ['https://api.github.com/*'] }));
+    expect(r).toMatchObject({ badge: 'Needs access to api.github.com', stored: true, hostsMissing: ['https://api.github.com/*'] });
+    expect(row(gh(), st({ state: 'not-configured' }))).toMatchObject({ stored: false, hostsMissing: [] });
+    expect(row(gh(), st({ state: 'needs-reauth' })).stored).toBe(true);
+  });
+
   it('ok, not-configured and error badges; login, scopes, last used, last error, revoke URL', () => {
     const r = row(gh({ login: 'octo', scopes: ['repo', 'read:org'], auth: 'token' }), st({ lastUsedAt: NOW - 5 * 60_000 }));
     expect(r).toMatchObject({

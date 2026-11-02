@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { evalCond, evalShow, usesAge } from '../../../src/core/lang/cond';
 import type { Cond, Rule, TabFacts } from '../../../src/core/lang/types';
 import type { TabSnap } from '../../../src/core/types';
+import { builtinRecipes } from '../../../src/recipes/load';
 
 const NOW = 1_800_000_000_000;
 const MIN = 60_000;
@@ -236,6 +237,18 @@ describe('usesAge (M3-R5: gates the age.tick alarm)', () => {
     expect(usesAge(rule({ url: 'a.com/*' }))).toBe(false);
     expect(usesAge(rule({ all: [{ title: 'age' }, { not: { pageText: 'age' } }, { opener: { group: 'G' } }] }))).toBe(false);
     expect(usesAge(rule({ any: [] }))).toBe(false);
+    expect(usesAge(rule({ field: { field: 'source.mergedAt', op: '<', value: '2026-01-01T00:00:00Z' } }))).toBe(false);
+    expect(usesAge(rule({ field: { field: 'source.state', op: '==', value: 'merged' } }))).toBe(false);
+  });
+  it('true for a field comparison against {ago} (M3-R92: mergedAt crossing autoCloseAfter)', () => {
+    expect(usesAge(rule({ field: { field: 'source.mergedAt', op: '<', value: { ago: '24h' } } }))).toBe(true);
+    expect(usesAge(rule({ all: [{ url: 'github.com/*' }, { not: { field: { field: 'source.mergedAt', op: '>', value: { ago: '{params.x}' } } } }] }))).toBe(true);
+  });
+  it('the shipped merged-prs auto-close rule counts, so the age tick runs for it', () => {
+    const merged = builtinRecipes()['merged-prs']!;
+    const r = merged.rules.find((x) => x.id === 'auto-close-merged')!;
+    expect(usesAge(r)).toBe(true);
+    expect(usesAge(merged.rules.find((x) => x.id === 'pr-state')!)).toBe(false);
   });
 });
 

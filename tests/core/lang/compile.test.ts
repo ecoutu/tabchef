@@ -453,13 +453,29 @@ describe('compileProgram: M3 T1 (sources, needs, conflicts, projects)', () => {
     const { errors } = compileProgram(config({ recipes: [ref('p')] }), b);
     expect(errors).toEqual([{ key: 'p/s', error: expect.stringMatching(/project fields are not supported yet/) }]);
   });
-  it('needs.anyOf and needs.connections are not supported yet (M3-R12), recipe-level and rule-level', () => {
-    const anyOf = { anyOf: [{ connections: ['github'] }, { hosts: ['https://github.com/*'] }] };
-    const r1 = compileProgram(config({ recipes: [ref('p')] }), { p: recipe('p', [rule('a')], { needs: anyOf }) });
-    expect(r1.errors).toEqual([{ key: 'p', error: expect.stringMatching(/needs\.anyOf.*not supported yet/) }]);
-    expect(r1.program.rules).toEqual([]);
-    const r2 = compileProgram(config({ recipes: [ref('p')] }), { p: recipe('p', [rule('a', { needs: { connections: ['github'] } })]) });
-    expect(r2.errors).toEqual([{ key: 'p/a', error: expect.stringMatching(/needs\.connections.*not supported yet/) }]);
+  it('needs.anyOf and needs.connections compile into Program.needs (M3-R63), recipe-level and rule-level', () => {
+    const anyOf = { anyOf: [{ connections: ['github'] }, { hosts: ['https://github.com/*'] }, {}] };
+    const r1 = compileProgram(config({ recipes: [ref('p')] }), { p: recipe('p', [rule('a', { needs: { connections: ['jira'] } })], { needs: anyOf }) });
+    expect(r1.errors).toEqual([]);
+    expect(r1.program.needs).toEqual({
+      p: { origins: [], permissions: [], anyOf: [
+        { origins: [], permissions: [], connections: ['github'] },
+        { origins: ['https://github.com/*'], permissions: [] },
+        { origins: [], permissions: [] },
+      ] },
+      'p/a': { origins: [], permissions: [], connections: ['jira'] },
+    });
+  });
+  it('a needs.anyOf alternative with its own anyOf is an error', () => {
+    const nested = { anyOf: [{ anyOf: [{ hosts: ['https://github.com/*'] }] }] };
+    const { program, errors } = compileProgram(config({ recipes: [ref('p')] }), { p: recipe('p', [rule('a', { needs: nested })]) });
+    expect(errors).toEqual([{ key: 'p/a', error: expect.stringMatching(/needs\.anyOf.*own anyOf/) }]);
+    expect(program.rules).toEqual([]);
+  });
+  it('a recipe\'s levels are carried into Program.levels by recipe id', () => {
+    const levels = [{ id: 'titles', label: 'Titles', rules: ['a'] }];
+    const { program } = compileProgram(config({ recipes: [ref('p'), ref('q')] }), { p: recipe('p', [rule('a')], { levels }), q: recipe('q', [rule('b')]) });
+    expect(program.levels).toEqual({ p: levels });
   });
   it('conflicting recipes both enabled: reported, and the later one in config.recipes is skipped (M3-R17)', () => {
     const b = { a: recipe('a', [rule('x')], { conflicts: ['b'] }), b: recipe('b', [rule('y')]) };

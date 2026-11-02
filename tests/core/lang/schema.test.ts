@@ -334,6 +334,22 @@ describe('M3 T1: sources, fields, keys and projects', () => {
     const r = recipe({ params: { x: { type: 'string[]', default: [], label: 'X' } }, rules: [rule({ needs: { anyOf: '{params.x}' } })] });
     expect(validateRecipe(r).ok).toBe(false);
   });
+  it('levels map to kinds by position (M3-R69): at most 3, and each listed rule has an alternative of that kind', () => {
+    const anyOf = { anyOf: [{ connections: ['github'] }, { hosts: ['https://github.com/*'] }, {}] };
+    const lv = (rules: string[][]) => rules.map((r, i) => ({ id: `l${i}`, label: `L${i}`, rules: r }));
+    expect(errorsOf(validateRecipe(recipe({ rules: [rule({ needs: anyOf })], levels: lv([['r'], ['r'], ['r']]) })))).toEqual([]);
+    const four = validateRecipe(recipe({ rules: [rule({ needs: anyOf })], levels: lv([['r'], ['r'], ['r'], ['r']]) }));
+    expect(at(four, '/levels').map((e) => e.message)).toEqual([expect.stringMatching(/at most 3 levels/)]);
+    // A rule with only a host alternative: no titles alternative (level 0) and no connection one (level 2).
+    const hostOnly = rule({ needs: { anyOf: [{ hosts: ['https://github.com/*'] }] } });
+    const r = validateRecipe(recipe({ rules: [hostOnly], levels: lv([['r'], ['r'], ['r']]) }));
+    expect(at(r, '/levels/0/rules/0').map((e) => e.message)).toEqual(['rule r has no titles alternative (level 0 means titles)']);
+    expect(at(r, '/levels/1/rules/0')).toEqual([]);
+    expect(at(r, '/levels/2/rules/0').map((e) => e.message)).toEqual(['rule r has no connection alternative (level 2 means connection)']);
+    // Without anyOf the rule's needs are its one alternative: no needs = titles, hosts = page, connections = connection.
+    expect(errorsOf(validateRecipe(recipe({ levels: lv([['r']]) })))).toEqual([]);
+    expect(at(validateRecipe(recipe({ levels: lv([['r'], ['r']]) })), '/levels/1/rules/0').length).toBe(1);
+  });
   it('a recipe may declare a project, conflicts and levels; level rules must exist', () => {
     const project = { key: '{key}', title: '{key}', color: 'blue', container: 'group', join: ['rules', 'manual'] };
     const ok = recipe({ project, conflicts: ['other'], levels: [{ id: 'full', label: 'Full', rules: ['r'] }] });

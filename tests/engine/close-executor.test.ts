@@ -114,6 +114,138 @@ describe('CloseExecutor', () => {
     expect(factsFor).toHaveBeenCalledWith(2, url);
   });
 
+  describe('M3-R90: stale or unknown source data never drives a close', () => {
+    const url = 'https://github.com/acme/api/pull/8';
+    const sourceProgram = (match: Rule['match'], mode: 'auto' | 'suggest' = 'auto'): Program => ({
+      ...programOf(cfgOf([])),
+      rules: [{
+        key: 'rec/merged', recipeId: 'rec', index: 0, dryRun: false,
+        rule: {
+          id: 'merged', name: 'Merged PR', enabled: true,
+          source: { connection: 'github', query: 'github.pull_request', args: { owner: '{o}', repo: '{r}', number: '{n}' }, fields: { state: 'state' } },
+          match, actions: [{ close: { after: '1s', mode } }],
+        },
+      }],
+    });
+    const mergedMatch: Rule['match'] = { all: [{ url: 'github.com/:o/:r/pull/:n' }, { field: { field: 'source.state', op: '==', value: 'merged' } }] };
+    function setupStale(match: Rule['match'] = mergedMatch, mode: 'auto' | 'suggest' = 'auto') {
+      const e = env();
+      e.port.addTab(tab(1, 'https://other.test/', { active: true }));
+      e.port.addTab(tab(2, url));
+      const src: { entry: { data?: Record<string, unknown>; stale?: boolean } | undefined } = { entry: { data: { state: 'merged' }, stale: true } };
+      const factsFor = (id: number) => (id === 2 && src.entry ? { 'rec/merged': src.entry } : undefined);
+      const w = worker(e, { sources: { factsFor } }, sourceProgram(match, mode));
+      const skips = () => w.logs.filter((l) => l.action === 'close-skipped');
+      return { e, w, src, skips, pending: () => (e.store.get(PENDING_CLOSES_KEY) as unknown[] | undefined) ?? [] };
+    }
+
+    it('a merged entry that is stale is not scheduled; the skip is logged once per page', async () => {
+      const t = setupStale();
+      await t.w.ex.onCommitted(2);
+      await t.w.ex.evaluate(2);
+      await t.w.ex.evaluate(2);
+      expect(t.pending()).toEqual([]);
+      expect(t.skips()).toEqual([expect.objectContaining({ tabId: 2, ruleId: 'rec/merged', detail: 'Not closed: its source data is stale' })]);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(t.w.closes()).toEqual([]);
+      // Fresh again: the next evaluation schedules and closes.
+      t.src.entry = { data: { state: 'merged' } };
+      await t.w.ex.evaluate(2);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(t.w.closes()).toEqual([2]);
+    });
+
+    it('data that turns stale between scheduling and the fire time: dropped at fire time and logged, not closed', async () => {
+      const t = setupStale();
+      t.src.entry = { data: { state: 'merged' } };
+      await t.w.ex.onCommitted(2);
+      await t.w.ex.evaluate(2);
+      expect(t.pending()).toEqual([expect.objectContaining({ tabId: 2, ruleKey: 'rec/merged' })]);
+      t.src.entry = { data: { state: 'merged' }, stale: true };
+      await vi.advanceTimersByTimeAsync(1_000);
+      await t.w.ex.idle();
+      expect(t.w.closes()).toEqual([]);
+      expect(t.pending()).toEqual([]);
+      expect(t.skips()).toEqual([expect.objectContaining({ tabId: 2, detail: 'Not closed: its source data is stale' })]);
+      expect(t.w.recentlyClosed.list()).toEqual([]);
+    });
+
+    it('a source rule whose data is unknown (no entry) never closes, even when its match reads no field', async () => {
+      const t = setupStale({ url: 'github.com/:o/:r/pull/:n' });
+      t.src.entry = undefined;
+      await t.w.ex.onCommitted(2);
+      await t.w.ex.evaluate(2);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(t.w.closes()).toEqual([]);
+      expect(t.skips()).toEqual([expect.objectContaining({ detail: 'Not closed: its source data is unknown' })]);
+    });
+
+    it('M3-R92: a merged PR just under autoCloseAfter is armed by the age tick (evaluateAll) once mergedAt crosses it', async () => {
+      const agoMatch: Rule['match'] = { all: [mergedMatch, { field: { field: 'source.mergedAt', op: '<', value: { ago: '1h' } } }] };
+      const t = setupStale(agoMatch);
+      // vi's fake Date starts at 1_000_000 ms: merged 1 h - 30 s ago.
+      t.src.entry = { data: { state: 'merged', mergedAt: new Date(1_000_000 - 3_600_000 + 30_000).toISOString() } };
+      await t.w.ex.onCommitted(2);
+      await t.w.ex.evaluate(2);
+      expect(t.pending()).toEqual([]);
+      await vi.advanceTimersByTimeAsync(60_000); // one age tick later, nothing else happened
+      expect(t.pending()).toEqual([]);
+      await t.w.ex.evaluateAll(); // what the age.tick alarm runs
+      expect(t.pending()).toEqual([expect.objectContaining({ tabId: 2, ruleKey: 'rec/merged' })]);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(t.w.closes()).toEqual([2]);
+      expect(t.skips()).toEqual([]);
+    });
+
+    it('M3-R92: a skipped stale close re-arms when the entry turns fresh with the same data (sourceUpdated -> evaluate)', async () => {
+      const t = setupStale();
+      await t.w.ex.onCommitted(2);
+      await t.w.ex.evaluate(2);
+      expect(t.skips()).toHaveLength(1);
+      t.src.entry = { data: { state: 'merged' } }; // SourceService reports the flag flip: onUpdated -> evaluate
+      await t.w.ex.evaluate(2);
+      expect(t.pending()).toEqual([expect.objectContaining({ tabId: 2, ruleKey: 'rec/merged' })]);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(t.w.closes()).toEqual([2]);
+    });
+
+    it('M3-R92: a stale winner falls through to the next live close rule (auto, or a suggestion), like dry run', async () => {
+      for (const mode of ['auto', 'suggest'] as const) {
+        const e = env();
+        e.port.addTab(tab(1, 'https://other.test/', { active: true }));
+        e.port.addTab(tab(2, url));
+        const base = sourceProgram(mergedMatch);
+        const lower: Program['rules'][number] = {
+          key: 'user/all-prs', index: 1, dryRun: false,
+          rule: { id: 'all-prs', name: 'All PRs', enabled: true, match: { url: 'github.com/*/pull/*' }, actions: [{ close: { after: '2s', mode } }] },
+        };
+        const factsFor = (id: number) => (id === 2 ? { 'rec/merged': { data: { state: 'merged' }, stale: true } } : undefined);
+        const w = worker(e, { sources: { factsFor } }, { ...base, rules: [...base.rules, lower] });
+        await w.ex.onCommitted(2);
+        await w.ex.evaluate(2);
+        expect(w.logs.filter((l) => l.action === 'close-skipped')).toEqual([expect.objectContaining({ ruleId: 'rec/merged' })]);
+        if (mode === 'suggest') {
+          expect(w.ex.suggestions()).toEqual([expect.objectContaining({ tabId: 2, ruleKey: 'user/all-prs' })]);
+        } else {
+          expect((e.store.get(PENDING_CLOSES_KEY) as unknown[])).toEqual([expect.objectContaining({ tabId: 2, ruleKey: 'user/all-prs' })]);
+          await vi.advanceTimersByTimeAsync(2_000);
+          expect(w.closes()).toEqual([2]);
+          expect(w.recentlyClosed.list()).toEqual([expect.objectContaining({ ruleId: 'user/all-prs' })]);
+        }
+      }
+    });
+
+    it('a stale entry is not suggested either, and an earlier suggestion of that rule goes away', async () => {
+      const t = setupStale(mergedMatch, 'suggest');
+      t.src.entry = { data: { state: 'merged' } };
+      await t.w.ex.evaluate(2);
+      expect(t.w.ex.suggestions()).toEqual([expect.objectContaining({ tabId: 2, ruleKey: 'rec/merged' })]);
+      t.src.entry = { data: { state: 'merged' }, stale: true };
+      await t.w.ex.evaluate(2);
+      expect(t.w.ex.suggestions()).toEqual([]);
+    });
+  });
+
   it('form edited at 2 s: no close, banner called', async () => {
     const e = env();
     e.port.addTab(tab(2, CB));

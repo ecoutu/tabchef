@@ -6,12 +6,19 @@
   // click handler calls requestNeeds FIRST, synchronously (it needs the user gesture), then preview.change for the
   // config with the recipe enabled, then on Apply recipes.enable {id, params, baseRev}. Denied recipe-level needs stop
   // there; denied rule-level needs (Finished / Meet) still enable, and that rule shows paused.
+  //
+  // Capability levels (M3 T12): a recipe that declares `levels` lists each as "<label>: available" or "<label>: locked,
+  // needs <what>". A locked host level has a button that requests its hosts and permissions (requestNeeds first, in the click; also when only a permission such as scripting is missing); a
+  // locked connection level links to the Connections page, and so does an available one whose connection needs a new
+  // sign-in (needs-reauth keeps the level, M3-R89). The list reloads on permission changes and on the
+  // background's `connections.changed` broadcast, so levels follow a sign-in or a needs-reauth while the page is open.
   import { onMount } from 'svelte';
+  import { browser } from 'wxt/browser';
   import type { Config } from '../../core/types';
   import type { ParamDef, Rule } from '../../core/lang/types';
   import { ruleOn } from '../../core/lang/compile';
-  import type { RecipeListItem } from '../../engine/messages';
-  import type { NeedStatus } from '../../engine/permissions';
+  import { isConnectionsChangedMessage, type RecipeListItem } from '../../engine/messages';
+  import type { LevelStatus, NeedStatus } from '../../engine/permissions';
   import type { PreviewResult } from '../../core/lang/preview';
   import { send } from '../../ui/send';
   import { onPermissionsChanged, requestNeeds } from '../../ui/permissions';
@@ -63,8 +70,15 @@
   }
 
   $effect(() => { void saved; void load(); });
+  /** Whether onPermissionsChanged is subscribed: a grant then reloads through it (one recipes.list per grant). */
+  let watchingPermissions = false;
   onMount(() => {
-    try { return onPermissionsChanged(() => { void load(); }); } catch { return undefined; }
+    const stops: (() => void)[] = [];
+    try { stops.push(onPermissionsChanged(() => { void load(); })); watchingPermissions = true; } catch { /* no permissions events here */ }
+    // A connection's status changed (signed in on #/connections, or needs-reauth in the background): levels follow.
+    const onMsg = (m: unknown): void => { if (isConnectionsChangedMessage(m)) void load(); };
+    try { browser.runtime.onMessage.addListener(onMsg); stops.push(() => browser.runtime.onMessage.removeListener(onMsg)); } catch { /* no runtime here */ }
+    return () => { for (const stop of stops) stop(); };
   });
 
   const hostOf = (p: string): string => /^[^:]+:\/\/([^/:]+)/.exec(p)?.[1] ?? p;
@@ -88,6 +102,15 @@
     const shown = ruleRows(saved, builtins).find((r) => r.key === `${i.id}/${ruleId}`);
     const why = shown ? inactiveReason(shown.rule) : undefined;
     return why ? `Inactive: ${why}` : 'Active';
+  }
+  const levelText = (l: LevelStatus): string => (l.available ? `${l.label}: available` : `${l.label}: locked, needs ${l.needs ?? ''}`);
+  /**
+   * Request a locked level's hosts. requestNeeds is the first statement (user gesture). A grant reloads through
+   * onPermissionsChanged; only without that subscription does the answer reload here (never both).
+   */
+  function allowLevel(l: LevelStatus): void {
+    const granted = requestNeeds({ origins: l.missing?.origins ?? [], permissions: l.missing?.permissions ?? [] });
+    if (!watchingPermissions) void granted.catch(() => false).then(() => load());
   }
   const deniedText = (s: NeedStatus): string => `Not enabled: ${(s.reason ?? 'missing permissions').replace(/^Paused: /, '')} (permission denied).`;
   const errorsOf = (i: RecipeListItem): Record<string, string> => paramErrors(i.paramDefs, values[i.id] ?? {}, hostParams(bodyOf(i.id)));
@@ -127,7 +150,7 @@
     const ok = await granted.catch(() => false);
     // Recipe-level needs gate the enable (R5); denied rule-level needs only pause their rule.
     if (!ok && !item.status.ok) { busy = null; say(id, deniedText(item.status), true); return; }
-    const cfg = withRecipe($state.snapshot(saved), id, { enabled: true, params });
+    const cfg = withRecipe($state.snapshot(saved), id, { enabled: true, params }, builtins);
     const baseRev = rev();
     await change(id, cfg, () => send({ type: 'recipes.enable', id, params, ...(baseRev !== undefined && { baseRev }) }), 'Enabled.');
   }
@@ -177,6 +200,23 @@
         <ul class="rules">
           {#each body.rules as r (r.id)}
             <li data-rule={`${item.id}/${r.id}`}>{r.name}: <span class:paused={ruleStatus(item, r).startsWith('Paused')}>{ruleStatus(item, r)}</span></li>
+          {/each}
+        </ul>
+      {/if}
+
+      {#if item.levels?.length}
+        <ul class="levels" aria-label="Capability levels">
+          {#each item.levels as l (l.id)}
+            <li data-level={l.id}>
+              <span class="level-text" class:locked={!l.available}>{levelText(l)}</span>
+              {#if !l.available && l.missing?.connections.length}
+                <a href="#/connections">Set up a connection</a>
+              {:else if !l.available && (l.missing?.origins.length || l.missing?.permissions.length)}
+                <button type="button" disabled={busy !== null} onclick={() => allowLevel(l)}>Allow access</button>
+              {:else if l.available && l.reauth?.length}
+                <a href="#/connections" class="reauth">Sign in again</a>
+              {/if}
+            </li>
           {/each}
         </ul>
       {/if}
@@ -238,6 +278,9 @@
   .paused { color: var(--danger); }
   .needs { color: var(--muted); font-size: 12px; }
   .rules { margin: 0; padding-left: 18px; font-size: 13px; }
+  .levels { margin: 0; padding-left: 18px; font-size: 13px; }
+  .levels li { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .locked { color: var(--muted); }
   .params { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 8px; }
   .actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .err { color: var(--danger); font-size: 12px; }

@@ -513,7 +513,7 @@
       ]
     },
     "needs": {
-      "$comment": "Recipe-level and rule-level needs (one definition, M3-R13). connections and anyOf (alternatives, best first) are rejected by compileProgram as not supported yet until T12 (M3-R12).",
+      "$comment": "Recipe-level and rule-level needs (one definition, M3-R13). anyOf lists alternatives, best first; PermissionsManager picks the first granted one as the rule's level (M3-R63). Alternatives do not nest (compileProgram reports it).",
       "type": "object",
       "additionalProperties": false,
       "properties": {

@@ -600,6 +600,103 @@ describe('ConnectionManager', () => {
       expect(changes.at(-1)).toMatchObject({ state: 'rate-limited', blockedUntil: NOW + 420_000 });
     });
 
+    it('a revoked api host → not-configured with a host-specific reason; re-granting restores ok', async () => {
+      let granted = true;
+      const r = rig({ granted: (o) => granted || o !== 'https://api.github.com/*' });
+      await connected(r);
+      expect((await st(r)).state).toBe('ok');
+      granted = false;
+      const s = await st(r);
+      expect(s.state).toBe('not-configured');
+      // M3-R96: credentials stored, hosts missing — origins only, never a secret.
+      expect(s.hostsMissing).toEqual(['https://api.github.com/*']);
+      expect(JSON.stringify(s)).not.toContain(TOKEN);
+      granted = true;
+      expect(await st(r)).toMatchObject({ state: 'ok' });
+      expect((await st(r)).hostsMissing).toBeUndefined();
+    });
+
+    it('a revoked api host wins over needs-reauth (the connection is unusable until granted)', async () => {
+      let granted = true;
+      const r = rig({ fetch: async () => json(401, {}), granted: () => granted });
+      await connected(r);
+      await r.mgr.fetch('github', GET);
+      expect((await st(r)).state).toBe('needs-reauth');
+      granted = false;
+      expect((await st(r)).state).toBe('not-configured');
+    });
+
+    it('permissionsChanged emits every connection\'s status so pages and levels re-list', async () => {
+      let granted = true;
+      const r = rig({ granted: () => granted });
+      await connected(r);
+      await r.mgr.save(jiraDef('acme.atlassian.net', 'classic'));
+      const changes: ConnectionStatus[] = [];
+      r.mgr.onStatusChange((s) => changes.push(s));
+      await r.mgr.permissionsChanged(); // first event since start: both emitted once (never emitted before)
+      changes.length = 0;
+      granted = false;
+      await r.mgr.permissionsChanged();
+      // jira (no credentials) was and stays plainly not-configured: no emit for it (M3-R96).
+      expect(changes.map((c) => [c.id, c.state])).toEqual([['github', 'not-configured']]);
+      expect(changes[0]!.hostsMissing).toEqual(['https://github.com/*', 'https://api.github.com/*']);
+      granted = true;
+      await r.mgr.permissionsChanged();
+      expect(changes.map((c) => [c.id, c.state])).toEqual([['github', 'not-configured'], ['github', 'ok']]);
+    });
+
+    it('M3-R96: a permission event that changes no status emits nothing', async () => {
+      const r = rig();
+      await connected(r);
+      await r.mgr.permissionsChanged(); // the first event emits github once (never emitted since start)
+      const cb = vi.fn();
+      r.mgr.onStatusChange(cb);
+      await r.mgr.permissionsChanged();
+      await r.mgr.permissionsChanged();
+      expect(cb).not.toHaveBeenCalled();
+    });
+
+    it('M3-R96: a status() read between the permission change and its event does not hide the change', async () => {
+      let granted = true;
+      const r = rig({ granted: () => granted });
+      await connected(r);
+      await r.mgr.permissionsChanged();
+      const changes: ConnectionStatus[] = [];
+      r.mgr.onStatusChange((s) => changes.push(s));
+      granted = false;
+      await r.mgr.status(); // e.g. the Connections page's list or a SourceService refresh got there first
+      await r.mgr.permissionsChanged();
+      expect(changes.map((c) => c.state)).toEqual(['not-configured']);
+      granted = true;
+      await r.mgr.status('github');
+      await r.mgr.permissionsChanged();
+      expect(changes.map((c) => c.state)).toEqual(['not-configured', 'ok']);
+    });
+
+    it('M3-R96: a removed connection is dropped from the emit memory', async () => {
+      const r = rig();
+      await connected(r);
+      await r.mgr.permissionsChanged();
+      const cb = vi.fn();
+      r.mgr.onStatusChange(cb);
+      await r.mgr.remove('github');
+      expect(cb).toHaveBeenCalledTimes(1); // remove's own emit
+      await r.mgr.permissionsChanged(); // no defs: the stale entry is dropped, nothing emitted
+      expect(cb).toHaveBeenCalledTimes(1);
+      await connected(r); // save emits not-configured (before the secret is stored)
+      cb.mockClear();
+      await r.mgr.permissionsChanged();
+      expect(cb.mock.calls.map(([x]) => (x as ConnectionStatus).state)).toEqual(['ok']);
+    });
+
+    it('M3-R96: statusOf reads the stored credentials once', async () => {
+      const r = rig();
+      await connected(r);
+      const get = vi.spyOn(r.secrets, 'getSecret');
+      await st(r);
+      expect(get).toHaveBeenCalledTimes(1);
+    });
+
     it('remove clears the runtime status', async () => {
       const r = rig({ fetch: async () => json(401, {}) });
       await connected(r);
