@@ -9,7 +9,7 @@ import { RecentlyClosed } from '../../src/core/safety/recently-closed';
 import { defaultConfig } from '../../src/core/config/defaults';
 import { FakeBrowserPort } from '../../src/platform/fake-port';
 import type { Config, TabSnap } from '../../src/core/types';
-import type { Rule } from '../../src/core/lang/types';
+import type { Program, Rule } from '../../src/core/lang/types';
 import type { WhyEntry } from '../../src/core/safety/why-log';
 import { programOf } from '../helpers/config';
 
@@ -25,7 +25,7 @@ const closeRule = (close: { after?: string; mode?: 'auto' | 'suggest' } = { afte
 const cfgOf = (rules: Rule[]): Config => ({ ...defaultConfig(), rules, order: rules.map((r) => `user/${r.id}`) });
 
 /** One worker: a CloseExecutor over a real SafetyService, sharing `store` (storage.session) and `port` across restarts. */
-function worker(env: { port: FakeBrowserPort; store: Map<string, unknown>; cfg: { c: Config } }, over: Partial<CloseExecutorDeps> = {}) {
+function worker(env: { port: FakeBrowserPort; store: Map<string, unknown>; cfg: { c: Config } }, over: Partial<CloseExecutorDeps> = {}, program?: Program) {
   const { port, store, cfg } = env;
   const logs: WhyEntry[] = [];
   const recentlyClosed = new RecentlyClosed();
@@ -45,7 +45,7 @@ function worker(env: { port: FakeBrowserPort; store: Map<string, unknown>; cfg: 
     session: { get: async (k) => structuredClone(store.get(k)), set: async (k, v) => { store.set(k, structuredClone(v)); } },
     ...over,
   };
-  const ex = new CloseExecutor(port, async () => programOf(cfg.c), deps);
+  const ex = new CloseExecutor(port, async () => program ?? programOf(cfg.c), deps);
   const closes = () => port.calls.filter((c) => c.method === 'closeTab').map((c) => c.args[0]);
   return { ex, safety, toast, banner, alarms, alarmApi, logs, recentlyClosed, facts, closes };
 }
@@ -83,6 +83,35 @@ describe('CloseExecutor', () => {
     expect(e.store.get(PENDING_CLOSES_KEY)).toEqual([]);
     await vi.advanceTimersByTimeAsync(60_000);
     expect(w.closes()).toEqual([2]);
+  });
+
+  it('a close rule on a source field reads TabFacts.source from the sources provider (M3 T11)', async () => {
+    const e = env();
+    const url = 'https://github.com/acme/api/pull/7';
+    e.port.addTab(tab(1, 'https://other.test/', { active: true }));
+    e.port.addTab(tab(2, url));
+    const base = programOf(cfgOf([]));
+    const program: Program = {
+      ...base,
+      rules: [{
+        key: 'rec/merged', recipeId: 'rec', index: 0, dryRun: false,
+        rule: {
+          id: 'merged', name: 'Merged PR', enabled: true,
+          source: { connection: 'github', query: 'github.pull_request', args: { owner: '{o}', repo: '{r}', number: '{n}' }, fields: { state: 'state' } },
+          match: { all: [{ url: 'github.com/:o/:r/pull/:n' }, { field: { field: 'source.state', op: '==', value: 'merged' } }] },
+          actions: [{ close: { after: '1s' } }],
+        },
+      }],
+    };
+    let state = 'open';
+    const factsFor = vi.fn((id: number, u?: string) => (id === 2 && u === url ? { 'rec/merged': { data: { state } } } : undefined));
+    const w = worker(e, { sources: { factsFor } }, program);
+    await w.ex.evaluate(2);
+    expect(e.store.get(PENDING_CLOSES_KEY) ?? []).toEqual([]);
+    state = 'merged';
+    await w.ex.evaluate(2);
+    expect(e.store.get(PENDING_CLOSES_KEY)).toEqual([expect.objectContaining({ tabId: 2, ruleKey: 'rec/merged' })]);
+    expect(factsFor).toHaveBeenCalledWith(2, url);
   });
 
   it('form edited at 2 s: no close, banner called', async () => {

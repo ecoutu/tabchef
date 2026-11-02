@@ -1,6 +1,6 @@
 import { dryRunGroupTabs, planGroups, planTargets, syncCreationOrder, type PageLookup, type PlanContext, type Targets } from '../core/group/plan';
 import type { Op, Snapshot } from '../core/types';
-import type { Program } from '../core/lang/types';
+import type { Program, TabFacts } from '../core/lang/types';
 import type { PreviewContext } from '../core/lang/preview';
 import { hasDryRun, isDryRunRule, liveProgram } from '../core/lang/dry-run';
 import type { BrowserPort } from '../platform/browser-port';
@@ -23,6 +23,8 @@ export interface ReconcilerOptions {
   extraLeaveAlone?: () => Iterable<number>;
   /** Page facts per tab (background PageFacts, M2 T7): page conditions and selector extracts, and the page hold. */
   pageFacts?: PageLookup;
+  /** Source data per tab (background SourceService, M3 T11): `TabFacts.source` for the planner. */
+  sources?: { factsFor(tabId: number, url?: string): TabFacts['source'] };
   now?: () => number;
   /** Anchor tabs (M2 T11): told about every group this reconciler creates (never adopted ones, ruling R9). */
   anchors?: Pick<AnchorService, 'onGroupCreated'>;
@@ -62,6 +64,8 @@ export class Reconciler {
    * (unapplied ops never converge, so every flush plans them again). Memory only.
    */
   private wouldSeen = new Set<string>();
+  /** What the planner reads per tab: page facts (opts.pageFacts) and source data (opts.sources). */
+  private readonly facts?: PageLookup;
 
   constructor(
     private readonly port: BrowserPort,
@@ -71,6 +75,12 @@ export class Reconciler {
   ) {
     this.debounceMs = opts.debounceMs ?? 150;
     this.now = opts.now ?? Date.now;
+    const { pageFacts, sources } = opts;
+    this.facts = !sources ? pageFacts : {
+      get: (id) => pageFacts?.get(id),
+      awaiting: (id) => pageFacts?.awaiting(id) ?? false,
+      source: (id, url) => sources.factsFor(id, url),
+    };
   }
 
   schedule(reason: string): void {
@@ -190,7 +200,7 @@ export class Reconciler {
       const ctxOf = (snap: Snapshot): PlanContext => {
         // R49 (per-rule dry run only): a dry-run rule's existing group is left alone, by both passes.
         const extra = [...this.extraLeaveAlone(st, snap, program),
-          ...(program.dryRun ? [] : dryRunGroupTabs(snap, program, this.now(), this.opts.pageFacts))];
+          ...(program.dryRun ? [] : dryRunGroupTabs(snap, program, this.now(), this.facts))];
         return extra.length ? { ...st, leaveAlone: new Set([...st.leaveAlone, ...extra]) } : st;
       };
       // Global dry run (R50): engine-initiated changes are only logged. User-initiated actions (popup close / close-all,
@@ -206,7 +216,7 @@ export class Reconciler {
       for (let pass = 0; ; pass++) {
         const snap = await this.port.snapshot();
         const ctx = ctxOf(snap);
-        const pre = planTargets(snap, live, ctx, this.now(), this.opts.pageFacts); // once per pass, shared by tracking and planning
+        const pre = planTargets(snap, live, ctx, this.now(), this.facts); // once per pass, shared by tracking and planning
         this.warnInvalidColors(pre);
         this.track(snap, st, pre, pass === 0);
         const ops = planGroups(snap, live, ctx, pre);
@@ -245,7 +255,7 @@ export class Reconciler {
   private dryRunPass(snap: Snapshot, program: Program, ctx: PlanContext): void {
     if (!hasDryRun(program)) { this.wouldSeen.clear(); return; }
     const global = program.dryRun === true;
-    const pre = planTargets(snap, program, ctx, this.now(), this.opts.pageFacts);
+    const pre = planTargets(snap, program, ctx, this.now(), this.facts);
     const ops = planGroups(snap, program, ctx, pre);
     const reported = (ruleId: string | undefined): boolean => global || isDryRunRule(program, ruleId);
     const titleOf = (gid: number) => snap.groups.find((g) => g.id === gid)?.title;

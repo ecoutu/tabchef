@@ -8,4 +8,8 @@ export interface PrInfo {
   headRefName?: string; reviewDecision?: string; url: string; ssoRequired?: { org: string; url: string };
 }
 export interface JiraIssue { key: string; summary?: string; status?: string; statusCategory?: 'new' | 'indeterminate' | 'done'; url: string }
-export interface SourceEntry<T = unknown> { data?: T; fetchedAt: number; via: 'api' | 'page' | 'none'; final: boolean; stale: boolean; error?: ConnErrorKind }
+/** `retryAt` / `sso`: from the failed request that set `error` (M3-R60); no request is sent before `retryAt`. */
+export interface SourceEntry<T = unknown> {
+  data?: T; fetchedAt: number; via: 'api' | 'page' | 'none'; final: boolean; stale: boolean; error?: ConnErrorKind;
+  retryAt?: number; sso?: { org: string; url: string };
+}

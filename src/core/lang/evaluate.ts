@@ -115,7 +115,8 @@ function extractsOf(r: CompiledRule, f: TabFacts): Record<string, string> {
   return vars;
 }
 
-function varsOf(r: CompiledRule, captures: Record<string, string>, f: TabFacts): { vars: Record<string, string>; needsPage: boolean } {
+/** A matched rule's template vars: the condition captures plus its extract values; `needsPage` when a page extract is missing. */
+export function varsOf(r: CompiledRule, captures: Record<string, string>, f: TabFacts): { vars: Record<string, string>; needsPage: boolean } {
   const needsPage = !f.page && Object.values(r.rule.extract ?? {}).some(isPageExtract);
   return { vars: { ...captures, ...extractsOf(r, f) }, needsPage };
 }

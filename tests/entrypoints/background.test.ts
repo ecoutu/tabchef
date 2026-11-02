@@ -94,6 +94,10 @@ vi.mock('../../src/engine/context-menu', async (orig) => ({
   refreshMenus: vi.fn(async () => {}),
   onMenuClick: vi.fn(async () => {}),
 }));
+vi.mock('../../src/engine/sources', async (orig) => ({
+  ...(await orig<typeof import('../../src/engine/sources')>()),
+  SourceService: h.fake('sources', () => ({ ready: Promise.resolve(), factsFor: vi.fn(() => undefined) })),
+}));
 vi.mock('../../src/engine/connections/manager', async (orig) => ({
   ...(await orig<typeof import('../../src/engine/connections/manager')>()),
   ConnectionManager: h.fake('connManager', () => ({ onStatusChange: vi.fn(() => () => {}) })),
@@ -119,7 +123,7 @@ vi.mock('../../src/engine/connections/token-auth', async (orig) => ({
 const { afterConfigChange } = await import('../../src/engine/close-executor');
 const { installMenus, onMenuClick, refreshMenus } = await import('../../src/engine/context-menu');
 const { createAskController } = await import('../../src/engine/ask');
-const { createHandler, createOnMessage, refreshBadge } = await import('../../src/engine/messages');
+const { createContentHandler, createHandler, createOnMessage, refreshBadge } = await import('../../src/engine/messages');
 const { setGitHubToken } = await import('../../src/engine/connections/token-auth');
 const background = (await import('../../src/entrypoints/background')).default;
 
@@ -367,6 +371,60 @@ describe('background wiring', () => {
     onPausedChanged();
     await vi.advanceTimersByTimeAsync(0);
     expect(alarmCalls()).toContainEqual(['alarms.create', ['age.tick', { periodInMinutes: 1 }]]);
+  });
+
+  it('the sources.refresh alarm refreshes source data in the background; it does not reach safety', async () => {
+    await fire('alarms.onAlarm', { name: 'sources.refresh' });
+    expect(I('sources').refresh).toHaveBeenCalledWith('alarm');
+    expect(I('safety').onAlarm).not.toHaveBeenCalled();
+  });
+
+  it('install and browser startup create the 5-minute sources.refresh alarm', async () => {
+    for (const ev of ['runtime.onInstalled', 'runtime.onStartup']) {
+      h.calls.length = 0;
+      await fire(ev, { reason: 'install' });
+      expect(alarmCalls()).toContainEqual(['alarms.create', ['sources.refresh', { periodInMinutes: 5 }]]);
+    }
+  });
+
+  it('changed source data re-plans, re-evaluates closes of the changed tabs and recounts the badge', async () => {
+    await vi.advanceTimersByTimeAsync(3000);
+    vi.mocked(refreshBadge).mockClear();
+    const d = I('sources').args[0] as { onUpdated: (ids: number[]) => void; conn: unknown; limiter: unknown; facts: unknown };
+    expect(d.conn).toBe(I('connManager'));
+    expect(d.limiter).toBe(I('limiter'));
+    expect(d.facts).toBe(I('pageFacts'));
+    d.onUpdated([3, 4]);
+    expect(I('reconciler').schedule).toHaveBeenCalledWith('sourceUpdated');
+    expect(I('closeExecutor').evaluate).toHaveBeenCalledWith(3);
+    expect(I('closeExecutor').evaluate).toHaveBeenCalledWith(4);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(refreshBadge).toHaveBeenCalledTimes(1);
+  });
+
+  it('the planner, close rules and read-only views read source facts from the SourceService; runs wait for it', async () => {
+    const src = { 'rec/pr': { data: { state: 'open' } } };
+    I('sources').factsFor!.mockReturnValue(src);
+    I('pageFacts').get!.mockReturnValue(undefined);
+    const r = I('reconciler').args[2] as { sources: { factsFor: (id: number, url?: string) => unknown }; beforeRun: () => Promise<void> };
+    expect(r.sources.factsFor(3, 'https://x.test/')).toBe(src);
+    expect(I('sources').factsFor).toHaveBeenCalledWith(3, 'https://x.test/');
+    const c = I('closeExecutor').args[2] as { sources: { factsFor: (id: number, url?: string) => unknown } };
+    expect(c.sources.factsFor(4, 'https://y.test/')).toBe(src);
+    expect(await settled(r.beforeRun())).toBe(true);
+    const views = (vi.mocked(createHandler).mock.calls[0]![0] as unknown as { views: { facts: (id: number) => unknown } }).views;
+    expect(views.facts(5)).toEqual({ source: src });
+  });
+
+  it('a created tab, a URL change and new page facts look up sources (debounced, one refresh)', async () => {
+    await fireAt('tabs.onCreated', TAB, { id: 3, url: 'https://b.test/', windowId: 1, discarded: false, status: 'loading' });
+    await fireAt('tabs.onUpdated', TAB, 3, { url: 'https://c.test/' }, { id: 3, windowId: 1, url: 'https://c.test/', active: false });
+    const onFacts = (vi.mocked(createContentHandler).mock.calls[0]![0] as { onFacts: (id: number) => void }).onFacts;
+    onFacts(3);
+    expect(I('sources').refresh).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(I('sources').refresh).toHaveBeenCalledTimes(1);
+    expect(I('sources').refresh).toHaveBeenCalledWith('tabs');
   });
 
   it('close alarms go to the close executor, others to safety', async () => {

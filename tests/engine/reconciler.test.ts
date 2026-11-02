@@ -706,3 +706,36 @@ describe('Reconciler: updateGroup {title} (M3-R41)', () => {
     expect(logs).toEqual([expect.objectContaining({ action: 'would-group', detail: 'Would rename group ABC-1 to ABC-1 · X (dry run)', dryRun: true })]);
   });
 });
+
+describe('Reconciler: source facts (M3 T11)', () => {
+  // A source rule groups open PRs only: `source.state` is unknown until the SourceService has data.
+  const prProgram = (): Program => {
+    const p = programOf(withGroupRules([]));
+    return {
+      ...p,
+      rules: [{
+        key: 'rec/pr', recipeId: 'rec', index: 0, dryRun: false,
+        rule: {
+          id: 'pr', name: 'PR', enabled: true,
+          source: { connection: 'github', query: 'github.pull_request', args: { owner: '{o}', repo: '{r}', number: '{n}' }, fields: { state: 'state' } },
+          match: { all: [{ url: 'github.com/:o/:r/pull/:n' }, { field: { field: 'source.state', op: '==', value: 'open' } }] },
+          actions: [{ group: { title: 'Open PRs', color: 'green' } }],
+        },
+      }],
+    };
+  };
+
+  it('the planner reads TabFacts.source from the sources provider, for the tab at its current URL', async () => {
+    const f = world();
+    const url = 'https://github.com/acme/api/pull/7';
+    f.addTab(tab(1, url));
+    f.addTab(tab(2, 'https://github.com/acme/api/pull/8'));
+    const factsFor = vi.fn((id: number, u?: string) => (id === 1 && u === url ? { 'rec/pr': { data: { state: 'open' } } } : undefined));
+    const r = new Reconciler(f, async () => prProgram(), { sources: { factsFor } });
+    emitGroupEvents(f, r);
+    await r.flush();
+    expect(groupOf(f, 1)).toBe('Open PRs');
+    expect(groupOf(f, 2)).toBeUndefined();
+    expect(factsFor).toHaveBeenCalledWith(1, url);
+  });
+});

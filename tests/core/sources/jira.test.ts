@@ -76,6 +76,40 @@ describe('resolveInHalves', () => {
     expect(r.errors.get('ABC-1')).toBe('rate-limited');
     expect(r.errors.get('ABC-2')).toBe('rate-limited');
   });
+  it('keeps retryAt and sso of a failed call per key (M3-R60); bad-request bisection records none', async () => {
+    const sso = { org: 'acme', url: 'https://github.com/orgs/acme/sso' };
+    const r = await resolveInHalves(['ABC-1'], async () => ({ ok: false, kind: 'rate-limited', retryAt: 99, sso }));
+    expect(r.errors.get('ABC-1')).toBe('rate-limited');
+    expect(r.details.get('ABC-1')).toEqual({ retryAt: 99, sso });
+    const plain = await resolveInHalves(['ABC-1', 'ABC-2'], async (ks) => (ks.length > 1 ? { ok: false, kind: 'bad-request' } : { ok: false, kind: 'server' }));
+    expect(plain.errors.get('ABC-2')).toBe('server');
+    expect(plain.details.size).toBe(0);
+  });
+  it('a 200 that omits EVERY requested key is not trusted (M3-R100): unauthorized, untrusted, never not-found', async () => {
+    const r = await resolveInHalves(['ABC-1', 'ABC-2'], async () => ({ ok: true, issues: new Map() }));
+    expect(r.untrusted).toBe(true);
+    expect(r.errors.get('ABC-1')).toBe('unauthorized');
+    expect(r.errors.get('ABC-2')).toBe('unauthorized');
+    const one = await resolveInHalves(['ABC-9'], async () => ({ ok: true, issues: new Map() }));
+    expect(one).toMatchObject({ untrusted: true });
+    expect(one.errors.get('ABC-9')).toBe('unauthorized');
+  });
+  it('some keys back (in any half): absent ones stay not-found and the result is trusted (M3-R31/R99)', async () => {
+    const some = await resolveInHalves(['ABC-1', 'ABC-9'], async () => ({ ok: true, issues: new Map([['ABC-1', issue('ABC-1')]]) }));
+    expect(some.untrusted).toBe(false);
+    const halves = await resolveInHalves(['ABC-1', 'BAD-1', 'ABC-9', 'ABC-8'], async (ks) => {
+      if (ks.length > 2) return { ok: false, kind: 'bad-request' };
+      return { ok: true, issues: new Map(ks.filter((k) => k === 'ABC-1').map((k) => [k, issue(k)])) };
+    });
+    expect(halves.untrusted).toBe(false);
+    expect(halves.errors.get('ABC-9')).toBe('not-found');
+    expect(halves.errors.get('BAD-1')).toBe('not-found');
+  });
+  it('a lone bad-request key stays not-found (a 400, not an empty 200)', async () => {
+    const r = await resolveInHalves(['BAD-1'], async () => ({ ok: false, kind: 'bad-request' }));
+    expect(r).toMatchObject({ untrusted: false });
+    expect(r.errors.get('BAD-1')).toBe('not-found');
+  });
   it('makes no call for no keys', async () => {
     const r = await resolveInHalves([], async () => { throw new Error('called'); });
     expect(r.issues.size + r.errors.size).toBe(0);

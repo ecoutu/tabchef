@@ -89,10 +89,14 @@ function planMoves(windowTabs: TabSnap[], desired: number[]): Op[] {
 
 type ManagedCtx = Pick<PlanContext, 'leaveAlone' | 'managedTitles' | 'overrides'>;
 
-/** Page facts per tab (M2 T7, background PageFacts). `awaiting`: no facts yet but the tab's watch script should report soon. */
+/**
+ * Page facts per tab (M2 T7, background PageFacts). `awaiting`: no facts yet but the tab's watch script should report
+ * soon. `source` (M3 T11): the tab's source data per rule key at `url` (background SourceService.factsFor).
+ */
 export interface PageLookup {
   get(tabId: number): TabFacts['page'] | undefined;
   awaiting(tabId: number): boolean;
+  source?(tabId: number, url: string): TabFacts['source'];
 }
 
 /** Per-pass rule evaluation shared by managedGroupIds and planGroups (compute once with planTargets). */
@@ -139,8 +143,9 @@ export function planTargets(snap: Snapshot, p: Program, ctx: ManagedCtx, now: nu
       const opener = t.openerTabId !== undefined ? byId.get(t.openerTabId) : undefined;
       const groupTitle = t.groupId !== -1 ? groupTitles.get(t.groupId) : undefined;
       const pf = page?.get(t.id);
+      const source = page?.source?.(t.id, urlOf(t));
       const { target: evaluated, needsPage } = evaluateGroup(t, p, {
-        ...(opener && { opener }), ...(groupTitle !== undefined && { groupTitle }), ...(pf && { page: pf }),
+        ...(opener && { opener }), ...(groupTitle !== undefined && { groupTitle }), ...(pf && { page: pf }), ...(source && { source }),
       }, now);
       if (needsPage && page?.awaiting(t.id)) { held.add(t.id); continue; }
       m = override && (!evaluated || override.ruleIndex < evaluated.ruleIndex) ? override : evaluated;
@@ -190,7 +195,8 @@ export function dryRunGroupTabs(snap: Snapshot, p: Program, now: number = Date.n
     for (const t of members) {
       const opener = t.openerTabId !== undefined ? byId.get(t.openerTabId) : undefined;
       const pf = page?.get(t.id);
-      const { target } = evaluateGroup(t, p, { ...(opener && { opener }), groupTitle: g.title, ...(pf && { page: pf }) }, now);
+      const source = page?.source?.(t.id, urlOf(t));
+      const { target } = evaluateGroup(t, p, { ...(opener && { opener }), groupTitle: g.title, ...(pf && { page: pf }), ...(source && { source }) }, now);
       if (target?.dryRun && target.title === g.title) out.push(t.id);
     }
   }

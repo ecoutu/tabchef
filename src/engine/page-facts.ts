@@ -1,7 +1,7 @@
 // Page facts per tab, reported by the watch content script (M2 T7): which pageText needles matched, selector extract
 // values and whether a form was edited. Held in memory, mirrored to storage.session (key `pageFacts`) so a restarted
 // worker keeps them; cleared on a top-frame navigation (onCommitted) and when the tab is removed.
-import { compilePattern } from '../core/match/pattern';
+import { compilePattern, matchesPattern } from '../core/match/pattern';
 import { adapterKey, adapterOf, type AdapterId } from '../core/adapters';
 import { isPageExtract } from '../core/lang/evaluate';
 import type { Cond, Program, Rule, TabFacts } from '../core/lang/types';
@@ -107,13 +107,6 @@ export function usesPageFacts(r: Rule): boolean {
   return needles.length > 0 || Object.values(r.extract ?? {}).some(isPageExtract);
 }
 
-const urlMatches = (pattern: string, url: string): boolean => {
-  try {
-    return compilePattern(pattern)(url) !== null;
-  } catch {
-    return false;
-  }
-};
 
 export class PageFacts implements PageLookup {
   private readonly facts = new Map<number, PageFactsData>();
@@ -285,7 +278,7 @@ export class PageFacts implements PageLookup {
     const addAdapterField = (id: AdapterId, field: string) => {
       const a = adapterOf(id);
       const key = adapterKey(id, field);
-      if (!a || adapterFields.has(key) || !urlMatches(a.urlPattern, url)) return;
+      if (!a || adapterFields.has(key) || !matchesPattern(a.urlPattern, url)) return;
       adapterFields.add(key);
       // The watch keeps the last value it finds per key: the first-listed fallback goes last, so the best one wins.
       for (const s of [...(a.selectors[field] ?? [])].reverse()) selectors.push({ key, ...s });

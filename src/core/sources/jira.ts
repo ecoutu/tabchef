@@ -49,22 +49,34 @@ export function splitOnBadRequest(keys: string[]): [string[], string[]] {
   return [keys.slice(0, mid), keys.slice(mid)];
 }
 
-export type IssueExec = (keys: string[]) => Promise<{ ok: true; issues: Map<string, JiraIssue> } | { ok: false; kind: ConnErrorKind }>;
-export interface ResolveResult { issues: Map<string, JiraIssue>; errors: Map<string, ConnErrorKind> }
+/** What a failed call may carry besides its kind (ApiResult's retryAt / sso, M3-R60). */
+export interface IssueFailureDetail { retryAt?: number; sso?: { org: string; url: string } }
+export type IssueExec = (keys: string[]) => Promise<{ ok: true; issues: Map<string, JiraIssue> } | ({ ok: false; kind: ConnErrorKind } & IssueFailureDetail)>;
+/**
+ * `details`: per failed key, the retryAt / sso of its failed call, when it had any. `untrusted`: successful calls
+ * came back without a single requested key (M3-R100); their keys are `unauthorized`, and the caller re-validates.
+ */
+export interface ResolveResult {
+  issues: Map<string, JiraIssue>; errors: Map<string, ConnErrorKind>; details: Map<string, IssueFailureDetail>; untrusted: boolean;
+}
 
 /**
  * Run `exec` on the keys; on `bad-request` bisect until the offending key stands alone and mark it `not-found` (M3-R31).
- * Keys absent from a successful response are `not-found` too. Any other failure applies to every key of that call.
+ * Keys absent from a successful response are `not-found` too, unless no successful response of the run returned any
+ * requested key: an anonymous or expired session (and a token without browse permission) gets exactly that 200, so
+ * those keys are `unauthorized` instead and the result `untrusted` (M3-R100). Any other failure applies to every key
+ * of that call, with its retryAt / sso in `details`.
  */
 export async function resolveInHalves(keys: string[], exec: IssueExec): Promise<ResolveResult> {
-  const out: ResolveResult = { issues: new Map(), errors: new Map() };
+  const out: ResolveResult = { issues: new Map(), errors: new Map(), details: new Map(), untrusted: false };
+  const absent: string[] = [];
   const run = async (ks: string[]): Promise<void> => {
     if (ks.length === 0) return;
     const r = await exec(ks);
     if (r.ok) {
       for (const k of ks) {
         const i = r.issues.get(k);
-        if (i) out.issues.set(k, i); else out.errors.set(k, 'not-found');
+        if (i) out.issues.set(k, i); else { out.errors.set(k, 'not-found'); absent.push(k); }
       }
     } else if (r.kind === 'bad-request') {
       if (ks.length === 1) { out.errors.set(ks[0]!, 'not-found'); return; }
@@ -72,10 +84,18 @@ export async function resolveInHalves(keys: string[], exec: IssueExec): Promise<
       await run(a);
       await run(b);
     } else {
-      for (const k of ks) out.errors.set(k, r.kind);
+      const detail: IssueFailureDetail = { ...(r.retryAt !== undefined && { retryAt: r.retryAt }), ...(r.sso && { sso: r.sso }) };
+      for (const k of ks) {
+        out.errors.set(k, r.kind);
+        if (detail.retryAt !== undefined || detail.sso) out.details.set(k, detail);
+      }
     }
   };
   await run(keys);
+  if (absent.length && out.issues.size === 0) {
+    out.untrusted = true;
+    for (const k of absent) out.errors.set(k, 'unauthorized');
+  }
   return out;
 }
 

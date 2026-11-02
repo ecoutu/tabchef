@@ -29,6 +29,7 @@ import { RateLimiter } from '../engine/connections/rate-limiter';
 import { GitHubDeviceAuth } from '../engine/connections/github-auth';
 import { TokenAuth, setGitHubToken } from '../engine/connections/token-auth';
 import type { ConnectionsChangedMessage } from '../engine/messages';
+import { SourceService, SOURCES_ALARM, SOURCES_PERIOD_MINUTES } from '../engine/sources';
 
 export default defineBackground(() => {
   const store = new ConfigStore();
@@ -82,9 +83,11 @@ export default defineBackground(() => {
   const reconciler: Reconciler = new Reconciler(port, getProgram, {
     log: whyLog,
     isPaused: () => safety.isPaused(),
-    beforeRun: async () => { await Promise.all([safety.ready, pageFacts.ready, permissions.ready]); },
+    beforeRun: async () => { await Promise.all([safety.ready, pageFacts.ready, permissions.ready, sources.ready]); },
     extraLeaveAlone: () => safety.lockedTabIds(),
     pageFacts,
+    // `sources` is declared below (it needs the connection manager); only called once a run starts.
+    sources: { factsFor: (id, url) => sources.factsFor(id, url) },
     anchors: { onGroupCreated: (...a) => anchors.onGroupCreated(...a) },
   });
   // Anchor tabs (M2 T11): opened when Tabchef creates a group; their state is the reconciler's RuntimeState.
@@ -197,6 +200,7 @@ export default defineBackground(() => {
     recentlyClosed,
     log: whyLog,
     facts: pageFacts,
+    sources: { factsFor: (id, url) => sources.factsFor(id, url) },
     banner: async (tabId) => {
       const t = (await port.snapshot()).tabs.find((x) => x.id === tabId);
       return t ? safety.protectedCloseBanner(t) : false;
@@ -238,6 +242,7 @@ export default defineBackground(() => {
   const localArea = browser.storage.local as unknown as KeyValueArea;
   const sessionArea = browser.storage.session as unknown as KeyValueArea;
   const secrets = new SecretStore({ local: localArea, session: sessionArea });
+  const limiter = new RateLimiter(sessionArea);
   const connFetch: typeof fetch = (input, init) => fetch(input, init);
   const githubAuth: GitHubDeviceAuth = new GitHubDeviceAuth({
     fetch: connFetch, secrets, session: sessionArea, port,
@@ -246,7 +251,7 @@ export default defineBackground(() => {
   });
   const tokenAuth = new TokenAuth();
   const connections: ConnectionManager = new ConnectionManager({
-    local: localArea, session: sessionArea, secrets, limiter: new RateLimiter(sessionArea), port, fetch: connFetch, log: whyLog,
+    local: localArea, session: sessionArea, secrets, limiter, port, fetch: connFetch, log: whyLog,
     // session / oauth-* sign-in is not implemented yet (Task 6 / later): their defs never reach the manager.
     auth: { 'device-code': githubAuth, token: tokenAuth, session: tokenAuth, 'oauth-pkce': tokenAuth, 'oauth-proxy': tokenAuth },
     allowLocalhost,
@@ -256,6 +261,27 @@ export default defineBackground(() => {
     const m: ConnectionsChangedMessage = { type: 'connections.changed', id: s.id };
     Promise.resolve(browser.runtime.sendMessage(m)).catch(() => {});
   });
+  // Source lookups of recipe rules (M3 T11), cached in storage.local. Changed data re-plans, re-evaluates closes of
+  // the changed tabs and recounts the badge (list views may show source fields).
+  const sources: SourceService = new SourceService({
+    conn: connections, limiter, getProgram, port, facts: pageFacts, local: localArea,
+    onUpdated: (tabIds) => {
+      reconciler.schedule('sourceUpdated');
+      for (const id of tabIds) void closeExecutor.evaluate(id);
+      scheduleBadge();
+    },
+  });
+  // Tabs and page facts changed: look up what new or navigated tabs need (cache first; at most every few seconds).
+  const scheduleSources = createDebounce(() => { sources.refresh('tabs').catch(warn('source refresh')); }, 1000, 5000);
+  const startSourcesAlarm = () => {
+    Promise.resolve(browser.alarms.create(SOURCES_ALARM, { periodInMinutes: SOURCES_PERIOD_MINUTES })).catch(warn('source alarm'));
+  };
+  /** Tab facts for read-only views (popup views, preview, explain): page facts and source data. */
+  const tabFacts = (id: number) => {
+    const page = pageFacts.get(id);
+    const source = sources.factsFor(id);
+    return { ...(page && { page }), ...(source && { source }) };
+  };
   const openOptions = async (hash: string) => { await browser.tabs.create({ url: `${browser.runtime.getURL('/options.html')}${hash}` }); };
 
   // MV3: every listener is registered synchronously at the top level so a restarted worker receives the event.
@@ -269,6 +295,7 @@ export default defineBackground(() => {
       if (url) candidate(tab.id, url, 'pending');
     }
     reconciler.schedule('tab-created');
+    scheduleSources();
   });
   // onUpdated(url) arrives ~4 ms before onCommitted and both carry the final post-redirect URL: act on whichever is first.
   browser.webNavigation.onCommitted.addListener((d) => {
@@ -295,6 +322,7 @@ export default defineBackground(() => {
       void reconciler.onTabUrlChanged(tabId, info.url);
       void closeExecutor.evaluate(tabId); // also same-document navigations, which fire no onCommitted
       if (tab.active) refreshActiveMenu(); // e.g. a new tab (chrome://newtab) navigating to a site
+      scheduleSources();
     }
     if (info.groupId !== undefined) void reconciler.onTabGroupChanged(tabId, info.groupId, tab.url);
     if (info.url !== undefined || info.groupId !== undefined || info.pinned !== undefined) {
@@ -339,6 +367,7 @@ export default defineBackground(() => {
     dedupe.noteStartup();
     reconciler.schedule('startup');
     void closeExecutor.evaluateAll(); // storage.session (pending closes) is empty after a browser start
+    startSourcesAlarm();
   });
   const badgeDeps = {
     port,
@@ -354,7 +383,7 @@ export default defineBackground(() => {
     views: {
       builtins: builtinRecipes(),
       getProgram,
-      facts: (id: number) => { const page = pageFacts.get(id); return page ? { page } : {}; },
+      facts: tabFacts,
       permissions,
       closes: {
         ready: closeExecutor.ready,
@@ -399,7 +428,7 @@ export default defineBackground(() => {
       builtins: builtinRecipes(),
       getProgram,
       planContext: (snap, p) => reconciler.planContext(snap, p),
-      facts: (id) => { const page = pageFacts.get(id); return page ? { page } : {}; },
+      facts: tabFacts,
       permissions,
     },
     // connections.* (M3 T7): the shared instances; setToken validates and stores a GitHub PAT (Task 5a).
@@ -412,7 +441,7 @@ export default defineBackground(() => {
     // explain.tab / rules.shadowed (M2 T14): read-only, like preview.
     explain: {
       builtins: builtinRecipes(),
-      facts: (id) => { const page = pageFacts.get(id); return page ? { page } : {}; },
+      facts: tabFacts,
       permissions,
     },
   });
@@ -425,7 +454,8 @@ export default defineBackground(() => {
     safety,
     schedule: (r) => reconciler.schedule(r),
     // New page facts can change list views (pageText showInView), hence the badge (R60).
-    onFacts: (id) => { void closeExecutor.onFacts(id); scheduleBadge(); },
+    // New page facts can also be a source's page fallback (M3 T11).
+    onFacts: (id) => { void closeExecutor.onFacts(id); scheduleBadge(); scheduleSources(); },
     onCloseChoice: (id, choice) => { void closeExecutor.onCloseChoice(id, choice); },
   };
   const handleContent = createContentHandler(contentDeps);
@@ -447,9 +477,10 @@ export default defineBackground(() => {
     },
   }));
   // Alarms are routed by name prefix: `close:<tabId>` to the CloseExecutor, `age.tick` re-evaluates age conditions
-  // (M3-R5), the rest (resume) to SafetyService.
+  // (M3-R5), `sources.refresh` refreshes source data (M3 T11), the rest (resume) to SafetyService.
   browser.alarms.onAlarm.addListener((alarm) => {
     if (alarm.name.startsWith(CLOSE_ALARM_PREFIX)) void closeExecutor.onAlarm(alarm.name);
+    else if (alarm.name === SOURCES_ALARM) sources.refresh('alarm').catch(warn('source refresh'));
     else if (alarm.name === AGE_TICK_ALARM) {
       reconciler.schedule('age');
       void closeExecutor.evaluateAll();
@@ -480,6 +511,7 @@ export default defineBackground(() => {
   browser.runtime.onInstalled.addListener(() => {
     reconciler.schedule('installed');
     installMenus(menuApi).then(refreshActiveMenu, warn('context menu install'));
+    startSourcesAlarm();
   });
   browser.contextMenus.onClicked.addListener((info, tab) => {
     safety.ready

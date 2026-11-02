@@ -359,6 +359,15 @@ function compileWildcard(p: string): Matcher {
  * handling and no `:param`s (use a regex named group), or `/regex/flags` as in compilePattern. Cached per pattern.
  * Input longer than MAX_MATCH_INPUT is truncated before matching.
  */
+/** Whether `url` matches pattern `p`; a pattern that does not compile is a non-match, never a throw. */
+export function matchesPattern(p: string, url: string): boolean {
+  try {
+    return compilePattern(p)(url) !== null;
+  } catch {
+    return false;
+  }
+}
+
 export function compileTextPattern(p: string): Matcher {
   const hit = textCache.get(p);
   if (hit) return hit;

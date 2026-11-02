@@ -19,7 +19,7 @@
 // Global dry run (R50) blocks only these engine-initiated closes: a protected-close banner answer still closes.
 import { evaluateTab, type CloseResult } from '../core/lang/evaluate';
 import { liveProgram } from '../core/lang/dry-run';
-import type { Program } from '../core/lang/types';
+import type { Program, TabFacts } from '../core/lang/types';
 import type { RecentlyClosed, RecentlyClosedInput } from '../core/safety/recently-closed';
 import type { WhyEntry } from '../core/safety/why-log';
 import type { Snapshot, TabSnap } from '../core/types';
@@ -70,6 +70,8 @@ export interface CloseExecutorDeps {
   recentlyClosed: Pick<RecentlyClosed, 'add' | 'take'>;
   log: { add(e: WhyEntry): void };
   facts: Pick<PageFacts, 'get'>;
+  /** Source data per tab at its URL (background SourceService, M3 T11): `TabFacts.source` for close rules. */
+  sources?: { factsFor(tabId: number, url?: string): TabFacts['source'] };
   /** Show the protected-close banner in the tab; false when it cannot be shown (not eligible, no ack). */
   banner: (tabId: number, kind: 'protected-close', ruleKey: string) => Promise<boolean>;
   /** chrome.alarms seam (D40): `whenMs` is the absolute fire time. */
@@ -388,8 +390,9 @@ export class CloseExecutor {
     const opener = tab.openerTabId !== undefined ? snap.tabs.find((t) => t.id === tab.openerTabId) : undefined;
     const groupTitle = tab.groupId !== -1 ? snap.groups.find((g) => g.id === tab.groupId)?.title : undefined;
     const page = this.deps.facts.get(tab.id);
+    const source = this.deps.sources?.factsFor(tab.id, tab.pendingUrl || tab.url);
     return evaluateTab(withDryRun ? p : liveProgram(p), {
-      tab, ...(opener && { opener }), ...(groupTitle !== undefined && { groupTitle }), ...(page && { page }),
+      tab, ...(opener && { opener }), ...(groupTitle !== undefined && { groupTitle }), ...(page && { page }), ...(source && { source }),
     }, this.now()).close;
   }
 
