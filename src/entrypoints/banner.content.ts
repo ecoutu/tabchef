@@ -1,5 +1,4 @@
 import { browser } from 'wxt/browser';
-import { createFormEditReporter } from '../engine/form-edit-reporter';
 import { bannerText, type BannerAck, type BannerChoice, type BannerShowMessage } from '../engine/messages';
 
 const HOST_ID = 'tabchef-dedupe-banner';
@@ -11,12 +10,7 @@ export default defineContentScript({
     if (w.__tabchefBanner) return; // injected twice: keep the single listener
     w.__tabchefBanner = true;
 
-    // Best-effort form-edit flag: reported once per page, only where this script was injected.
-    const onInput = createFormEditReporter(() => location.href, () => {
-      void browser.runtime.sendMessage({ type: 'tab.formEdited' }).catch(() => {});
-    });
-    window.addEventListener('input', onInput, true);
-
+    // Form edits are reported by the watch content script (watch.content.ts), not here.
     browser.runtime.onMessage.addListener((msg: unknown, sender, sendResponse) => {
       void sender;
       const m = msg as Partial<BannerShowMessage> | null;

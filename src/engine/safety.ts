@@ -31,6 +31,11 @@ export interface SafetyDeps {
   armExemption: (url: string, windowId?: number) => () => void;
   api: Pick<AskApi, 'executeScript' | 'sendMessage' | 'createNotification'>;
   bannerFile: string;
+  /**
+   * The durable form-edit state from the page facts (PageFacts, mirrored to storage.session): consulted when this
+   * worker has no flag of its own, so form-edit protection survives a worker restart (D34).
+   */
+  pageFormEdited?: (tabId: number) => boolean;
   now?: () => number;
 }
 
@@ -249,13 +254,18 @@ export class SafetyService {
 
   // ---- form edits ----
 
-  /** Best effort: only pages where the banner content script is present report edits. Cleared when the URL changes. */
+  /** Reported by the watch content script (page.facts / watch.hello) where it runs. Cleared when the URL changes. */
   markFormEdited(tabId: number, url?: string): void {
     this.formEdited.set(tabId, url);
   }
 
+  /** The page reported its edits gone (a form submit). */
+  clearFormEdited(tabId: number): void {
+    this.formEdited.delete(tabId);
+  }
+
   isFormEdited(tabId: number): boolean {
-    return this.formEdited.has(tabId);
+    return this.formEdited.has(tabId) || (this.deps.pageFormEdited?.(tabId) ?? false);
   }
 
   isProtected(tab: TabSnap): boolean {

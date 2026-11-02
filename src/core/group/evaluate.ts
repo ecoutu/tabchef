@@ -20,6 +20,12 @@ export type GroupMatch = GroupTarget;
  * `facts` adds what the snapshot alone does not say (opener, current group title, creation time, page facts).
  */
 export function evaluateGroupRules(tab: TabSnap, p: Program, facts?: Partial<TabFacts>, now: number = Date.now()): GroupTarget | null {
-  const g = evaluateTab(p, { ...facts, tab }, now).group;
-  return g ? { ...g, ruleId: g.key, ruleIndex: g.index } : null;
+  return evaluateGroup(tab, p, facts, now).target;
+}
+
+/** evaluateGroupRules plus whether the group outcome could still change once page facts arrive (EvalResult.groupNeedsPage). */
+export function evaluateGroup(tab: TabSnap, p: Program, facts?: Partial<TabFacts>, now: number = Date.now()): { target: GroupTarget | null; needsPage: boolean } {
+  const r = evaluateTab(p, { ...facts, tab }, now);
+  const g = r.group;
+  return { target: g ? { ...g, ruleId: g.key, ruleIndex: g.index } : null, needsPage: r.groupNeedsPage };
 }

@@ -3,10 +3,10 @@ import { fakeBrowser } from 'wxt/testing/fake-browser';
 
 vi.mock('../../src/core/group/evaluate', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../src/core/group/evaluate')>();
-  return { ...real, evaluateGroupRules: vi.fn(real.evaluateGroupRules) };
+  return { ...real, evaluateGroup: vi.fn(real.evaluateGroup) };
 });
 
-import { evaluateGroupRules } from '../../src/core/group/evaluate';
+import { evaluateGroup } from '../../src/core/group/evaluate';
 import { Reconciler } from '../../src/engine/reconciler';
 import { FakeBrowserPort } from '../../src/platform/fake-port';
 import type { Config } from '../../src/core/types';
@@ -15,9 +15,9 @@ import { withGroupRules, programOf } from '../helpers/config';
 const config: Config = withGroupRules([{ id: 'a', name: 'a', enabled: true, match: { url: 'https://a.com/**' }, group: { title: 'A', color: 'red' } }]);
 
 describe('Reconciler: targets computed once per pass (CR#8)', () => {
-  beforeEach(() => { fakeBrowser.reset(); vi.mocked(evaluateGroupRules).mockClear(); });
+  beforeEach(() => { fakeBrowser.reset(); vi.mocked(evaluateGroup).mockClear(); });
 
-  it('evaluateGroupRules runs once per tab per pass', async () => {
+  it('evaluateGroup runs once per tab per pass', async () => {
     const f = new FakeBrowserPort();
     f.addWindow(1);
     for (const id of [1, 2, 3]) {
@@ -28,6 +28,6 @@ describe('Reconciler: targets computed once per pass (CR#8)', () => {
     await new Reconciler(f, async () => programOf(config)).flush();
     const passes = snapshots.mock.calls.length;
     expect(passes).toBe(2); // group, then a satisfied re-plan
-    expect(vi.mocked(evaluateGroupRules).mock.calls.length).toBe(3 * passes);
+    expect(vi.mocked(evaluateGroup).mock.calls.length).toBe(3 * passes);
   });
 });

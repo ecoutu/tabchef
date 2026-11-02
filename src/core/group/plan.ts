@@ -1,7 +1,7 @@
-import { evaluateGroupRules, type GroupMatch } from './evaluate';
+import { evaluateGroup, type GroupMatch } from './evaluate';
 import { parseTemplateLenient } from '../match/template';
 import { isExemptUrl } from '../url/normalize';
-import type { Program } from '../lang/types';
+import type { Program, TabFacts } from '../lang/types';
 import type { GroupSnap, Op, Snapshot, TabSnap } from '../types';
 
 export interface PlanContext {
@@ -77,6 +77,12 @@ function planMoves(windowTabs: TabSnap[], desired: number[]): Op[] {
 
 type ManagedCtx = Pick<PlanContext, 'leaveAlone' | 'managedTitles'>;
 
+/** Page facts per tab (M2 T7, background PageFacts). `awaiting`: no facts yet but the tab's watch script should report soon. */
+export interface PageLookup {
+  get(tabId: number): TabFacts['page'] | undefined;
+  awaiting(tabId: number): boolean;
+}
+
 /** Per-pass rule evaluation shared by managedGroupIds and planGroups (compute once with planTargets). */
 export interface Targets {
   normal: Set<number>;
@@ -91,12 +97,15 @@ export interface Targets {
 
 /**
  * Evaluates every eligible tab against `p` at time `now`. Facts come from the snapshot (opener tab, current group
- * title); page facts and creation times are not known here yet (M2 T7).
+ * title) and `page` (page facts); creation times are not known here yet.
+ *
+ * A tab whose group outcome waits on page facts that are on their way (`page.awaiting`) is held like a dry-run tab, so
+ * a selector-extract title is not grouped half-rendered and a pageText group is not strict-ungrouped meanwhile.
  *
  * A tab whose winning group rule is a dry-run rule is held: not eligible, so this pass neither groups, moves nor
  * ungroups it (M2 T12 logs what it would do). planGroups also never strict-ungroups a dry-run rule's group.
  */
-export function planTargets(snap: Snapshot, p: Program, ctx: ManagedCtx, now: number = Date.now()): Targets {
+export function planTargets(snap: Snapshot, p: Program, ctx: ManagedCtx, now: number = Date.now(), page?: PageLookup): Targets {
   const normal = new Set(snap.windows.filter((w) => w.type === 'normal').map((w) => w.id));
   const tabs = snap.tabs.filter((t) => normal.has(t.windowId)).sort(byPos);
   const held = new Set<number>();
@@ -110,7 +119,11 @@ export function planTargets(snap: Snapshot, p: Program, ctx: ManagedCtx, now: nu
     if (!baseEligible(t)) continue;
     const opener = t.openerTabId !== undefined ? byId.get(t.openerTabId) : undefined;
     const groupTitle = t.groupId !== -1 ? groupTitles.get(t.groupId) : undefined;
-    const m = evaluateGroupRules(t, p, { ...(opener && { opener }), ...(groupTitle !== undefined && { groupTitle }) }, now);
+    const pf = page?.get(t.id);
+    const { target: m, needsPage } = evaluateGroup(t, p, {
+      ...(opener && { opener }), ...(groupTitle !== undefined && { groupTitle }), ...(pf && { page: pf }),
+    }, now);
+    if (needsPage && page?.awaiting(t.id)) { held.add(t.id); continue; }
     if (!m) continue;
     if (m.dryRun) { held.add(t.id); continue; }
     matches.set(t.id, m);
