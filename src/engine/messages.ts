@@ -131,9 +131,14 @@ export type Request =
   | { type: 'import.preview'; source: ImportSource; data: unknown }
   | { type: 'import.apply'; source: ImportSource; data: unknown; baseRev: string }
   | { type: 'recipes.list' }
-  // The UI calls requestNeeds (src/ui/permissions.ts) first, in the click's user gesture, then recipes.enable.
-  | { type: 'recipes.enable'; id: string; baseRev?: string }
+  /**
+   * R5 flow (Recipes page, T15): requestNeeds first in the click's user gesture, then preview.change, then on Apply
+   * recipes.enable. `params`, when given, is stored with `enabled` in the same update; like setParams it REPLACES the
+   * whole params object (omitted params fall back to their defaults), so the UI always sends the complete object.
+   */
+  | { type: 'recipes.enable'; id: string; params?: Record<string, unknown>; baseRev?: string }
   | { type: 'recipes.disable'; id: string; baseRev?: string }
+  /** Replaces the recipe's whole params object (not a merge): send every param, not only the changed ones (T8). */
   | { type: 'recipes.setParams'; id: string; params: Record<string, unknown>; baseRev?: string }
   /**
    * What saving `config` would do to the open tabs (M2 T13): the UI sends it before config.set / recipes.enable and
@@ -231,6 +236,7 @@ const str = (v: unknown): v is string => typeof v === 'string';
 const NO_ARGS = new Set(['config.get', 'config.backups', 'config.status', 'tabs.list', 'dupes.list', 'dupes.closeAll', 'recent.list', 'why.all',
   'safety.resume', 'safety.status', 'recipes.list']);
 const optRev = (x: Record<string, unknown>) => x.baseRev === undefined || str(x.baseRev);
+const isParams = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
 const isImportSource = (v: unknown): v is ImportSource => v === 'auto-group-tabs' || v === 'tab-deduper';
 
@@ -265,9 +271,9 @@ export function isRequest(m: unknown): m is Request {
     case 'import.preview': return isImportSource(x.source);
     case 'import.apply': return isImportSource(x.source) && 'data' in x && str(x.baseRev);
     case 'safety.pause': return x.d === '15m' || x.d === '1h' || x.d === 'restart';
-    case 'recipes.enable': case 'recipes.disable': return str(x.id) && optRev(x);
-    case 'recipes.setParams':
-      return str(x.id) && typeof x.params === 'object' && x.params !== null && !Array.isArray(x.params) && optRev(x);
+    case 'recipes.enable': return str(x.id) && (x.params === undefined || isParams(x.params)) && optRev(x);
+    case 'recipes.disable': return str(x.id) && optRev(x);
+    case 'recipes.setParams': return str(x.id) && isParams(x.params) && optRev(x);
     case 'preview.change': return typeof x.config === 'object' && x.config !== null && (x.only === undefined || str(x.only));
     case 'explain.tab': return num(x.tabId);
     case 'rules.shadowed': return x.config === undefined || (typeof x.config === 'object' && x.config !== null);
@@ -449,24 +455,34 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
     }
     const ref = cfg.recipes.find((r) => r.id === req.id);
     if (!ref) return fail('unknown recipe');
+    /** Each given param against its ParamDef (unknown names too); values that fail only where they land are compile errors. */
+    const paramErrors = (r: RecipeRef, params: Record<string, unknown>): string[] => {
+      const defs = bodyOf(r)?.params ?? {};
+      const errors: string[] = [];
+      for (const [name, v] of Object.entries(params)) {
+        const def = Object.hasOwn(defs, name) ? defs[name] : undefined;
+        const m = def ? paramProblem(def, v) : undefined;
+        if (!def) errors.push(`unknown param: ${name}`);
+        else if (m) errors.push(`param ${name}: ${m}`);
+      }
+      return errors;
+    };
     switch (req.type) {
       case 'recipes.enable': {
-        const { needs, errors } = compileRecipe(cfg, req.id, d.builtins);
-        if (errors.length) return fail('invalid recipe', errors);
+        if (req.params !== undefined) {
+          const errors = paramErrors(ref, req.params);
+          if (errors.length) return fail('invalid params', errors);
+        }
+        const over = req.params !== undefined ? { params: req.params } : {};
+        const { needs, errors } = compileRecipe(cfg, req.id, d.builtins, over);
+        if (errors.length) return fail(req.params !== undefined ? 'invalid params' : 'invalid recipe', errors);
         // R5: only recipe-level needs gate the enable; an unmet rule-level need pauses that rule after enabling.
         if (!(await d.permissions.check(needs)).ok) return fail('missing permissions');
-        return updateRecipe(req.id, req.baseRev, (r) => ({ ...r, enabled: true }));
+        return updateRecipe(req.id, req.baseRev, (r) => ({ ...r, enabled: true, ...(req.params !== undefined && { params: { ...req.params } }) }));
       }
       case 'recipes.disable': return updateRecipe(req.id, req.baseRev, (r) => ({ ...r, enabled: false }));
       case 'recipes.setParams': {
-        const defs = bodyOf(ref)?.params ?? {};
-        const errors: string[] = [];
-        for (const [name, v] of Object.entries(req.params)) {
-          const def = Object.hasOwn(defs, name) ? defs[name] : undefined;
-          const m = def ? paramProblem(def, v) : undefined;
-          if (!def) errors.push(`unknown param: ${name}`);
-          else if (m) errors.push(`param ${name}: ${m}`);
-        }
+        const errors = paramErrors(ref, req.params);
         if (errors.length) return fail('invalid params', errors);
         // Values valid alone may still fail where they land (e.g. braces in a template, R37).
         const compiled = compileRecipe(cfg, req.id, d.builtins, { params: req.params });

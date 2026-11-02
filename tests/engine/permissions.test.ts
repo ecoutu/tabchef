@@ -290,6 +290,16 @@ describe('PermissionsManager', () => {
     expect(keys).toEqual(['finished/oauth-callback', 'finished/redirect']);
   });
 
+  it('recipes.enable with params (R5 flow, T15) validates them and stores them with enabled in one update', async () => {
+    const t = setup([ref('finished', false)], [], builtinRecipes());
+    expect(await t.handle({ type: 'recipes.enable', id: 'finished', params: { delay: 5 } }, ui))
+      .toEqual({ ok: false, error: 'invalid params', errors: ['param delay: must be a duration like 500ms, 30s, 15m, 2h or 1d'] });
+    expect(t.getCfg().recipes[0]!.enabled).toBe(false);
+    const params = { delay: '9s', mode: 'suggest' };
+    expect(await t.handle({ type: 'recipes.enable', id: 'finished', params, baseRev: configRev(t.getCfg()) }, ui)).toEqual({ ok: true, data: null });
+    expect(t.getCfg().recipes[0]).toMatchObject({ enabled: true, params });
+  });
+
   it('recipes.setParams validates against ParamDef and names the param', async () => {
     const t = setup();
     expect(await t.handle({ type: 'recipes.setParams', id: 'meet', params: { delay: 5 } }, ui))

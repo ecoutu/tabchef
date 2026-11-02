@@ -7,6 +7,7 @@
   import { unclaimedErrors } from '../../ui/rules-model';
   import type { Config, TabSnap } from '../../core/types';
   import Rules from './Rules.svelte';
+  import Recipes from './Recipes.svelte';
   import Dedupe from './Dedupe.svelte';
   import History from './History.svelte';
   import Explain from './Explain.svelte';
@@ -23,9 +24,10 @@
    */
   const ROUTES: {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    path: string; label: string; page: 'rules' | 'dedupe' | 'history' | 'backups' | 'import' | 'explain' | Component<any>; nav?: false;
+    path: string; label: string; page: 'rules' | 'recipes' | 'dedupe' | 'history' | 'backups' | 'import' | 'explain' | Component<any>; nav?: false;
   }[] = [
-    { path: '/rules', label: 'Group rules', page: 'rules' },
+    { path: '/rules', label: 'Rules', page: 'rules' },
+    { path: '/recipes', label: 'Recipes', page: 'recipes' },
     { path: '/dedupe', label: 'Duplicates', page: 'dedupe' },
     { path: '/history', label: 'History', page: 'history' },
     { path: '/backups', label: 'Backups', page: 'backups' },
@@ -181,6 +183,8 @@
       {#key matched.params.tabId}<Explain tabId={Number(matched.params.tabId)} />{/key}
     {:else if current.page === 'backups'}
       {#if saved}<Backups saved={saved!} {dirty} onApplied={loadConfig} />{/if}
+    {:else if current.page === 'recipes'}
+      {#if saved}<Recipes saved={saved!} {baseRev} {dirty} onApplied={loadConfig} />{/if}
     {:else if current.page === 'import'}
       {#if saved}<Import {dirty} onApplied={loadConfig} />{/if}
     {:else if draft && current.page === 'rules'}
