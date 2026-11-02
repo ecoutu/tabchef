@@ -18,6 +18,7 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm run check:cycles
+      - run: npm run check:terms
       - run: npm run validate:recipes
       - run: npm run check
       - run: npm test

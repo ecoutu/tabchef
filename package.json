@@ -19,6 +19,7 @@
     "check:csp": "node scripts/check-no-eval.mjs",
     "check:secrets": "node scripts/check-no-secrets.mjs",
     "check:cycles": "node scripts/check-cycles.mjs",
+    "check:terms": "node scripts/check-terms.mjs",
     "validate:recipes": "node scripts/run-ts.mjs scripts/validate-recipes.ts"
   },
   "devDependencies": {

@@ -1,0 +1,9 @@
+{
+  "name": "Tabchef",
+  "banned": [
+    { "pattern": "\\bde-?dup(e|es|ed|ing)?\\b(?!\\s+(override|off|on))", "flags": "i", "use": "de-duplicate (prose) or Duplicates (the page)", "where": "store" },
+    { "pattern": "\\b(preset|template)s?\\b", "flags": "i", "use": "recipe", "why": "A bundle of rules is a recipe everywhere a user sees it.", "where": "store" },
+    { "pattern": "\\bruleset\\b", "flags": "i", "use": "recipe", "where": "all" },
+    { "pattern": "\\bauto-?group(s|ed|ing)?\\b", "flags": "i", "use": "group", "why": "Auto-Group Tabs is another extension's name.", "where": "store" }
+  ]
+}
