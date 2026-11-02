@@ -37,7 +37,7 @@
 // engine's job (ProgramCache, T6).
 import { formatSchemaError, regexProblem, ruleProblems, type Tables } from '../config/rule-problems';
 import { validateRule } from '../config/validate-config.generated.js';
-import { DURATION } from './duration';
+import { DURATION, parseDuration } from './duration';
 import type { Config, DedupeSettings } from '../types';
 import type { CompiledRule, Cond, NeedsAlt, NeedsEntry, ParamDef, Program, Recipe, RecipeLevel, RecipeNeeds, RecipeRef, Rule } from './types';
 import type { ProjectDef } from '../projects/types';
@@ -62,6 +62,26 @@ const INNER = /\{params\.([A-Za-z_]\w*)\}/g;
 export const placeholderNames = (s: string): string[] => [...s.matchAll(INNER)].map((m) => m[1] as string);
 
 /** Why `v` is not a valid value for `def`, or undefined. */
+/** The size min / max compare (M3-R77): a duration in ms, a number itself; undefined for other types or a bad value. */
+function magnitude(type: ParamDef['type'], x: unknown): number | undefined {
+  if (type === 'duration') return typeof x === 'string' && DURATION.test(x) ? parseDuration(x) : undefined;
+  if (type === 'number') return typeof x === 'number' && Number.isFinite(x) ? x : undefined;
+  return undefined;
+}
+
+/** Why a ParamDef's `min` / `max` is malformed (M3-R77): only on duration and number params, of that type, min ≤ max. */
+export function boundProblem(def: ParamDef, k: 'min' | 'max'): string | undefined {
+  const b = def[k];
+  if (b === undefined) return undefined;
+  if (def.type !== 'duration' && def.type !== 'number') return `${k} applies only to duration and number params`;
+  if (magnitude(def.type, b) === undefined) return def.type === 'duration' ? 'must be a duration like 500ms, 30s, 15m, 2h or 1d' : 'must be a number';
+  if (k === 'min' && def.max !== undefined) {
+    const hi = magnitude(def.type, def.max);
+    if (hi !== undefined && magnitude(def.type, b)! > hi) return 'must not be more than max';
+  }
+  return undefined;
+}
+
 export function paramProblem(def: ParamDef, v: unknown): string | undefined {
   switch (def.type) {
     case 'string':
@@ -87,6 +107,11 @@ export function paramProblem(def: ParamDef, v: unknown): string | undefined {
     default:
       return `unknown param type: ${String((def as { type: unknown }).type)}`;
   }
+  const m = magnitude(def.type, v);
+  const lo = def.min !== undefined ? magnitude(def.type, def.min) : undefined;
+  const hi = def.max !== undefined ? magnitude(def.type, def.max) : undefined;
+  if (m !== undefined && lo !== undefined && m < lo) return `must be at least ${String(def.min)}`;
+  if (m !== undefined && hi !== undefined && m > hi) return `must be at most ${String(def.max)}`;
   if (def.enum !== undefined) {
     const key = JSON.stringify(v);
     if (!Array.isArray(def.enum) || !def.enum.some((e) => JSON.stringify(e) === key)) return `must be one of ${JSON.stringify(def.enum)}`;
@@ -193,7 +218,7 @@ function ruleErrors(rule: unknown, tables: Tables): string[] {
   return ruleProblems(rule as Rule, tables).map((p) => `${p.path} ${p.message}`);
 }
 
-interface Candidate { id: string; source: RecipeRef['source']; body: Recipe; ref: RecipeRef; values: Record<string, unknown> }
+interface Candidate { id: string; source: RecipeRef['source']; body: Recipe; ref: RecipeRef; values: Record<string, unknown>; defs: Record<string, ParamDef> }
 
 /**
  * Whether a recipe rule runs (R56/R57): the user's boolean override `ref.ruleEnabled[rule.id]`, else the body's
@@ -251,7 +276,7 @@ function resolveRecipes(config: Config, builtins: Record<string, Recipe>, errors
       continue;
     }
     if (body.views !== undefined && !(Array.isArray(body.views) && body.views.every(isObj))) { errors.push({ key: id, error: 'malformed views' }); continue; }
-    out.push({ id, source: ref.source, body, ref, values });
+    out.push({ id, source: ref.source, body, ref, values, defs: isObj(raw.params) ? (raw.params as Record<string, ParamDef>) : {} });
   }
   return withoutConflicts(out, errors);
 }
@@ -376,10 +401,14 @@ export function compileProgram(
     for (const r of rules) if (r.needs) needs[`${c.id}/${r.id}`] = needsOf(r.needs); // paused rules too
     if (c.body.levels) levels[c.id] = c.body.levels;
   }
-  // M3 T15: what the ProjectService needs of a project recipe (its def and params; Program carries no params otherwise).
-  const withProject = survivors.filter((c) => c.body.project !== undefined);
-  const projects = withProject.map((c): ProjectDef => ({ ...c.body.project!, recipeId: c.id }));
-  const params = Object.fromEntries(withProject.map((c) => [c.id, c.values]));
+  // M3 T15: what the ProjectService needs of a project recipe (its def). Params (T13): the resolved values of every
+  // recipe that declares any, read by the ProjectService, view `params.*` fields and the sources.refresh period.
+  const projects = survivors.filter((c) => c.body.project !== undefined).map((c): ProjectDef => ({ ...c.body.project!, recipeId: c.id }));
+  const params = Object.fromEntries(survivors.filter((c) => Object.keys(c.values).length > 0).map((c) => [c.id, c.values]));
+  // M3-R75 / M3-R78: the sources.refresh period, only from recipes that declare `refreshEvery` as a duration param.
+  const refreshEvery = Object.fromEntries(survivors
+    .filter((c) => own(c.defs, 'refreshEvery') && c.defs.refreshEvery?.type === 'duration' && typeof c.values.refreshEvery === 'string')
+    .map((c) => [c.id, c.values.refreshEvery as string]));
 
   return {
     program: {
@@ -389,7 +418,9 @@ export function compileProgram(
       dedupe,
       needs,
       ...(Object.keys(levels).length && { levels }),
-      ...(projects.length && { projects, params }),
+      ...(projects.length && { projects }),
+      ...(Object.keys(params).length && { params }),
+      ...(Object.keys(refreshEvery).length && { refreshEvery }),
       dryRun: config.dryRun === true,
     },
     errors,

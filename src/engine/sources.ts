@@ -11,6 +11,7 @@ import type { AdapterId } from '../core/adapters';
 import type { ApiRequest, ApiResult, ConnErrorKind, ConnectionState } from '../core/connections/types';
 import { DEFAULT_KEY_PATTERN } from '../core/keys/jira-key';
 import { evalCond } from '../core/lang/cond';
+import { DURATION, parseDuration } from '../core/lang/duration';
 import { varsOf } from '../core/lang/evaluate';
 import type { NeedsKind } from '../core/lang/needs';
 import type { CompiledRule, Cond, Program, Rule, SourceQueryKind, TabFacts } from '../core/lang/types';
@@ -33,6 +34,17 @@ export { CACHE_MAX, SOURCE_CACHE_KEY } from './source-cache';
 export const SOURCES_ALARM = 'sources.refresh';
 export const SOURCES_PERIOD_MINUTES = 5;
 export const POPUP_THROTTLE_MS = 30_000;
+/** The shortest `sources.refresh` period, as the `refreshEvery` params' `min` (M3-R75). */
+export const SOURCES_MIN_PERIOD_MINUTES = 1;
+
+/**
+ * The `sources.refresh` alarm period (M3-R75): the smallest `refreshEvery` among the enabled recipes that declare it
+ * as a duration param (Program.refreshEvery, M3-R78), in minutes; SOURCES_PERIOD_MINUTES when none does. Never below 1 minute.
+ */
+export function refreshPeriodMinutes(p: Program): number {
+  const periods = Object.values(p.refreshEvery ?? {}).flatMap((d) => (DURATION.test(d) ? [parseDuration(d) / 60_000] : []));
+  return periods.length ? Math.max(SOURCES_MIN_PERIOD_MINUTES, Math.min(...periods)) : SOURCES_PERIOD_MINUTES;
+}
 /** The connection ids linkedFor / issues use (the built-in GitHub and Jira connections). */
 const GITHUB = 'github';
 const JIRA = 'jira';

@@ -1,0 +1,83 @@
+# Merged PRs (M3 T13): the first built-in recipe on connections. pr-state reads each open GitHub PR tab's state, from
+# the GitHub API when the GitHub connection is set up, else from the PR page (needs github.com); the popup's Merged
+# tab lists the merged ones. auto-close-merged (off by default) closes them through CloseExecutor (fire-time
+# protection, undo). It needs the GitHub connection (M3-R94): the PR page never yields mergedAt, so without the
+# connection it is paused ("Paused: needs the GitHub connection") instead of silently never firing.
+# M3-R77: `source.*` fields are rule-scoped (M3-R10), so auto-close-merged carries its own copy of pr-state's
+# source and trigger. Both render the same cache key, so a PR is looked up once.
+# refreshEvery sets the period of the `sources.refresh` alarm (M3-R75).
+recipe: merged-prs
+version: 1
+name: Merged PRs
+description: Lists open tabs of merged GitHub pull requests in the popup's Merged tab, and can close them.
+params:
+  includeClosed:
+    type: boolean
+    default: false
+    label: Also list closed pull requests
+    help: When on, the Merged tab also lists pull requests that were closed without being merged.
+  autoCloseAfter:
+    type: duration
+    default: 24h
+    label: Close merged pull requests after
+    help: With "Close merged pull request tabs" turned on, a pull request's tab closes this long after it was merged, e.g. 24h or 3d. Needs the GitHub connection (the merge time comes from the GitHub API). You can undo it. Pinned and locked tabs, and tabs with unsaved form edits, are never closed.
+  refreshEvery:
+    type: duration
+    default: 5m
+    min: 1m
+    label: Check pull request states every
+    help: How often Tabchef looks up the state of your open pull requests, e.g. 5m. At least 1m. With several recipes, the shortest interval is used.
+rules:
+  - id: pr-state
+    name: Read pull request state
+    enabled: true
+    needs:
+      anyOf:
+        - connections: [github]
+        - hosts: ['https://github.com/*']
+    source:
+      connection: github
+      query: github.pull_request
+      args: {owner: '{owner}', repo: '{repo}', number: '{num}'}
+      fields: {state: state, mergedAt: mergedAt}
+      fallback: {adapter: github.prPage}
+    trigger:
+      on: [created, committed, sourceUpdated]
+    match:
+      url: 'github.com/:owner/:repo/pull/:num*'
+    actions:
+      - showInView: {view: merged}
+  - id: auto-close-merged
+    name: Close merged pull request tabs
+    enabled: false
+    needs:
+      anyOf:
+        - connections: [github]
+    source:
+      connection: github
+      query: github.pull_request
+      args: {owner: '{owner}', repo: '{repo}', number: '{num}'}
+      fields: {state: state, mergedAt: mergedAt}
+      fallback: {adapter: github.prPage}
+    trigger:
+      on: [created, committed, sourceUpdated]
+    match:
+      all:
+        - url: 'github.com/:owner/:repo/pull/:num*'
+        - field: {field: source.state, op: '==', value: merged}
+        - field: {field: source.mergedAt, op: '<', value: {ago: '{params.autoCloseAfter}'}}
+    actions:
+      - close: {mode: auto}
+views:
+  - id: merged
+    tab: Merged
+    kind: list
+    rules: [pr-state]
+    show:
+      any:
+        - {field: source.state, op: '==', value: merged}
+        - all:
+            - {field: params.includeClosed, op: '==', value: true}
+            - {field: source.state, op: '==', value: closed}
+    sort: {field: source.mergedAt, dir: desc}
+    actions: [focus, close, close-all]

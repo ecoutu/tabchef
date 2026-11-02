@@ -76,6 +76,8 @@ export interface ParamDef {
   help?: string;
   /** Allowed values (compared by JSON equality); the schema keyword lands with the recipe schema (T5). */
   enum?: unknown[];
+  /** Inclusive bounds of a duration (a duration string) or number param (M3-R77); a value outside is a param problem. */
+  min?: string | number; max?: string | number;
 }
 export interface Recipe {
   recipe: string; version: number; name: string; description: string;
@@ -128,8 +130,10 @@ export interface Program {
   levels?: Record<string, RecipeLevel[]>;
   /** M3 T15: the project definitions of enabled recipes (params substituted), one per recipe that declares one. */
   projects?: ProjectDef[];
-  /** M3 T15: the resolved param values of those recipes, by recipe id (e.g. `githubOrgs`, `projectPrefixes`). */
+  /** The resolved param values of enabled recipes that declare params, by recipe id (M3 T15 projects, T13 views and the refresh period). */
   params?: Record<string, Record<string, unknown>>;
+  /** M3-R75: the `refreshEvery` value of each enabled recipe that declares it as a duration param, by recipe id. */
+  refreshEvery?: Record<string, string>;
   /**
    * Global dry run (`config.dryRun`, M2 T12): every rule is dry-run and engine-initiated actions only (R50) are blocked
    * and logged; user-initiated actions (popup close / close-all, banner choices, undo) still apply.

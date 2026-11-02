@@ -11,7 +11,7 @@ import ruleSchema from './rule.schema.json';
 import { validateRecipe as recipeShape, validateRule as ruleShape } from '../config/validate-config.generated.js';
 import { COLORS, regexProblem, ruleProblems, schemaProblem, templateProblem, type Problem } from '../config/rule-problems';
 import { templateVars } from '../match/template';
-import { ParamError, paramProblem, placeholderNames, substitute } from './compile';
+import { boundProblem, ParamError, paramProblem, placeholderNames, substitute } from './compile';
 import { altKind, kindRank, LEVEL_KINDS, type NeedsKind } from './needs';
 import type { Comparison, ParamDef, Recipe, RecipeNeeds, Rule, Show } from './types';
 
@@ -157,6 +157,12 @@ export function validateRecipe(x: unknown): RecipeResult {
     const base = `/params/${esc(name)}`;
     const { enum: allowed, ...plain } = def;
     allowed?.forEach((v, i) => { const m = paramProblem(plain, v); if (m) out.push({ path: `${base}/enum/${i}`, message: m }); });
+    const bad = (['min', 'max'] as const).filter((k) => {
+      const b = boundProblem(def, k);
+      if (b) out.push({ path: `${base}/${k}`, message: b });
+      return b !== undefined;
+    });
+    if (bad.length) continue; // the default is checked against valid bounds only
     const m = paramProblem(def, def.default);
     if (m) out.push({ path: `${base}/default`, message: m });
     else defaults[name] = def.default;

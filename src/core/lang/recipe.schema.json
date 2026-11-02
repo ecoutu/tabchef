@@ -48,6 +48,12 @@
         "enum": {
           "type": "array",
           "minItems": 1
+        },
+        "min": {
+          "anyOf": [{ "type": "string", "maxLength": 64 }, { "type": "number" }]
+        },
+        "max": {
+          "anyOf": [{ "type": "string", "maxLength": 64 }, { "type": "number" }]
         }
       }
     },

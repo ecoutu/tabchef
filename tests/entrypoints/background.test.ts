@@ -190,6 +190,8 @@ const deferred = () => {
 /** A compiled-Program stand-in: only `rules[].rule.match` is read by the age.tick gate. */
 const programWith = (...matches: unknown[]) => ({ rules: matches.map((match, i) => ({ key: `user/r${i}`, rule: { id: `r${i}`, match, actions: [] } })) });
 const alarmCalls = () => h.calls.filter(([p]) => p.startsWith('alarms.'));
+/** Alarm calls about one alarm name. */
+const alarmCallsOf = (name: string) => alarmCalls().filter(([, a]) => (a as unknown[])[0] === name);
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -357,18 +359,18 @@ describe('background wiring', () => {
     h.state.program = programWith({ url: 'a.com/*' }, { all: [{ url: 'b.com/*' }, { opener: { not: { age: { lt: '1h' } } } }] });
     onChange({ version: 2, rules: [] });
     await vi.advanceTimersByTimeAsync(0);
-    expect(alarmCalls()).toEqual([['alarms.get', ['age.tick']], ['alarms.create', ['age.tick', { periodInMinutes: 1 }]]]);
+    expect(alarmCallsOf('age.tick')).toEqual([['alarms.get', ['age.tick']], ['alarms.create', ['age.tick', { periodInMinutes: 1 }]]]);
     // Already running: left alone, so frequent config changes never postpone its next tick.
     h.calls.length = 0;
     h.returns['alarms.get'] = () => Promise.resolve({ name: 'age.tick', periodInMinutes: 1 });
     onChange({ version: 2, rules: [] });
     await vi.advanceTimersByTimeAsync(0);
-    expect(alarmCalls()).toEqual([['alarms.get', ['age.tick']]]);
+    expect(alarmCallsOf('age.tick')).toEqual([['alarms.get', ['age.tick']]]);
     h.calls.length = 0;
     h.state.program = programWith({ url: 'a.com/*' });
     onChange({ version: 2, rules: [] });
     await vi.advanceTimersByTimeAsync(0);
-    expect(alarmCalls()).toEqual([['alarms.clear', ['age.tick']]]);
+    expect(alarmCallsOf('age.tick')).toEqual([['alarms.clear', ['age.tick']]]);
   });
 
   it('a field comparison against {ago} (auto-close-merged mergedAt) also creates age.tick (M3-R92)', async () => {
@@ -395,6 +397,22 @@ describe('background wiring', () => {
     await fire('alarms.onAlarm', { name: 'sources.refresh' });
     expect(I('sources').refresh).toHaveBeenCalledWith('alarm');
     expect(I('safety').onAlarm).not.toHaveBeenCalled();
+  });
+
+  it('M3-R75: a config change sets the sources.refresh period to the smallest refreshEvery, only when it differs', async () => {
+    await vi.advanceTimersByTimeAsync(0);
+    const onChange = I('store').onChange!.mock.calls[0]![0] as (c: unknown) => void;
+    h.calls.length = 0;
+    h.state.program = { ...programWith({ url: 'a.com/*' }), refreshEvery: { a: '10m', b: '2m' } };
+    h.returns['alarms.get'] = (name: unknown) => Promise.resolve(name === 'sources.refresh' ? { name, periodInMinutes: 5 } : undefined);
+    onChange({ version: 2, rules: [] });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(alarmCallsOf('sources.refresh')).toEqual([['alarms.get', ['sources.refresh']], ['alarms.create', ['sources.refresh', { periodInMinutes: 2 }]]]);
+    h.calls.length = 0;
+    h.returns['alarms.get'] = (name: unknown) => Promise.resolve(name === 'sources.refresh' ? { name, periodInMinutes: 2 } : undefined);
+    onChange({ version: 2, rules: [] });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(alarmCallsOf('sources.refresh')).toEqual([['alarms.get', ['sources.refresh']]]); // unchanged: left alone
   });
 
   it('install and browser startup create the 5-minute sources.refresh alarm', async () => {

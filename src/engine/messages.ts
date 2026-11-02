@@ -189,6 +189,12 @@ export type Request =
    * `url`: the row's URL as the popup showed it; refused when the tab has since navigated (R61).
    */
   | { type: 'view.close'; viewId: string; tabId: number; url?: string }
+  /**
+   * close-all (M3 T13, M3-R76): closes each listed row tab as above; a tab that is never closed (pinned, locked,
+   * anchor) or has unsaved form edits (M3-R78), gone, navigated or no longer in the view is skipped and counted.
+   * Answers `{closed, skipped}`.
+   */
+  | { type: 'view.close'; viewId: string; tabs: { tabId: number; url?: string }[] }
   /** Dismisses a Finished suggestion: CloseExecutor.exempt, so the tab is not suggested again at that URL. `url` as above. */
   | { type: 'view.keep'; viewId: string; tabId: number; url?: string }
   // ---- Connections page (M3 T7). No response ever carries a token or the device_code. ----
@@ -307,7 +313,8 @@ export interface ResponseData {
   'rules.shadowed': ShadowedRule[];
   'views.list': ViewSummary[];
   'view.data': ViewData;
-  'view.close': null;
+  /** null for one tab; `{closed, skipped}` for `tabs` (close-all). */
+  'view.close': null | { closed: number; skipped: number };
   'view.keep': null;
   'connections.list': { defs: ConnectionDef[]; status: ConnectionStatus[] };
   'connections.github.start': { userCode: string; verificationUri: string; expiresAt: number; interval: number };
@@ -392,6 +399,12 @@ async function runImport(source: ImportSource, data: unknown, current: Config, b
   return { ...r, warnings, changes: mergeDedupe(current.dedupe, r.dedupe).changes, collapse: importedRules(r.rules, current, builtins).collapse };
 }
 
+/** The recently-closed reason of a close from a recipe view (`<recipeId>/<viewId>`); default: the view's tab name. */
+const VIEW_CLOSE_REASONS: Record<string, string> = { 'merged-prs/merged': 'merged-pr' };
+
+const isViewTab = (t: unknown): boolean => typeof t === 'object' && t !== null && num((t as Record<string, unknown>).tabId)
+  && ((t as Record<string, unknown>).url === undefined || str((t as Record<string, unknown>).url));
+
 /** Structural check of an untrusted message. */
 export function isRequest(m: unknown): m is Request {
   if (typeof m !== 'object' || m === null) return false;
@@ -415,7 +428,8 @@ export function isRequest(m: unknown): m is Request {
     case 'explain.tab': return num(x.tabId);
     case 'rules.shadowed': return x.config === undefined || (typeof x.config === 'object' && x.config !== null);
     case 'view.data': return str(x.viewId);
-    case 'view.close': case 'view.keep': return str(x.viewId) && num(x.tabId) && (x.url === undefined || str(x.url));
+    case 'view.close': return str(x.viewId) && (Array.isArray(x.tabs) ? x.tabs.length > 0 && x.tabs.every(isViewTab) : isViewTab(x));
+    case 'view.keep': return str(x.viewId) && isViewTab(x);
     case 'connections.setToken': return (x.id === 'github' || x.id === 'jira') && str(x.token);
     case 'connections.test': case 'connections.disconnect': return CONNECTION_IDS.has(x.id as string);
     case 'projects.addTab': return num(x.tabId) && str(x.projectId);
@@ -444,6 +458,12 @@ export interface HandlerDeps {
   safety: Pick<SafetyService, 'pause' | 'resume' | 'isPaused' | 'lock' | 'unlock' | 'isLocked' | 'lockedTabIds' | 'undo'>;
   /** Anchor tabs (M2 T11) are never closed by dupes.close* (R11). Default: none. */
   isAnchor?: (tabId: number) => boolean;
+  /**
+   * Fire-time protection of view.close beyond pinned / locked / anchor (M3-R78): a tab with unsaved form edits
+   * (SafetyService.isFormEdited) is refused (one tab) or skipped (close-all), unless its row is a close suggestion,
+   * which asked the user to decide. Audible and exempt tabs are not refused: the user's Close is explicit. Default: none.
+   */
+  isFormEdited?: (tabId: number) => boolean;
   /**
    * Awaited before dupes.close* and view.close decide which tabs are kept (background: SafetyService and AnchorService
    * ready), so a popup message that wakes the worker never closes a stored-locked tab or an anchor (M3). Default: none.
@@ -670,43 +690,72 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
     return { snap, views: await readViews(d, { snap, config, now: now(), dupes: dupesData, ...(only !== undefined && { only }) }) };
   }
 
-  /** view.close / view.keep: user-initiated (R50: they apply under global dry run too), only on a row of that view. */
+  /**
+   * view.close / view.keep: user-initiated (R50: they apply under global dry run too), only on a row of that view.
+   * view.close with `tabs` is close-all (M3-R76): each tab goes through the same checks, and a refused one is skipped.
+   */
   async function runViewAction(req: Extract<Request, { type: 'view.close' | 'view.keep' }>, d: ViewsDeps): Promise<Response> {
     await deps.beforeClose?.();
     const { snap, views } = await listViews(d, req.viewId);
     const v = views[0];
     if (!v) return fail('unknown view');
-    const allowed = req.type === 'view.keep' ? v.summary.actions.includes('keep') : v.summary.actions.some((a) => a === 'close' || a === 'close-all');
+    const all = 'tabs' in req;
+    const allowed = req.type === 'view.keep' ? v.summary.actions.includes('keep')
+      : all ? v.summary.actions.includes('close-all') : v.summary.actions.some((a) => a === 'close' || a === 'close-all');
     if (!allowed) return fail('action not allowed');
-    const tab = snap.tabs.find((t) => t.id === req.tabId);
-    // R61: act only on the page the row was for. A suggestion made for another page, or a row the popup showed at
-    // another URL, means the tab navigated (its suggestion may not be cleared yet): refuse, never act on the new page.
     const p = await d.getProgram();
-    const stale = tab !== undefined && ((req.url !== undefined && !samePage(req.url, tabUrl(tab), p))
-      || (v.view.recipeId === 'finished' && d.closes?.suggestions().some((x) => x.tabId === tab.id && !samePage(x.url, tabUrl(tab), p))));
-    if (stale) return fail('tab has navigated');
-    const row = v.data.kind === 'list' ? v.data.rows.find((r) => r.tabId === req.tabId) : undefined;
-    if (!row || !tab) return fail('not in view');
-    if (req.type === 'view.keep') {
-      if (!row.suggested || !d.closes) return fail('not in view');
-      await d.closes.exempt(tab.id, row.url);
-    } else {
+    /** One row's action; the refusal as an error, or undefined once done. */
+    const actOn = async (tabId: number, url: string | undefined): Promise<string | undefined> => {
+      const tab = snap.tabs.find((t) => t.id === tabId);
+      // R61: act only on the page the row was for. A suggestion made for another page, or a row the popup showed at
+      // another URL, means the tab navigated (its suggestion may not be cleared yet): refuse, never act on the new page.
+      const stale = tab !== undefined && ((url !== undefined && !samePage(url, tabUrl(tab), p))
+        || (v.view.recipeId === 'finished' && d.closes?.suggestions().some((x) => x.tabId === tab.id && !samePage(x.url, tabUrl(tab), p))));
+      if (stale) return 'tab has navigated';
+      const row = v.data.kind === 'list' ? v.data.rows.find((r) => r.tabId === tabId) : undefined;
+      if (!row || !tab) return 'not in view';
+      if (req.type === 'view.keep') {
+        if (!row.suggested || !d.closes) return 'not in view';
+        await d.closes.exempt(tab.id, row.url);
+        return undefined;
+      }
       const why = never(tab);
-      if (why) return fail(why === 'pinned' ? 'tab is pinned' : 'tab is locked');
+      if (why) return why === 'pinned' ? 'tab is pinned' : 'tab is locked';
+      if (!row.suggested && deps.isFormEdited?.(tab.id)) return 'tab has unsaved form edits';
       const at = now();
       const groupTitle = tab.groupId !== -1 ? snap.groups.find((g) => g.id === tab.groupId)?.title : undefined;
       await deps.port.closeTab(tab.id);
       deps.recentlyClosed.add({
-        url: row.url, title: tab.title, windowId: tab.windowId, reason: row.reason ?? v.view.tab, at,
+        url: row.url, title: tab.title, windowId: tab.windowId, reason: row.reason ?? VIEW_CLOSE_REASONS[`${v.view.recipeId}/${v.view.id}`] ?? v.view.tab, at,
         ...(row.ruleKey !== undefined && { ruleId: row.ruleKey }), ...(groupTitle !== undefined && { groupTitle }),
       });
       deps.whyLog.add({
         tabId: tab.id, action: 'view-close', detail: `Closed from the popup's ${v.view.tab} view`, at,
         ...(row.ruleKey !== undefined && { ruleId: row.ruleKey }),
       });
+      return undefined;
+    };
+    if (!('tabs' in req)) {
+      const err = await actOn(req.tabId, req.url);
+      if (err) return fail(err);
+      await refreshBadge(badgeDeps);
+      return ok(null);
+    }
+    let closed = 0;
+    let skipped = 0;
+    for (const t of req.tabs) {
+      let err: string | undefined;
+      try {
+        err = await actOn(t.tabId, t.url);
+      } catch (e) {
+        console.warn(`[tabchef] close-all: closing tab ${t.tabId} failed; skipped`, e); // e.g. the tab closed meanwhile
+        err = 'close failed';
+      }
+      if (err) skipped++;
+      else closed++;
     }
     await refreshBadge(badgeDeps);
-    return ok(null);
+    return ok({ closed, skipped });
   }
 
   /** The recipe `id` compiled as if enabled with `over` applied: its needs, its rules' own needs and its compile errors. */

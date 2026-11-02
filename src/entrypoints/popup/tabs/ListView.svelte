@@ -1,10 +1,15 @@
 <script lang="ts">
   // A recipe-declared `list` view (M2 T17), e.g. Finished: rows from view.data, buttons from the view's `actions`.
+  // M3 T13: a row's source state as a pill (and a stale marker), and the locked state of a view whose rules all
+  // wait for a connection or host access (Connect opens #/connections; Allow requests in the click handler).
+  import { browser } from 'wxt/browser';
   import { send } from '../../../ui/send';
+  import { requestNeeds } from '../../../ui/permissions';
   import type { ViewRow, ViewSummary } from '../../../engine/views';
 
   let { view, rows, onChange }: { view: ViewSummary; rows: ViewRow[]; onChange: () => void } = $props();
   let error = $state('');
+  let status = $state('');
 
   const can = (a: ViewSummary['actions'][number]): boolean => view.actions.includes(a);
   /** Rows split into runs of the same `group` (rows arrive grouped and sorted). */
@@ -15,26 +20,59 @@
     return out;
   }, []));
 
-  /** Runs requests in order; shows a one-line error on the first failure, refreshes on success. */
-  async function act(...runs: (() => Promise<{ ok: boolean; error?: string }>)[]): Promise<void> {
-    for (const run of runs) {
-      const r = await run();
-      if (!r.ok) { error = r.error ?? 'Something went wrong'; return; }
-    }
+  /** Runs a request; shows a one-line error on failure, refreshes on success. */
+  async function act(run: () => Promise<{ ok: boolean; error?: string; data?: unknown }>): Promise<void> {
+    const r = await run();
+    if (!r.ok) { error = r.error ?? 'Something went wrong'; return; }
     error = '';
+    const skipped = (r.data as { skipped?: unknown } | null | undefined)?.skipped;
+    status = typeof skipped === 'number' && skipped > 0 ? `${skipped} skipped` : '';
     onChange();
   }
   const focus = (tabId: number) => act(() => send({ type: 'tab.focus', tabId }));
   // The row's URL goes along: the worker refuses if the tab has navigated since (R61).
   const close = (r: ViewRow) => act(() => send({ type: 'view.close', viewId: view.id, tabId: r.tabId, url: r.url }));
   const keep = (r: ViewRow) => act(() => send({ type: 'view.keep', viewId: view.id, tabId: r.tabId, url: r.url }));
-  const closeAll = () => act(...rows.map((r) => () => send({ type: 'view.close', viewId: view.id, tabId: r.tabId, url: r.url })));
+  // One request: the worker skips (and counts) pinned, locked and protected tabs (M3-R76).
+  const closeAll = () => act(() => send({ type: 'view.close', viewId: view.id, tabs: rows.map((r) => ({ tabId: r.tabId, url: r.url })) }));
+  /** The row's source state (e.g. merged), shown as a pill. */
+  const stateOf = (r: ViewRow): string | undefined => (typeof r.source?.state === 'string' ? r.source.state : undefined);
+
+  async function connect(): Promise<void> {
+    try {
+      await browser.tabs.create({ url: `${browser.runtime.getURL('/options.html')}#/connections` });
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    }
+  }
+  /** The permission request is the handler's first statement (user gesture), before any await. */
+  function allow(lock: NonNullable<ViewSummary['locked']>): void {
+    requestNeeds({ origins: lock.origins, permissions: lock.permissions }).then((granted) => { if (granted) onChange(); }, (e: unknown) => {
+      error = e instanceof Error ? e.message : String(e);
+    });
+  }
 </script>
 
 <section>
   {#if error}<p class="error" role="alert">{error}</p>{/if}
-  {#if view.paused ?? view.notice}<p class="paused" role="status">{view.paused ?? view.notice}</p>{/if}
-  {#if rows.length === 0}<p class="empty">Nothing here.</p>{/if}
+  {#if status}<p class="paused" role="status">{status}</p>{/if}
+  {#if view.locked}
+    {@const lock = view.locked}
+    <div class="locked">
+      <p class="locked-text" title={view.paused}>{lock.text}</p>
+      <div class="locked-actions">
+        {#each lock.connections as c (c.id)}
+          <button type="button" class="act" onclick={connect}>Connect {c.label}</button>
+        {/each}
+        {#if lock.origins.length > 0}
+          <button type="button" class="act" onclick={() => allow(lock)}>Allow {lock.hosts.join(', ')}</button>
+        {/if}
+      </div>
+    </div>
+  {:else}
+    {#if view.paused ?? view.notice}<p class="paused">{view.paused ?? view.notice}</p>{/if}
+    {#if rows.length === 0}<p class="empty">Nothing here.</p>{/if}
+  {/if}
 
   {#each groups as g, gi (gi)}
     {#if g.name !== undefined}<h2 class="group">{g.name || '—'}</h2>{/if}
@@ -55,6 +93,8 @@
             {/if}
             {#if r.reason}<span class="reason">{r.reason}</span>{/if}
           </span>
+          {#if stateOf(r)}<span class={`pill pill-${stateOf(r)}`}>{stateOf(r)}</span>{/if}
+          {#if r.stale}<span class="stale" title="Could not refresh this; it may be out of date">stale</span>{/if}
           {#if can('keep') && r.suggested}
             <button type="button" class="act" aria-label={`Keep ${name}`} onclick={() => keep(r)}>Keep</button>
           {/if}
@@ -89,5 +129,11 @@
   .error { color: var(--danger); margin: 6px 12px; font-size: 12px; }
   .paused { color: var(--muted); margin: 6px 12px; font-size: 12px; }
   .empty { color: var(--muted); padding: 12px; margin: 0; }
+  .pill { flex: none; font-size: 11px; border-radius: 999px; padding: 1px 8px; border: 1px solid var(--border); color: var(--muted); }
+  .pill-merged { color: var(--accent); border-color: var(--accent); }
+  .stale { flex: none; font-size: 11px; color: var(--muted); font-style: italic; }
+  .locked { padding: 12px; }
+  .locked-text { margin: 0 0 8px; font-weight: 600; }
+  .locked-actions { display: flex; flex-wrap: wrap; gap: 8px; }
   button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 </style>

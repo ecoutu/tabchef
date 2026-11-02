@@ -375,3 +375,53 @@ describe('T17 fix round 1', () => {
     expect(await s.handle({ type: 'view.close', viewId: 'any', tabId: 1, url: 7 }, ui)).toEqual({ ok: false, error: 'unknown request' });
   });
 });
+
+describe('M3 T13: source / params fields and close-all (view.close with tabs, M3-R76)', () => {
+  const rule: Rule = { id: 'pr', name: 'PR', enabled: true, match: { url: 'github.com/*' }, actions: [{ showInView: { view: 'prs' } }] };
+  const view: View = {
+    id: 'prs', tab: 'PRs', kind: 'list', rules: ['pr'], actions: ['focus', 'close', 'close-all'],
+    show: { any: [{ field: 'source.state', op: '==', value: 'open' }, { field: 'params.all', op: '==', value: true }] },
+  };
+  const mine = (all: boolean): RecipeRef => ({
+    ...userRecipe('mine', [rule], [view], { params: { all: { type: 'boolean', default: false, label: 'All' } } }), params: { all },
+  });
+
+  it('show reads source.<name> of the feeding rule and params.<name> of the recipe; rows carry the source data', async () => {
+    const s = setup();
+    s.deps.views!.facts = (id) => (id === 1 ? { source: { 'mine/pr': { data: { state: 'open' } } } } : {});
+    await s.setCfg({ ...defaultConfig(), recipes: [mine(false)] });
+    s.mk(1, 'https://github.com/a/b/pull/1'); s.mk(2, 'https://github.com/a/b/pull/2');
+    const r = (await s.handle({ type: 'view.data', viewId: 'prs' }, ui)) as Loose;
+    expect(r.data.rows.map((x: { tabId: number; source?: unknown }) => [x.tabId, x.source])).toEqual([[1, { state: 'open' }]]);
+    await s.setCfg({ ...defaultConfig(), recipes: [mine(true)] });
+    const all = (await s.handle({ type: 'view.data', viewId: 'prs' }, ui)) as Loose;
+    expect(all.data.rows.map((x: { tabId: number }) => x.tabId)).toEqual([1, 2]);
+  });
+
+  it('close-all needs the close-all action; tabs outside the view are skipped; malformed tabs are refused', async () => {
+    const s = setup({ suggestions: [oauth] });
+    await s.setCfg(enable(defaultConfig(), 'finished'));
+    s.mk(3, CB);
+    expect(await s.handle({ type: 'view.close', viewId: 'finished', tabs: [{ tabId: 3 }] }, ui)).toEqual({ ok: false, error: 'action not allowed' });
+    await s.setCfg({ ...defaultConfig(), recipes: [mine(true)] });
+    s.mk(1, 'https://github.com/a/b/pull/1');
+    expect(await s.handle({ type: 'view.close', viewId: 'prs', tabs: [{ tabId: 1 }, { tabId: 3 }, { tabId: 99 }] }, ui))
+      .toEqual({ ok: true, data: { closed: 1, skipped: 2 } });
+    expect(s.added).toEqual([expect.objectContaining({ reason: 'PRs' })]); // the view's tab name unless mapped (merged-pr)
+    for (const tabs of [[], [{ tabId: '1' }], [{ tabId: 1, url: 2 }], 'x']) {
+      expect(await s.handle({ type: 'view.close', viewId: 'prs', tabs }, ui)).toEqual({ ok: false, error: 'unknown request' });
+    }
+  });
+});
+
+describe('M3-R78: a Finished suggestion is closable from the view even when the tab is protected', () => {
+  it('audible or form-edited suggested tab: Close closes it (the suggestion asked for that decision)', async () => {
+    const s = setup({ suggestions: [oauth, { ...oauth, tabId: 4, url: `${CB}&x=4` }] });
+    s.deps.isFormEdited = (id) => id === 4;
+    await s.setCfg(enable(defaultConfig(), 'finished'));
+    s.mk(3, CB, { audible: true }); s.mk(4, `${CB}&x=4`);
+    expect(await s.handle({ type: 'view.close', viewId: 'finished', tabId: 3 }, ui)).toEqual({ ok: true, data: null });
+    expect(await s.handle({ type: 'view.close', viewId: 'finished', tabId: 4 }, ui)).toEqual({ ok: true, data: null });
+    expect((await s.port.snapshot()).tabs).toEqual([]);
+  });
+});

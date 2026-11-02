@@ -367,3 +367,26 @@ describe('M3 T1: sources, fields, keys and projects', () => {
     expect(validateRecipe(recipe({ views: [{ id: 'p', tab: 'P', kind: 'projects', actions: [] }] })).ok).toBe(false);
   });
 });
+
+describe('M3-R77: param min / max (duration and number)', () => {
+  const dur = (o: Record<string, unknown>) => recipe({ params: { d: { type: 'duration', default: '5m', label: 'D', ...o } } });
+  const num = (o: Record<string, unknown>) => recipe({ params: { n: { type: 'number', default: 5, label: 'N', ...o } } });
+  it('the schema accepts min and max on duration and number params', () => {
+    expect(validateRecipe(dur({ min: '1m', max: '1h' })).ok).toBe(true);
+    expect(validateRecipe(num({ min: 1, max: 10 })).ok).toBe(true);
+  });
+  it('a default below min or above max is a problem with the bound in the message', () => {
+    expect(at(validateRecipe(dur({ default: '30s', min: '1m' })), '/params/d/default').map((e) => e.message)).toEqual(['must be at least 1m']);
+    expect(at(validateRecipe(dur({ default: '2h', max: '1h' })), '/params/d/default').map((e) => e.message)).toEqual(['must be at most 1h']);
+    expect(at(validateRecipe(num({ default: 0, min: 1 })), '/params/n/default').map((e) => e.message)).toEqual(['must be at least 1']);
+    expect(at(validateRecipe(num({ default: 11, max: 10 })), '/params/n/default').map((e) => e.message)).toEqual(['must be at most 10']);
+    expect(validateRecipe(dur({ default: '1m', min: '1m', max: '1m' })).ok).toBe(true); // bounds are inclusive
+  });
+  it('a bound must fit the param type, sit on a duration or number param, and min must not exceed max', () => {
+    expect(at(validateRecipe(dur({ min: 5 })), '/params/d/min').length).toBe(1);
+    expect(at(validateRecipe(num({ max: '1m' })), '/params/n/max').length).toBe(1);
+    expect(at(validateRecipe(dur({ min: '1h', max: '1m' })), '/params/d/min').length).toBe(1);
+    const s = recipe({ params: { s: { type: 'string', default: 'x', label: 'S', min: 1 } } });
+    expect(at(validateRecipe(s), '/params/s/min').length).toBe(1);
+  });
+});

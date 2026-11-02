@@ -5,6 +5,9 @@
 // - kind 'list': the tabs whose evaluateTab(...).views includes the view id (showInView, ruling R26), plus
 //   CloseExecutor.suggestions() for the Finished recipe's `finished` view, filtered by `show` over {tab.*, extract.*},
 //   then grouped (`groupBy`) and sorted (`sort`). Dry-run rules put no tab in a view (R48: they fall through).
+//   M3 T13: `show` / `groupBy` / `sort` also read `source.<name>` (the tab's source data of the first feeding rule
+//   that has an entry; missing = unknown, so an unknown or data-less PR never matches `==`) and `params.<name>` (the
+//   view's recipe params). Rows carry that source data and `stale` (the state pill and the stale marker).
 // - Which views: every enabled recipe's views (paused ones too, faded with their reason, R45), the first declaration
 //   of an id winning; plus the built-in Duplicates view while global dedupe is active (R58) and the built-in Finished
 //   view while close suggestions exist, whichever rule made them (R59).
@@ -13,13 +16,14 @@ import { evalShow } from '../core/lang/cond';
 import { compileProgram } from '../core/lang/compile';
 import { liveProgram } from '../core/lang/dry-run';
 import { evaluateTab, type EvalResult } from '../core/lang/evaluate';
+import { alternativesOf, hostOf } from '../core/lang/needs';
 import type { Program, Recipe, TabFacts, View } from '../core/lang/types';
 import type { Config, Snapshot, TabSnap } from '../core/types';
 import { normalizeUrl } from '../core/url/normalize';
 import type { PendingAsk } from './ask';
 import type { CloseSuggestion } from './close-executor';
 import type { DupeSetView } from './messages';
-import type { PermissionsManager } from './permissions';
+import type { NeedStatus, PermissionsManager } from './permissions';
 
 export type DeclaredView = View & { recipeId: string };
 
@@ -31,12 +35,26 @@ export interface ViewRow {
   /** Why the tab is listed (the suggesting rule's name) and that rule's key. */
   reason?: string; ruleKey?: string;
   suggested?: true;
+  /** M3 T13: the feeding rule's source data (picked fields, e.g. `state`, `mergedAt`); absent when it has none. */
+  source?: Record<string, unknown>;
+  /** The source data could not be refreshed (connection error, page fallback): shown with a stale marker. */
+  stale?: true;
+}
+
+/**
+ * Every rule feeding a view is paused and some of them can run on a connection (M3 T13): the locked state. `text`
+ * is e.g. "Needs GitHub access"; the popup offers Connect <label> (options #/connections) and Allow <hosts>, which
+ * requests `origins` and `permissions` (what the paused rules miss) in the click handler.
+ */
+export interface ViewLock {
+  text: string; connections: { id: string; label: string }[]; hosts: string[]; origins: string[]; permissions: string[];
 }
 
 /** A view as views.list reports it. `paused`: the view's recipe, or every rule feeding it, waits for a permission
  * (faded, R45); `notice`: only some feeding rules do (the view still fills). Both are "Paused: needs access to …". */
 export interface ViewSummary {
   id: string; tab: string; kind: View['kind']; actions: View['actions']; count: number; paused?: string; notice?: string;
+  locked?: ViewLock;
 }
 
 export type ViewData =
@@ -53,6 +71,8 @@ export interface ViewsDeps {
   permissions?: Pick<PermissionsManager, 'check'>;
   /** CloseExecutor: its persisted suggestions (storage.session `closeSuggestions`) and the undo exemption (keep). */
   closes?: { ready: Promise<void>; suggestions(): CloseSuggestion[]; exempt(tabId: number, url: string): Promise<void> };
+  /** Connection ids and labels, for the locked state's copy (ConnectionManager defs). Default: the ids. */
+  connections?: () => Promise<{ id: string; label: string }[]>;
 }
 
 export interface ViewsInput {
@@ -106,9 +126,17 @@ function factsOf(snap: Snapshot, tab: TabSnap, extra: Partial<TabFacts>): TabFac
   return { ...extra, tab, ...(opener && { opener }), ...(groupTitle !== undefined && { groupTitle }) };
 }
 
-/** `tab.<prop>` (primitive TabSnap fields; `tab.url` is the pending URL when there is one) and `extract.<name>`. */
-function fieldOf(tab: TabSnap, extract: Record<string, string>): (name: string) => unknown {
+/**
+ * `tab.<prop>` (primitive TabSnap fields; `tab.url` is the pending URL when there is one), `extract.<name>`, and (M3)
+ * `source.<name>` and `params.<name>`.
+ */
+function fieldOf(
+  tab: TabSnap, extract: Record<string, string>, source: Record<string, unknown> = {}, params: Record<string, unknown> = {},
+): (name: string) => unknown {
+  const ownVal = (o: Record<string, unknown>, k: string) => (Object.hasOwn(o, k) ? o[k] : undefined);
   return (name) => {
+    if (name.startsWith('source.')) return ownVal(source, name.slice(7));
+    if (name.startsWith('params.')) return ownVal(params, name.slice(7));
     if (name === 'tab.url') return tabUrl(tab);
     if (name.startsWith('tab.')) {
       const k = name.slice(4);
@@ -129,23 +157,39 @@ function cmp(a: unknown, b: unknown): number {
   return String(a).localeCompare(String(b));
 }
 
+type SourceFacts = NonNullable<TabFacts['source']>;
+type SourceOf = (t: TabSnap) => SourceFacts | undefined;
+
+/** The tab's source entry of the first of `keys` that has one (the view's feeding rules). */
+function entryOf(src: SourceFacts | undefined, keys: string[]): { data?: Record<string, unknown>; stale?: boolean } | undefined {
+  if (!src) return undefined;
+  for (const k of keys) if (Object.hasOwn(src, k) && src[k]) return src[k];
+  return undefined;
+}
+
 function listRows(
   v: DeclaredView, snap: Snapshot, p: Program, evalOf: (t: TabSnap) => EvalResult, suggestions: Map<number, CloseSuggestion>,
+  sourceOf: SourceOf,
 ): ViewRow[] {
   const rows: { row: ViewRow; sortKey: unknown; order: number }[] = [];
+  const keys = feedingRules(v, p);
+  const params = p.params?.[v.recipeId] ?? {};
   snap.tabs.forEach((tab, order) => {
     const ev = evalOf(tab);
     // A suggestion is for one page (R61): once the tab navigated it is stale, even before the executor clears it.
     const s = isSuggestionsView(v) ? suggestions.get(tab.id) : undefined;
     const sug = s && samePage(s.url, tabUrl(tab), p) ? s : undefined;
     if (!sug && !ev.views.includes(v.id)) return;
-    const field = fieldOf(tab, ev.viewVars?.[v.id] ?? {});
+    const entry = entryOf(sourceOf(tab), keys);
+    const data = entry?.data && Object.keys(entry.data).length ? entry.data : undefined;
+    const field = fieldOf(tab, ev.viewVars?.[v.id] ?? {}, data, params);
     if (v.show && !evalShow(v.show, field)) return;
     const row: ViewRow = {
       tabId: tab.id, windowId: tab.windowId, title: tab.title, url: tabUrl(tab), pinned: tab.pinned,
       ...(tab.favIconUrl && { favIconUrl: tab.favIconUrl }),
       ...(v.groupBy !== undefined && { group: String(field(v.groupBy) ?? '') }),
       ...(sug && { reason: sug.reason, ruleKey: sug.ruleKey, suggested: true as const }),
+      ...(data && { source: { ...data } }), ...(data && entry?.stale && { stale: true as const }),
     };
     rows.push({ row, sortKey: v.sort ? field(v.sort.field) : undefined, order });
   });
@@ -163,7 +207,8 @@ function feedingRules(v: DeclaredView, full: Program): string[] {
     ('showInView' in a && a.showInView.view === v.id) || ('close' in a && isSuggestionsView(v)))).map((r) => r.key);
 }
 
-async function pauseOf(v: DeclaredView, full: Program, check: Pick<PermissionsManager, 'check'>['check']): Promise<Pick<ViewSummary, 'paused' | 'notice'>> {
+async function pauseOf(v: DeclaredView, full: Program, d: ViewsDeps): Promise<Pick<ViewSummary, 'paused' | 'notice' | 'locked'>> {
+  const check = (n: Program['needs'][string]) => d.permissions!.check(n);
   const own = full.needs[v.recipeId];
   if (own) {
     const st = await check(own);
@@ -171,16 +216,33 @@ async function pauseOf(v: DeclaredView, full: Program, check: Pick<PermissionsMa
   }
   const feeding = feedingRules(v, full);
   const reasons: string[] = [];
+  const missing: NeedStatus['missing'][] = [];
+  const conns = new Set<string>();
   for (const k of feeding) {
     const n = full.needs[k];
     if (!n) continue;
     const st = await check(n);
-    if (!st.ok) reasons.push(st.reason ?? 'Paused');
+    if (st.ok) continue;
+    reasons.push(st.reason ?? 'Paused');
+    missing.push(st.missing);
+    for (const a of alternativesOf(n)) for (const c of a.connections ?? []) conns.add(c);
   }
   if (reasons.length === 0) return {};
   // Fade only when every feeding rule is paused: Finished keeps filling from OAuth / redirect while meet-ended waits.
   const reason = [...new Set(reasons)].join('; ');
-  return reasons.length === feeding.length ? { paused: reason } : { notice: reason };
+  if (reasons.length !== feeding.length) return { notice: reason };
+  return { paused: reason, ...(conns.size > 0 && { locked: await lockOf([...conns], missing, d) }) };
+}
+
+/** The locked state of a view whose paused rules can run on one of `conns` (M3 T13). */
+async function lockOf(conns: string[], missing: NeedStatus['missing'][], d: ViewsDeps): Promise<ViewLock> {
+  const labels = new Map((await d.connections?.().catch(() => []) ?? []).map((c) => [c.id, c.label]));
+  const connections = conns.map((id) => ({ id, label: labels.get(id) ?? id }));
+  const origins = [...new Set(missing.flatMap((m) => m.origins))];
+  return {
+    text: `Needs ${connections.map((c) => c.label).join(' or ')} access`, connections,
+    hosts: [...new Set(origins.map(hostOf))], origins, permissions: [...new Set(missing.flatMap((m) => m.permissions))],
+  };
 }
 
 /** Every listed view (or only `input.only`) with its summary and data. Read-only. */
@@ -194,9 +256,15 @@ export async function readViews(d: ViewsDeps, input: ViewsInput): Promise<Comput
   if (views.length === 0) return [];
   const live = liveProgram(p);
   const evals = new Map<number, EvalResult>();
+  const extras = new Map<number, Partial<TabFacts>>();
+  const extraOf = (t: TabSnap): Partial<TabFacts> => {
+    let x = extras.get(t.id);
+    if (!x) extras.set(t.id, (x = d.facts?.(t.id) ?? {}));
+    return x;
+  };
   const evalOf = (t: TabSnap): EvalResult => {
     let ev = evals.get(t.id);
-    if (!ev) evals.set(t.id, (ev = evaluateTab(live, factsOf(snap, t, d.facts?.(t.id) ?? {}), now)));
+    if (!ev) evals.set(t.id, (ev = evaluateTab(live, factsOf(snap, t, extraOf(t)), now)));
     return ev;
   };
   const full = config && d.permissions && !input.noStatus ? compileProgram(config, d.builtins).program : undefined;
@@ -205,11 +273,11 @@ export async function readViews(d: ViewsDeps, input: ViewsInput): Promise<Comput
   for (const v of views) {
     const data: ViewData = v.kind === 'duplicates' && dupes
       ? { kind: 'duplicates', ...dupes }
-      : { kind: 'list', rows: listRows(v, snap, p, evalOf, suggestions) };
+      : { kind: 'list', rows: listRows(v, snap, p, evalOf, suggestions, (t) => extraOf(t).source) };
     const count = data.kind === 'duplicates'
       ? data.sets.reduce((n, s) => n + s.closable, 0) + data.pending.length
       : data.rows.length;
-    const pause = full && d.permissions ? await pauseOf(v, full, (n) => d.permissions!.check(n)) : {};
+    const pause = full && d.permissions ? await pauseOf(v, full, d) : {};
     out.push({ view: v, data, summary: { id: v.id, tab: v.tab, kind: v.kind, actions: [...v.actions], count, ...pause } });
   }
   return out;

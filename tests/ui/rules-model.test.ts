@@ -122,7 +122,7 @@ describe('rules-model: YAML (M2 T15)', () => {
     const { builtinRecipes } = await import('../../src/recipes/load');
     const c = { ...defaultConfig(), recipes: defaultConfig().recipes.map((r) => ({ ...r, enabled: true })) };
     const rows = ruleRows(c, builtinRecipes()).filter((r) => r.kind === 'recipe');
-    expect(rows.map((r) => r.key)).toEqual(['github-prs/group-by-repo', 'finished/oauth-callback', 'finished/meet-ended', 'finished/redirect']);
+    expect(rows.map((r) => r.key)).toEqual(['github-prs/group-by-repo', 'finished/oauth-callback', 'finished/meet-ended', 'finished/redirect', 'merged-prs/pr-state', 'merged-prs/auto-close-merged']);
     for (const row of rows) expect(yamlToRule(ruleToYaml(row.rule))).toEqual({ ok: true, rule: row.rule });
   });
 

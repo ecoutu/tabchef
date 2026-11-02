@@ -30,7 +30,7 @@ import { RateLimiter } from '../engine/connections/rate-limiter';
 import { GitHubDeviceAuth } from '../engine/connections/github-auth';
 import { TokenAuth, setGitHubToken } from '../engine/connections/token-auth';
 import type { ConnectionsChangedMessage } from '../engine/messages';
-import { SourceService, SOURCES_ALARM, SOURCES_PERIOD_MINUTES } from '../engine/sources';
+import { refreshPeriodMinutes, SourceService, SOURCES_ALARM } from '../engine/sources';
 
 export default defineBackground(() => {
   const store = new ConfigStore();
@@ -65,10 +65,7 @@ export default defineBackground(() => {
     };
   }), {
     // Connection states feed the capability levels (M3 T12). Lazy: the manager is built below; syncs run after start.
-    connections: async () => {
-      const [defs, status] = await Promise.all([connections.defs(), connections.status()]);
-      return status.map((st) => ({ id: st.id, label: defs.find((d) => d.id === st.id)?.label ?? st.id, state: st.state }));
-    },
+    connections: () => connectionInfo(),
     onPausedChanged: () => {
       reconciler.schedule('permissions');
       syncAgeTick(); // a paused or resumed rule may use age
@@ -76,6 +73,11 @@ export default defineBackground(() => {
       void closeExecutor.evaluateAll(); // the Program changed (R51): a resumed close rule applies to open tabs
     },
   });
+  /** Each connection's id, label and state (the manager is built below; only called after start). */
+  async function connectionInfo() {
+    const [defs, status] = await Promise.all([connections.defs(), connections.status()]);
+    return status.map((st) => ({ id: st.id, label: defs.find((d) => d.id === st.id)?.label ?? st.id, state: st.state }));
+  }
   // Page facts from the watch content script (M2 T7), mirrored to storage.session.
   const pageFacts = new PageFacts({
     session,
@@ -112,6 +114,7 @@ export default defineBackground(() => {
     // Then the badge, which counts the shown views (R60): they depend on the config. scheduleBadge is declared below.
     void afterConfigChange(() => permissions.onChanged(), closeExecutor, () => scheduleBadge()).catch(warn('close re-evaluation'));
     syncAgeTick(); // declared below
+    startSourcesAlarm(); // refreshEvery may have changed (M3-R75); declared below
     // Tell open extension pages (options) the config changed; "no receiver" rejections are expected.
     Promise.resolve(browser.runtime.sendMessage({ type: 'config.changed', rev: configRev(c) })).catch(() => {});
   });
@@ -295,8 +298,15 @@ export default defineBackground(() => {
   });
   // Tabs and page facts changed: look up what new or navigated tabs need (cache first; at most every few seconds).
   const scheduleSources = createDebounce(() => { sources.refresh('tabs').catch(warn('source refresh')); }, 1000, 5000);
+  // M3-R75: the period is the smallest `refreshEvery` of the enabled recipes (default 5 min); the alarm is re-created
+  // only when it is missing or its period differs, so config changes never postpone its next tick.
   const startSourcesAlarm = () => {
-    Promise.resolve(browser.alarms.create(SOURCES_ALARM, { periodInMinutes: SOURCES_PERIOD_MINUTES })).catch(warn('source alarm'));
+    (async () => {
+      const period = refreshPeriodMinutes(await getProgram());
+      if ((await browser.alarms.get(SOURCES_ALARM))?.periodInMinutes !== period) {
+        await browser.alarms.create(SOURCES_ALARM, { periodInMinutes: period });
+      }
+    })().catch(warn('source alarm'));
   };
   /** Tab facts for read-only views (popup views, preview, explain): page facts and source data. */
   const tabFacts = (id: number) => {
@@ -408,6 +418,7 @@ export default defineBackground(() => {
       getProgram,
       facts: tabFacts,
       permissions,
+      connections: () => connectionInfo(),
       closes: {
         ready: closeExecutor.ready,
         suggestions: () => closeExecutor.suggestions(),
@@ -444,8 +455,10 @@ export default defineBackground(() => {
     whyLog,
     recipes: { builtins: builtinRecipes(), permissions },
     isAnchor: (id) => anchors.isAnchor(id),
-    // M3: dupes.close* / view.close decide on loaded locks and anchors, never on empty sets.
-    beforeClose: async () => { await Promise.all([safety.ready, anchors.ready]); },
+    // view.close's fire-time protection (M3-R76 / M3-R78): unsaved form edits, besides pinned / locked / anchor.
+    isFormEdited: (id) => safety.isFormEdited(id),
+    // M3: dupes.close* / view.close decide on loaded locks, anchors and page facts (form edits), never on empty sets.
+    beforeClose: async () => { await Promise.all([safety.ready, anchors.ready, pageFacts.ready]); },
     // preview.change (M2 T13): read-only views of the engine (Program, planner state, page facts); nothing is applied.
     preview: {
       builtins: builtinRecipes(),
