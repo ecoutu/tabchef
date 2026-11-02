@@ -104,7 +104,7 @@
     Auto-Group Tabs' compressed rule list is decoded for you.
   </p>
   {#if source === 'tab-deduper'}
-    <p class="hint">Tab Deduper never closed tabs automatically; Tabchef defaults to switching to the existing tab (always-switch). You can choose ask or off under Dedupe.</p>
+    <p class="hint">Tab Deduper never closed tabs automatically; Tabchef defaults to switching to the existing tab (always-switch). You can choose ask or off on the Duplicates page.</p>
   {/if}
 
   <div class="row">

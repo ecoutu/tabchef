@@ -56,7 +56,7 @@ describe('Import page', () => {
     render(Import, props());
     expect(screen.queryByText(/never closed tabs automatically/)).toBeNull();
     await fireEvent.change(screen.getByLabelText('Source'), { target: { value: 'tab-deduper' } });
-    expect(screen.getByText(/Tab Deduper never closed tabs automatically; Tabchef defaults to switching to the existing tab \(always-switch\)\. You can choose ask or off under Dedupe\./)).toBeTruthy();
+    expect(screen.getByText(/Tab Deduper never closed tabs automatically; Tabchef defaults to switching to the existing tab \(always-switch\)\. You can choose ask or off on the Duplicates page\./)).toBeTruthy();
     await paste('nope');
     expect((await screen.findByRole('alert')).textContent).toBe('Not valid JSON.');
     const big = new File(['{}'], 'd.json');
