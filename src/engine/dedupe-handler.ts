@@ -1,16 +1,17 @@
 import { compilePattern, PatternError } from '../core/match/pattern';
 import { findDuplicate, tabUrl } from '../core/dedupe/find';
-import { evaluateTab, type EvalResult } from '../core/lang/evaluate';
+import { evaluateTab } from '../core/lang/evaluate';
+import { isDryRunRule, liveProgram } from '../core/lang/dry-run';
 import { isExemptUrl, normalizeUrl } from '../core/url/normalize';
 import type { DedupeOverride, Snapshot, TabSnap } from '../core/types';
-import type { Program } from '../core/lang/types';
+import type { Program, TabFacts } from '../core/lang/types';
 import type { BrowserPort } from '../platform/browser-port';
 import { SESSION_MARKER, STARTUP_GRACE_MS } from './dedupe-constants';
 
 export interface RecentlyClosedEntry {
   url: string; title: string; groupTitle?: string; windowId: number; reason: string; ruleId?: string; at: number;
 }
-export interface LogEntry { tabId?: number; ruleId?: string; action: string; detail: string; at: number }
+export interface LogEntry { tabId?: number; ruleId?: string; action: string; detail: string; at: number; dryRun?: true }
 
 export interface DedupeDeps {
   recentlyClosed: { add(e: RecentlyClosedEntry): string };
@@ -56,6 +57,8 @@ export class DedupeHandler {
   private readonly established = new Set<number>();
   /** tabId -> normalized key already handled (closed or asked). */
   private readonly handled = new Map<number, string>();
+  /** tabId -> `<rule>\n<key>` of the would-close already logged for it (dry run, M2 T12). */
+  private readonly wouldLogged = new Map<number, string>();
   private readonly inFlight = new Set<string>();
   /** Restored tabs exempt from dedupe: tabId -> normalized key of the restored page (undefined until first seen). */
   private readonly exempt = new Map<number, string | undefined>();
@@ -185,6 +188,7 @@ export class DedupeHandler {
     this.fresh.delete(tabId);
     this.established.delete(tabId);
     this.handled.delete(tabId);
+    this.wouldLogged.delete(tabId);
   }
 
   /** Call from tabs.onReplaced: the added tab inherits the removed tab's age/freshness; memos are cleared. */
@@ -259,15 +263,38 @@ export class DedupeHandler {
     if (this.exemptNow(tabId, key, live.windowId, p)) return;
     const newTab: TabSnap = { ...live, url };
     delete newTab.pendingUrl;
-    const { o, ruleId } = dedupeDecision(p, evaluateTab(p, { tab: newTab, ...openerOf(snap, newTab) }, this.now()));
+    const facts: TabFacts = { tab: newTab, ...openerOf(snap, newTab) };
     const locked = new Set(snap.tabs.filter((t) => this.kept(t.id)).map((t) => t.id));
     // Another new tab may be "existing" only if it is older (lower id): of two new duplicates, the newer one closes.
     const pool = snap.tabs.filter((t) => t.id < tabId || !this.isCandidateLike(t.id));
-    const dup = findDuplicate(newTab, pool, s, o, locked);
-    if (!dup) return;
-    let mode = o?.mode ?? s.mode;
-    if (mode === 'off') return;
-    if (mode === 'ask' && matchesAny(url, s.alwaysSwitchSites ?? [])) mode = 'always-switch';
+    const outcome = (d: { o?: DedupeOverride }) => {
+      const dup = findDuplicate(newTab, pool, s, d.o, locked);
+      if (!dup) return undefined;
+      const mode = d.o?.mode ?? s.mode;
+      if (mode === 'off') return undefined;
+      return { dup, mode: mode === 'ask' && matchesAny(url, s.alwaysSwitchSites ?? []) ? 'always-switch' : mode };
+    };
+    // Dry run (R10/R48): what a winning dry-run dedupe rule (or, globally, the whole Program) would do is only logged.
+    const dry = dryDedupeDecision(p, facts, this.now());
+    if (dry) {
+      const would = outcome(dry);
+      const memo = `${dry.ruleId ?? ''}\n${key}`;
+      if (would && this.wouldLogged.get(tabId) !== memo) {
+        this.wouldLogged.set(tabId, memo);
+        const { existing } = would.dup;
+        this.deps.log.add({
+          tabId, action: 'would-close', at: this.now(), dryRun: true, ...(dry.ruleId !== undefined ? { ruleId: dry.ruleId } : {}),
+          detail: would.mode === 'ask'
+            ? `Would ask about closing duplicate of tab ${existing.id} (${existing.title}) (dry run)`
+            : `Would close duplicate of tab ${existing.id} (${existing.title}) (dry run)`,
+        });
+      }
+    }
+    if (p.dryRun) return; // global dry run: nothing is applied
+    const { o, ruleId } = dedupeDecision(p, facts, this.now());
+    const act = outcome({ ...(o && { o }) });
+    if (!act) return;
+    const { dup, mode } = act;
     if (mode === 'ask') {
       if (this.exemptNow(tabId, key, live.windowId, p)) return;
       this.handled.set(tabId, key);
@@ -305,15 +332,30 @@ export class DedupeHandler {
   }
 }
 
-/**
- * The per-rule override (R25) from a tab's evaluation, and the rule recorded with a close: the rule whose dedupe action
- * won, else (as M1) the group rule. A dry-run rule's dedupe action has no live effect (M2 T12 logs it), so the
- * global settings apply.
- */
-export function dedupeDecision(p: Program, ev: EvalResult): { o?: DedupeOverride; ruleId?: string } {
-  const d = ev.dedupe && !p.rules.find((r) => r.key === ev.dedupe?.key)?.dryRun ? ev.dedupe : undefined;
+/** The per-rule override (R25) of `p`'s winning dedupe action, and the rule recorded with a close: that rule, else (as M1) the group rule. */
+function decisionOf(p: Program, f: TabFacts, now: number): { o?: DedupeOverride; ruleId?: string } {
+  const ev = evaluateTab(p, f, now);
+  const d = ev.dedupe;
   const ruleId = d?.key ?? ev.group?.key;
   return { ...(d && { o: d }), ...(ruleId !== undefined && { ruleId }) };
+}
+
+/**
+ * The live dedupe decision for tab facts `f`: dry-run rules fall through (R48), so neither the override nor the
+ * recorded cause ever comes from a dry-run rule; the next live rule (else the global settings) decides.
+ */
+export function dedupeDecision(p: Program, f: TabFacts, now: number): { o?: DedupeOverride; ruleId?: string } {
+  return decisionOf(liveProgram(p), f, now);
+}
+
+/**
+ * The decision only logged as would-close (M2 T12): under global dry run the whole Program's; otherwise the winning
+ * dedupe action's, when that rule is dry-run. Undefined when nothing is dry-run for this tab.
+ */
+export function dryDedupeDecision(p: Program, f: TabFacts, now: number): { o?: DedupeOverride; ruleId?: string } | undefined {
+  if (p.dryRun) return decisionOf(p, f, now);
+  const d = evaluateTab(p, f, now).dedupe;
+  return d && isDryRunRule(p, d.key) ? { o: d, ruleId: d.key } : undefined;
 }
 
 /** `{ opener }` fact for evaluateTab when the tab's opener is in the snapshot. */

@@ -1,6 +1,7 @@
 import { browser } from 'wxt/browser';
 
-export interface WhyEntry { tabId?: number; ruleId?: string; action: string; detail: string; at: number }
+/** `dryRun`: a would-* entry (M2 T12): what a dry-run rule, or the engine under global dry run, would have done. */
+export interface WhyEntry { tabId?: number; ruleId?: string; action: string; detail: string; at: number; dryRun?: true }
 
 export const WHY_LOG_KEY = 'whyLog';
 export const WHY_LOG_MAX = 1000;

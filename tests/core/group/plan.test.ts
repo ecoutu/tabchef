@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { managedGroupIds, planGroups, planTargets, syncCreationOrder, type PlanContext } from '../../../src/core/group/plan';
+import { liveProgram } from '../../../src/core/lang/dry-run';
 import { FakeBrowserPort } from '../../../src/platform/fake-port';
 import type { Config, GroupColor, GroupRule, Op, Snapshot, TabSnap } from '../../../src/core/types';
 import type { GroupAction, Program, Rule } from '../../../src/core/lang/types';
@@ -606,14 +607,14 @@ describe('planGroups: compiled-program inputs (M2 T6)', () => {
     id, name: id, enabled: true, match: { url }, actions: [{ group: { title, color: 'blue', ...group } }], ...extra,
   });
 
-  it('a dry-run rule never moves or ungroups the tab it wins (T12 logs it instead)', () => {
+  it('plans dry-run rules like live ones; liveProgram drops them (R48: the engine plans live ops with it, M2 T12)', () => {
     const f = world();
     f.addTab(tab(1, A));
-    f.addTab(tab(2, B, { groupId: 10 }));
-    f.addGroup({ id: 10, windowId: 1, title: 'A', color: 'blue', collapsed: false });
-    const p = v2([gr('a', 'a.com/*', 'A', { dryRun: true }), gr('b', 'b.com/*', 'B', { dryRun: true })]);
-    expect(planGroups(snap(f), p, ctx({ managedTitles: new Set(['A']) }))).toEqual([]);
-    expect(planGroups(snap(f), v2([gr('a', 'a.com/*', 'A')], { dryRun: true }), ctx({ managedTitles: new Set(['A']) }))).toEqual([]);
+    f.addTab(tab(2, B));
+    const p = v2([gr('a', 'a.com/*', 'A', { dryRun: true }), gr('b', 'b.com/*', 'B')]);
+    expect(planGroups(snap(f), p, ctx()).map((o) => (o.kind === 'group' ? o.title : o.kind))).toEqual(['A', 'B']);
+    expect(planGroups(snap(f), liveProgram(p), ctx())).toEqual(planGroups(snap(f), v2([gr('b', 'b.com/*', 'B')]), ctx()));
+    expect(planGroups(snap(f), liveProgram(p), ctx()).map((o) => (o.kind === 'group' ? o.title : o.kind))).toEqual(['B']);
   });
 
   it('holds a tab whose group outcome waits on page facts that are on their way (T6 carry, M2 T7)', () => {

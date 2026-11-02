@@ -99,11 +99,11 @@ export interface Targets {
  * Evaluates every eligible tab against `p` at time `now`. Facts come from the snapshot (opener tab, current group
  * title) and `page` (page facts); creation times are not known here yet.
  *
- * A tab whose group outcome waits on page facts that are on their way (`page.awaiting`) is held like a dry-run tab, so
- * a selector-extract title is not grouped half-rendered and a pageText group is not strict-ungrouped meanwhile.
+ * A tab whose group outcome waits on page facts that are on their way (`page.awaiting`) is held, so a
+ * selector-extract title is not grouped half-rendered and a pageText group is not strict-ungrouped meanwhile.
  *
- * A tab whose winning group rule is a dry-run rule is held: not eligible, so this pass neither groups, moves nor
- * ungroups it (M2 T12 logs what it would do). planGroups also never strict-ungroups a dry-run rule's group.
+ * The planner treats every rule of `p` as live. The engine plans live ops with liveProgram(p) (dry-run rules fall
+ * through, R48) and plans what dry-run rules would do in a separate pass over the full Program (R10, M2 T12).
  */
 export function planTargets(snap: Snapshot, p: Program, ctx: ManagedCtx, now: number = Date.now(), page?: PageLookup): Targets {
   const normal = new Set(snap.windows.filter((w) => w.type === 'normal').map((w) => w.id));
@@ -125,7 +125,6 @@ export function planTargets(snap: Snapshot, p: Program, ctx: ManagedCtx, now: nu
     }, now);
     if (needsPage && page?.awaiting(t.id)) { held.add(t.id); continue; }
     if (!m) continue;
-    if (m.dryRun) { held.add(t.id); continue; }
     matches.set(t.id, m);
     const prev = titleMatch.get(m.title);
     if (!prev || m.ruleIndex < prev.ruleIndex) titleMatch.set(m.title, m);
@@ -209,14 +208,14 @@ export function planGroups(snap: Snapshot, p: Program, ctx: PlanContext, pre?: T
   const isManaged = (g: GroupSnap): boolean => managed.has(g.id);
   /**
    * The rule a managed group belongs to: one of its targeting tabs' rule, else the first program rule with a group
-   * action whose title template produces it. A dry-run rule's group is never strict (it must not ungroup live tabs).
+   * action whose title template produces it.
    */
   const ruleFor = (g: GroupSnap): { strict: boolean; ruleId?: string } => {
     const m = titleMatch.get(g.title);
     if (m) return { strict: m.strict, ruleId: m.ruleId };
     for (const r of p.rules) {
       for (const a of r.rule.actions) {
-        if ('group' in a && templateProduces(a.group.title, g.title)) return { strict: !r.dryRun && (a.group.strict ?? true), ruleId: r.key };
+        if ('group' in a && templateProduces(a.group.title, g.title)) return { strict: a.group.strict ?? true, ruleId: r.key };
       }
     }
     return { strict: true };

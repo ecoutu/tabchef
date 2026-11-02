@@ -7,11 +7,13 @@
   let why = $state<WhyEntry[]>([]);
   let recent = $state<RecentlyClosedItem[]>([]);
   let filter = $state('');
+  let dryOnly = $state(false);
   let error = $state('');
 
   const shown = $derived.by(() => {
     const id = filter.trim() === '' ? undefined : Number(filter);
-    const list = id === undefined || Number.isNaN(id) ? why : why.filter((e) => e.tabId === id);
+    const byTab = id === undefined || Number.isNaN(id) ? why : why.filter((e) => e.tabId === id);
+    const list = dryOnly ? byTab.filter((e) => e.dryRun) : byTab;
     return list.slice().sort((a, b) => b.at - a.at);
   });
   const time = (at: number): string => new Date(at).toLocaleString();
@@ -48,13 +50,16 @@
   </ul>
 
   <h2>Why log</h2>
-  <label class="filter">Filter by tab id <input inputmode="numeric" bind:value={filter} placeholder="all tabs" /></label>
+  <div class="filters">
+    <label class="filter">Filter by tab id <input inputmode="numeric" bind:value={filter} placeholder="all tabs" /></label>
+    <label class="filter"><input type="checkbox" bind:checked={dryOnly} /> Dry run only</label>
+  </div>
   {#if shown.length === 0}<p class="empty">No entries.</p>{/if}
   <ul>
     {#each shown as e, i (`${e.at}-${i}`)}
       <li>
         <div class="main">
-          <span class="title">{e.action}{e.tabId !== undefined ? ` · tab ${e.tabId}` : ''}{e.ruleId ? ` · rule ${e.ruleId}` : ''}</span>
+          <span class="title">{#if e.dryRun}<span class="chip">dry run</span> {/if}{e.action}{e.tabId !== undefined ? ` · tab ${e.tabId}` : ''}{e.ruleId ? ` · rule ${e.ruleId}` : ''}</span>
           <span class="meta">{e.detail} · {time(e.at)}</span>
         </div>
       </li>
@@ -70,6 +75,8 @@
   .title { overflow-wrap: anywhere; }
   .meta { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
   .empty { color: var(--muted); }
+  .filters { display: flex; flex-wrap: wrap; gap: 6px 16px; }
   .filter { display: inline-flex; gap: 6px; align-items: center; margin-bottom: 6px; }
+  .chip { display: inline-block; border: 1px solid var(--border); background: var(--hover); color: var(--muted); border-radius: 8px; padding: 0 6px; font-size: 11px; }
   .err { color: var(--danger); }
 </style>

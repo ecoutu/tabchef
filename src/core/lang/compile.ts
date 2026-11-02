@@ -306,6 +306,7 @@ export function compileProgram(
       tables: mergeTables(survivors, config),
       dedupe,
       needs,
+      dryRun: config.dryRun === true,
     },
     errors,
   };

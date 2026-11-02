@@ -59,4 +59,6 @@ export interface CompiledRule { key: string /* 'user/<id>' | '<recipeId>/<id>' *
 export interface Program {
   rules: CompiledRule[]; views: (View & { recipeId: string })[]; tables: Record<string, Record<string, string>>;
   dedupe: DedupeSettings; needs: Record<string /* recipeId | ruleKey (rule-level, T10; listed while paused too) */, { origins: string[]; permissions: string[] }>;
+  /** Global dry run (`config.dryRun`, M2 T12): every rule is dry-run and the engine applies nothing at all. */
+  dryRun?: boolean;
 }
