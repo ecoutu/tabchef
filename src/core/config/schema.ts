@@ -1,6 +1,7 @@
 import type { Config, DedupeSettings, GroupColor } from '../types';
 import type { Cond, Rule } from '../lang/types';
 import { compilePattern, MAX_REGEX_LEN, PatternError, patternCaptures } from '../match/pattern';
+import { slowRegexProblem } from '../match/regex-safety';
 import { DURATION } from '../lang/duration';
 import { parseTemplate, TemplateError, templateTables, templateVars } from '../match/template';
 import schema from './config.schema.json';
@@ -33,18 +34,18 @@ function patternProblem(p: string): string | undefined {
   }
 }
 /**
- * Error for a regex that does not compile, or, when `capped`, whose text (`measured`, default `source`) exceeds
- * MAX_REGEX_LEN. Rule regexes and dedupe urlTransforms (T18) are capped; stored over-long ones are removed on load
+ * Error for a regex that does not compile, that has a nested unbounded quantifier (R67, slowRegexProblem), or, when
+ * `capped`, whose text (`measured`, default `source`) exceeds MAX_REGEX_LEN. Rule regexes and dedupe urlTransforms (T18) are capped; stored over-long ones are removed on load
  * (repairConfig) instead of failing the whole config.
  */
 export function regexProblem(source: string, flags?: string, capped = false, measured = source): string | undefined {
   if (capped && measured.length > MAX_REGEX_LEN) return `regex too long (max ${MAX_REGEX_LEN} characters)`;
   try {
     new RegExp(source, flags);
-    return undefined;
   } catch (e) {
     return `invalid regex: ${(e as Error).message}`;
   }
+  return slowRegexProblem(source); // R67
 }
 
 export type Tables = Record<string, Record<string, string>>;

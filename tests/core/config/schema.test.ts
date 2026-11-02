@@ -323,3 +323,35 @@ describe('age conditions are not supported yet (R66)', () => {
     expect(validateConfig(r.config).ok).toBe(true);
   });
 });
+
+describe('nested-quantifier regexes in stored config (R67)', () => {
+  it('validateConfig rejects them in rule title / url / extract regexes', () => {
+    for (const over of [
+      { match: { title: '/(a+)+$/' } }, { match: { url: '/(a+)+$/' } },
+      { extract: { n: { from: 'title', regex: '(a+)+$' } }, match: { url: 'a.com/*' } },
+    ]) {
+      const r = validateConfig(cfgRaw([v2(over)]));
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.errors.join()).toMatch(/regex may be too slow/);
+    }
+  });
+  it('repairConfig disables such a rule and drops such dedupe entries, with warnings, and the result validates', () => {
+    const input = {
+      ...cfgRaw([v2({ match: { title: '/(a+)+$/' } }), v2({ id: 'ok', name: 'OK' })]),
+      dedupe: {
+        ...defaultConfig().dedupe,
+        urlTransforms: [{ pattern: '(x+)+y', replacement: '' }, { pattern: 'ok', replacement: '' }],
+        fragmentOverrides: [{ pattern: '/(a|aa)+/', keepFragment: true }],
+        titleOverrides: [{ pattern: 'b.com/*', matchTitle: true }],
+      },
+    };
+    const r = repairConfig(input);
+    const out = r.config as Config;
+    expect(out.rules.map((x) => [x.id, x.enabled])).toEqual([['r1', false], ['ok', true]]);
+    expect(out.dedupe.urlTransforms).toEqual([{ pattern: 'ok', replacement: '' }]);
+    expect(out.dedupe.fragmentOverrides).toEqual([]);
+    expect(out.dedupe.titleOverrides).toEqual([{ pattern: 'b.com/*', matchTitle: true }]);
+    expect(r.warnings).toEqual([expect.stringContaining('1 rule(s) disabled'), expect.stringMatching(/2 dedupe setting\(s\) removed: .*too slow/)]);
+    expect(validateConfig(r.config).ok).toBe(true);
+  });
+});
