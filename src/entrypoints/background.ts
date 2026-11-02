@@ -34,6 +34,11 @@ export default defineBackground(() => {
   const port = new ChromePort();
   const whyLog = new WhyLog();
   const recentlyClosed = new RecentlyClosed();
+  // storage.session (cleared on browser restart) as the engine's key-value seam.
+  const session = {
+    get: async (k: string): Promise<unknown> => (await browser.storage.session.get(k))[k],
+    set: (k: string, v: unknown): Promise<void> => browser.storage.session.set({ [k]: v }),
+  };
   const warn = (what: string) => (e: unknown) => console.warn(`[tabchef] ${what} failed`, e);
   // The one owner of the watch registration (R5, constraint 8): chrome.scripting is undefined until `scripting` is
   // granted, so the API is looked up per call and every call is a no-op without it.
@@ -56,10 +61,7 @@ export default defineBackground(() => {
   });
   // Page facts from the watch content script (M2 T7), mirrored to storage.session.
   const pageFacts = new PageFacts({
-    session: {
-      get: async (k) => (await browser.storage.session.get(k))[k],
-      set: (k, v) => browser.storage.session.set({ [k]: v }),
-    },
+    session,
     onHoldExpired: () => reconciler.schedule('pageFacts-hold'),
     // Hold only where the watch is registered: elsewhere no facts will come.
     covers: (url) => permissions.covers(url),
@@ -119,10 +121,7 @@ export default defineBackground(() => {
           type: 'basic', iconUrl: browser.runtime.getURL('/icon/128.png'), requireInteraction: true, ...o,
         });
       },
-      session: {
-        get: async (k) => (await browser.storage.session.get(k))[k],
-        set: (k, v) => browser.storage.session.set({ [k]: v }),
-      },
+      session,
     },
     bannerFile: 'content-scripts/banner.js',
     getProgram,
@@ -145,10 +144,7 @@ export default defineBackground(() => {
     beforeDecide: async () => { await Promise.all([safety.ready, anchors.ready, permissions.ready]); },
     onClosed: (id, entry, focused) => { safety.toast(id, entry, focused).catch(warn('undo toast')); },
     // Cleared on browser restart: a missing marker at worker start opens the startup grace (order-independent).
-    session: {
-      get: async (k) => (await browser.storage.session.get(k))[k],
-      set: (k, v) => browser.storage.session.set({ [k]: v }),
-    },
+    session,
   });
   const safety: SafetyService = new SafetyService(port, {
     recentlyClosed,
@@ -186,10 +182,7 @@ export default defineBackground(() => {
       create: (name, when) => browser.alarms.create(name, { when }),
       clear: (name) => browser.alarms.clear(name),
     },
-    session: {
-      get: async (k) => (await browser.storage.session.get(k))[k],
-      set: (k, v) => browser.storage.session.set({ [k]: v }),
-    },
+    session,
     isRulePaused: (key) => permissions.paused().has(key),
     // I1: evidence-based (the executor also requires page facts for the tab); covers() is only for the page-facts hold.
     observesForm: (url) => permissions.coversKnown(url),
@@ -293,7 +286,6 @@ export default defineBackground(() => {
     reconciler.schedule('startup');
     void closeExecutor.evaluateAll(); // storage.session (pending closes) is empty after a browser start
   });
-  const session = { get: async (k: string) => (await browser.storage.session.get(k))[k] };
   const badgeDeps = {
     port,
     // Anchors are never closed by dupes.close* (R11), so they are not counted as closable extras.
