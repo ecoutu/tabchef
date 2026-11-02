@@ -291,6 +291,14 @@ export default defineBackground(() => {
     whyLog,
     recipes: { builtins: builtinRecipes(), permissions },
     isAnchor: (id) => anchors.isAnchor(id),
+    // preview.change (M2 T13): read-only views of the engine (Program, planner state, page facts); nothing is applied.
+    preview: {
+      builtins: builtinRecipes(),
+      getProgram,
+      planContext: (snap, p) => reconciler.planContext(snap, p),
+      facts: (id) => { const page = pageFacts.get(id); return page ? { page } : {}; },
+      permissions,
+    },
   });
   // Watch content script (ruling R12): its own sender-checked channel, never createHandler.
   const handleContent = createContentHandler({
