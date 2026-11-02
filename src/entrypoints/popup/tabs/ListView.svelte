@@ -5,6 +5,7 @@
   import { browser } from 'wxt/browser';
   import { send } from '../../../ui/send';
   import { requestNeeds } from '../../../ui/permissions';
+  import PrPill from '../../../ui/PrPill.svelte';
   import type { ViewRow, ViewSummary } from '../../../engine/views';
 
   let { view, rows, onChange }: { view: ViewSummary; rows: ViewRow[]; onChange: () => void } = $props();
@@ -93,8 +94,7 @@
             {/if}
             {#if r.reason}<span class="reason">{r.reason}</span>{/if}
           </span>
-          {#if stateOf(r)}<span class={`pill pill-${stateOf(r)}`}>{stateOf(r)}</span>{/if}
-          {#if r.stale}<span class="stale" title="Could not refresh this; it may be out of date">stale</span>{/if}
+          <PrPill state={stateOf(r)} stale={r.stale === true} staleLabel="Could not refresh this; it may be out of date" />
           {#if can('keep') && r.suggested}
             <button type="button" class="act" aria-label={`Keep ${name}`} onclick={() => keep(r)}>Keep</button>
           {/if}
@@ -124,14 +124,12 @@
   .reason { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .group { font-size: 11px; font-weight: 600; color: var(--muted); margin: 0; padding: 8px 12px 2px; text-transform: none; }
   button { font: inherit; }
-  .act, .all { border: 1px solid var(--border); background: var(--surface); color: inherit; border-radius: 6px; padding: 2px 8px; cursor: pointer; }
+  /* .act: src/ui/tokens.css; .all looks the same. */
+  .all { border: 1px solid var(--border); background: var(--surface); color: inherit; border-radius: 6px; padding: 2px 8px; cursor: pointer; }
   .all { display: block; width: calc(100% - 24px); margin: 8px 12px; padding: 6px; }
   .error { color: var(--danger); margin: 6px 12px; font-size: 12px; }
   .paused { color: var(--muted); margin: 6px 12px; font-size: 12px; }
   .empty { color: var(--muted); padding: 12px; margin: 0; }
-  .pill { flex: none; font-size: 11px; border-radius: 999px; padding: 1px 8px; border: 1px solid var(--border); color: var(--muted); }
-  .pill-merged { color: var(--accent); border-color: var(--accent); }
-  .stale { flex: none; font-size: 11px; color: var(--muted); font-style: italic; }
   .locked { padding: 12px; }
   .locked-text { margin: 0 0 8px; font-weight: 600; }
   .locked-actions { display: flex; flex-wrap: wrap; gap: 8px; }

@@ -2,6 +2,7 @@
   // One project card (M3 T17, spec §6.5 mockup): title, status pill and tab count; the open tabs (title focuses the tab,
   // PR state pill, stale dot); the linked PRs not open, greyed with "Open ↗"; and the Done prompt.
   import { staleText, type ProjectCard } from '../../../ui/projects-model';
+  import PrPill from '../../../ui/PrPill.svelte';
 
   let { card, prompt, onFocus, onOpenLinked, onCloseGroup, onKeep }: {
     card: ProjectCard;
@@ -39,15 +40,14 @@
           <span class="fav fav-ph" aria-hidden="true"></span>
         {/if}
         <button type="button" class="title" title={t.url} onclick={() => onFocus(t.tabId)}>{t.title || t.url}</button>
-        {#if t.pill}<span class={`pill pill-${t.pill}`}>{t.pill}</span>{/if}
-        {#if t.stale}<span class="stale" role="img" title={STALE} aria-label={STALE}></span>{/if}
+        <PrPill state={t.pill} stale={t.stale === true} staleLabel={STALE} />
       </li>
     {/each}
     {#each card.linked as l (l.url)}
       <li class="row linked">
         <span class="fav fav-ph" aria-hidden="true"></span>
         <span class="title" title={l.url}>{l.title}</span>
-        {#if l.state}<span class={`pill pill-${l.state}`}>{l.state}</span>{/if}
+        <PrPill state={l.state} staleLabel={STALE} />
         <button type="button" class="act" aria-label={`Open ${l.title}`} onclick={() => onOpenLinked(l.url)}>Open ↗</button>
       </li>
     {/each}
@@ -73,9 +73,6 @@
     background: none; border: 0; color: inherit; font: inherit; cursor: pointer; padding: 2px 0; }
   span.title { cursor: default; }
   .linked .title, .linked .fav { opacity: 0.55; }
-  .pill { flex: none; font-size: 11px; border-radius: 999px; padding: 1px 8px; border: 1px solid var(--border); color: var(--muted); }
-  .pill-merged { color: var(--accent); border-color: var(--accent); }
-  .stale { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
   .act { flex: none; } /* the button itself: .act in src/ui/tokens.css */
   button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 </style>

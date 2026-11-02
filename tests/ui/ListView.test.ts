@@ -78,6 +78,7 @@ describe('ListView: Merged PRs (M3 T13)', () => {
     render(ListView, { view: merged, rows: [pr(1), pr(2, { stale: true, source: { state: 'closed' } })], onChange: vi.fn() });
     expect(screen.getAllByText(/^(merged|closed)$/).map((e) => e.textContent)).toEqual(['merged', 'closed']);
     expect(screen.getAllByText('stale')).toHaveLength(1);
+    expect(screen.getByTitle('Could not refresh this; it may be out of date').textContent).toBe('stale');
   });
 
   describe('locked state', () => {

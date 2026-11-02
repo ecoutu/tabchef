@@ -100,5 +100,7 @@
 <style>
   .error { color: var(--danger); margin: 6px 12px; font-size: 12px; }
   .empty { color: var(--muted); padding: 12px; margin: 0; }
+  /* Undo on the --surface toast: the page background, so it stands out (overrides .act's --surface). */
+  .toast .act { background: var(--bg); }
   .toast { display: flex; align-items: center; gap: 8px; margin: 6px 12px; padding: 6px 8px; border-radius: 6px; background: var(--surface); }
 </style>
