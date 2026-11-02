@@ -1,6 +1,6 @@
 import type { Config, GroupColor } from '../types';
 import type { Cond, Rule } from '../lang/types';
-import { compilePattern, PatternError, patternCaptures } from '../match/pattern';
+import { compilePattern, MAX_REGEX_LEN, PatternError, patternCaptures } from '../match/pattern';
 import { templateVars } from '../match/template';
 import schema from './config.schema.json';
 import { validate, validateRule, type ValidateError } from './validate-config.generated.js';
@@ -10,8 +10,9 @@ export const configJsonSchema = schema;
 export type ValidationResult = { ok: true; config: Config } | { ok: false; errors: string[] };
 
 const COLORS = new Set<string>(['grey', 'blue', 'red', 'yellow', 'green', 'pink', 'purple', 'cyan', 'orange'] satisfies GroupColor[]);
-/** Durations: a positive integer and a unit (s, m, h, d), e.g. '30s', '15m', '2d'. */
-export const DURATION = /^[0-9]+[smhd]$/;
+/** Durations (plan Global Constraint): an integer and a unit (ms, s, m, h, d), e.g. '500ms', '30s', '15m', '2d'. */
+export const DURATION = /^\d+(ms|s|m|h|d)$/;
+const DURATION_MSG = 'must be a duration like 500ms, 30s, 15m, 2h or 1d';
 
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x);
 const list = <T>(x: T | T[]): T[] => (Array.isArray(x) ? x : [x]);
@@ -28,7 +29,13 @@ function patternProblem(p: string): string | undefined {
     throw e;
   }
 }
-function regexProblem(source: string, flags?: string): string | undefined {
+/**
+ * Error for a regex that does not compile, or, when `capped`, whose text (`measured`, default `source`) exceeds
+ * MAX_REGEX_LEN. Rule regexes are capped; dedupe urlTransforms are not (M1 stored data never had a cap, and a
+ * failing stored config would fall back to defaults).
+ */
+function regexProblem(source: string, flags?: string, capped = false, measured = source): string | undefined {
+  if (capped && measured.length > MAX_REGEX_LEN) return `regex too long (max ${MAX_REGEX_LEN} characters)`;
   try {
     new RegExp(source, flags);
     return undefined;
@@ -54,13 +61,13 @@ function condProblems(c: Cond, path: string, out: Problem[]): void {
     // Title patterns compile with the text matcher (M2 T2/R6); only a /regex/ is checkable here.
     const t = c.title;
     if (t.length >= 2 && t.startsWith('/') && t.lastIndexOf('/') > 0) {
-      const m = regexProblem(t.slice(1, t.lastIndexOf('/')), t.slice(t.lastIndexOf('/') + 1));
+      const m = regexProblem(t.slice(1, t.lastIndexOf('/')), t.slice(t.lastIndexOf('/') + 1), true, t);
       if (m) out.push({ path: `${path}/title`, message: m });
     }
   } else if ('age' in c) {
     for (const k of ['gt', 'lt'] as const) {
       const v = c.age[k];
-      if (v !== undefined && !DURATION.test(v)) out.push({ path: `${path}/age/${k}`, message: `must be a duration like 30s, 15m, 2h or 1d` });
+      if (v !== undefined && !DURATION.test(v)) out.push({ path: `${path}/age/${k}`, message: DURATION_MSG });
     }
   } else if ('opener' in c) condProblems(c.opener, `${path}/opener`, out);
   else if ('not' in c) condProblems(c.not, `${path}/not`, out);
@@ -102,11 +109,11 @@ export function ruleTitleProblems(rule: Rule): string[] {
 function ruleProblems(rule: Rule): Problem[] {
   const out: Problem[] = [];
   condProblems(rule.match, '/match', out);
-  if (rule.trigger?.every !== undefined && !DURATION.test(rule.trigger.every)) out.push({ path: '/trigger/every', message: 'must be a duration like 30s, 15m, 2h or 1d' });
+  if (rule.trigger?.every !== undefined && !DURATION.test(rule.trigger.every)) out.push({ path: '/trigger/every', message: DURATION_MSG });
   // Uniqueness is checked here, not with JSON-schema uniqueItems: ajv's standalone code for it needs a runtime require().
   rule.trigger?.on.forEach((k, j, all) => { if (all.indexOf(k) !== j) out.push({ path: `/trigger/on/${j}`, message: `duplicate trigger: ${k}` }); });
   for (const [name, x] of Object.entries(rule.extract ?? {})) {
-    if ('regex' in x) { const m = regexProblem(x.regex); if (m) out.push({ path: `/extract/${name}/regex`, message: m }); }
+    if ('regex' in x) { const m = regexProblem(x.regex, undefined, true); if (m) out.push({ path: `/extract/${name}/regex`, message: m }); }
   }
   rule.actions.forEach((a, j) => {
     if ('group' in a) {
@@ -115,7 +122,7 @@ function ruleProblems(rule: Rule): Problem[] {
         out.push({ path: `/actions/${j}/group/color`, message: `must be one of ${[...COLORS].join(', ')}, or a {template}` });
       }
     } else if ('close' in a && a.close.after !== undefined && !DURATION.test(a.close.after)) {
-      out.push({ path: `/actions/${j}/close/after`, message: 'must be a duration like 30s, 15m, 2h or 1d' });
+      out.push({ path: `/actions/${j}/close/after`, message: DURATION_MSG });
     }
   });
   return out;

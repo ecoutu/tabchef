@@ -7,7 +7,8 @@ export class PatternError extends Error {
 
 export type Matcher = (url: string) => Record<string, string> | null;
 
-const MAX_REGEX_LEN = 500;
+/** Regex-safety cap: every user or recipe regex is at most this many characters. */
+export const MAX_REGEX_LEN = 500;
 const cache = new Map<string, Matcher>();
 
 function collect(groups: Record<string, string | undefined> | undefined): Record<string, string> {

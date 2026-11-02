@@ -4,6 +4,7 @@ import { defaultConfig } from '../../../src/core/config/defaults';
 import { groupRuleToRule } from '../../../src/core/config/migrate';
 import { validateRule } from '../../../src/core/config/validate-config.generated.js';
 import type { Config, GroupRule } from '../../../src/core/types';
+import { MAX_REGEX_LEN } from '../../../src/core/match/pattern';
 
 const rule = (over: Record<string, unknown> = {}): GroupRule => ({
   id: 'r1', name: 'GH', enabled: true,
@@ -69,6 +70,21 @@ describe('config schema', () => {
       expect(r.errors.some((e) => e.startsWith('/rules/0/match/all/1/age/gt '))).toBe(true);
       expect(r.errors.some((e) => e.startsWith('/rules/0/actions/0/close/after '))).toBe(true);
     }
+  });
+  it('durations accept ms, s, m, h and d, and reject anything else', () => {
+    const close = (after: string) => validateConfig(cfgRaw([v2({ actions: [{ close: { after } }] })]));
+    for (const d of ['500ms', '30s', '15m', '2h', '1d']) expect(close(d).ok).toBe(true);
+    for (const d of ['5', '1.5s', '10mss', '3w', 'ms', '-1s']) expect(close(d)).toEqual({ ok: false, errors: ['/rules/0/actions/0/close/after must be a duration like 500ms, 30s, 15m, 2h or 1d'] });
+    expect(validateConfig(cfgRaw([v2({ trigger: { on: ['schedule'], every: '250ms' }, match: { age: { gt: '100ms' } } })])).ok).toBe(true);
+  });
+  it('caps title and extract regexes at the shared 500-character limit', () => {
+    const body = 'a'.repeat(MAX_REGEX_LEN);
+    const title = (t: string) => validateConfig(cfgRaw([v2({ match: { title: t } })]));
+    expect(title(`/${'a'.repeat(MAX_REGEX_LEN - 2)}/`).ok).toBe(true);
+    expect(title(`/${body}/`)).toEqual({ ok: false, errors: ['/rules/0/match/title regex too long (max 500 characters)'] });
+    const extract = (regex: string) => validateConfig(cfgRaw([v2({ extract: { x: { from: 'url', regex } } })]));
+    expect(extract(body).ok).toBe(true);
+    expect(extract('a'.repeat(10_000))).toEqual({ ok: false, errors: ['/rules/0/extract/x/regex regex too long (max 500 characters)'] });
   });
   it('rejects an invalid extract regex', () => {
     const r = validateConfig(cfgRaw([v2({ extract: { x: { from: 'title', regex: '(' } } })]));
