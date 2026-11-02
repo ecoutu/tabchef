@@ -156,4 +156,33 @@ describe('App: preview before Save (M2 T13)', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(types()).toContain('config.set');
   });
+
+  it('a failed preview saves nothing, keeps the edits and shows the error', async () => {
+    const base = send.getMockImplementation()!;
+    send.mockImplementation(async (req: { type: string }) => (req.type === 'preview.change' ? { ok: false, error: 'boom' } : base(req)));
+    render(App);
+    await edit();
+    await fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await screen.findByText('Could not preview: boom');
+    expect(types()).not.toContain('config.set');
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.getByText('Unsaved changes')).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(false);
+    await edit();
+    expect(screen.queryByText('Could not preview: boom')).toBeNull();
+  });
+
+  it('an invalid config still reaches config.set, which reports the errors', async () => {
+    const base = send.getMockImplementation()!;
+    send.mockImplementation(async (req: { type: string }) => {
+      if (req.type === 'preview.change') return { ok: false, error: 'invalid config', errors: ['bad config'] };
+      if (req.type === 'config.set') return { ok: false, error: 'invalid config', errors: ['bad config'] };
+      return base(req);
+    });
+    render(App);
+    await edit();
+    await fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await screen.findByText('Could not save:');
+    expect(types()).toContain('config.set');
+  });
 });

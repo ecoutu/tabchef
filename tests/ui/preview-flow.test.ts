@@ -18,7 +18,7 @@ describe('previewThenApply', () => {
     const order: string[] = [];
     const confirm = vi.fn(async () => { order.push('confirm'); return true; });
     const apply = vi.fn(async () => { order.push('apply'); return 'done'; });
-    expect(await previewThenApply(defaultConfig(), confirm, apply)).toBe('done');
+    expect(await previewThenApply(defaultConfig(), confirm, apply)).toEqual({ status: 'applied', value: 'done' });
     expect(send).toHaveBeenCalledWith({ type: 'preview.change', config: defaultConfig() });
     expect(confirm).toHaveBeenCalledWith(effects);
     expect(order).toEqual(['confirm', 'apply']);
@@ -27,17 +27,29 @@ describe('previewThenApply', () => {
   it('cancel: nothing is applied', async () => {
     send.mockResolvedValue({ ok: true, data: effects });
     const apply = vi.fn();
-    expect(await previewThenApply(defaultConfig(), async () => false, apply)).toBeUndefined();
+    expect(await previewThenApply(defaultConfig(), async () => false, apply)).toEqual({ status: 'cancelled' });
     expect(apply).not.toHaveBeenCalled();
   });
 
-  it('no effects, only dry-run entries (R52), or a failed preview: applies straight away without asking', async () => {
+  it('no effects, only dry-run entries (R52), or an invalid config: applies straight away without asking', async () => {
     const dryOnly: PreviewResult = { ...none, moves: [{ tabId: 1, title: 't', to: 'ex', dryRun: true }], closes: [{ tabId: 2, title: 'c', ruleKey: 'user/c', afterMs: 1, dryRun: true }] };
-    for (const r of [{ ok: true, data: none }, { ok: true, data: dryOnly }, { ok: false, error: 'invalid config' }]) {
+    // invalid config: the apply request (config.set) reports the field errors.
+    for (const r of [{ ok: true, data: none }, { ok: true, data: dryOnly }, { ok: false, error: 'invalid config', errors: ['/rules/0/name x'] }]) {
       send.mockResolvedValue(r);
       const confirm = vi.fn();
       const apply = vi.fn(async () => 1);
-      expect(await previewThenApply(defaultConfig(), confirm, apply)).toBe(1);
+      expect(await previewThenApply(defaultConfig(), confirm, apply)).toEqual({ status: 'applied', value: 1 });
+      expect(confirm).not.toHaveBeenCalled();
+    }
+  });
+
+  it('any other preview failure: nothing is applied, the error is returned', async () => {
+    for (const error of ['planContext exploded', 'Could not establish connection. Receiving end does not exist.', 'preview unavailable']) {
+      send.mockResolvedValue({ ok: false, error });
+      const confirm = vi.fn();
+      const apply = vi.fn(async () => 1);
+      expect(await previewThenApply(defaultConfig(), confirm, apply)).toEqual({ status: 'failed', error });
+      expect(apply).not.toHaveBeenCalled();
       expect(confirm).not.toHaveBeenCalled();
     }
   });

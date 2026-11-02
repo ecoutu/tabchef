@@ -44,6 +44,8 @@
   let baseRev = $state<string | undefined>(undefined);
   let conflict = $state(false);
   let syncWarning = $state('');
+  /** "Could not preview: <error>": the change was not saved (T13 fix round 1). */
+  let previewError = $state('');
   /** The open preview (M2 T13) and how to answer it (Apply → true, Cancel → false). */
   let preview = $state<{ result: PreviewResult; answer: (apply: boolean) => void } | null>(null);
 
@@ -88,12 +90,18 @@
   /** Save → preview.change → [Apply] → config.set {baseRev}; a change with no effects saves straight away (R5, T13). */
   async function save(): Promise<void> {
     if (!draft) return;
-    saving = true; saveErrors = []; saveMessage = '';
+    saving = true; saveErrors = []; saveMessage = ''; previewError = '';
     const toSave = structuredClone($state.snapshot(draft));
     // baseRev is read when Apply is clicked: a remote change meanwhile still conflicts.
-    const r = await previewThenApply(toSave, confirmPreview,
+    const out = await previewThenApply(toSave, confirmPreview,
       () => send({ type: 'config.set', config: toSave, ...(baseRev !== undefined ? { baseRev } : {}) }));
-    if (!r) { saving = false; return; } // cancelled: the edits stay
+    // Cancelled, or the preview failed: nothing was saved and the edits stay.
+    if (out.status !== 'applied') {
+      saving = false;
+      if (out.status === 'failed') previewError = `Could not preview: ${out.error}`;
+      return;
+    }
+    const r = out.value;
     if (r.ok) {
       saved = toSave; saveMessage = 'Saved.';
       const g = await send({ type: 'config.get' });
@@ -107,7 +115,7 @@
     saveErrors = r.errors?.length ? r.errors : [r.error];
   }
 
-  function edit(c: Config): void { draft = c; saveMessage = ''; }
+  function edit(c: Config): void { draft = c; saveMessage = ''; previewError = ''; }
 
   onMount(() => {
     void loadConfig();
@@ -151,6 +159,7 @@
     </div>
   {/if}
   {#if saveMessage}<p class="ok" role="status">{saveMessage}</p>{/if}
+  {#if previewError}<p class="err" role="alert">{previewError}</p>{/if}
   {#if preview}
     <PreviewDialog result={preview.result} onApply={() => preview?.answer(true)} onCancel={() => preview?.answer(false)} />
   {/if}
