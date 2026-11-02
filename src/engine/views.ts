@@ -6,7 +6,8 @@
 //   CloseExecutor.suggestions() for the Finished recipe's `finished` view, filtered by `show` over {tab.*, extract.*},
 //   then grouped (`groupBy`) and sorted (`sort`). Dry-run rules put no tab in a view (R48: they fall through).
 // - Which views: every enabled recipe's views (paused ones too, faded with their reason, R45), the first declaration
-//   of an id winning; plus the built-in Duplicates view while global dedupe is active (R58).
+//   of an id winning; plus the built-in Duplicates view while global dedupe is active (R58) and the built-in Finished
+//   view while close suggestions exist, whichever rule made them (R59).
 import { tabUrl } from '../core/dedupe/find';
 import { evalShow } from '../core/lang/cond';
 import { compileProgram } from '../core/lang/compile';
@@ -62,6 +63,8 @@ export interface ViewsInput {
   dupes?: () => Promise<{ sets: DupeSetView[]; pending: PendingAsk[] }>;
   /** Only this view id. */
   only?: string;
+  /** Skip the paused status (the toolbar badge only needs counts). */
+  noStatus?: boolean;
 }
 
 export interface ComputedView { view: DeclaredView; summary: ViewSummary; data: ViewData }
@@ -69,13 +72,23 @@ export interface ComputedView { view: DeclaredView; summary: ViewSummary; data: 
 /** The Finished recipe's view: it also lists CloseExecutor.suggestions() (T9→T17). */
 const isSuggestionsView = (v: DeclaredView): boolean => v.recipeId === 'finished' && v.id === 'finished';
 
-/** The views the popup lists, in Program (recipe) order; R58's Duplicates view first. */
-export function declaredViews(p: Program, config: Config | undefined, builtins: Record<string, Recipe>): DeclaredView[] {
+/**
+ * The views the popup lists, in Program (recipe) order; R58's Duplicates view first, R59's Finished view (shown while
+ * `hasSuggestions` even with the finished recipe disabled) last.
+ */
+export function declaredViews(
+  p: Program, config: Config | undefined, builtins: Record<string, Recipe>, hasSuggestions = false,
+): DeclaredView[] {
   const out: DeclaredView[] = [];
   const seen = new Set<string>();
+  const builtinViews = (id: string) => (Object.hasOwn(builtins, id) ? builtins[id]?.views ?? [] : []);
+  // View ids are global (showInView names an id only): the first declaration of an id wins, later ones are dropped.
   for (const v of p.views) if (!seen.has(v.id)) { seen.add(v.id); out.push(v); }
+  if (hasSuggestions && !out.some(isSuggestionsView)) {
+    for (const v of builtinViews('finished')) if (!seen.has(v.id)) { seen.add(v.id); out.push({ ...v, recipeId: 'finished' }); }
+  }
   if (config && config.dedupe.mode !== 'off') {
-    const dup = (Object.hasOwn(builtins, 'duplicates') ? builtins.duplicates?.views ?? [] : []).filter((v) => !seen.has(v.id));
+    const dup = builtinViews('duplicates').filter((v) => !seen.has(v.id));
     out.unshift(...dup.map((v) => ({ ...v, recipeId: 'duplicates' })));
   }
   return out;
@@ -157,6 +170,7 @@ async function pauseOf(v: DeclaredView, full: Program, check: Pick<PermissionsMa
     if (!st.ok) reasons.push(st.reason ?? 'Paused');
   }
   if (reasons.length === 0) return {};
+  // Fade only when every feeding rule is paused: Finished keeps filling from OAuth / redirect while meet-ended waits.
   const reason = [...new Set(reasons)].join('; ');
   return reasons.length === feeding.length ? { paused: reason } : { notice: reason };
 }
@@ -167,7 +181,7 @@ export async function readViews(d: ViewsDeps, input: ViewsInput): Promise<Comput
   const p = await d.getProgram();
   await d.closes?.ready;
   const suggestions = new Map((d.closes?.suggestions() ?? []).map((s) => [s.tabId, s]));
-  const views = declaredViews(p, config, d.builtins)
+  const views = declaredViews(p, config, d.builtins, suggestions.size > 0)
     .filter((v) => (input.only === undefined || v.id === input.only) && (v.kind === 'list' || input.dupes));
   if (views.length === 0) return [];
   const live = liveProgram(p);
@@ -177,7 +191,7 @@ export async function readViews(d: ViewsDeps, input: ViewsInput): Promise<Comput
     if (!ev) evals.set(t.id, (ev = evaluateTab(live, factsOf(snap, t, d.facts?.(t.id) ?? {}), now)));
     return ev;
   };
-  const full = config && d.permissions ? compileProgram(config, d.builtins).program : undefined;
+  const full = config && d.permissions && !input.noStatus ? compileProgram(config, d.builtins).program : undefined;
   const dupes = views.some((v) => v.kind === 'duplicates') ? await input.dupes!() : undefined;
   const out: ComputedView[] = [];
   for (const v of views) {

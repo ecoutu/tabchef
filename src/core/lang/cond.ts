@@ -121,7 +121,8 @@ function compare(c: Comparison, v: unknown): boolean {
       return c.op === '<' ? (v as number | string) < (want as number | string) : (v as number | string) > (want as number | string);
     }
     case 'in': return v !== undefined && Array.isArray(want) && want.some((x) => x === v);
-    // An unanchored regex search, through the same cached, input-capped compiler as `title: /re/` patterns.
+    // An unanchored regex search, through the same cached, input-capped compiler as `title: /re/` patterns (no
+    // comparison evaluator existed before T17). Wrapped as `/value/`, a 499–500-char value exceeds MAX_REGEX_LEN: no match.
     case 'matches': return typeof want === 'string' && (typeof v === 'string' || typeof v === 'number') && run(compileTextPattern, `/${want}/`, String(v)) !== null;
     default: return false;
   }

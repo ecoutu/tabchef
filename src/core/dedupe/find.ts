@@ -62,6 +62,7 @@ export function findDuplicateSets(
 ): { key: string; tabs: TabSnap[] }[] {
   const byKey = new Map<string, { key: string; tabs: TabSnap[] }>();
   for (const t of tabs) {
+    // Per-tab: each tab keyed with its own override; the engine keys a pair with the new tab's (final review: T17).
     const o = overrideOf?.(t);
     if (o?.mode === 'off') continue;
     const k = keyOf(tabUrl(t), t.incognito, s, o)?.key;

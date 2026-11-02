@@ -352,7 +352,11 @@ export function isExtensionPage(sender: MessageSender, d: Pick<HandlerDeps, 'run
   return typeof sender.url === 'string' && (sender.url === d.extensionOrigin || sender.url.startsWith(`${d.extensionOrigin}/`));
 }
 
-type BadgeDeps = Pick<HandlerDeps, 'port' | 'getSettings' | 'getProgram' | 'ask' | 'views' | 'now'> & { isLocked: (tabId: number) => boolean };
+type BadgeDeps = Pick<HandlerDeps, 'port' | 'getSettings' | 'getProgram' | 'ask' | 'views' | 'now'> & {
+  isLocked: (tabId: number) => boolean;
+  /** The stored config: which views are shown (R58 / R60). */
+  getConfig?: () => Promise<Config>;
+};
 
 /** Duplicate sets of the open tabs: each tab's winning dedupe override applied when the Program is known (R25). */
 async function duplicateSets(deps: Pick<HandlerDeps, 'port' | 'getSettings' | 'getProgram' | 'now'>): Promise<DupeSet[]> {
@@ -364,26 +368,34 @@ async function duplicateSets(deps: Pick<HandlerDeps, 'port' | 'getSettings' | 'g
   return findDuplicateSets(snap.tabs, p.dedupe, (t) => dedupeDecision(p, { tab: t, ...openerOf(snap, t) }, at).o);
 }
 
+/** Duplicate sets with their closable extras (pinned and `isLocked` tabs are never closed) and the pending asks. */
+async function dupesDataOf(deps: BadgeDeps): Promise<{ sets: DupeSetView[]; pending: PendingAsk[] }> {
+  const [sets, pending] = await Promise.all([duplicateSets(deps), deps.ask.listPending()]);
+  return { sets: sets.map((s) => ({ ...s, closable: s.tabs.slice(1).filter((t) => !t.pinned && !deps.isLocked(t.id)).length })), pending };
+}
+
 /** Closable duplicate extras (tabs after the oldest, excluding pinned and locked) plus pending asks. */
 export async function badgeCount(deps: BadgeDeps): Promise<number> {
-  const [sets, pending] = await Promise.all([duplicateSets(deps), deps.ask.listPending()]);
-  const extras = sets.reduce((n, s) => n + s.tabs.slice(1).filter((t) => !t.pinned && !deps.isLocked(t.id)).length, 0);
-  return extras + pending.length;
+  const { sets, pending } = await dupesDataOf(deps);
+  return sets.reduce((n, s) => n + s.closable, 0) + pending.length;
 }
 
 /**
- * Toolbar badge (R20): M1 badgeCount (the Duplicates view's count) plus every list view's count, i.e. the Finished
- * suggestions with the built-in recipes. The popup header total is the same sum over its views. Each view counts a tab
- * once (a Finished row is one tab whether it is suggested, shown by showInView or both).
+ * Toolbar badge (R20, R60): the sum of the counts of the views the popup shows, i.e. the popup header total. With the
+ * built-in recipes that is M1 badgeCount (the Duplicates view, counted only while shown, R58) plus the Finished
+ * suggestions (counted only while Finished is shown, R59). Each view counts a tab once. Without `views` (M1 wiring):
+ * badgeCount alone.
  */
 export async function refreshBadge(deps: BadgeDeps): Promise<void> {
-  const [dupes, lists] = await Promise.all([
-    badgeCount(deps),
-    deps.views
-      ? readViews(deps.views, { snap: await deps.port.snapshot(), now: (deps.now ?? Date.now)() }).then((vs) => vs.reduce((n, v) => n + v.summary.count, 0))
-      : 0,
-  ]);
-  const n = dupes + lists;
+  let n: number;
+  if (!deps.views) n = await badgeCount(deps);
+  else {
+    const [snap, config] = await Promise.all([deps.port.snapshot(), deps.getConfig?.()]);
+    const views = await readViews(deps.views, {
+      snap, now: (deps.now ?? Date.now)(), dupes: () => dupesDataOf(deps), noStatus: true, ...(config && { config }),
+    });
+    n = views.reduce((sum, v) => sum + v.summary.count, 0);
+  }
   await deps.port.setBadge(n > 0 ? String(n) : '');
 }
 
@@ -455,11 +467,11 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
     return duplicateSets(deps);
   }
 
-  async function dupesData(): Promise<{ sets: DupeSetView[]; pending: PendingAsk[] }> {
-    const views = (await sets()).map((s): DupeSetView => ({
-      ...s, closable: s.tabs.slice(1).filter((t) => !t.pinned && !kept(t.id)).length,
-    }));
-    return { sets: views, pending: await deps.ask.listPending() };
+  /** Badge deps for refreshes after an action: kept = locked or anchor, and the stored config (R60). */
+  const badgeDeps: BadgeDeps = { ...deps, isLocked: kept, getConfig: () => deps.store.get() };
+
+  function dupesData(): Promise<{ sets: DupeSetView[]; pending: PendingAsk[] }> {
+    return dupesDataOf(badgeDeps);
   }
 
   /** views.list / view.* : the listed views (or only `only`), computed from the snapshot, Program and stored config. */
@@ -496,7 +508,7 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
         ...(row.ruleKey !== undefined && { ruleId: row.ruleKey }),
       });
     }
-    await refreshBadge({ ...deps, isLocked: kept });
+    await refreshBadge(badgeDeps);
     return ok(null);
   }
 
@@ -722,18 +734,18 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
       case 'dupes.closeExtras': {
         const set = (await sets()).find((s) => s.key === req.key);
         const n = set ? await closeSet(set) : 0;
-        await refreshBadge({ ...deps, isLocked: kept });
+        await refreshBadge(badgeDeps);
         return ok(n);
       }
       case 'dupes.closeAll': {
         let n = 0;
         for (const s of await sets()) n += await closeSet(s);
-        await refreshBadge({ ...deps, isLocked: kept });
+        await refreshBadge(badgeDeps);
         return ok(n);
       }
       case 'dupes.resolve':
         await deps.ask.resolvePending(req.newTabId, req.existingTabId, req.choice);
-        await refreshBadge({ ...deps, isLocked: kept });
+        await refreshBadge(badgeDeps);
         return ok(null);
       case 'recent.list': await deps.recentlyClosed.ready; return ok(deps.recentlyClosed.list());
       case 'recent.undo': await deps.safety.undo(req.id); return ok(null);

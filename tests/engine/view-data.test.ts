@@ -249,3 +249,51 @@ describe('toolbar badge (R20): M1 badgeCount + Finished suggestions, nothing cou
     expect(views.reduce((n, v) => n + v.count, 0)).toBe(2); // the popup header total agrees with the badge
   });
 });
+
+describe('R59 / R60: Finished shown whenever suggestions exist; the badge counts only shown views', () => {
+  const total = async (s: ReturnType<typeof setup>) =>
+    (((await s.handle({ type: 'views.list' }, ui)) as Loose).data as { count: number }[]).reduce((n, v) => n + v.count, 0);
+
+  it('R59: finished disabled, a suggestion from a user suggest-mode rule → Finished shows and the badge counts it', async () => {
+    const user: CloseSuggestion = { tabId: 3, ruleKey: 'user/cb', reason: 'Callback' };
+    const s = setup({ suggestions: [user] });
+    const rule: Rule = { id: 'cb', name: 'Callback', enabled: true, match: { url: 'localhost:*/*' }, actions: [{ close: { mode: 'suggest' } }] };
+    await s.setCfg({ ...defaultConfig(), rules: [rule], order: ['user/cb'] }); // finished is disabled by default
+    s.mk(3, CB);
+    const views = ((await s.handle({ type: 'views.list' }, ui)) as Loose).data as { id: string; count: number }[];
+    expect(views.map((v) => [v.id, v.count])).toEqual([['duplicates', 0], ['finished', 1]]);
+    const r = (await s.handle({ type: 'view.data', viewId: 'finished' }, ui)) as Loose;
+    expect(r.data.rows).toEqual([expect.objectContaining({ tabId: 3, suggested: true, reason: 'Callback', ruleKey: 'user/cb' })]);
+    await refreshBadge({ ...s.deps, getConfig: s.deps.store.get, isLocked: () => false });
+    expect(s.port.badge).toBe('1');
+    expect(await total(s)).toBe(1);
+  });
+
+  it('R59: without suggestions a disabled finished recipe shows no Finished view', async () => {
+    const s = setup();
+    expect((((await s.handle({ type: 'views.list' }, ui)) as Loose).data as { id: string }[]).map((v) => v.id)).toEqual(['duplicates']);
+  });
+
+  it('R60: dedupe off and duplicates disabled → the badge excludes duplicates and matches the popup total', async () => {
+    const s = setup({ suggestions: [oauth] });
+    const c = enable(defaultConfig(), 'finished');
+    await s.setCfg({ ...c, dedupe: { ...c.dedupe, mode: 'off' }, recipes: c.recipes.map((r) => (r.id === 'duplicates' ? { ...r, enabled: false } : r)) });
+    s.mk(1, 'https://a.example/x'); s.mk(2, 'https://a.example/x'); s.mk(3, CB);
+    await refreshBadge({ ...s.deps, getConfig: s.deps.store.get, isLocked: () => false });
+    expect(s.port.badge).toBe('1'); // the Finished suggestion only; the a.example duplicate is not counted
+    expect(await total(s)).toBe(1);
+    // A handler-triggered refresh (view.keep) uses the same rule.
+    s.port.badge = '';
+    await s.handle({ type: 'view.keep', viewId: 'finished', tabId: 3 }, ui);
+    expect(s.port.badge).toBe('1');
+  });
+
+  it('R60: with the Duplicates view shown, the badge is its count plus the list views, equal to the popup total', async () => {
+    const s = setup({ suggestions: [oauth] });
+    await s.setCfg(enable(defaultConfig(), 'finished'));
+    s.mk(1, 'https://a.example/x'); s.mk(2, 'https://a.example/x'); s.mk(3, CB);
+    await refreshBadge({ ...s.deps, getConfig: s.deps.store.get, isLocked: () => false });
+    expect(s.port.badge).toBe('2');
+    expect(await total(s)).toBe(2);
+  });
+});

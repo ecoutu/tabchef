@@ -294,6 +294,8 @@ export default defineBackground(() => {
     getSettings: async () => (await getProgram()).dedupe,
     // Per-rule dedupe overrides (R25) for duplicate sets, as the engine decides them (M2 T17).
     getProgram,
+    // Which views are shown (R58 / R59): the badge counts only those (R60).
+    getConfig: () => store.get(),
     // Recipe views (M2 T17): the popup tabs, and the list views' counts in the toolbar badge (R20).
     views: {
       builtins: builtinRecipes(),
