@@ -11,6 +11,11 @@ import type { TabSnap } from '../types';
 export interface GroupTarget extends GroupResult {
   ruleId: string;
   ruleIndex: number;
+  /**
+   * M3 (project targets, T14): with no group of exactly `title` in the window, a managed group whose title this
+   * accepts is adopted and renamed (`updateGroup{title}`) instead of creating a second group.
+   */
+  titleMatches?: (title: string) => boolean;
 }
 /** M1 name, kept for the planner. */
 export type GroupMatch = GroupTarget;

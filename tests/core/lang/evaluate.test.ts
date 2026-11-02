@@ -239,6 +239,10 @@ describe('evaluateTab: M3 T1 fields and projects', () => {
       { key: 'PR-7', ruleKey: 'p/a', index: 1, create: true },
     ]);
   });
+  it('a candidate carries the rule\'s non-empty summary var (T14)', () => {
+    const b = { p: recipe('p', [rule('a', { url: 'github.com/*' }, [assign('K-1')], { extract: { summary: { from: 'title', regex: '^\\d+ (.+)$' } } })], { project }) };
+    expect(ev(config({ recipes: [ref('p')] }), facts(), b).project).toEqual([{ key: 'K-1', ruleKey: 'p/a', index: 0, create: false, summary: 'Fix it' }]);
+  });
   it('a key that renders empty is skipped; no candidates leaves project undefined', () => {
     const b = { p: recipe('p', [rule('a', { url: 'github.com/*' }, [assign('{t}')], { extract: { t: { from: 'title', regex: '^(zzz)' } } })], { project }) };
     expect(ev(config({ recipes: [ref('p')] }), facts(), b).project).toBeUndefined();

@@ -27,8 +27,11 @@ export interface GroupResult {
 }
 export interface DedupeResult { key: string; mode?: DedupeMode; followFragment?: boolean; keepFragment?: boolean; matchTitle?: boolean }
 export interface CloseResult { key: string; afterMs: number; mode: CloseMode; dryRun: boolean }
-/** One `assignProject` candidate (M3): the key rendered with the rule's vars; `index` is the rule's priority. */
-export interface ProjectCandidate { key: string; ruleKey: string; index: number; create: boolean }
+/**
+ * One `assignProject` candidate (M3): the key rendered with the rule's vars; `index` is the rule's priority.
+ * `summary`: the rule's `summary` var (an extract), when non-empty; T14's resolveProjects reports it for the project.
+ */
+export interface ProjectCandidate { key: string; ruleKey: string; index: number; create: boolean; summary?: string }
 /** No `notify` / `discard`: those actions do not exist in M2 (R26). */
 export interface EvalResult {
   group?: GroupResult;
@@ -186,7 +189,12 @@ export function evaluateTab(p: Program, f: TabFacts, now: number): EvalResult {
         }
       } else if ('assignProject' in a) {
         const key = renderTemplate(a.assignProject.key, vars, p.tables);
-        if (key !== '') (out.project ??= []).push({ key, ruleKey: r.key, index: r.index, create: a.assignProject.create ?? false });
+        const summary = vars.summary;
+        if (key !== '') {
+          (out.project ??= []).push({
+            key, ruleKey: r.key, index: r.index, create: a.assignProject.create ?? false, ...(summary ? { summary } : {}),
+          });
+        }
       }
     }
   }

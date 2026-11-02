@@ -65,6 +65,6 @@ export type Op =
   | { kind: 'ungroup'; tabIds: number[]; ruleId?: string }
   | { kind: 'moveTabs'; tabIds: number[]; windowId: number; groupId: number; ruleId?: string }   // merge rules
   | { kind: 'moveGroup'; groupId: number; index: number }
-  | { kind: 'updateGroup'; groupId: number; color?: GroupColor; collapsed?: boolean }
+  | { kind: 'updateGroup'; groupId: number; title?: string; color?: GroupColor; collapsed?: boolean }
   | { kind: 'closeTab'; tabId: number; reason: string; ruleId?: string }
   | { kind: 'focusTab'; tabId: number; windowId: number; url?: string };

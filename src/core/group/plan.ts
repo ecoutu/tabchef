@@ -1,4 +1,4 @@
-import { evaluateGroup, type GroupMatch } from './evaluate';
+import { evaluateGroup, type GroupMatch, type GroupTarget } from './evaluate';
 import { parseTemplateLenient } from '../match/template';
 import { isExemptUrl } from '../url/normalize';
 import type { Program, TabFacts } from '../lang/types';
@@ -11,6 +11,12 @@ export interface PlanContext {
   managedTitles: Set<string>;
   /** `"<windowId>|<title>"` → monotonically increasing creation number. */
   creationOrder: Map<string, number>;
+  /**
+   * M3 (M3-R39): per-tab targets from outside the rule language (project targets, T14 projectTargets). A target
+   * competes with the tab's evaluated group: the lower ruleIndex wins (the evaluated one on a tie). `null`: the tab
+   * has no target at all. Applied in planTargets, so managed groups, tracking and planning agree.
+   */
+  overrides?: Map<number, GroupTarget | null>;
 }
 
 /** One desired group: an existing group to adopt (`groupId`) or a new one, plus the tabs that must join it. */
@@ -33,15 +39,21 @@ function templateProduces(template: string, title: string): boolean {
   return re.test(title);
 }
 
-/** Desired sort: (ruleIndex, title | creation order, group id, first tab position). */
-function bucketCompare(ctx: PlanContext) {
+/**
+ * Desired sort: (ruleIndex, title | creation order, group id, first tab position). An adopted group's creation number
+ * is read under its current title (`groupTitle`), so a group being renamed keeps its place (M3-R41).
+ */
+function bucketCompare(ctx: PlanContext, groupTitle: (gid: number) => string | undefined) {
+  const createdAt = (b: Bucket): number => {
+    const title = (b.groupId !== undefined ? groupTitle(b.groupId) : undefined) ?? b.title;
+    return ctx.creationOrder.get(`${b.windowId}|${title}`) ?? Infinity;
+  };
   return (a: Bucket, b: Bucket): number => {
     const byRule = cmp(a.match.ruleIndex, b.match.ruleIndex);
     if (byRule) return byRule;
     const second = a.match.sortGroups === 'alphabetical'
       ? a.title.localeCompare(b.title)
-      : cmp(ctx.creationOrder.get(`${a.windowId}|${a.title}`) ?? Infinity,
-        ctx.creationOrder.get(`${b.windowId}|${b.title}`) ?? Infinity);
+      : cmp(createdAt(a), createdAt(b));
     if (second) return second;
     const byId = cmp(a.groupId ?? Infinity, b.groupId ?? Infinity);
     if (byId) return byId;
@@ -75,7 +87,7 @@ function planMoves(windowTabs: TabSnap[], desired: number[]): Op[] {
   return ops;
 }
 
-type ManagedCtx = Pick<PlanContext, 'leaveAlone' | 'managedTitles'>;
+type ManagedCtx = Pick<PlanContext, 'leaveAlone' | 'managedTitles' | 'overrides'>;
 
 /** Page facts per tab (M2 T7, background PageFacts). `awaiting`: no facts yet but the tab's watch script should report soon. */
 export interface PageLookup {
@@ -115,15 +127,24 @@ export function planTargets(snap: Snapshot, p: Program, ctx: ManagedCtx, now: nu
   const titleMatch = new Map<string, GroupMatch>();
   const byId = new Map(snap.tabs.map((t) => [t.id, t]));
   const groupTitles = new Map(snap.groups.map((g) => [g.id, g.title]));
+  // An override ranked ahead of every group rule wins whatever the page says: neither evaluated nor held (M3-R56).
+  // Infinity when no rule has a group action (Math.min of nothing): then every override wins outright.
+  const firstGroupRule = Math.min(...p.rules.filter((r) => r.rule.actions.some((a) => 'group' in a)).map((r) => r.index));
   for (const t of tabs) {
     if (!baseEligible(t)) continue;
-    const opener = t.openerTabId !== undefined ? byId.get(t.openerTabId) : undefined;
-    const groupTitle = t.groupId !== -1 ? groupTitles.get(t.groupId) : undefined;
-    const pf = page?.get(t.id);
-    const { target: m, needsPage } = evaluateGroup(t, p, {
-      ...(opener && { opener }), ...(groupTitle !== undefined && { groupTitle }), ...(pf && { page: pf }),
-    }, now);
-    if (needsPage && page?.awaiting(t.id)) { held.add(t.id); continue; }
+    const override = ctx.overrides?.get(t.id);
+    if (override === null) continue;
+    let m: GroupMatch | null | undefined = override;
+    if (!override || override.ruleIndex >= firstGroupRule) {
+      const opener = t.openerTabId !== undefined ? byId.get(t.openerTabId) : undefined;
+      const groupTitle = t.groupId !== -1 ? groupTitles.get(t.groupId) : undefined;
+      const pf = page?.get(t.id);
+      const { target: evaluated, needsPage } = evaluateGroup(t, p, {
+        ...(opener && { opener }), ...(groupTitle !== undefined && { groupTitle }), ...(pf && { page: pf }),
+      }, now);
+      if (needsPage && page?.awaiting(t.id)) { held.add(t.id); continue; }
+      m = override && (!evaluated || override.ruleIndex < evaluated.ruleIndex) ? override : evaluated;
+    }
     if (!m) continue;
     matches.set(t.id, m);
     const prev = titleMatch.get(m.title);
@@ -238,6 +259,19 @@ export function planGroups(snap: Snapshot, p: Program, ctx: PlanContext, pre?: T
   }
 
   const isManaged = (g: GroupSnap): boolean => managed.has(g.id);
+  /** Group id → the title a bucket adopted it for through titleMatches (M3-R40); one bucket per group. */
+  const renamed = new Map<number, string>();
+  /** M3-R40: the lowest-id managed group in window `w` that `m.titleMatches` accepts and no tab targets by title. */
+  const adoptable = (w: number, m: GroupMatch): GroupSnap | undefined => {
+    const accepts = m.titleMatches;
+    if (!accepts) return undefined;
+    const g = snap.groups
+      .filter((x) => x.windowId === w && x.title !== '' && isManaged(x) && !titleMatch.has(x.title)
+        && (renamed.get(x.id) ?? m.title) === m.title && accepts(x.title))
+      .sort((a, b) => a.id - b.id)[0];
+    if (g) renamed.set(g.id, m.title);
+    return g;
+  };
   /**
    * The rule a managed group belongs to: one of its targeting tabs' rule, else the first program rule with a group
    * action whose title template produces it.
@@ -292,8 +326,8 @@ export function planGroups(snap: Snapshot, p: Program, ctx: PlanContext, pre?: T
       }
       key = home ? `${t.windowId}|${m.title}` : `merge|${incog}|${m.title}`;
     } else {
-      home = candidates.find((g) => g.windowId === t.windowId);
       key = `${t.windowId}|${m.title}`;
+      home = candidates.find((g) => g.windowId === t.windowId) ?? (buckets.has(key) ? undefined : adoptable(t.windowId, m));
     }
     let b = buckets.get(key);
     if (!b) {
@@ -311,7 +345,7 @@ export function planGroups(snap: Snapshot, p: Program, ctx: PlanContext, pre?: T
     for (const t of b.join) dirty.add(t.windowId);
   }
 
-  const order = bucketCompare(ctx);
+  const order = bucketCompare(ctx, (gid) => groupsById.get(gid)?.title);
   const ops: Op[] = [];
   for (const w of [...normal].sort((a, b) => a - b)) {
     for (const [gid, tabIds] of ungroups.get(w) ?? []) {
@@ -333,7 +367,11 @@ export function planGroups(snap: Snapshot, p: Program, ctx: PlanContext, pre?: T
     }
     for (const b of mine) {
       const g = b.groupId !== undefined ? groupsById.get(b.groupId) : undefined;
-      if (g && g.color !== b.match.color) ops.push({ kind: 'updateGroup', groupId: g.id, color: b.match.color });
+      if (!g || (g.title === b.title && g.color === b.match.color)) continue;
+      ops.push({
+        kind: 'updateGroup', groupId: g.id, ...(g.title !== b.title && { title: b.title }),
+        ...(g.color !== b.match.color && { color: b.match.color }),
+      });
     }
     if (!dirty.has(w)) {
       const desired = mine.flatMap((b) => (b.groupId !== undefined ? [b.groupId] : []));

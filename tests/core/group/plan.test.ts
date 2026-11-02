@@ -4,6 +4,7 @@ import { liveProgram } from '../../../src/core/lang/dry-run';
 import { FakeBrowserPort } from '../../../src/platform/fake-port';
 import type { Config, GroupColor, GroupRule, Op, Snapshot, TabSnap } from '../../../src/core/types';
 import type { GroupAction, Program, Rule } from '../../../src/core/lang/types';
+import type { GroupTarget } from '../../../src/core/group/evaluate';
 import { defaultConfig } from '../../../src/core/config/defaults';
 import { programFromGroupRules, programOf } from '../../helpers/config';
 
@@ -67,7 +68,8 @@ async function apply(f: FakeBrowserPort, ops: Op[]): Promise<void> {
         break;
       case 'moveGroup': await f.moveGroup(op.groupId, op.index); break;
       case 'updateGroup': {
-        const p: { color?: GroupColor; collapsed?: boolean } = {};
+        const p: { title?: string; color?: GroupColor; collapsed?: boolean } = {};
+        if (op.title !== undefined) p.title = op.title;
         if (op.color !== undefined) p.color = op.color;
         if (op.collapsed !== undefined) p.collapsed = op.collapsed;
         await f.updateGroup(op.groupId, p);
@@ -668,5 +670,115 @@ describe('planGroups: compiled-program inputs (M2 T6)', () => {
     expect(planGroups(snap(f), p, ctx())).toEqual([
       { kind: 'group', tabIds: [2], windowId: 1, title: 'From A', color: 'blue', collapsed: false, ruleId: 'user/o' },
     ]);
+  });
+});
+
+describe('planGroups: overrides and titleMatches (M3 T14)', () => {
+  const API = cfg(rule('api', 'a.com/*', 'api'));
+  /** A project-like target: strict, own title, adopts groups titled `key` or `key · …`. */
+  const target = (title: string, key: string, o: Partial<GroupTarget> = {}): GroupTarget => ({
+    key: 'p/r', ruleId: 'p/r', index: 5, ruleIndex: 5, title, color: 'blue', collapsed: false, sortGroups: 'creation',
+    strict: true, merge: false, dryRun: false, anchors: [], titleMatches: (t) => t === key || t.startsWith(`${key} · `), ...o,
+  });
+
+  it('an existing managed group "ABC-1" and target "ABC-1 · Login fails" → one updateGroup {title}, no new group', async () => {
+    const f = world();
+    f.addTab(tab(1, OTHER, { groupId: 7 }));
+    f.addTab(tab(2, OTHER));
+    f.addGroup({ id: 7, windowId: 1, title: 'ABC-1', color: 'blue', collapsed: false });
+    const t = target('ABC-1 · Login fails', 'ABC-1');
+    const c = ctx({ managedTitles: new Set(['ABC-1']), overrides: new Map([[1, t], [2, t]]) });
+    expect(planGroups(snap(f), cfg(), c)).toEqual([
+      { kind: 'group', tabIds: [2], windowId: 1, title: 'ABC-1 · Login fails', color: 'blue', existingGroupId: 7, ruleId: 'p/r' },
+      { kind: 'updateGroup', groupId: 7, title: 'ABC-1 · Login fails' },
+    ]);
+    const passes = await converge(f, cfg(), c);
+    expect(passes.flat().some((o) => o.kind === 'group' && o.existingGroupId === undefined)).toBe(false);
+    expect(f.state.groups.map((g) => g.title)).toEqual(['ABC-1 · Login fails']);
+  });
+
+  it('a renamed group keeps its place: its creation number is read under its current title (R41)', () => {
+    const f = world();
+    f.addTab(tab(1, OTHER, { groupId: 7 }));
+    f.addTab(tab(2, B, { groupId: 8 }));
+    f.addGroup({ id: 7, windowId: 1, title: 'ABC-1', color: 'blue', collapsed: false });
+    f.addGroup({ id: 8, windowId: 1, title: 'ABC-2', color: 'blue', collapsed: false });
+    const c = ctx({
+      managedTitles: new Set(['ABC-1', 'ABC-2']), creationOrder: new Map([['1|ABC-1', 1], ['1|ABC-2', 2]]),
+      overrides: new Map([[1, target('ABC-1 · Login', 'ABC-1')], [2, target('ABC-2', 'ABC-2')]]),
+    });
+    expect(planGroups(snap(f), cfg(), c)).toEqual([{ kind: 'updateGroup', groupId: 7, title: 'ABC-1 · Login' }]);
+  });
+
+  it('a winning override that no rule can beat is not held while page facts are on their way', () => {
+    const f = world();
+    f.addTab(tab(1, A));
+    const p = programOf({ ...defaultConfig(), rules: [
+      { id: 'done', name: 'done', enabled: true, match: { all: [{ url: 'a.com/*' }, { pageText: 'finished' }] }, actions: [{ group: { title: 'Done', color: 'blue' } }] },
+    ] });
+    const page = { get: () => undefined, awaiting: () => true };
+    const manual = ctx({ overrides: new Map([[1, target('P', 'P', { ruleIndex: -1, index: -1 })]]) });
+    const pre = planTargets(snap(f), p, manual, 0, page);
+    expect(pre.matches.get(1)?.title).toBe('P');
+    expect(pre.eligible(f.state.tabs[0]!)).toBe(true);
+    // An override a page-dependent rule could still beat keeps the hold.
+    const late = ctx({ overrides: new Map([[1, target('P', 'P', { ruleIndex: 5, index: 5 })]]) });
+    expect(planTargets(snap(f), p, late, 0, page).matches.has(1)).toBe(false);
+  });
+
+  it('a title and color change together are one updateGroup', () => {
+    const f = world();
+    f.addTab(tab(1, OTHER, { groupId: 7 }));
+    f.addGroup({ id: 7, windowId: 1, title: 'ABC-1', color: 'red', collapsed: false });
+    const c = ctx({ managedTitles: new Set(['ABC-1']), overrides: new Map([[1, target('ABC-1 · X', 'ABC-1')]]) });
+    expect(planGroups(snap(f), cfg(), c)).toEqual([{ kind: 'updateGroup', groupId: 7, title: 'ABC-1 · X', color: 'blue' }]);
+  });
+
+  it('a group with the exact target title wins over a titleMatches one; an unmanaged match is never adopted', () => {
+    const f = world();
+    f.addTab(tab(1, OTHER, { groupId: 7 }));
+    f.addTab(tab(2, OTHER, { groupId: 8 }));
+    f.addGroup({ id: 7, windowId: 1, title: 'ABC-1', color: 'blue', collapsed: false });
+    f.addGroup({ id: 8, windowId: 1, title: 'ABC-1 · X', color: 'blue', collapsed: false });
+    const t = target('ABC-1 · X', 'ABC-1');
+    const managed = planGroups(snap(f), cfg(), ctx({ managedTitles: new Set(['ABC-1']), overrides: new Map([[1, t], [2, t]]) }));
+    expect(managed).toEqual([{ kind: 'group', tabIds: [1], windowId: 1, title: 'ABC-1 · X', color: 'blue', existingGroupId: 8, ruleId: 'p/r' }]);
+
+    const g = world();
+    g.addTab(tab(1, OTHER, { groupId: 7 }));
+    g.addTab(tab(2, OTHER));
+    g.addGroup({ id: 7, windowId: 1, title: 'ABC-1', color: 'blue', collapsed: false });
+    const ops = planGroups(snap(g), cfg(), ctx({ overrides: new Map([[2, t]]) }));
+    expect(ops).toEqual([{ kind: 'group', tabIds: [2], windowId: 1, title: 'ABC-1 · X', color: 'blue', collapsed: false, ruleId: 'p/r' }]);
+  });
+
+  it('an override null is no target (a strict group ungroups the tab); managed and the planner agree', () => {
+    const f = world();
+    f.addTab(tab(1, A, { groupId: 7 }));
+    f.addGroup({ id: 7, windowId: 1, title: 'api', color: 'blue', collapsed: false });
+    const c = ctx({ overrides: new Map([[1, null]]) });
+    expect(planTargets(snap(f), API, c).matches.has(1)).toBe(false);
+    expect(managedGroupIds(snap(f), API, ctx({ managedTitles: new Set(['api']), overrides: c.overrides }))).toEqual(new Set([7]));
+    expect(planGroups(snap(f), API, ctx({ managedTitles: new Set(['api']), overrides: c.overrides })))
+      .toEqual([{ kind: 'ungroup', tabIds: [1], ruleId: 'user/api' }]);
+  });
+
+  it('an override target counts for managed (the group it targets is managed without managedTitles)', () => {
+    const f = world();
+    f.addTab(tab(1, OTHER, { groupId: 7 }));
+    f.addGroup({ id: 7, windowId: 1, title: 'ABC-1', color: 'blue', collapsed: false });
+    const c = ctx({ overrides: new Map([[1, target('ABC-1', 'ABC-1')]]) });
+    expect(managedGroupIds(snap(f), cfg(), c)).toEqual(new Set([7]));
+    expect(planGroups(snap(f), cfg(), c)).toEqual([]);
+  });
+
+  it('an override competes with the evaluated rule: the lower ruleIndex wins', () => {
+    const f = world();
+    f.addTab(tab(1, A));
+    const p = cfg(rule('a', 'a.com/*', 'A')); // ruleIndex 0
+    const late = ctx({ overrides: new Map([[1, target('P', 'P', { ruleIndex: 5, index: 5 })]]) });
+    expect(planTargets(snap(f), p, late).matches.get(1)?.title).toBe('A');
+    const early = ctx({ overrides: new Map([[1, target('P', 'P', { ruleIndex: -1, index: -1 })]]) });
+    expect(planTargets(snap(f), p, early).matches.get(1)?.title).toBe('P');
   });
 });

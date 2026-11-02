@@ -293,6 +293,7 @@ export class Reconciler {
           if (global) would(`g${op.groupId}|move|${op.index}`, { action: 'would-group', detail: `Would move group ${titleOf(op.groupId) ?? op.groupId} to position ${op.index} (dry run)` });
           break;
         case 'updateGroup':
+          if (global && op.title !== undefined) would(`g${op.groupId}|title|${op.title}`, { action: 'would-group', detail: `Would rename group ${titleOf(op.groupId) ?? op.groupId} to ${op.title} (dry run)` });
           if (global && op.color !== undefined) would(`g${op.groupId}|color|${op.color}`, { action: 'would-group', detail: `Would recolor group ${titleOf(op.groupId) ?? op.groupId} ${op.color} (dry run)` });
           break;
         default:
@@ -372,6 +373,17 @@ export class Reconciler {
     if (title === undefined) return;
     st.managedTitles.add(title);
     for (const id of tabIds) st.managedTabs.set(id, groupId);
+  }
+
+  /** A renamed group keeps its place (M3-R41): its creation number moves from `w|from` to `w|to`. */
+  private rekeyCreation(st: LiveState, windowId: number, from: string, to: string): void {
+    const old = `${windowId}|${from}`;
+    const n = st.creationOrder.get(old);
+    if (n === undefined) return;
+    st.creationOrder.delete(old);
+    st.creationAbsent.delete(old);
+    const key = `${windowId}|${to}`;
+    if (!st.creationOrder.has(key)) st.creationOrder.set(key, n);
   }
 
   /** Records expected group-change events; returns them so the window can restart when the call resolves. */
@@ -518,9 +530,21 @@ export class Reconciler {
         this.adopt(st, op.groupId, titleOf(op.groupId));
         return;
       case 'updateGroup': {
-        const p = { ...(op.color !== undefined && { color: op.color }), ...(op.collapsed !== undefined && { collapsed: op.collapsed }) };
+        const p = {
+          ...(op.title !== undefined && { title: op.title }), ...(op.color !== undefined && { color: op.color }),
+          ...(op.collapsed !== undefined && { collapsed: op.collapsed }),
+        };
         await this.call(() => this.port.updateGroup(op.groupId, p));
-        this.adopt(st, op.groupId, titleOf(op.groupId));
+        const g = snap.groups.find((x) => x.id === op.groupId);
+        if (g && op.title !== undefined && op.title !== g.title) {
+          const old = g.title;
+          this.rekeyCreation(st, g.windowId, old, op.title);
+          // The pass's snapshot follows the rename, so later ops (and their why-log entries) see the new title.
+          g.title = op.title;
+          // A user group later titled `old` must not count as Tabchef's; keep it while another group still has it.
+          if (!snap.groups.some((x) => x.title === old)) st.managedTitles.delete(old);
+        }
+        this.adopt(st, op.groupId, op.title ?? titleOf(op.groupId));
         return;
       }
       default:
