@@ -1,11 +1,18 @@
-import type { Config, GroupRule, TabSnap } from '../core/types';
-import type { Rule } from '../core/lang/types';
-import { compilePattern } from '../core/match/pattern';
+import { isMap, isScalar, isSeq, LineCounter, parseDocument, stringify, type Node as YamlNode } from 'yaml';
+import type { Config, DedupeMode, GroupRule, TabSnap } from '../core/types';
+import type { CloseMode, Cond, GroupAction, Recipe, RecipeRef, Rule } from '../core/lang/types';
+import { compilePattern, compileTextPattern } from '../core/match/pattern';
 import { asGroupRule, orderedUserRules } from '../core/config/group-view';
 import { groupRuleToRule, sanitizeRuleId, userKey } from '../core/config/migrate';
+import { COLORS } from '../core/config/schema';
+import { validateRule } from '../core/lang/schema';
+import { substitute } from '../core/lang/compile';
+import { builtinRecipes } from '../recipes/load';
 
-// The Rules page edits v2 user rules through the M1 form fields (ruling R3). A rule the form cannot express
-// (asGroupRule returns null) is shown read-only until M2 T15. Display order = priority = `order`.
+// The Rules page (M2 T15) lists user rules and the rules of enabled recipes in one priority order (`order`). User
+// rules are edited in a form (ruleForm) or as YAML (ruleToYaml / yamlToRule), toggled per rule; a rule the form
+// cannot show is a read-only summary (ruleSummary) with "Edit in YAML". Recipe rules are locked rows: they can be
+// reordered, tested and customized (copied into a user rule), not edited. Display order = priority = `order`.
 
 export { orderedUserRules } from '../core/config/group-view';
 
@@ -86,11 +93,20 @@ export function configPatternErrors(c: Config): PathError[] {
     const m = patternError(p);
     if (m) out.push({ path, message: m });
   };
-  c.rules.forEach((r, i) => {
-    if (!('url' in r.match)) return;
-    if (Array.isArray(r.match.url)) r.match.url.forEach((p, j) => check(`/rules/${i}/match/url/${j}`, p));
-    else check(`/rules/${i}/match/url`, r.match.url);
-  });
+  const checkText = (path: string, p: string): void => {
+    try { compileTextPattern(p); } catch (e) { out.push({ path, message: e instanceof Error ? e.message : String(e) }); }
+  };
+  const walk = (m: Cond, path: string): void => {
+    if ('url' in m) {
+      if (Array.isArray(m.url)) m.url.forEach((p, j) => check(`${path}/url/${j}`, p));
+      else check(`${path}/url`, m.url);
+    } else if ('title' in m) checkText(`${path}/title`, m.title);
+    else if ('all' in m) m.all.forEach((x, j) => walk(x, `${path}/all/${j}`));
+    else if ('any' in m) m.any.forEach((x, j) => walk(x, `${path}/any/${j}`));
+    else if ('not' in m) walk(m.not, `${path}/not`);
+    else if ('opener' in m) walk(m.opener, `${path}/opener`);
+  };
+  c.rules.forEach((r, i) => walk(r.match, `/rules/${i}/match`));
   c.dedupe.allowDuplicates.forEach((p, i) => check(`/dedupe/allowDuplicates/${i}`, p));
   c.dedupe.alwaysSwitchSites.forEach((p, i) => check(`/dedupe/alwaysSwitchSites/${i}`, p));
   return out;
@@ -113,7 +129,8 @@ export function errorsForPath(errors: string[], path: string): string[] {
 }
 
 const FIELD_PATH = new RegExp(
-  '^/(rules/\\d+/(name|enabled|match/url(/\\d+)?|actions/\\d+/group/(title|color|collapsed|sortGroups|strict|merge)|actions/\\d+/dedupe(/mode)?)'
+  '^/(rules/\\d+/(name|enabled|dryRun|match/(all/0/)?url(/\\d+)?|match/(all/1/)?title|actions/\\d+/group/(title|color|collapsed|sortGroups|strict|merge)'
+  + '|actions/\\d+/dedupe(/mode)?|actions/\\d+/close(/(after|mode))?)'
   + '|dedupe/(mode|scope|stripFragment|ignoreTrailingSlash|followFragment|includeIncognito|(stripParams|allowDuplicates|alwaysSwitchSites)(/\\d+)?))$',
 );
 
@@ -123,4 +140,325 @@ export function unclaimedErrors(errors: string[]): string[] {
     const sp = e.indexOf(' ');
     return !FIELD_PATH.test(sp < 0 ? e : e.slice(0, sp));
   });
+}
+
+// ---- M2 T15: rows across user and recipe rules ----
+
+/** A row of the Rules page: a user rule, or a rule of an enabled recipe (params substituted; `error` if that fails). */
+export type RuleRow =
+  | { key: string; kind: 'user'; rule: Rule }
+  | { key: string; kind: 'recipe'; recipeId: string; recipeName: string; rule: Rule; error?: string };
+
+const own = (o: object, k: string): boolean => Object.prototype.hasOwnProperty.call(o, k);
+
+/** The body of a recipe ref: the built-in, or the user recipe's own body. */
+export function recipeBody(ref: RecipeRef, builtins: Record<string, Recipe>): Recipe | undefined {
+  return ref.source === 'builtin' ? (own(builtins, ref.id) ? builtins[ref.id] : undefined) : ref.body;
+}
+
+/** Param values of a recipe as compileProgram resolves them: the user's value, else the default. */
+export function paramValues(body: Recipe, params: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [name, def] of Object.entries(body.params ?? {})) out[name] = own(params, name) ? params[name] : def.default;
+  return out;
+}
+
+/** Every row, in priority order: keys named in `order` first, then the rest (user rules, then recipe rules). */
+export function ruleRows(c: Config, builtins: Record<string, Recipe> = builtinRecipes()): RuleRow[] {
+  const rows: RuleRow[] = c.rules.map((rule) => ({ key: userKey(rule.id), kind: 'user', rule }));
+  for (const ref of c.recipes) {
+    const body = ref.enabled ? recipeBody(ref, builtins) : undefined;
+    if (!body) continue;
+    const values = paramValues(body, ref.params);
+    for (const raw of body.rules) {
+      const row: RuleRow = { key: `${ref.id}/${raw.id}`, kind: 'recipe', recipeId: ref.id, recipeName: body.name, rule: raw };
+      try {
+        row.rule = substitute(raw, values) as Rule;
+      } catch (e) {
+        row.error = e instanceof Error ? e.message : String(e);
+      }
+      rows.push(row);
+    }
+  }
+  const byKey = new Map(rows.map((r) => [r.key, r]));
+  const out: RuleRow[] = [];
+  for (const k of c.order) {
+    const r = byKey.get(k);
+    if (r) { out.push(r); byKey.delete(k); }
+  }
+  return [...out, ...byKey.values()];
+}
+
+/** `order` with every shown key in it: the existing entries, then the shown keys it lacks (in display order). */
+function fullOrder(c: Config, shown: string[]): string[] {
+  const have = new Set(c.order);
+  return [...c.order, ...shown.filter((k) => !have.has(k))];
+}
+
+/** `full` with the slots of the shown keys refilled in the sequence `shown` (other entries keep their places). */
+function refill(full: string[], shown: string[]): string[] {
+  const set = new Set(shown);
+  const queue = [...shown];
+  return full.map((k) => (set.has(k) ? queue.shift()! : k));
+}
+
+/**
+ * Moves the row `fromKey` (user or recipe rule key) to display position `toIndex`. Operates on `order` only: missing
+ * shown keys are written into it (same priority compileProgram gives them), then the shown keys' slots are refilled.
+ * Entries not shown (rules of disabled recipes) keep their places. Unknown key, same place or out of range → `c`.
+ */
+export function reorder(c: Config, fromKey: string, toIndex: number, builtins: Record<string, Recipe> = builtinRecipes()): Config {
+  const shown = ruleRows(c, builtins).map((r) => r.key);
+  const from = shown.indexOf(fromKey);
+  if (from < 0 || from === toIndex || toIndex < 0 || toIndex >= shown.length) return c;
+  const next = shown.slice();
+  next.splice(from, 1);
+  next.splice(toIndex, 0, fromKey);
+  return { ...c, order: trimDefaultTail(c, shown, refill(fullOrder(c, shown), next)) };
+}
+
+/**
+ * Drops the keys `order` gained when they still sit at its end in their default sequence: compileProgram appends
+ * missing keys in that same sequence, so the result means the same and `order` only grows when it must.
+ */
+function trimDefaultTail(c: Config, shown: string[], order: string[]): string[] {
+  const have = new Set(c.order);
+  const added = shown.filter((k) => !have.has(k));
+  const tail = order.slice(order.length - added.length);
+  return added.length && tail.every((k, i) => k === added[i]) ? order.slice(0, order.length - added.length) : order;
+}
+
+/**
+ * "Customize": copies a recipe rule (params substituted) into a new user rule placed just above it, so the copy wins.
+ * The id is `<recipeId>-<ruleId>` made unique (R38 pattern, sanitizeRuleId); `needs` is dropped (user rules declare
+ * none, R44). Unknown keys, user keys and rows whose params fail → `c`.
+ */
+export function customizeRule(c: Config, key: string, builtins: Record<string, Recipe> = builtinRecipes()): Config {
+  const rows = ruleRows(c, builtins);
+  const row = rows.find((r) => r.key === key);
+  if (!row || row.kind !== 'recipe' || row.error) return c;
+  const copy: Rule = JSON.parse(JSON.stringify(row.rule));
+  delete copy.needs;
+  const id = sanitizeRuleId(`${row.recipeId}-${row.rule.id}`, new Set(c.rules.map((r) => r.id)));
+  const rule: Rule = { ...copy, id, name: `${row.rule.name} (custom)` };
+  const full = fullOrder(c, rows.map((r) => r.key));
+  const at = full.indexOf(key);
+  const order = [...full.slice(0, at), userKey(id), ...full.slice(at)];
+  return { ...c, rules: [...c.rules, rule], order };
+}
+
+/** Replaces user rule `id` with `rule` (from the YAML view); a new id renames its `order` key. */
+export function replaceRule(c: Config, id: string, rule: Rule): { ok: true; config: Config } | { ok: false; error: string } {
+  if (rule.id !== id && c.rules.some((r) => r.id === rule.id)) return { ok: false, error: `Another rule already has id "${rule.id}"` };
+  const rules = c.rules.map((r) => (r.id === id ? rule : r));
+  const order = c.order.map((k) => (k === userKey(id) ? userKey(rule.id) : k));
+  return { ok: true, config: { ...c, rules, order } };
+}
+
+// ---- M2 T15: the rule form ----
+
+/** What the rule form edits. `url` '' / `title` '' = no such condition; a null action = the rule has none. */
+export interface RuleForm {
+  name: string; enabled: boolean; dryRun: boolean;
+  url: string | string[]; title: string;
+  group: GroupAction | null; dedupe: DedupeMode | null; close: { after?: string; mode?: CloseMode } | null;
+}
+
+const FORM_RULE_KEYS = new Set(['id', 'name', 'enabled', 'dryRun', 'match', 'actions']);
+const FORM_GROUP_KEYS = new Set(['title', 'color', 'collapsed', 'sortGroups', 'strict', 'merge']);
+const keysIn = (o: object, allowed: Set<string>): boolean => Object.keys(o).every((k) => allowed.has(k));
+const keysAre = (o: object, ...keys: string[]): boolean => Object.keys(o).length === keys.length && keys.every((k) => own(o, k));
+
+function matchForm(m: Cond): { url: string | string[]; title: string } | null {
+  if (keysAre(m, 'url')) return { url: (m as { url: string | string[] }).url, title: '' };
+  if (keysAre(m, 'title')) return { url: '', title: (m as { title: string }).title };
+  if (keysAre(m, 'all')) {
+    const all = (m as { all: Cond[] }).all;
+    if (all.length === 2 && keysAre(all[0]!, 'url') && keysAre(all[1]!, 'title')) {
+      return { url: (all[0] as { url: string | string[] }).url, title: (all[1] as { title: string }).title };
+    }
+  }
+  return null;
+}
+
+/**
+ * The form view of a rule, or null when the form cannot show all of it: a match other than url, title or
+ * all[url, title]; more than one action of a kind; showInView; a templated color or anchors; dedupe options other
+ * than mode; close options other than after/mode; trigger, extract or needs.
+ */
+export function ruleForm(r: Rule): RuleForm | null {
+  if (!keysIn(r, FORM_RULE_KEYS)) return null;
+  const m = matchForm(r.match);
+  if (!m) return null;
+  const f: RuleForm = { name: r.name, enabled: r.enabled, dryRun: r.dryRun === true, ...m, group: null, dedupe: null, close: null };
+  for (const a of r.actions) {
+    if ('group' in a) {
+      if (f.group || !keysIn(a.group, FORM_GROUP_KEYS) || !COLORS.has(a.group.color)) return null;
+      f.group = a.group;
+    } else if ('dedupe' in a) {
+      if (f.dedupe || !keysAre(a.dedupe, 'mode') || a.dedupe.mode === undefined) return null;
+      f.dedupe = a.dedupe.mode;
+    } else if ('close' in a) {
+      if (f.close || !keysIn(a.close, new Set(['after', 'mode']))) return null;
+      f.close = a.close;
+    } else return null;
+  }
+  return f;
+}
+
+const hasUrl = (u: string | string[]): boolean => (Array.isArray(u) ? u.length > 0 : u !== '');
+
+/** `r` with the form values: match rebuilt; actions replaced in place, removed, or appended (group, dedupe, close). */
+export function applyRuleForm(r: Rule, f: RuleForm): Rule {
+  const match: Cond = f.title === '' ? { url: f.url } : !hasUrl(f.url) ? { title: f.title } : { all: [{ url: f.url }, { title: f.title }] };
+  const actions: Rule['actions'] = [];
+  const seen = new Set<string>();
+  for (const a of r.actions) {
+    if ('group' in a) { seen.add('group'); if (f.group) actions.push({ group: f.group }); }
+    else if ('dedupe' in a) { seen.add('dedupe'); if (f.dedupe) actions.push({ dedupe: { mode: f.dedupe } }); }
+    else if ('close' in a) { seen.add('close'); if (f.close) actions.push({ close: f.close }); }
+    else actions.push(a);
+  }
+  if (f.group && !seen.has('group')) actions.push({ group: f.group });
+  if (f.dedupe && !seen.has('dedupe')) actions.push({ dedupe: { mode: f.dedupe } });
+  if (f.close && !seen.has('close')) actions.push({ close: f.close });
+  return { id: r.id, name: f.name, enabled: f.enabled, ...(f.dryRun && { dryRun: true }), match, actions };
+}
+
+/** Applies a form patch to user rule `id`; rules the form cannot show and unknown ids leave `c` unchanged. */
+export function patchRuleForm(c: Config, id: string, patch: Partial<RuleForm>): Config {
+  const i = ruleIndex(c, id);
+  const f = i < 0 ? null : ruleForm(c.rules[i]!);
+  if (!f) return c;
+  const rules = c.rules.slice();
+  rules[i] = applyRuleForm(c.rules[i]!, { ...f, ...patch });
+  return { ...c, rules };
+}
+
+// ---- M2 T15: read-only summary ----
+
+const list = (x: string | string[]): string => (Array.isArray(x) ? x.join(', ') : x);
+
+function condText(c: Cond): string {
+  if ('url' in c) return `url ${list(c.url)}`;
+  if ('title' in c) return `title ${c.title}`;
+  if ('all' in c) return `all of (${c.all.map(condText).join('; ')})`;
+  if ('any' in c) return `any of (${c.any.map(condText).join('; ')})`;
+  if ('not' in c) return `not (${condText(c.not)})`;
+  if ('opener' in c) return `opened from (${condText(c.opener)})`;
+  if ('group' in c) return `in group ${c.group}`;
+  if ('pinned' in c) return c.pinned ? 'pinned' : 'not pinned';
+  if ('audible' in c) return c.audible ? 'playing audio' : 'not playing audio';
+  if ('age' in c) return `age${c.age.gt ? ` over ${c.age.gt}` : ''}${c.age.lt ? ` under ${c.age.lt}` : ''}`;
+  if ('pageText' in c) return `page text ${(Array.isArray(c.pageText) ? c.pageText : [c.pageText]).map((t) => `"${t}"`).join(', ')}`;
+  return JSON.stringify(c);
+}
+
+/** One line per part of a rule, for rules the form cannot show (and locked recipe rows). */
+export function ruleSummary(r: Rule): string[] {
+  const out = [`Match: ${condText(r.match)}`];
+  if (r.trigger) out.push(`Runs on: ${r.trigger.on.join(', ')}${r.trigger.every ? ` every ${r.trigger.every}` : ''}`);
+  if (r.extract) out.push(`Extracts: ${Object.keys(r.extract).join(', ')}`);
+  for (const a of r.actions) {
+    if ('group' in a) out.push(`Group into "${a.group.title}" (${a.group.color})${a.group.anchors?.length ? ` with ${a.group.anchors.length} anchor tabs` : ''}`);
+    else if ('dedupe' in a) out.push(`De-duplicate${a.dedupe.mode ? `: ${a.dedupe.mode}` : ''}`);
+    else if ('close' in a) out.push(`Close${a.close.after ? ` after ${a.close.after}` : ''}${a.close.mode ? ` (${a.close.mode})` : ''}`);
+    else out.push(`Show in view ${a.showInView.view}`);
+  }
+  if (r.dryRun) out.push('Dry run: logged only');
+  return out;
+}
+
+// ---- M2 T15: editor hints ----
+
+/** URL patterns anywhere in a rule's match (for editor hints). */
+export function ruleUrlPatterns(r: Rule): string[] {
+  const out: string[] = [];
+  const walk = (c: Cond): void => {
+    if ('url' in c) out.push(...(Array.isArray(c.url) ? c.url : [c.url]));
+    else if ('all' in c) c.all.forEach(walk);
+    else if ('any' in c) c.any.forEach(walk);
+    else if ('not' in c) walk(c.not);
+    else if ('opener' in c) walk(c.opener);
+  };
+  walk(r.match);
+  return out;
+}
+
+/**
+ * Editor hints (not errors) for a URL glob: a pattern ending in a param or literal path segment matches only that
+ * exact path (T15/T16 follow-up), and a `*` inside the host also matches look-alike hosts (R32: kept for
+ * compatibility, so warned about, not refused). Regex patterns get none.
+ */
+export function patternHints(p: string): string[] {
+  if (p.startsWith('/') || p === '') return [];
+  const out: string[] = [];
+  const rest = p.replace(/^[a-z*]+:\/\//i, '');
+  const slash = rest.search(/[/?#]/);
+  const host = slash < 0 ? rest : rest.slice(0, slash);
+  const sub = host.startsWith('*.') ? 2 : 0;
+  const star = host.indexOf('*', sub);
+  if (rest[slash] === '/' && !/[*/]$/.test(rest) && !/[?#]/.test(rest)) out.push('matches only exactly this path; add * to include deeper pages');
+  const lit = star > sub ? host.slice(sub, star) : '';
+  if (lit !== '') {
+    const name = lit.replace(/\.$/, '');
+    out.push(`also matches look-alike hosts such as ${name}.evil.com${lit.endsWith('.') ? '' : `; use ${lit}/* to match only ${lit}`}`);
+  }
+  return out;
+}
+
+// ---- M2 T15: YAML view ----
+
+/** The YAML text of a rule (the YAML view). */
+export function ruleToYaml(r: Rule): string {
+  return stringify(r, { lineWidth: 0 });
+}
+
+export type YamlRuleResult = { ok: true; rule: Rule } | { ok: false; errors: { line: number; message: string }[] };
+
+const unescapePointer = (s: string): string => s.replace(/~1/g, '/').replace(/~0/g, '~');
+
+/** Line of the deepest node along a JSON pointer (map keys point at the key's line). */
+function lineOfPath(doc: ReturnType<typeof parseDocument>, segs: string[], lc: LineCounter): number {
+  const lineOf = (n: YamlNode | null | undefined): number | undefined => (n?.range ? lc.linePos(n.range[0]).line : undefined);
+  let node: unknown = doc.contents;
+  let line = lineOf(doc.contents as YamlNode) ?? 1;
+  for (const seg of segs) {
+    if (isMap(node)) {
+      const pair = node.items.find((p) => isScalar(p.key) && String(p.key.value) === seg);
+      if (!pair) break;
+      line = lineOf(pair.key as YamlNode) ?? line;
+      node = pair.value;
+    } else if (isSeq(node)) {
+      const item = node.items[Number(seg)] as YamlNode | undefined;
+      if (!/^\d+$/.test(seg) || !item) break;
+      line = lineOf(item) ?? line;
+      node = item;
+    } else break;
+  }
+  return line;
+}
+
+/**
+ * Parses the YAML view: syntax errors, then validateRule (schema, then the pattern / regex / duration / template
+ * post-checks). Each error carries the line of the node its path names; an unknown key points at that key.
+ */
+export function yamlToRule(s: string): YamlRuleResult {
+  const lc = new LineCounter();
+  const doc = parseDocument(s, { lineCounter: lc, prettyErrors: false, uniqueKeys: true });
+  if (doc.errors.length) {
+    return { ok: false, errors: doc.errors.map((e) => ({ line: lc.linePos(e.pos[0]).line, message: e.message.split('\n')[0]! })) };
+  }
+  if (!isMap(doc.contents)) return { ok: false, errors: [{ line: 1, message: 'A rule must be a mapping (id, name, enabled, match, actions)' }] };
+  const v = validateRule(doc.toJS({ maxAliasCount: 100 }));
+  if (v.ok) return { ok: true, rule: v.rule };
+  return {
+    ok: false,
+    errors: v.errors.map((p) => {
+      const segs = p.path.split('/').slice(1).filter((x) => x !== '').map(unescapePointer);
+      const extra = /additional propert(?:y|ies): (\S+)/.exec(p.message)?.[1];
+      const at = p.path === '/' || p.path === '' ? '' : `${p.path.slice(1)}: `;
+      return { line: lineOfPath(doc, extra ? [...segs, extra] : segs, lc), message: `${at}${p.message}` };
+    }),
+  };
 }

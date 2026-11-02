@@ -196,4 +196,15 @@ describe('App routing (R28, M2 T14)', () => {
     expect(send.mock.calls.some((c) => c[0].type === 'explain.tab' && c[0].tabId === 12)).toBe(true);
     expect(screen.queryByRole('link', { name: /explain/i })).toBeNull();
   });
+
+  it('#/recipes opens the Recipes page (M2 T15) from the nav', async () => {
+    const base = send.getMockImplementation()!;
+    send.mockImplementation(async (req: { type: string }) => (req.type === 'recipes.list'
+      ? { ok: true, data: { rev, recipes: [{ id: 'duplicates', source: 'builtin', enabled: true, params: {}, name: 'Duplicates', description: 'Lists duplicate tabs.', paramDefs: {}, needs: { origins: [], permissions: [] }, status: { ok: true, missing: { origins: [], permissions: [] } }, rules: {} }] } }
+      : base(req)));
+    window.location.hash = '#/recipes';
+    render(App);
+    expect((screen.getByRole('link', { name: 'Recipes' }) as HTMLAnchorElement).getAttribute('aria-current')).toBe('page');
+    expect(await screen.findByRole('region', { name: 'Duplicates' })).toBeTruthy();
+  });
 });

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { reorderRules, addRule, updateRule, removeRule, previewMatches, patternError, configPatternErrors, errorsForPath, orderedUserRules, formRule } from '../../src/ui/rules-model';
 import { defaultConfig } from '../../src/core/config/defaults';
 import { validateConfig } from '../../src/core/config/schema';
-import type { Config, GroupRule, TabSnap } from '../../src/core/types';
+import type { Config, GroupRule, Rule, TabSnap } from '../../src/core/types';
 import { withGroupRules } from '../helpers/config';
 
 const rule = (id: string, url: string | string[] = 'a.com/*'): GroupRule => ({ id, name: id, enabled: true, match: { url }, group: { title: id, color: 'blue' } });
@@ -94,5 +94,173 @@ describe('unclaimedErrors', () => {
     const { unclaimedErrors } = await import('../../src/ui/rules-model');
     expect(unclaimedErrors(['/rules/2/actions/0/group/color bad', '/rules/0/actions/1/dedupe/mode bad', '/ must have x', '/rules/1/id duplicate rule id: x', '/dedupe/mode bad']))
       .toEqual(['/ must have x', '/rules/1/id duplicate rule id: x']);
+  });
+
+  it('claims the T15 form fields too: dryRun, title / all[url, title] match, close', async () => {
+    const { unclaimedErrors } = await import('../../src/ui/rules-model');
+    expect(unclaimedErrors(['/rules/0/dryRun bad', '/rules/0/match/title bad', '/rules/0/match/all/0/url/1 bad', '/rules/0/match/all/1/title bad',
+      '/rules/0/actions/1/close/after bad', '/rules/0/actions/1/close bad', '/rules/0/match/any/0/url bad'])).toEqual(['/rules/0/match/any/0/url bad']);
+  });
+});
+
+describe('rules-model: YAML (M2 T15)', () => {
+  it('yamlToRule(ruleToYaml(r)) round-trips every built-in rule (param defaults substituted)', async () => {
+    const { ruleToYaml, yamlToRule, ruleRows } = await import('../../src/ui/rules-model');
+    const { builtinRecipes } = await import('../../src/recipes/load');
+    const c = { ...defaultConfig(), recipes: defaultConfig().recipes.map((r) => ({ ...r, enabled: true })) };
+    const rows = ruleRows(c, builtinRecipes()).filter((r) => r.kind === 'recipe');
+    expect(rows.map((r) => r.key)).toEqual(['github-prs/group-by-repo', 'finished/oauth-callback', 'finished/meet-ended', 'finished/redirect']);
+    for (const row of rows) expect(yamlToRule(ruleToYaml(row.rule))).toEqual({ ok: true, rule: row.rule });
+  });
+
+  it('round-trips a user rule', async () => {
+    const { ruleToYaml, yamlToRule } = await import('../../src/ui/rules-model');
+    const r = cfg('a').rules[0]!;
+    expect(yamlToRule(ruleToYaml(r))).toEqual({ ok: true, rule: r });
+  });
+
+  it('maps a schema error to its line: actions: [{ eval: x }] on line 4 → line 4', async () => {
+    const { yamlToRule } = await import('../../src/ui/rules-model');
+    const r = yamlToRule("id: x\nname: X\nenabled: true\nactions: [{ eval: x }]\nmatch: { url: 'a.com/*' }\n");
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.errors[0]!.line).toBe(4);
+    expect(r.errors[0]!.message).toMatch(/eval/);
+  });
+
+  it('an unknown top-level key points at that key\'s line; a bad color at the color line', async () => {
+    const { yamlToRule } = await import('../../src/ui/rules-model');
+    const r = yamlToRule("id: x\nname: X\nenabled: true\nmatch:\n  url: a.com/*\nbogus: 1\nactions:\n  - group:\n      title: A\n      color: blue\n");
+    expect(!r.ok && r.errors.map((e) => e.line)).toEqual([6]);
+    const c = yamlToRule("id: x\nname: X\nenabled: true\nmatch:\n  url: a.com/*\nactions:\n  - group:\n      title: A\n      color: nope\n");
+    expect(!c.ok && c.errors.map((e) => e.line)).toEqual([9]);
+  });
+
+  it('reports YAML syntax errors with their line, and a non-mapping document', async () => {
+    const { yamlToRule } = await import('../../src/ui/rules-model');
+    const r = yamlToRule('id: x\nname: [unclosed\n');
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.errors[0]!.line).toBeGreaterThanOrEqual(2);
+    expect(yamlToRule('- a\n- b\n')).toEqual({ ok: false, errors: [{ line: 1, message: 'A rule must be a mapping (id, name, enabled, match, actions)' }] });
+  });
+
+  it('runs the post-checks (pattern compile) too', async () => {
+    const { yamlToRule } = await import('../../src/ui/rules-model');
+    const r = yamlToRule("id: x\nname: X\nenabled: true\nmatch:\n  url: '/(/'\nactions:\n  - group: { title: A, color: blue }\n");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.errors[0]).toMatchObject({ line: 5 });
+  });
+});
+
+describe('rules-model: order across user and recipe rules (M2 T15)', () => {
+  it('reorder moves a recipe key above a user key (operates on order)', async () => {
+    const { reorder, ruleRows } = await import('../../src/ui/rules-model');
+    const { builtinRecipes } = await import('../../src/recipes/load');
+    const base = { ...cfg('a', 'b'), recipes: defaultConfig().recipes.map((r) => ({ ...r, enabled: r.id === 'finished' || r.enabled })) };
+    const keys = (c: Config) => ruleRows(c, builtinRecipes()).map((r) => r.key);
+    expect(keys(base)).toEqual(['user/a', 'user/b', 'github-prs/group-by-repo', 'finished/oauth-callback', 'finished/meet-ended', 'finished/redirect']);
+    const moved = reorder(base, 'finished/oauth-callback', 0, builtinRecipes());
+    expect(keys(moved)).toEqual(['finished/oauth-callback', 'user/a', 'user/b', 'github-prs/group-by-repo', 'finished/meet-ended', 'finished/redirect']);
+    expect(moved.order[0]).toBe('finished/oauth-callback');
+    expect(moved.rules).toBe(base.rules);
+    expect(validateConfig(moved).ok).toBe(true);
+    expect(reorder(base, 'nope/x', 0, builtinRecipes())).toBe(base);
+    expect(reorder(base, 'user/a', 0, builtinRecipes())).toBe(base);
+  });
+
+  it('reorder keeps order entries it does not show (disabled recipes) in place', async () => {
+    const { reorder } = await import('../../src/ui/rules-model');
+    const { builtinRecipes } = await import('../../src/recipes/load');
+    const c = { ...cfg('a', 'b'), order: ['user/a', 'finished/redirect', 'user/b'] };
+    expect(reorder(c, 'user/b', 0, builtinRecipes()).order.slice(0, 3)).toEqual(['user/b', 'finished/redirect', 'user/a']);
+  });
+
+  it('ruleRows lists recipe rules of enabled recipes with params substituted, locked', async () => {
+    const { ruleRows } = await import('../../src/ui/rules-model');
+    const { builtinRecipes } = await import('../../src/recipes/load');
+    const c = { ...defaultConfig(), recipes: defaultConfig().recipes.map((r) => (r.id === 'finished' ? { ...r, enabled: true, params: { delay: '9s' } } : r)) };
+    const row = ruleRows(c, builtinRecipes()).find((r) => r.key === 'finished/oauth-callback')!;
+    expect(row).toMatchObject({ kind: 'recipe', recipeId: 'finished', recipeName: 'Finished' });
+    expect(row.rule.actions).toEqual([{ close: { after: '9s', mode: 'auto' } }]);
+    expect(Array.isArray((row.rule.match as { url: string[] }).url)).toBe(true);
+  });
+
+  it('customizeRule copies a recipe rule into a user rule placed just above it, with a non-colliding id', async () => {
+    const { customizeRule, ruleRows } = await import('../../src/ui/rules-model');
+    const { builtinRecipes } = await import('../../src/recipes/load');
+    const c = { ...defaultConfig(), recipes: defaultConfig().recipes.map((r) => ({ ...r, enabled: true })) };
+    const once = customizeRule(c, 'finished/meet-ended', builtinRecipes());
+    const r = once.rules[0]!;
+    expect(r.id).toBe('finished-meet-ended');
+    expect(r).not.toHaveProperty('needs'); // user rules declare no needs (R44)
+    expect(r.name).toBe('Close Meet tabs after the call ends (custom)');
+    const keys = ruleRows(once, builtinRecipes()).map((x) => x.key);
+    expect(keys.indexOf('user/finished-meet-ended')).toBe(keys.indexOf('finished/meet-ended') - 1);
+    expect(validateConfig(once).ok).toBe(true);
+    const twice = customizeRule(once, 'finished/meet-ended', builtinRecipes());
+    expect(twice.rules.map((x) => x.id)).toEqual(['finished-meet-ended', 'finished-meet-ended-2']);
+    expect(customizeRule(c, 'user/zz', builtinRecipes())).toBe(c);
+  });
+});
+
+describe('rules-model: form and helpers (M2 T15)', () => {
+  it('ruleForm covers url/title match, group, dedupe mode, close, enabled and dryRun; null for nested any', async () => {
+    const { ruleForm } = await import('../../src/ui/rules-model');
+    const r = { id: 'x', name: 'X', enabled: true, dryRun: true, match: { all: [{ url: 'a.com/*' }, { title: '*Inbox*' }] },
+      actions: [{ group: { title: 'A', color: 'blue' } }, { close: { after: '5s', mode: 'suggest' } }] } as Rule;
+    expect(ruleForm(r)).toEqual({ name: 'X', enabled: true, dryRun: true, url: 'a.com/*', title: '*Inbox*',
+      group: { title: 'A', color: 'blue' }, dedupe: null, close: { after: '5s', mode: 'suggest' } });
+    expect(ruleForm({ ...r, match: { any: [{ url: 'a' }, { url: 'b' }] } } as Rule)).toBeNull();
+    expect(ruleForm({ ...r, actions: [{ group: { title: 'A', color: '{c}' } }] } as Rule)).toBeNull();
+    expect(ruleForm({ ...r, trigger: { on: ['pageText'] } } as Rule)).toBeNull();
+  });
+
+  it('patchRuleForm rebuilds match and actions in place and leaves non-form rules alone', async () => {
+    const { patchRuleForm, ruleForm } = await import('../../src/ui/rules-model');
+    const c = cfg('a');
+    const withTitle = patchRuleForm(c, 'a', { title: '*x*' });
+    expect(withTitle.rules[0]!.match).toEqual({ all: [{ url: 'a.com/*' }, { title: '*x*' }] });
+    const closing = patchRuleForm(withTitle, 'a', { close: { after: '3s' }, dryRun: true });
+    expect(closing.rules[0]!.actions).toEqual([{ group: { title: 'a', color: 'blue' } }, { close: { after: '3s' } }]);
+    expect(closing.rules[0]!.dryRun).toBe(true);
+    const noGroup = patchRuleForm(closing, 'a', { group: null, title: '', dryRun: false });
+    expect(noGroup.rules[0]).toEqual({ id: 'a', name: 'a', enabled: true, match: { url: 'a.com/*' }, actions: [{ close: { after: '3s' } }] });
+    expect(ruleForm(noGroup.rules[0]!)!.group).toBeNull();
+    const odd = { ...defaultConfig(), rules: [{ id: 'x', name: 'X', enabled: true, match: { any: [{ url: 'a' }] }, actions: [{ close: {} }] }], order: [] } as Config;
+    expect(patchRuleForm(odd, 'x', { enabled: false })).toBe(odd);
+  });
+
+  it('replaceRule swaps a rule by id, renames its order key, and refuses an id that collides', async () => {
+    const { replaceRule } = await import('../../src/ui/rules-model');
+    const c = cfg('a', 'b');
+    const r = replaceRule(c, 'a', { ...c.rules[0]!, id: 'z', name: 'Z' });
+    expect(r.ok && r.config.rules.map((x) => x.id)).toEqual(['z', 'b']);
+    expect(r.ok && r.config.order).toEqual(['user/z', 'user/b']);
+    expect(replaceRule(c, 'a', { ...c.rules[0]!, id: 'b' })).toEqual({ ok: false, error: 'Another rule already has id "b"' });
+  });
+
+  it('ruleSummary describes a rule the form cannot show', async () => {
+    const { ruleSummary } = await import('../../src/ui/rules-model');
+    const r = { id: 'x', name: 'X', enabled: true, match: { any: [{ url: 'a.com/*' }, { title: '*b*' }] },
+      actions: [{ close: { after: '2s', mode: 'suggest' } }, { showInView: { view: 'finished' } }] } as Rule;
+    expect(ruleSummary(r)).toEqual(['Match: any of (url a.com/*; title *b*)', 'Close after 2s (suggest)', 'Show in view finished']);
+  });
+
+  it('patternHints: exact-path patterns and open-ended host globs', async () => {
+    const { patternHints } = await import('../../src/ui/rules-model');
+    const EXACT = 'matches only exactly this path; add * to include deeper pages';
+    expect(patternHints('https://github.com/:repo')).toEqual([EXACT]);
+    expect(patternHints('github.com/acme/repo')).toEqual([EXACT]);
+    expect(patternHints('github.com/acme/*')).toEqual([]);
+    expect(patternHints('github.com/:owner/:repo*')).toEqual([]);
+    expect(patternHints('/^https:\\/\\/a/')).toEqual([]);
+    expect(patternHints('https://github.com*')).toEqual(['also matches look-alike hosts such as github.com.evil.com; use github.com/* to match only github.com']);
+    expect(patternHints('*.github.com/*')).toEqual([]);
+    expect(patternHints('*://*/*')).toEqual([]);
+  });
+
+  it('configPatternErrors also checks url and title patterns nested in all/any/not', async () => {
+    const c = { ...defaultConfig(), rules: [{ id: 'x', name: 'X', enabled: true, match: { all: [{ url: 'a.com/*' }, { not: { title: '/(/' } }] }, actions: [{ close: {} }] }], order: [] } as Config;
+    expect(configPatternErrors(c).map((e) => e.path)).toEqual(['/rules/0/match/all/1/not/title']);
   });
 });
