@@ -1,6 +1,6 @@
 import type { ConfigV1, ConfigV2, DedupeSettingsV1, GroupRule } from '../types';
-import type { Action, GroupAction, Rule } from '../lang/types';
-import { builtinRecipeRefs, defaultConfig } from './defaults';
+import type { Action, GroupAction, RecipeRef, Rule } from '../lang/types';
+import { BUILTIN_RECIPES, builtinRecipeRefs, defaultConfig } from './defaults';
 import { validateConfigV1 } from './validate-config.generated.js';
 
 /** v2 rule and recipe ids (also each half of a rule key 'user/<id>'). Mirrors rule.schema.json $defs/id. */
@@ -57,11 +57,21 @@ export function fillConfigV1(raw: unknown): unknown {
   return { groupRules: [], ...raw, dedupe: { ...v1DedupeDefaults(), ...(isObj(raw.dedupe) ? raw.dedupe : {}) } };
 }
 
-/** Forward-compatible: fill v2 fields missing from an older stored v2 config with defaults (stored values win). */
+/**
+ * Forward-compatible: fill v2 fields missing from an older stored v2 config with defaults (stored values win). A
+ * built-in recipe added after the config was saved gets its ref appended, disabled (R68), after the stored refs; when
+ * none is missing the stored `recipes` array is kept as is. Load path only: never written here (R2).
+ */
 export function fillConfigDefaults(raw: unknown): unknown {
   if (!isObj(raw)) return raw;
   const d = defaultConfig();
-  return { ...d, ...raw, dedupe: { ...d.dedupe, ...(isObj(raw.dedupe) ? raw.dedupe : {}) } };
+  const out: Record<string, unknown> = { ...d, ...raw, dedupe: { ...d.dedupe, ...(isObj(raw.dedupe) ? raw.dedupe : {}) } };
+  if (Array.isArray(raw.recipes)) {
+    const have = new Set(raw.recipes.map((r: unknown) => (isObj(r) ? r.id : undefined)));
+    const missing = BUILTIN_RECIPES.filter((id) => !have.has(id));
+    if (missing.length) out.recipes = [...raw.recipes, ...missing.map((id): RecipeRef => ({ id, enabled: false, params: {}, source: 'builtin' }))];
+  }
+  return out;
 }
 
 export type MigrateResult = { ok: true; config: ConfigV2; migratedFrom?: 1 } | { ok: false; errors: string[] };

@@ -138,6 +138,24 @@ describe('ConfigStore', () => {
     await vi.waitFor(async () => expect((await b.status()).warning).toBeUndefined(), { interval: 5 });
   });
 
+  it('M2/R68: a stored config missing a built-in recipe loads with that ref appended, disabled; existing refs and order kept', async () => {
+    const d = defaultConfig();
+    const old: Config = {
+      ...d,
+      recipes: [{ ...d.recipes.find((r) => r.id === 'github-prs')!, enabled: false }, d.recipes.find((r) => r.id === 'duplicates')!],
+    };
+    await putSync(JSON.stringify(old));
+    const c = await mk().get();
+    expect(c.recipes).toEqual([...old.recipes, { id: 'finished', enabled: false, params: {}, source: 'builtin' }]);
+    expect(await sync().get('cfg:0')).toEqual({ 'cfg:0': JSON.stringify(old) }); // loading never writes (R2)
+  });
+
+  it('M2/R68: nothing missing: the loaded recipes are exactly the stored ones (no churn)', async () => {
+    const old: Config = { ...defaultConfig(), recipes: [...defaultConfig().recipes].reverse() };
+    await putSync(JSON.stringify(old));
+    expect(await mk().get()).toEqual(old);
+  });
+
   it('fills missing fields from defaults (forward-compatible migration)', async () => {
     const old = defaultConfig() as unknown as { dedupe: Record<string, unknown> };
     delete old.dedupe.alwaysSwitchSites;

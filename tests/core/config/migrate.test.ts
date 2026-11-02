@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import raw from '../../../fixtures/auto-group-tabs.json?raw';
 import { importAutoGroupTabs } from '../../../src/core/import/auto-group-tabs';
-import { groupRuleToRule, migrateConfig, sanitizeRuleId, RULE_ID_PATTERN } from '../../../src/core/config/migrate';
+import { fillConfigDefaults, groupRuleToRule, migrateConfig, sanitizeRuleId, RULE_ID_PATTERN } from '../../../src/core/config/migrate';
 import { defaultConfig } from '../../../src/core/config/defaults';
 import { validateConfig } from '../../../src/core/config/schema';
 import type { ConfigV2, GroupRule } from '../../../src/core/types';
@@ -117,3 +117,27 @@ describe('defaultConfig v2', () => {
     expect(c.dedupe).toMatchObject({ fragmentOverrides: [], matchTitle: false, titleOverrides: [] });
   });
 });
+
+describe('fillConfigDefaults: built-in recipes added later (M2, R68)', () => {
+  it('appends each missing built-in ref, disabled, after the stored refs, in built-in order', () => {
+    const d = defaultConfig();
+    const user = { id: 'mine', enabled: true, params: {}, source: 'user' as const, body: {} };
+    const out = fillConfigDefaults({ ...d, recipes: [user, d.recipes.find((r) => r.id === 'finished')!] }) as ConfigV2;
+    expect(out.recipes.map((r) => [r.id, r.enabled])).toEqual([['mine', true], ['finished', false], ['duplicates', false], ['github-prs', false]]);
+    expect(out.recipes[2]).toEqual({ id: 'duplicates', enabled: false, params: {}, source: 'builtin' });
+  });
+  it('returns the stored recipes array untouched when none is missing, and never mutates the input', () => {
+    const d = defaultConfig();
+    const input = { ...d, recipes: d.recipes.slice(0, 2) };
+    fillConfigDefaults(input);
+    expect(input.recipes).toHaveLength(2);
+    const full = { ...d };
+    expect((fillConfigDefaults(full) as ConfigV2).recipes).toBe(full.recipes);
+  });
+  it('a missing recipes key still gets the default refs (with their default enabled state)', () => {
+    const d = defaultConfig() as unknown as Record<string, unknown>;
+    delete d.recipes;
+    expect((fillConfigDefaults(d) as ConfigV2).recipes).toEqual(defaultConfig().recipes);
+  });
+});
+
