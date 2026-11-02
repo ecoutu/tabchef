@@ -26,7 +26,7 @@ const userRecipe = (id: string, rules: Rule[], views: View[], over: Partial<Reci
   id, enabled: true, params: {}, source: 'user', body: { recipe: id, version: 1, name: id, description: id, rules, views, ...over },
 });
 
-function setup(o: { suggestions?: CloseSuggestion[]; granted?: (origin: string) => boolean; views?: boolean } = {}) {
+function setup(o: { suggestions?: CloseSuggestion[]; granted?: (origin: string) => boolean; views?: boolean; beforeClose?: () => Promise<void> } = {}) {
   const port = new FakeBrowserPort();
   port.addWindow(1, { focused: true });
   const mk = (id: number, url: string, x = {}) =>
@@ -58,6 +58,7 @@ function setup(o: { suggestions?: CloseSuggestion[]; granted?: (origin: string) 
     whyLog: { ready: Promise.resolve(), all: () => [], forTab: () => [], add: whyAdd },
     ask: { listPending: async () => [], resolvePending: vi.fn(async () => {}) },
     now: () => 42,
+    ...(o.beforeClose && { beforeClose: o.beforeClose }),
     ...(o.views !== false && {
       views: {
         builtins: builtinRecipes(),
@@ -225,6 +226,20 @@ describe('view actions (user-initiated: they apply under global dry run, R50)', 
     expect(await s.handle({ type: 'view.keep', viewId: 'finished', tabId: 3 }, ui)).toEqual({ ok: true, data: null });
     expect(s.exempt).toHaveBeenCalledWith(3, CB);
     expect(await s.handle({ type: 'view.keep', viewId: 'finished', tabId: 99 }, ui)).toEqual({ ok: false, error: 'not in view' });
+  });
+
+  it('M3: view.close issued before locks load waits for them, so a tab locked in storage is not closed', async () => {
+    let load!: () => void;
+    const loaded = new Promise<void>((r) => { load = r; });
+    const s = setup({ suggestions: [oauth], beforeClose: () => loaded });
+    await s.setCfg(enable(defaultConfig(), 'finished'));
+    s.mk(3, CB);
+    const r = s.handle({ type: 'view.close', viewId: 'finished', tabId: 3 }, ui);
+    await new Promise((x) => setTimeout(x, 0));
+    s.locked.add(3);
+    load();
+    expect(await r).toEqual({ ok: false, error: 'tab is locked' });
+    expect((await s.port.snapshot()).tabs.map((t) => t.id)).toEqual([3]);
   });
 
   it('view.close closes a row tab and records it (also under dry run); never a locked tab or a tab outside the view', async () => {

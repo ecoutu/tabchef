@@ -71,6 +71,24 @@ describe('messages', () => {
     expect((await s.port.snapshot()).tabs.map((t) => t.id)).toEqual([1, 2, 3]);
   });
 
+  it('M3: dupes.closeAll / closeExtras issued before locks and anchors load wait for them: a locked tab and an anchor stay', async () => {
+    for (const req of [{ type: 'dupes.closeAll' }, { type: 'dupes.closeExtras' }] as const) {
+      let load!: () => void;
+      const loaded = new Promise<void>((r) => { load = r; });
+      const anchors = new Set<number>();
+      const s = setup({ isAnchor: (id) => anchors.has(id), beforeClose: () => loaded });
+      s.mk(1, A); s.mk(2, A); s.mk(3, A); s.mk(4, A);
+      const key = ((await s.handle({ type: 'dupes.list' }, ui)) as Loose).data.sets[0]!.key;
+      const r = s.handle(req.type === 'dupes.closeAll' ? req : { ...req, key }, ui);
+      await new Promise((x) => setTimeout(x, 0));
+      expect((await s.port.snapshot()).tabs).toHaveLength(4); // nothing decided yet
+      s.locked.add(3); anchors.add(2); // the stored locks and anchors arrive
+      load();
+      expect(await r).toEqual({ ok: true, data: 1 });
+      expect((await s.port.snapshot()).tabs.map((t) => t.id)).toEqual([1, 2, 3]);
+    }
+  });
+
   it('never closes anchor tabs (R11)', async () => {
     const s = setup({ isAnchor: (id) => id === 2 });
     s.mk(1, A); s.mk(2, A); s.mk(3, A);

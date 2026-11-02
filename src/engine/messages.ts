@@ -356,6 +356,11 @@ export interface HandlerDeps {
   safety: Pick<SafetyService, 'pause' | 'resume' | 'isPaused' | 'lock' | 'unlock' | 'isLocked' | 'lockedTabIds' | 'undo'>;
   /** Anchor tabs (M2 T11) are never closed by dupes.close* (R11). Default: none. */
   isAnchor?: (tabId: number) => boolean;
+  /**
+   * Awaited before dupes.close* and view.close decide which tabs are kept (background: SafetyService and AnchorService
+   * ready), so a popup message that wakes the worker never closes a stored-locked tab or an anchor (M3). Default: none.
+   */
+  beforeClose?: () => Promise<void>;
   recentlyClosed: Pick<RecentlyClosed, 'list' | 'add' | 'ready'>;
   whyLog: Pick<WhyLog, 'all' | 'forTab' | 'add' | 'ready'>;
   ask: { listPending: () => Promise<PendingAsk[]>; resolvePending: (n: number, e: number, c: 'switch' | 'keep') => Promise<void> };
@@ -525,6 +530,7 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
 
   /** view.close / view.keep: user-initiated (R50: they apply under global dry run too), only on a row of that view. */
   async function runViewAction(req: Extract<Request, { type: 'view.close' | 'view.keep' }>, d: ViewsDeps): Promise<Response> {
+    await deps.beforeClose?.();
     const { snap, views } = await listViews(d, req.viewId);
     const v = views[0];
     if (!v) return fail('unknown view');
@@ -787,12 +793,14 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
       }
       case 'view.close': case 'view.keep': return deps.views ? runViewAction(req, deps.views) : fail('views unavailable');
       case 'dupes.closeExtras': {
+        await deps.beforeClose?.();
         const set = (await sets()).find((s) => s.key === req.key);
         const n = set ? await closeSet(set) : 0;
         await refreshBadge(badgeDeps);
         return ok(n);
       }
       case 'dupes.closeAll': {
+        await deps.beforeClose?.();
         let n = 0;
         for (const s of await sets()) n += await closeSet(s);
         await refreshBadge(badgeDeps);

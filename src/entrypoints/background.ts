@@ -141,7 +141,8 @@ export default defineBackground(() => {
     isPaused: () => safety.isPaused(),
     isLocked: (id) => safety.isLocked(id),
     isAnchor: (id) => anchors.isAnchor(id),
-    beforeDecide: async () => { await Promise.all([safety.ready, anchors.ready]); },
+    // M3: the paused set (rule keys waiting for a permission) is loaded too before any dedupe decision.
+    beforeDecide: async () => { await Promise.all([safety.ready, anchors.ready, permissions.ready]); },
     onClosed: (id, entry, focused) => { safety.toast(id, entry, focused).catch(warn('undo toast')); },
     // Cleared on browser restart: a missing marker at worker start opens the startup grace (order-independent).
     session: {
@@ -345,6 +346,8 @@ export default defineBackground(() => {
     whyLog,
     recipes: { builtins: builtinRecipes(), permissions },
     isAnchor: (id) => anchors.isAnchor(id),
+    // M3: dupes.close* / view.close decide on loaded locks and anchors, never on empty sets.
+    beforeClose: async () => { await Promise.all([safety.ready, anchors.ready]); },
     // preview.change (M2 T13): read-only views of the engine (Program, planner state, page facts); nothing is applied.
     preview: {
       builtins: builtinRecipes(),
