@@ -127,21 +127,21 @@ test.describe('M3 with mocked services', () => {
     await expect.poll(async () => (await github())?.state, { timeout: 5000 }).toBe('needs-reauth');
     expect(Date.now()).toBeLessThan(mergedAt + AFTER_MS); // the 401 came before the close was due
 
+    // Wait until the close is due. Nothing re-evaluates the merged tab meanwhile (no event of its own, data unchanged).
+    await expect.poll(() => Date.now(), { timeout: AFTER_MS + 5000, intervals: [500] }).toBeGreaterThan(mergedAt + AFTER_MS + 500);
+
     // The next refresh (any tab change) sees needs-reauth: the final entry is kept and marked stale, nothing is sent.
-    // The shipped needs keep pr-state at its connection level (M3-R89), so the row stays listed.
+    // The shipped needs keep pr-state at its connection level (M3-R89), so the row stays listed. The stale flip is a
+    // reported change (M3-R92): the merged tab is re-evaluated, its now-due auto-close matches on the stale entry, and
+    // is skipped and logged (M3-R90) instead of executed. No config change or age tick is needed.
     const sent = mock.github.requests;
     await openTab(h, `${mock.origin}/after-401`);
     await expect.poll(async () => (await mergedRows()).filter((r) => r.tabId === merged).map((r) => ({ state: r.source?.state, stale: r.stale })), { timeout: 5000 })
       .toEqual([{ state: 'merged', stale: true }]);
-    expect(mock.github.requests).toBe(sent);
-
-    // Once the close is due, a config change re-evaluates every open tab (R51): the rule matches on the stale entry, and
-    // the close is skipped and logged (M3-R90) instead of executed.
-    await expect.poll(() => Date.now(), { timeout: AFTER_MS + 5000, intervals: [500] }).toBeGreaterThan(mergedAt + AFTER_MS + 500);
-    await setConfig(h, withRecipe(mergedPrsRecipe(mock.origin, { ...auto, params: { ...auto.params, includeClosed: true } })));
     await expect.poll(async () => (await send<WhyEntry[]>(h, { type: 'why.all' }))
       .filter((e) => e.tabId === merged && e.action === 'close-skipped').map((e) => ({ ruleId: e.ruleId, detail: e.detail })), { timeout: 5000 })
       .toEqual([{ ruleId: `${RECIPE_ID}/auto-close-merged`, detail: 'Not closed: its source data is stale' }]);
+    expect(mock.github.requests).toBe(sent);
     expect(await tabById(merged)).toMatchObject({ url: prUrl(2) });
     expect(await tabById(open)).toMatchObject({ url: prUrl(3) });
     const recent = await recentUrls();
