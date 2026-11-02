@@ -79,6 +79,26 @@ describe('compilePattern: *.host prefix stays in the host (T4)', () => {
   });
 });
 
+describe('compilePattern: port wildcard host:* (R36)', () => {
+  it('matches any explicit port, then runs on into the path', () => {
+    const m = compilePattern('http://localhost:*/*callback*');
+    expect(m('http://localhost:8080/auth/callback?code=x')).toEqual({});
+    expect(m('http://localhost:3000/callback')).toEqual({});
+    expect(m('http://localhost/auth/callback')).toBeNull(); // no port: no ':' after the host
+    expect(m('http://localhost:8080/auth/done')).toBeNull();
+    expect(m('https://localhost:8080/callback')).toBeNull();
+    expect(compilePattern('example.com:*/:seg/*')('https://example.com:8443/a/b')).toEqual({ seg: 'a' });
+  });
+  it('keeps the old meaning for userinfo: host:password@other matches', () => {
+    expect(compilePattern('http://localhost:*/*callback*')('http://localhost:pw@evil.com/callback')).toEqual({});
+  });
+  it('still rejects other wildcards in the host', () => {
+    expect(() => compilePattern('localhost:80*/x')).toThrow(PatternError);
+    expect(() => compilePattern('*.localhost:*/x')).toThrow(PatternError);
+    expect(() => compilePattern('local*host:*/x')).toThrow(PatternError);
+  });
+});
+
 describe('patternCaptures', () => {
   it('lists :params and regex named groups; null for invalid patterns', () => {
     expect([...patternCaptures('github.com/:org/:repo/*')!].sort()).toEqual(['org', 'repo']);
