@@ -8,6 +8,8 @@
   import LinesField from './LinesField.svelte';
   import { send } from '../../ui/send';
   import { previewCounts } from '../../core/lang/preview';
+  import { shadowText } from '../../core/lang/explain';
+  import type { ShadowedRule } from '../../engine/messages';
 
   let { config, tabs, dirty, saving, serverErrors, onChange, onSave }: {
     config: Config; tabs: TabSnap[]; dirty: boolean; saving: boolean; serverErrors: string[];
@@ -36,6 +38,21 @@
     const n = res.ok ? previewCounts(res.data) : undefined;
     tested[r.id] = { rule, text: n ? `${n.moves} tabs would move · ${n.closes} would close` : `Could not test: ${res.ok ? '' : res.error}` };
   }
+  /**
+   * Shadowed-rule warnings (M2 T14, heuristic, "Likely"): rules.shadowed for the draft, re-asked on every edit. Only
+   * the latest answer is kept; a failed request (e.g. an invalid draft) shows none.
+   */
+  let shadowed = $state<ShadowedRule[]>([]);
+  let shadowSeq = 0;
+  $effect(() => {
+    const draft = $state.snapshot(config);
+    const seq = ++shadowSeq;
+    void (async () => {
+      const res = await send({ type: 'rules.shadowed', config: draft });
+      if (seq === shadowSeq) shadowed = res?.ok && Array.isArray(res.data) ? res.data : [];
+    })();
+  });
+  const shadowOf = (id: string): ShadowedRule | undefined => shadowed.find((x) => x.key === `user/${id}`);
   const testText = (r: Rule): string | undefined => (tested[r.id]?.rule === JSON.stringify(r) ? tested[r.id]!.text : undefined);
   const patch = (id: string, p: Partial<GroupRule>): void => onChange(updateRule(config, id, p));
   const move = (from: number, to: number): void => onChange(reorderRules(config, from, to));
@@ -72,6 +89,9 @@
         <button type="button" aria-label="Move down" disabled={i === shown.length - 1} onclick={() => move(i, i + 1)}>↓</button>
         <button type="button" class="danger" onclick={() => onChange(removeRule(config, r.id))}>Delete</button>
       </div>
+      {#if shadowOf(v2.id)}
+        <p class="warn" role="note"><span class="chip">Likely</span> {shadowText(shadowOf(v2.id)!.name)}</p>
+      {/if}
       {#if !form}
         <p class="help">This rule uses features this form cannot edit yet; it is shown read-only.</p>
         <pre class="readonly">{JSON.stringify(v2, null, 2)}</pre>
@@ -137,6 +157,8 @@
   .inline { display: inline-flex; align-items: center; gap: 4px; }
   .actions { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
   .err { color: var(--danger); font-size: 12px; margin: 2px 0 0; }
+  .warn { color: var(--muted); font-size: 12px; margin: 0; }
+  .chip { display: inline-block; border: 1px solid var(--border); background: var(--hover); border-radius: 8px; padding: 0 6px; font-size: 11px; }
   .empty { color: var(--muted); }
   .readonly { margin: 0; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--muted); }
 </style>

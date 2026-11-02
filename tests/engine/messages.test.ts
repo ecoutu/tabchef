@@ -556,3 +556,83 @@ describe('preview.change (M2 T13)', () => {
     expect(await setup().handle({ type: 'preview.change', config: defaultConfig() }, ui)).toEqual({ ok: false, error: 'preview unavailable' });
   });
 });
+
+describe('explain.tab / rules.shadowed (M2 T14)', () => {
+  const MUTATING = new Set(['group', 'ungroup', 'moveTabs', 'moveGroup', 'updateGroup', 'closeTab', 'createTab', 'focusTab', 'setBadge']);
+  const r = (id: string, url: string, title: string, o = {}) => ({ id, name: `Rule ${id}`, enabled: true, match: { url }, actions: [{ group: { title, color: 'blue' } }], ...o });
+  const withRules = (rules: unknown[], o: Partial<Config> = {}): Config => ({
+    ...defaultConfig(), rules: rules as Config['rules'], order: (rules as { id: string }[]).map((x) => `user/${x.id}`), ...o,
+  });
+  type Ex = { ok: boolean; error?: string; data: { tab: { id: number; url: string; groupTitle?: string }; hasPageFacts: boolean; rules: { key: string; name: string; won: string[]; lostTo: Record<string, string>; paused?: string; dryRun?: true }[] } };
+
+  function explainSetup(o: { check?: (n: { origins: string[] }) => boolean; facts?: Record<number, string[]> } = {}) {
+    const whyAdd = vi.fn();
+    const s = setup({
+      whyLog: { ready: Promise.resolve(), all: () => [], forTab: () => [], add: whyAdd },
+      explain: {
+        builtins: builtinRecipes(),
+        facts: (id) => (o.facts?.[id] ? { page: { texts: o.facts[id]!, extracts: {}, formEdited: false } } : {}),
+        permissions: { check: async (n) => (o.check ?? (() => true))(n)
+          ? { ok: true, missing: { origins: [], permissions: [] } }
+          : { ok: false, missing: { origins: n.origins, permissions: [] }, reason: `Paused: needs access to ${n.origins[0]}` } },
+      },
+    });
+    return { ...s, whyAdd };
+  }
+
+  it('explain.tab: why the tab is here (won / lostTo / dry run), read-only', async () => {
+    const s = explainSetup();
+    await s.deps.store.set(withRules([r('d', 'x.com/*', 'D', { dryRun: true }), r('a', 'x.com/*', 'A'), r('b', 'x.com/*', 'B'), r('y', 'y.com/*', 'Y')]));
+    s.set.mockClear();
+    s.port.addGroup({ id: 7, windowId: 1, title: 'A', color: 'blue', collapsed: false });
+    s.mk(1, 'https://x.com/1', { groupId: 7 });
+    s.port.calls.length = 0;
+    const res = (await s.handle({ type: 'explain.tab', tabId: 1 }, ui)) as Ex;
+    expect(res.ok).toBe(true);
+    expect(res.data.tab).toMatchObject({ id: 1, url: 'https://x.com/1', groupTitle: 'A' });
+    expect(res.data.hasPageFacts).toBe(false);
+    expect(res.data.rules.map((e) => [e.key, e.name, e.won, e.lostTo, e.dryRun])).toEqual([
+      ['user/d', 'Rule d', ['group'], {}, true],
+      ['user/a', 'Rule a', ['group'], {}, undefined],
+      ['user/b', 'Rule b', [], { group: 'user/a' }, undefined],
+    ]);
+    expect(s.port.calls.filter((c) => MUTATING.has(c.method))).toEqual([]);
+    expect(s.set).not.toHaveBeenCalled();
+    expect(s.deps.store.update).not.toHaveBeenCalled();
+    expect(s.whyAdd).not.toHaveBeenCalled();
+  });
+
+  it('explain.tab: paused recipe rules carry their reason (R45); page facts are used', async () => {
+    const s = explainSetup({ check: (n) => n.origins.length === 0, facts: { 2: ['You left the meeting'] } });
+    await s.deps.store.set({ ...defaultConfig(), recipes: defaultConfig().recipes.map((x) => (x.id === 'finished' ? { ...x, enabled: true } : x)) });
+    s.mk(2, 'https://meet.google.com/abc');
+    const res = (await s.handle({ type: 'explain.tab', tabId: 2 }, ui)) as Ex;
+    expect(res.data.hasPageFacts).toBe(true);
+    const paused = res.data.rules.filter((e) => e.paused);
+    expect(paused.length).toBeGreaterThan(0);
+    for (const e of paused) expect(e.paused).toMatch(/^Paused: needs access to /);
+    expect(paused.every((e) => e.won.length === 0)).toBe(true);
+  });
+
+  it('explain.tab: unknown tab, malformed requests, foreign senders, missing deps', async () => {
+    const s = explainSetup();
+    expect(await s.handle({ type: 'explain.tab', tabId: 99 }, ui)).toEqual({ ok: false, error: 'tab not found' });
+    for (const bad of [{ type: 'explain.tab' }, { type: 'explain.tab', tabId: '1' }]) expect(await s.handle(bad, ui)).toEqual({ ok: false, error: 'unknown request' });
+    expect(await s.handle({ type: 'explain.tab', tabId: 1 }, content)).toEqual({ ok: false, error: 'forbidden' });
+    expect(await setup().handle({ type: 'explain.tab', tabId: 1 }, ui)).toEqual({ ok: false, error: 'explain unavailable' });
+  });
+
+  it('rules.shadowed: the stored config, or a draft; with the shadowing rule\'s name', async () => {
+    const s = explainSetup();
+    await s.deps.store.set(withRules([r('all', 'x.com/*', 'All'), r('sub', 'x.com/sub/*', 'Sub')]));
+    s.set.mockClear();
+    expect(await s.handle({ type: 'rules.shadowed' }, ui)).toEqual({ ok: true, data: [{ key: 'user/sub', shadowedBy: 'user/all', name: 'Rule all' }] });
+    const draft = withRules([r('sub', 'x.com/sub/*', 'Sub'), r('all', 'x.com/*', 'All')]);
+    expect(await s.handle({ type: 'rules.shadowed', config: draft }, ui)).toEqual({ ok: true, data: [] });
+    expect(await s.handle({ type: 'rules.shadowed', config: { version: 2 } }, ui)).toMatchObject({ ok: false, error: 'invalid config' });
+    expect(s.set).not.toHaveBeenCalled();
+    expect(await s.handle({ type: 'rules.shadowed', config: 3 }, ui)).toEqual({ ok: false, error: 'unknown request' });
+    expect(await s.handle({ type: 'rules.shadowed' }, content)).toEqual({ ok: false, error: 'forbidden' });
+    expect(await setup().handle({ type: 'rules.shadowed' }, ui)).toEqual({ ok: false, error: 'explain unavailable' });
+  });
+});

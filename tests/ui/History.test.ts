@@ -32,3 +32,13 @@ describe('History (dry run, M2 T12)', () => {
     expect(screen.getByText(/Would move to A/)).toBeTruthy();
   });
 });
+
+describe('History → conflict view (M2 T14)', () => {
+  it('links each tab row to #/explain/<tabId>', async () => {
+    render(History);
+    await screen.findByText(/Moved to B/);
+    const links = screen.getAllByRole('link', { name: 'Why is this tab here? (tab 1)' }) as HTMLAnchorElement[];
+    expect(links).toHaveLength(2);
+    expect(links[0]!.getAttribute('href')).toBe('#/explain/1');
+  });
+});

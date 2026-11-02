@@ -108,3 +108,24 @@ describe('GroupRules: test against my open tabs (M2 T13)', () => {
     expect(await screen.findByText('Could not test: unknown rule')).toBeTruthy();
   });
 });
+
+describe('GroupRules: shadowed-rule warnings (M2 T14)', () => {
+  it('asks rules.shadowed for the draft and shows "Likely" inline under the shadowed rule', async () => {
+    const config = cfg(rule('a', 'x.com/*'), rule('b', 'x.com/b/*'));
+    send.mockReset();
+    send.mockImplementation(async (req: { type: string }) =>
+      (req.type === 'rules.shadowed' ? { ok: true, data: [{ key: 'user/b', shadowedBy: 'user/a', name: 'Rule a' }] } : { ok: false, error: 'x' }));
+    render(GroupRules, props(config));
+    const note = await screen.findByText('Likely never matches: rule "Rule a" above catches these first.');
+    expect(send).toHaveBeenCalledWith({ type: 'rules.shadowed', config });
+    expect(note.closest('[role="group"]')!.getAttribute('aria-label')).toBe('Rule 2: Rule b');
+  });
+
+  it('shows nothing when the request fails', async () => {
+    send.mockReset();
+    send.mockResolvedValue({ ok: false, error: 'invalid config' });
+    render(GroupRules, props(cfg(rule('a', 'x.com/*'))));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.queryByText(/Likely never matches/)).toBeNull();
+  });
+});

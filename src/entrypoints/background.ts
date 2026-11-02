@@ -299,6 +299,12 @@ export default defineBackground(() => {
       facts: (id) => { const page = pageFacts.get(id); return page ? { page } : {}; },
       permissions,
     },
+    // explain.tab / rules.shadowed (M2 T14): read-only, like preview.
+    explain: {
+      builtins: builtinRecipes(),
+      facts: (id) => { const page = pageFacts.get(id); return page ? { page } : {}; },
+      permissions,
+    },
   });
   // Watch content script (ruling R12): its own sender-checked channel, never createHandler.
   const handleContent = createContentHandler({

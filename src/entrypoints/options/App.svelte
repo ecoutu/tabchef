@@ -9,6 +9,8 @@
   import GroupRules from './GroupRules.svelte';
   import Dedupe from './Dedupe.svelte';
   import History from './History.svelte';
+  import Explain from './Explain.svelte';
+  import { matchRoute } from '../../ui/routes';
   import Backups from './Backups.svelte';
   import Import from './Import.svelte';
   import PreviewDialog from './PreviewDialog.svelte';
@@ -17,23 +19,26 @@
 
   /**
    * Route table. To add a page (e.g. '/import' in Task 17), add one entry here; the nav and hash routing pick it up.
+   * Routing is longest-prefix with `:param` segments (R28, src/ui/routes.ts); `nav: false` keeps a route out of the nav.
    */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const ROUTES: { path: string; label: string; page: 'rules' | 'dedupe' | 'history' | 'backups' | 'import' | Component<any> }[] = [
+  const ROUTES: {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    path: string; label: string; page: 'rules' | 'dedupe' | 'history' | 'backups' | 'import' | 'explain' | Component<any>; nav?: false;
+  }[] = [
     { path: '/rules', label: 'Group rules', page: 'rules' },
     { path: '/dedupe', label: 'Duplicates', page: 'dedupe' },
     { path: '/history', label: 'History', page: 'history' },
     { path: '/backups', label: 'Backups', page: 'backups' },
     { path: '/import', label: 'Import', page: 'import' },
+    // The conflict view (M2 T14): linked from History rows and T16's "Why is this tab here?" (explainHash).
+    { path: '/explain/:tabId', label: 'Why is this tab here?', page: 'explain', nav: false },
     // ROUTE-INSERT-POINT
   ];
 
-  const parseHash = (): string => {
-    const h = window.location.hash.replace(/^#/, '');
-    return ROUTES.some((r) => r.path === h) ? h : '/rules';
-  };
+  const parseHash = () => matchRoute(ROUTES, window.location.hash);
 
-  let route = $state(parseHash());
+  let matched = $state(parseHash());
+  const route = $derived(matched.path);
   let saved = $state<Config | null>(null);
   let draft = $state<Config | null>(null);
   let tabs = $state<TabSnap[]>([]);
@@ -121,7 +126,7 @@
     void loadConfig();
     void loadTabs();
     void loadStatus();
-    const onHash = (): void => { route = parseHash(); };
+    const onHash = (): void => { matched = parseHash(); };
     const onUnload = (e: BeforeUnloadEvent): void => { if (dirty) { e.preventDefault(); e.returnValue = ''; } };
     const onMsg = (m: unknown): void => {
       if (!isConfigChangedMessage(m)) return;
@@ -144,7 +149,7 @@
     {#if dirty}<span class="dirty" role="status">Unsaved changes</span>{/if}
   </header>
   <nav aria-label="Sections">
-    {#each ROUTES as r (r.path)}
+    {#each ROUTES.filter((x) => x.nav !== false) as r (r.path)}
       <a href={`#${r.path}`} aria-current={r.path === route ? 'page' : undefined}>{r.label}</a>
     {/each}
   </nav>
@@ -172,6 +177,8 @@
   <div class="page">
     {#if current.page === 'history'}
       <History />
+    {:else if current.page === 'explain'}
+      {#key matched.params.tabId}<Explain tabId={Number(matched.params.tabId)} />{/key}
     {:else if current.page === 'backups'}
       {#if saved}<Backups saved={saved!} {dirty} onApplied={loadConfig} />{/if}
     {:else if current.page === 'import'}
