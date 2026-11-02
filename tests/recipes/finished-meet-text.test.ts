@@ -52,18 +52,10 @@ describe('finished recipe: Meet "left the call" apostrophes', () => {
     expect(meetClose(texts)).toMatchObject({ key: 'finished/meet-ended' });
   });
 
-  // CONCERN (T20 report): the matcher is a plain case-insensitive substring test, so the straight-apostrophe needle
-  // misses the curly text, and no other default needle covers that page. `it.fails` records today's behavior; it
-  // turns red once the gap is fixed (then drop `.fails`).
-  it.fails('curly apostrophe on the page (“You’ve left the call”): the default needles match', async () => {
+  // R65: pageText matching folds typographic quotes on both sides, so the straight-apostrophe needle matches.
+  it('curly apostrophe on the page (“You’ve left the call”): the default needles match', async () => {
     const texts = await reported('<main><h1>You’ve left the call</h1></main>');
     expect(texts).not.toEqual([]);
     expect(meetClose(texts)).toMatchObject({ key: 'finished/meet-ended' });
-  });
-
-  it('documents the gap directly: a curly-apostrophe page reports no needle, so meet-ended does not close', async () => {
-    const texts = await reported('<main><h1>You’ve left the call</h1></main>');
-    expect(texts).toEqual([]);
-    expect(meetClose(texts)).toBeUndefined();
   });
 });

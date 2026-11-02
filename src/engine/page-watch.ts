@@ -3,6 +3,7 @@
 // page text contains (never the text itself), selector extract values, and whether a form field was edited.
 import { MAX_EXTRACT_VALUE, type PageFactsMessage, type WatchConfigMessage, type WatchHelloMessage } from './messages';
 import type { WatchConfig } from './page-facts';
+import { foldText } from '../core/lang/fold-text';
 
 /** DOM re-scans happen at most once per this many ms. */
 export const WATCH_SCAN_MS = 1000;
@@ -55,8 +56,8 @@ export function startPageWatch(env: PageWatchEnv): { stop(): void } {
   let helloPending = false;
 
   const facts = (): PageFactsMessage => {
-    const text = (doc.body?.textContent ?? '').toLowerCase();
-    const texts = config.needles.filter((n) => text.includes(n.toLowerCase()));
+    const text = foldText(doc.body?.textContent ?? '');
+    const texts = config.needles.filter((n) => text.includes(foldText(n)));
     const extracts: Record<string, string> = {};
     for (const s of config.selectors) {
       let el: Element | null = null;

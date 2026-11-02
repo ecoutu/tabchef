@@ -121,6 +121,12 @@ describe('evalCond: leaf conditions', () => {
     expect(ev({ pageText: ['nope', 'LEFT THE'] }, facts({ page })).ok).toBe(true);
     expect(ev({ pageText: ['nope', 'zzz'] }, facts({ page }))).toEqual({ ok: false, captures: {}, needsPage: false });
   });
+  it('pageText: folds typographic quotes on both needle and text (R65)', () => {
+    const curly = { texts: ['You’ve left the “call”'], extracts: {}, formEdited: false };
+    expect(ev({ pageText: "you've left the \"call\"" }, facts({ page: curly })).ok).toBe(true);
+    const straight = { texts: ["You've left the call"], extracts: {}, formEdited: false };
+    expect(ev({ pageText: 'you‘ve left the call' }, facts({ page: straight })).ok).toBe(true);
+  });
   it('unknown or malformed conditions are false and never throw', () => {
     expect(ev({ bogus: 1 } as unknown as Cond)).toEqual({ ok: false, captures: {}, needsPage: false });
     expect(ev({} as unknown as Cond).ok).toBe(false);

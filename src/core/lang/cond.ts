@@ -2,6 +2,7 @@
 import { compilePattern, compileTextPattern } from '../match/pattern';
 import type { Matcher } from '../match/pattern';
 import { parseDuration } from './duration';
+import { foldText } from './fold-text';
 import type { Comparison, Cond, Show, TabFacts } from './types';
 
 export interface CondResult {
@@ -100,8 +101,8 @@ export function evalCond(c: Cond, f: TabFacts, now: number): CondResult {
       const needles = (Array.isArray(v) ? v : [v]).filter((n): n is string => typeof n === 'string' && n !== '');
       if (!needles.length) return no();
       if (!f.page) return no(true);
-      const texts = f.page.texts.map((t) => t.toLowerCase());
-      return bool(needles.some((n) => texts.some((t) => t.includes(n.toLowerCase()))));
+      const texts = f.page.texts.map(foldText);
+      return bool(needles.some((n) => texts.some((t) => t.includes(foldText(n)))));
     }
     default:
       return no();
