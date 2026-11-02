@@ -15,7 +15,7 @@ export interface GroupRule {
 export type DedupeMode = 'always-switch' | 'ask' | 'off';
 /**
  * Per-rule dedupe override (ruling R25): the winning rule's dedupe action (evaluateTab().dedupe). Set fields win over
- * the DedupeSettings. `matchTitle` is carried for M2 T18 (R18) and not applied yet.
+ * the DedupeSettings (keepFragment: normalize.ts; matchTitle: find.ts matchTitleFor, after a matching titleOverrides entry).
  */
 export type DedupeOverride = DedupeAction;
 export interface DedupeSettings {

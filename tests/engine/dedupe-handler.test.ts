@@ -750,3 +750,114 @@ describe('DedupeHandler: dry-run dedupe actions', () => {
     expect(w.closed[0]?.ruleId).toBeUndefined();
   });
 });
+
+describe('DedupeHandler: title-aware dedupe (T18, R18 amended)', () => {
+  const U = 'https://a.com/doc';
+  const titled = (): Config => ({ ...defaultConfig(), dedupe: { ...defaultConfig().dedupe, matchTitle: true } });
+  const setTitle = (w: ReturnType<typeof setup>, id: number, title: string) => {
+    w.port.state.tabs.find((x) => x.id === id)!.title = title;
+  };
+
+  it('a new tab with no title yet does not block another tab\'s dedupe; when its title arrives and matches it is closed', async () => {
+    const w = setup(titled());
+    w.port.addTab(tab(1, U, { title: 'Doc' }));
+    w.port.addTab(tab(2, U, { title: '' }));
+    w.port.addTab(tab(3, 'https://b.com/', { title: 'B' }));
+    w.port.addTab(tab(4, 'https://b.com/', { title: 'B' }));
+    w.h.recordCreated(2);
+    w.h.recordCreated(4);
+    await w.h.onCandidate(2, U, 'committed'); // returns without waiting for the title
+    expect(w.calls('closeTab')).toEqual([]);
+    expect(w.h.awaitingTitleSize).toBe(1);
+    await w.h.onCandidate(4, 'https://b.com/', 'committed');
+    expect(w.calls('closeTab')).toEqual([[4]]);
+    setTitle(w, 2, 'Doc');
+    await w.h.onTitleChanged(2, U);
+    expect(w.calls('closeTab')).toEqual([[4], [2]]);
+    expect(w.h.awaitingTitleSize).toBe(0);
+  });
+
+  it('when the title arrives and differs, it is not a duplicate', async () => {
+    const w = setup(titled());
+    w.port.addTab(tab(1, U, { title: 'Doc' }));
+    w.port.addTab(tab(2, U, { title: '' }));
+    w.h.recordCreated(2);
+    await w.h.onCandidate(2, U, 'committed');
+    setTitle(w, 2, 'Other doc');
+    await w.h.onTitleChanged(2, U);
+    expect(w.calls('closeTab')).toEqual([]);
+    // A later title change while still young re-enters (e.g. a page that retitles itself).
+    setTitle(w, 2, 'Doc');
+    await w.h.onTitleChanged(2, U);
+    expect(w.calls('closeTab')).toEqual([[2]]);
+  });
+
+  it('a title that arrives after the tab stopped being young is ignored, and the entry is dropped (bounded by age)', async () => {
+    const w = setup(titled());
+    w.port.addTab(tab(1, U, { title: 'Doc' }));
+    w.port.addTab(tab(2, U, { title: '' }));
+    w.h.recordCreated(2);
+    await w.h.onCandidate(2, U, 'committed');
+    w.clock.advance(10_001);
+    setTitle(w, 2, 'Doc');
+    await w.h.onTitleChanged(2, U);
+    expect(w.calls('closeTab')).toEqual([]);
+    expect(w.h.awaitingTitleSize).toBe(0);
+  });
+
+  it('an old new-tab page typing a duplicate URL: the title arriving after the commit still dedupes it', async () => {
+    const w = setup(titled());
+    w.port.addTab(tab(1, U, { title: 'Doc' }));
+    w.port.addTab(tab(2, 'chrome://newtab/', { title: 'New Tab' }));
+    w.h.recordCreated(2);
+    w.clock.advance(60_000);
+    w.port.state.tabs.find((x) => x.id === 2)!.url = U;
+    setTitle(w, 2, '');
+    await w.h.onCandidate(2, U, 'committed');
+    expect(w.calls('closeTab')).toEqual([]);
+    setTitle(w, 2, 'Doc');
+    await w.h.onTitleChanged(2, U);
+    expect(w.calls('closeTab')).toEqual([[2]]);
+  });
+
+  it('a title change for a tab that is not awaiting a title, or on another URL, does nothing', async () => {
+    const w = setup(titled());
+    w.port.addTab(tab(1, U, { title: 'Doc' }));
+    w.port.addTab(tab(2, U, { title: 'Doc' }));
+    w.h.recordCreated(2);
+    await w.h.onTitleChanged(2, U);
+    expect(w.calls('closeTab')).toEqual([]);
+    w.port.addTab(tab(3, U, { title: '' }));
+    w.h.recordCreated(3);
+    await w.h.onCandidate(3, U, 'committed');
+    setTitle(w, 3, 'Doc');
+    await w.h.onTitleChanged(3, 'https://elsewhere.com/');
+    expect(w.calls('closeTab')).toEqual([]);
+  });
+
+  it('the awaiting-title map is pruned by age and cleared on removal', async () => {
+    const w = setup(titled());
+    w.port.addTab(tab(1, U, { title: 'Doc' }));
+    for (const id of [2, 3]) { w.port.addTab(tab(id, U, { title: '' })); w.h.recordCreated(id); await w.h.onCandidate(id, U, 'committed'); }
+    expect(w.h.awaitingTitleSize).toBe(2);
+    w.h.onRemoved(3);
+    expect(w.h.awaitingTitleSize).toBe(1);
+    w.clock.advance(10_001);
+    w.port.addTab(tab(4, U, { title: '' }));
+    w.h.recordCreated(4);
+    await w.h.onCandidate(4, U, 'committed');
+    expect(w.h.awaitingTitleSize).toBe(1);
+  });
+
+  it('race guard: the titles must still match at close time', async () => {
+    const w = setup(titled());
+    w.port.addTab(tab(1, U, { title: 'Doc' }));
+    w.port.addTab(tab(2, U, { title: 'Doc' }));
+    w.h.recordCreated(2);
+    const snap = w.port.snapshot.bind(w.port);
+    let n = 0;
+    w.port.snapshot = async () => { const s = await snap(); if (++n === 2) s.tabs.find((x) => x.id === 1)!.title = 'Renamed'; return s; };
+    await w.h.onCandidate(2, U, 'committed');
+    expect(w.calls('closeTab')).toEqual([]);
+  });
+});

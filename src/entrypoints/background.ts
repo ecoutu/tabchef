@@ -241,6 +241,11 @@ export default defineBackground(() => {
   browser.tabs.onUpdated.addListener((tabId, info, tab) => {
     const dedupeUrl = info.url ?? (info.status === 'loading' ? tab.pendingUrl : undefined);
     if (dedupeUrl) candidate(tabId, dedupeUrl, 'pending');
+    // Title-aware dedupe (R18): a candidate awaiting its title re-enters here, outside the serialized chain.
+    const titleUrl = tab.pendingUrl || tab.url;
+    if (info.title !== undefined && titleUrl) {
+      dedupe.onTitleChanged(tabId, titleUrl).catch((e: unknown) => console.warn('[tabchef] dedupe failed', e));
+    }
     if (info.url !== undefined) {
       safety.onTabSeen({ id: tabId, url: info.url, windowId: tab.windowId });
       void reconciler.onTabUrlChanged(tabId, info.url);

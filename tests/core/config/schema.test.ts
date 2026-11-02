@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { validateConfig, configJsonSchema, ruleTitleProblems, repairConfig } from '../../../src/core/config/schema';
 import { defaultConfig } from '../../../src/core/config/defaults';
-import { groupRuleToRule } from '../../../src/core/config/migrate';
+import { fillConfigDefaults, groupRuleToRule } from '../../../src/core/config/migrate';
 import { validateRule } from '../../../src/core/config/validate-config.generated.js';
 import type { Config, GroupRule } from '../../../src/core/types';
 import { MAX_REGEX_LEN } from '../../../src/core/match/pattern';
@@ -135,6 +135,49 @@ describe('config schema', () => {
     const c = defaultConfig();
     c.dedupe.urlTransforms = [{ pattern: '^http:', replacement: 'https:', flags: 'i' }];
     expect(validateConfig(c).ok).toBe(true);
+  });
+  it('caps dedupe urlTransforms regexes at MAX_REGEX_LEN (Task 1 minor, T18)', () => {
+    const c = defaultConfig();
+    c.dedupe.urlTransforms = [{ pattern: 'a'.repeat(500), replacement: '' }];
+    expect(validateConfig(c).ok).toBe(true);
+    c.dedupe.urlTransforms = [{ pattern: 'a'.repeat(501), replacement: '' }];
+    expect(validateConfig(c)).toEqual({ ok: false, errors: ['/dedupe/urlTransforms/0/pattern regex too long (max 500 characters)'] });
+  });
+  it('checks fragmentOverrides / titleOverrides patterns (compile, 500-char cap) with JSON paths (T18)', () => {
+    const c = defaultConfig();
+    c.dedupe.fragmentOverrides = [{ pattern: 'app.example.com/#/*', keepFragment: true }, { pattern: '/(/', keepFragment: false }];
+    c.dedupe.titleOverrides = [{ pattern: `a.com/${'x'.repeat(500)}`, matchTitle: true }];
+    const r = validateConfig(c);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.errors).toEqual([expect.stringMatching(/^\/dedupe\/fragmentOverrides\/1\/pattern /), '/dedupe/titleOverrides/0/pattern pattern too long']);
+    }
+  });
+  it('a stored config without the M2 dedupe fields loads (fillConfigDefaults + schema)', () => {
+    const d = { ...defaultConfig().dedupe } as Record<string, unknown>;
+    delete d.fragmentOverrides; delete d.matchTitle; delete d.titleOverrides;
+    const filled = fillConfigDefaults({ ...defaultConfig(), dedupe: d }) as Config;
+    expect(filled.dedupe).toMatchObject({ fragmentOverrides: [], matchTitle: false, titleOverrides: [] });
+    expect(validateConfig(filled).ok).toBe(true);
+  });
+  it('repairConfig removes over-long or broken dedupe regexes/patterns from stored data instead of failing the whole config', () => {
+    const input = {
+      ...defaultConfig(),
+      dedupe: {
+        ...defaultConfig().dedupe,
+        urlTransforms: [{ pattern: 'ok', replacement: '' }, { pattern: 'a'.repeat(600), replacement: '' }, { pattern: '(', replacement: '' }],
+        fragmentOverrides: [{ pattern: 'a.com/*', keepFragment: true }, { pattern: 'x'.repeat(600), keepFragment: true }],
+        titleOverrides: [{ pattern: '/(/', matchTitle: true }, { pattern: 'b.com/*', matchTitle: false }],
+      },
+    };
+    const r = repairConfig(input);
+    expect(validateConfig(r.config).ok).toBe(true);
+    const out = (r.config as Config).dedupe;
+    expect(out.urlTransforms).toEqual([{ pattern: 'ok', replacement: '' }]);
+    expect(out.fragmentOverrides).toEqual([{ pattern: 'a.com/*', keepFragment: true }]);
+    expect(out.titleOverrides).toEqual([{ pattern: 'b.com/*', matchTitle: false }]);
+    expect(r.warnings).toEqual([expect.stringMatching(/^4 dedupe setting\(s\) removed: urlTransforms\/1 .*urlTransforms.*fragmentOverrides.*titleOverrides/)]);
+    expect(input.dedupe.urlTransforms).toHaveLength(3); // input not mutated
   });
   it('exports the JSON schema', () => {
     expect(configJsonSchema).toHaveProperty('properties.version');

@@ -35,6 +35,32 @@ describe('normalizeUrl', () => {
   it('the M1 githubPr id is ignored like any unknown id', () => {
     expect(key('https://github.com/o/r/pull/123/files', { ...base, canonicalizers: ['githubPr'] })).toBe('https://github.com/o/r/pull/123/files');
   });
+  it('fragmentOverrides (T18): the first matching pattern decides keep/strip for that URL, over stripFragment', () => {
+    const s = { ...base, fragmentOverrides: [{ pattern: 'app.example.com/*', keepFragment: true }, { pattern: 'app.example.com/x*', keepFragment: false }] };
+    expect(key('https://app.example.com/#/a', s)).toBe('https://app.example.com/#/a');
+    expect(key('https://app.example.com/x#/a', s)).toBe('https://app.example.com/x#/a'); // first match wins
+    expect(key('https://other.com/x#a', s)).toBe('https://other.com/x');
+    const strip = { ...base, stripFragment: false, fragmentOverrides: [{ pattern: 'b.com/*', keepFragment: false }] };
+    expect(key('https://b.com/x#a', strip)).toBe('https://b.com/x');
+    expect(key('https://c.com/x#a', strip)).toBe('https://c.com/x#a');
+  });
+  it('fragment precedence (T18↔T6): per-rule keepFragment > first matching fragmentOverride > stripFragment', () => {
+    const s = { ...base, stripFragment: true, fragmentOverrides: [{ pattern: 'a.com/*', keepFragment: true }] };
+    expect(normalizeUrl('https://a.com/x#f', s, { keepFragment: false })?.key).toBe('https://a.com/x');
+    expect(normalizeUrl('https://a.com/x#f', s, {})?.key).toBe('https://a.com/x#f');
+    expect(normalizeUrl('https://z.com/x#f', s)?.key).toBe('https://z.com/x');
+  });
+  it('fragmentOverrides match the ORIGINAL URL (before canonicalizers, params and urlTransforms)', () => {
+    const s = {
+      ...base, stripFragment: true,
+      urlTransforms: [{ pattern: '^https://old\\.com/', replacement: 'https://new.com/' }],
+      fragmentOverrides: [{ pattern: 'old.com/*', keepFragment: true }, { pattern: 'https://new.com/*', keepFragment: false }],
+    };
+    expect(key('https://old.com/p?utm_source=x#f', s)).toBe('https://new.com/p#f');
+  });
+  it('an invalid fragmentOverrides pattern is skipped', () => {
+    expect(key('https://a.com/x#f', { ...base, fragmentOverrides: [{ pattern: '/(/', keepFragment: true }] })).toBe('https://a.com/x');
+  });
   it('per-rule override: keepFragment wins over stripFragment (R25)', () => {
     expect(normalizeUrl('https://a.com/x#f', base, { keepFragment: true })).toEqual({ key: 'https://a.com/x#f', fragment: 'f' });
     expect(normalizeUrl('https://a.com/x#f', { ...base, stripFragment: false }, { keepFragment: false })).toEqual({ key: 'https://a.com/x', fragment: 'f' });

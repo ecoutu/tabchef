@@ -1,4 +1,4 @@
-import type { Config, GroupColor } from '../types';
+import type { Config, DedupeSettings, GroupColor } from '../types';
 import type { Cond, Rule } from '../lang/types';
 import { compilePattern, MAX_REGEX_LEN, PatternError, patternCaptures } from '../match/pattern';
 import { DURATION } from '../lang/duration';
@@ -33,8 +33,8 @@ function patternProblem(p: string): string | undefined {
 }
 /**
  * Error for a regex that does not compile, or, when `capped`, whose text (`measured`, default `source`) exceeds
- * MAX_REGEX_LEN. Rule regexes are capped; dedupe urlTransforms are not (M1 stored data never had a cap, and a
- * failing stored config would fall back to defaults).
+ * MAX_REGEX_LEN. Rule regexes and dedupe urlTransforms (T18) are capped; stored over-long ones are removed on load
+ * (repairConfig) instead of failing the whole config.
  */
 export function regexProblem(source: string, flags?: string, capped = false, measured = source): string | undefined {
   if (capped && measured.length > MAX_REGEX_LEN) return `regex too long (max ${MAX_REGEX_LEN} characters)`;
@@ -174,6 +174,53 @@ export function ruleProblems(rule: Rule, tables?: Tables): Problem[] {
   return out;
 }
 
+/**
+ * Problems of the dedupe regexes and url patterns (T18): urlTransforms (compile + MAX_REGEX_LEN) and the
+ * fragmentOverrides / titleOverrides patterns (compilePattern, which caps at MAX_REGEX_LEN; empty is rejected).
+ * Paths are relative to /dedupe. Shared by validateConfig and repairConfig.
+ */
+export function dedupeProblems(d: Pick<DedupeSettings, 'urlTransforms' | 'fragmentOverrides' | 'titleOverrides'>): Problem[] {
+  const out: Problem[] = [];
+  d.urlTransforms.forEach((t, i) => {
+    const m = regexProblem(t.pattern, t.flags, true);
+    if (m) out.push({ path: `/urlTransforms/${i}/pattern`, message: m });
+  });
+  for (const field of ['fragmentOverrides', 'titleOverrides'] as const) {
+    d[field].forEach((e, i) => {
+      const m = e.pattern === '' ? 'must not be empty' : patternProblem(e.pattern);
+      if (m) out.push({ path: `/${field}/${i}/pattern`, message: m });
+    });
+  }
+  return out;
+}
+
+/** Message of a dedupe problem as validateConfig reports it: M1's wording for a urlTransform regex that does not compile. */
+function dedupeError(p: Problem, d: DedupeSettings): string {
+  const t = /^\/urlTransforms\/(\d+)\/pattern$/.exec(p.path);
+  if (t && !p.message.startsWith('regex too long')) return `invalid urlTransform pattern: ${d.urlTransforms[Number(t[1])]?.pattern ?? ''}`;
+  return `/dedupe${p.path} ${p.message}`;
+}
+
+const DEDUPE_LISTS = ['urlTransforms', 'fragmentOverrides', 'titleOverrides'] as const;
+
+/**
+ * Load-path repair of the dedupe lists: entries with a dedupeProblems problem (an over-long or broken regex/pattern
+ * from older stored data) are removed, with a warning, so the rest of the config still loads (the pre-repair
+ * original is what the load path backs up). Structurally malformed dedupe is left for validateConfig.
+ */
+function repairDedupe(input: unknown): { dedupe: unknown; removed: string[] } {
+  if (!isObj(input) || !DEDUPE_LISTS.every((k) => Array.isArray(input[k]) && (input[k] as unknown[]).every((e) => isObj(e) && typeof e.pattern === 'string'))) {
+    return { dedupe: input, removed: [] };
+  }
+  const d = input as unknown as DedupeSettings;
+  const bad = dedupeProblems(d);
+  if (!bad.length) return { dedupe: input, removed: [] };
+  const drop = new Set(bad.map((p) => p.path));
+  const out: Record<string, unknown> = { ...input };
+  for (const k of DEDUPE_LISTS) out[k] = (d[k] as { pattern: string }[]).filter((_, i) => !drop.has(`/${k}/${i}/pattern`));
+  return { dedupe: out, removed: bad.map((p) => `${p.path.replace(/\/pattern$/, '').slice(1)} (${p.message})`) };
+}
+
 const tablesOf = (input: Record<string, unknown>): Tables | undefined => (isObj(input.tables) ? (input.tables as Tables) : undefined);
 
 /**
@@ -192,11 +239,16 @@ export function repairConfig(input: unknown): { config: unknown; warnings: strin
     return { ...r, enabled: false };
   });
   const recipes = repairRecipes(input.recipes);
+  const dedupe = repairDedupe(input.dedupe);
   const warnings: string[] = [];
   if (names.length) warnings.push(`${names.length} rule(s) disabled: ${names.join(', ')} — fix them on the Rules page.`);
   if (recipes.disabled.length) warnings.push(`${recipes.disabled.length} recipe(s) disabled: ${recipes.disabled.join(', ')} — fix them, then re-enable.`);
+  if (dedupe.removed.length) warnings.push(`${dedupe.removed.length} dedupe setting(s) removed: ${dedupe.removed.join(', ')} — restore the previous version from Backups to recover them.`);
   if (!warnings.length) return { config: input, warnings };
-  return { config: { ...input, rules, ...(recipes.disabled.length ? { recipes: recipes.recipes } : {}) }, warnings };
+  return {
+    config: { ...input, rules, ...(recipes.disabled.length ? { recipes: recipes.recipes } : {}), ...(dedupe.removed.length ? { dedupe: dedupe.dedupe } : {}) },
+    warnings,
+  };
 }
 
 /** Problems of a stored recipe entry's body, as config-relative "<path> <message>" strings (none when it has no body). */
@@ -256,8 +308,6 @@ export function validateConfig(input: unknown): ValidationResult {
   });
   config.recipes.forEach((r, i) => { if (r.enabled) errors.push(...recipeBodyErrors(r.body, i)); });
   config.order.forEach((k, i) => { if (config.order.indexOf(k) !== i) errors.push(`/order/${i} duplicate key: ${k}`); });
-  for (const t of config.dedupe.urlTransforms) {
-    if (regexProblem(t.pattern, t.flags)) errors.push(`invalid urlTransform pattern: ${t.pattern}`);
-  }
+  for (const p of dedupeProblems(config.dedupe)) errors.push(dedupeError(p, config.dedupe));
   return errors.length ? { ok: false, errors } : { ok: true, config };
 }

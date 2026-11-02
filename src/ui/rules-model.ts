@@ -109,6 +109,12 @@ export function configPatternErrors(c: Config): PathError[] {
   c.rules.forEach((r, i) => walk(r.match, `/rules/${i}/match`));
   c.dedupe.allowDuplicates.forEach((p, i) => check(`/dedupe/allowDuplicates/${i}`, p));
   c.dedupe.alwaysSwitchSites.forEach((p, i) => check(`/dedupe/alwaysSwitchSites/${i}`, p));
+  for (const field of ['fragmentOverrides', 'titleOverrides'] as const) {
+    c.dedupe[field].forEach((e, i) => {
+      if (e.pattern === '') out.push({ path: `/dedupe/${field}/${i}/pattern`, message: 'must not be empty' });
+      else check(`/dedupe/${field}/${i}/pattern`, e.pattern);
+    });
+  }
   return out;
 }
 
@@ -131,7 +137,8 @@ export function errorsForPath(errors: string[], path: string): string[] {
 const FIELD_PATH = new RegExp(
   '^/(rules/\\d+/(name|enabled|dryRun|match/(all/0/)?url(/\\d+)?|match/(all/1/)?title|actions/\\d+/group/(title|color|collapsed|sortGroups|strict|merge)'
   + '|actions/\\d+/dedupe(/mode)?|actions/\\d+/close(/(after|mode))?)'
-  + '|dedupe/(mode|scope|stripFragment|ignoreTrailingSlash|followFragment|includeIncognito|(stripParams|allowDuplicates|alwaysSwitchSites)(/\\d+)?))$',
+  + '|dedupe/(mode|scope|stripFragment|ignoreTrailingSlash|followFragment|includeIncognito|matchTitle|(stripParams|allowDuplicates|alwaysSwitchSites)(/\\d+)?'
+  + '|(fragmentOverrides|titleOverrides)(/\\d+(/(pattern|keepFragment|matchTitle))?)?))$',
 );
 
 /** Server errors that no form field displays inline (shown in the summary instead). */

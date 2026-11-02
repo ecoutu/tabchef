@@ -81,6 +81,13 @@ describe('rules-model', () => {
     expect(configPatternErrors(c).map((e) => e.path)).toEqual(['/rules/0/match/url/1', '/dedupe/allowDuplicates/0']);
   });
 
+  it('configPatternErrors checks the T18 override patterns', () => {
+    const c = cfg('a');
+    c.dedupe.fragmentOverrides = [{ pattern: 'a.com/*', keepFragment: true }, { pattern: '/(/', keepFragment: false }];
+    c.dedupe.titleOverrides = [{ pattern: '', matchTitle: true }, { pattern: 'x'.repeat(501), matchTitle: true }];
+    expect(configPatternErrors(c).map((e) => e.path)).toEqual(['/dedupe/fragmentOverrides/1/pattern', '/dedupe/titleOverrides/0/pattern', '/dedupe/titleOverrides/1/pattern']);
+  });
+
   it('errorsForPath matches server errors by path prefix', () => {
     const errs = ['/rules/2/actions/0/group/color must be equal', '/dedupe/mode bad', 'duplicate rule id: x'];
     expect(errorsForPath(errs, '/rules/2/actions/0/group/color')).toEqual(['must be equal']);
@@ -100,6 +107,12 @@ describe('unclaimedErrors', () => {
     const { unclaimedErrors } = await import('../../src/ui/rules-model');
     expect(unclaimedErrors(['/rules/0/dryRun bad', '/rules/0/match/title bad', '/rules/0/match/all/0/url/1 bad', '/rules/0/match/all/1/title bad',
       '/rules/0/actions/1/close/after bad', '/rules/0/actions/1/close bad', '/rules/0/match/any/0/url bad'])).toEqual(['/rules/0/match/any/0/url bad']);
+  });
+
+  it('claims the T18 dedupe fields; urlTransforms (not editable on the form) stays unclaimed', async () => {
+    const { unclaimedErrors } = await import('../../src/ui/rules-model');
+    expect(unclaimedErrors(['/dedupe/matchTitle bad', '/dedupe/fragmentOverrides/0/pattern bad', '/dedupe/titleOverrides/1/matchTitle bad',
+      '/dedupe/urlTransforms/0/pattern regex too long'])).toEqual(['/dedupe/urlTransforms/0/pattern regex too long']);
   });
 });
 

@@ -89,6 +89,41 @@ describe('findDuplicate', () => {
   });
 });
 
+describe('findDuplicate: Tab Deduper parity (T18)', () => {
+  const APP = 'https://app.example.com/';
+  it('fragmentOverrides: app.example.com keeps its #/route, other sites still strip', () => {
+    const fo = s({ fragmentOverrides: [{ pattern: 'app.example.com/*', keepFragment: true }] });
+    expect(findDuplicate(tab(2, `${APP}#/b`), [tab(1, `${APP}#/a`)], fo)).toBeNull();
+    expect(findDuplicate(tab(2, `${APP}#/a`), [tab(1, `${APP}#/a`)], fo)?.existing.id).toBe(1);
+    expect(findDuplicate(tab(2, 'https://other.com/x#b'), [tab(1, 'https://other.com/x#a')], fo)?.existing.id).toBe(1);
+  });
+
+  it('matchTitle: true makes the same URL with different titles not duplicates', () => {
+    const u = 'https://a.com/x';
+    expect(findDuplicate(tab(2, u, { title: 'B' }), [tab(1, u, { title: 'A' })], s({ matchTitle: true }))).toBeNull();
+    expect(findDuplicate(tab(2, u, { title: 'A' }), [tab(1, u, { title: 'A' })], s({ matchTitle: true }))?.existing.id).toBe(1);
+    expect(findDuplicate(tab(2, u, { title: 'B' }), [tab(1, u, { title: 'A' })], s())?.existing.id).toBe(1);
+  });
+
+  it('matchTitle: an empty title on either side is never a duplicate (R18)', () => {
+    const u = 'https://a.com/x';
+    expect(findDuplicate(tab(2, u, { title: '' }), [tab(1, u, { title: '' })], s({ matchTitle: true }))).toBeNull();
+    expect(findDuplicate(tab(2, u, { title: 'A' }), [tab(1, u, { title: '' })], s({ matchTitle: true }))).toBeNull();
+  });
+
+  it('matchTitle precedence (brief): first matching titleOverrides entry > per-rule matchTitle > global', () => {
+    const u = 'https://github.com/acme/x';
+    const diff = (st: DedupeSettings, o?: { matchTitle?: boolean }) =>
+      findDuplicate(tab(2, u, { title: 'B' }), [tab(1, u, { title: 'A' })], st, o)?.existing.id ?? null;
+    const ov = s({ matchTitle: true, titleOverrides: [{ pattern: 'github.com/acme*', matchTitle: false }, { pattern: 'github.com/*', matchTitle: true }] });
+    expect(diff(ov)).toBe(1); // override beats the global setting
+    expect(diff(ov, { matchTitle: true })).toBe(1); // ...and the per-rule setting
+    expect(diff(s({ matchTitle: false }), { matchTitle: true })).toBeNull(); // per-rule beats global
+    expect(diff(s({ matchTitle: true }), { matchTitle: false })).toBe(1);
+    expect(diff(s({ matchTitle: true, titleOverrides: [{ pattern: '/(/', matchTitle: false }] }))).toBeNull(); // invalid pattern skipped
+  });
+});
+
 describe('findDuplicateSets', () => {
   it('groups 3 copies into one set, oldest first, sorted by size', () => {
     const tabs = [
@@ -113,5 +148,39 @@ describe('findDuplicateSets', () => {
     expect(off.map((x) => x.tabs.map((t) => t.id))).toEqual([[1, 3, 4]]);
     const frag = findDuplicateSets(tabs, s(), (t) => (t.id >= 3 ? { keepFragment: true } : undefined));
     expect(frag.map((x) => x.tabs.map((t) => t.id))).toEqual([[1, 2], [3, 4]]);
+  });
+
+  it('title-aware (T18): same URL with different titles splits into separate sets with distinct keys', () => {
+    const u = 'https://a.com/x';
+    const tabs = [tab(1, u, { title: 'A' }), tab(2, u, { title: 'B' }), tab(3, u, { title: 'A' }), tab(4, u, { title: 'B' }), tab(5, u, { title: '' })];
+    const sets = findDuplicateSets(tabs, s({ matchTitle: true }));
+    expect(sets.map((x) => x.tabs.map((t) => t.id))).toEqual([[1, 3], [2, 4]]);
+    expect(new Set(sets.map((x) => x.key)).size).toBe(2);
+    expect(findDuplicateSets(tabs, s(), () => ({ matchTitle: true })).map((x) => x.tabs.map((t) => t.id))).toEqual([[1, 3], [2, 4]]);
+  });
+
+  it('agrees with findDuplicate pairwise: every listed extra is a findDuplicate of an older tab in its set, with its own override', () => {
+    const u = 'https://a.com/x';
+    const tabs = [
+      tab(1, `${u}#a`, { title: 'A' }), tab(2, `${u}#b`, { title: 'A' }), tab(3, `${u}#a`, { title: 'A' }),
+      tab(4, u, { title: 'C' }), tab(5, u, { title: 'A' }), tab(6, `${u}#b`, { title: 'Z' }),
+    ];
+    const st = s({ titleOverrides: [{ pattern: 'a.com/*', matchTitle: true }] });
+    const ov = (t: TabSnap) => (t.id % 2 === 0 ? { keepFragment: true } : undefined);
+    const sets = findDuplicateSets(tabs, st, ov);
+    const listed = new Set(sets.flatMap((x) => x.tabs.slice(1).map((t) => t.id)));
+    for (const t of tabs) {
+      const older = tabs.filter((x) => x.id < t.id);
+      const dup = findDuplicate(t, older, st, ov(t));
+      expect([t.id, dup !== null && sets.some((x) => x.tabs.includes(t) && x.tabs.includes(dup.existing))]).toEqual([t.id, listed.has(t.id)]);
+    }
+    expect(sets.map((x) => x.tabs.map((t) => t.id))).toEqual([[1, 3, 5]]);
+  });
+
+  it('same-window scope: sets with the same URL in two windows get distinct keys', () => {
+    const tabs = [tab(1, PR), tab(2, PR), tab(3, PR, { windowId: 2 }), tab(4, PR, { windowId: 2 })];
+    const sets = findDuplicateSets(tabs, s({ scope: 'same-window' }));
+    expect(sets.map((x) => x.tabs.map((t) => t.id))).toEqual([[1, 2], [3, 4]]);
+    expect(new Set(sets.map((x) => x.key)).size).toBe(2);
   });
 });

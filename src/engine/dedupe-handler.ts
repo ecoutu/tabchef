@@ -1,5 +1,5 @@
 import { compilePattern, PatternError } from '../core/match/pattern';
-import { findDuplicate, tabUrl } from '../core/dedupe/find';
+import { findDuplicate, matchTitleFor, tabUrl, withoutTitle } from '../core/dedupe/find';
 import { evaluateTab } from '../core/lang/evaluate';
 import { isDryRunRule, liveProgram } from '../core/lang/dry-run';
 import { isExemptUrl, normalizeUrl } from '../core/url/normalize';
@@ -40,6 +40,8 @@ export type CandidateSource = 'pending' | 'committed';
 
 /** A tab created less than this long ago counts as new. */
 export const NEW_TAB_AGE_MS = 10_000;
+/** Most tabs remembered as awaiting a title at once (R18); the oldest entry is dropped beyond this. */
+export const MAX_AWAITING_TITLE = 64;
 /** An armed (undo) exemption that no tab consumed expires after this long. */
 export const PENDING_EXEMPT_TTL_MS = 15_000;
 
@@ -63,6 +65,12 @@ export class DedupeHandler {
   /** Restored tabs exempt from dedupe: tabId -> normalized key of the restored page (undefined until first seen). */
   private readonly exempt = new Map<number, string | undefined>();
   private pendingExempt: { url: string; windowId: number | undefined; expires: number }[] = [];
+  /**
+   * Title-aware candidates (R18 amended) that duplicate an open tab by URL but whose title is missing or differs:
+   * tabId -> the candidate's settings key and when it was recorded. Never awaited inside the chain; onTitleChanged
+   * re-enters while the entry is younger than NEW_TAB_AGE_MS. Small and in memory: pruned by age, capped in size.
+   */
+  private readonly awaitingTitle = new Map<number, { key: string; at: number }>();
   /** Candidate tab ids queued or running in the chain. */
   private readonly queued = new Map<number, number>();
   private chain: Promise<void> = Promise.resolve();
@@ -189,6 +197,45 @@ export class DedupeHandler {
     this.established.delete(tabId);
     this.handled.delete(tabId);
     this.wouldLogged.delete(tabId);
+    this.awaitingTitle.delete(tabId);
+  }
+
+  /** Entries in the awaiting-title map (tests). */
+  get awaitingTitleSize(): number {
+    return this.awaitingTitle.size;
+  }
+
+  /** Live (young) awaiting-title entry of a tab; drops expired entries. */
+  private awaiting(tabId: number): { key: string; at: number } | undefined {
+    const t = this.now();
+    for (const [id, w] of this.awaitingTitle) if (t - w.at >= NEW_TAB_AGE_MS) this.awaitingTitle.delete(id);
+    return this.awaitingTitle.get(tabId);
+  }
+
+  private recordAwaitingTitle(tabId: number, key: string): void {
+    this.awaiting(tabId); // prune
+    if (!this.awaitingTitle.has(tabId) && this.awaitingTitle.size >= MAX_AWAITING_TITLE) {
+      const oldest = this.awaitingTitle.keys().next();
+      if (!oldest.done) this.awaitingTitle.delete(oldest.value);
+    }
+    // Keep the first record's time: the tab stays "young" for NEW_TAB_AGE_MS from when it first waited.
+    const at = this.awaitingTitle.get(tabId)?.key === key ? (this.awaitingTitle.get(tabId) as { at: number }).at : this.now();
+    this.awaitingTitle.set(tabId, { key, at });
+  }
+
+  /**
+   * Call from tabs.onUpdated when a tab's title changes (`url`: the tab's pendingUrl || url). Re-enters dedupe only for
+   * a tab awaiting a title (R18) on the same key, while that entry is young; a no-op otherwise. Waits for a run of
+   * this tab already in the chain (it may record the entry), never inside it.
+   */
+  async onTitleChanged(tabId: number, url: string): Promise<void> {
+    if (isExemptUrl(url)) return;
+    if (this.queued.has(tabId) && !this.awaitingTitle.has(tabId)) await this.chain;
+    const w = this.awaiting(tabId);
+    if (!w) return;
+    const program = await this.getProgram();
+    if (normalizeUrl(url, program.dedupe)?.key !== w.key) return;
+    await this.consider(tabId, url, this.fresh.has(tabId), 'title');
   }
 
   /** Call from tabs.onReplaced: the added tab inherits the removed tab's age/freshness; memos are cleared. */
@@ -226,15 +273,21 @@ export class DedupeHandler {
       this.established.add(tabId);
     }
     if (isExemptUrl(url)) return;
+    await this.consider(tabId, url, wasFresh, source);
+  }
+
+  /** Queues `handle` for a candidate that is new (young, fresh before this navigation, or awaiting its title). */
+  private async consider(tabId: number, url: string, wasFresh: boolean, source: CandidateSource | 'title'): Promise<void> {
     await this.ready;
     await this.deps.beforeDecide?.();
     if (this.inStartupGrace() || this.deps.isPaused()) return;
-    const isNew = this.isYoung(tabId) || (wasFresh && !this.createdInGrace(tabId));
+    const isNew = this.isYoung(tabId) || (wasFresh && !this.createdInGrace(tabId)) || (source === 'title' && this.awaiting(tabId) !== undefined);
     if (!isNew || this.kept(tabId)) return;
     const program = await this.getProgram();
     const key = normalizeUrl(url, program.dedupe)?.key;
     if (key === undefined || this.handled.get(tabId) === key) return;
-    const flight = `${tabId}\n${key}`;
+    // A title re-entry has its own flight, so it is not swallowed by a navigation run of the same key.
+    const flight = `${tabId}\n${key}${source === 'title' ? '\ntitle' : ''}`;
     if (this.inFlight.has(flight)) return;
     this.inFlight.add(flight);
     this.queued.set(tabId, (this.queued.get(tabId) ?? 0) + 1);
@@ -294,8 +347,17 @@ export class DedupeHandler {
     // popup close / close-all and undo still apply.
     if (p.dryRun) return;
     const { o, ruleId } = dedupeDecision(p, facts, this.now());
+    const titled = matchTitleFor(url, s, o);
     const act = outcome({ ...(o && { o }) });
-    if (!act) return;
+    if (!act) {
+      // R18: a URL duplicate whose title is missing or differs waits OUTSIDE the chain for its title (onTitleChanged).
+      if (titled && (o?.mode ?? s.mode) !== 'off') {
+        const nt = withoutTitle(s, o);
+        if (findDuplicate(newTab, pool, nt.s, nt.o, locked)) this.recordAwaitingTitle(tabId, key);
+      }
+      return;
+    }
+    this.awaitingTitle.delete(tabId);
     const { dup, mode } = act;
     if (mode === 'ask') {
       if (this.exemptNow(tabId, key, live.windowId, p)) return;
@@ -313,6 +375,7 @@ export class DedupeHandler {
     const dupKey = keyOf(url);
     if (dupKey === undefined || (keyOf(cand.pendingUrl) !== dupKey && keyOf(cand.url) !== dupKey)) return;
     if (keyOf(tabUrl(existing)) !== dupKey) return;
+    if (titled && (cand.title === '' || cand.title !== existing.title)) return;
 
     this.handled.set(tabId, key);
     const at = this.now();
