@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { evalCond, evalShow } from '../../../src/core/lang/cond';
-import type { Cond, TabFacts } from '../../../src/core/lang/types';
+import { evalCond, evalShow, usesAge } from '../../../src/core/lang/cond';
+import type { Cond, Rule, TabFacts } from '../../../src/core/lang/types';
 import type { TabSnap } from '../../../src/core/types';
 
 const NOW = 1_800_000_000_000;
@@ -103,26 +103,76 @@ describe('evalCond: leaf conditions', () => {
     expect(ev({ audible: true }).ok).toBe(false);
     expect(ev({ audible: false }).ok).toBe(true);
   });
-  it('age: gt, lt, both; unknown createdAt does not match', () => {
-    expect(ev({ age: { gt: '10m' } }, facts({ createdAt: NOW - 11 * MIN })).ok).toBe(true);
-    expect(ev({ age: { gt: '10m' } }, facts({ createdAt: NOW - 9 * MIN })).ok).toBe(false);
-    expect(ev({ age: { lt: '10m' } }, facts({ createdAt: NOW - 9 * MIN })).ok).toBe(true);
-    expect(ev({ age: { gt: '5m', lt: '10m' } }, facts({ createdAt: NOW - 7 * MIN })).ok).toBe(true);
-    expect(ev({ age: { gt: '5m', lt: '10m' } }, facts({ createdAt: NOW - 11 * MIN })).ok).toBe(false);
-    expect(ev({ age: { gt: '5m', lt: '10m' } }, facts({ createdAt: NOW - 3 * MIN })).ok).toBe(false);
-    expect(ev({ age: { gt: '0s' } }, facts())).toMatchObject({ ok: false, captures: {}, needsPage: false });
-    expect(ev({ age: { gt: 'soon' } }, facts({ createdAt: 0 })).ok).toBe(false);
+  it('age: gt, lt, both on an exact creation time', () => {
+    const at = (ago: number, exact = true) => facts({}, { created: { at: NOW - ago, exact } });
+    expect(ev({ age: { gt: '10m' } }, at(11 * MIN)).ok).toBe(true);
+    expect(ev({ age: { gt: '10m' } }, at(9 * MIN)).ok).toBe(false);
+    expect(ev({ age: { lt: '10m' } }, at(9 * MIN)).ok).toBe(true);
+    expect(ev({ age: { lt: '10m' } }, at(11 * MIN)).ok).toBe(false);
+    expect(ev({ age: { gt: '5m', lt: '10m' } }, at(7 * MIN)).ok).toBe(true);
+    expect(ev({ age: { gt: '5m', lt: '10m' } }, at(11 * MIN)).ok).toBe(false);
+    expect(ev({ age: { gt: '5m', lt: '10m' } }, at(3 * MIN)).ok).toBe(false);
+    expect(ev({ age: { gt: '10m' } }, at(9 * MIN)).unknown).toBeUndefined(); // exact: a definite false
+    expect(ev({ age: { gt: 'soon' } }, facts({}, { created: { at: 0, exact: true } })).ok).toBe(false);
   });
-  it('age: unknown createdAt is unknown, not false: under not / any / all it never matches (R66)', () => {
+  it('age: absent created is unknown (M3-R3)', () => {
+    expect(ev({ age: { gt: '0s' } }, facts())).toEqual({ ok: false, captures: {}, needsPage: false, unknown: true });
+  });
+  it('age: a lower-bound creation time makes gt true or unknown, and lt false or unknown (M3-R3)', () => {
+    const lb = (ago: number) => facts({}, { created: { at: NOW - ago, exact: false } });
+    const U = { ok: false, captures: {}, needsPage: false, unknown: true };
+    const NO = { ok: false, captures: {}, needsPage: false };
+    expect(ev({ age: { gt: '10m' } }, lb(11 * MIN))).toEqual({ ok: true, captures: {}, needsPage: false });
+    expect(ev({ age: { gt: '10m' } }, lb(10 * MIN))).toEqual(U);
+    expect(ev({ age: { gt: '10m' } }, lb(9 * MIN))).toEqual(U);
+    expect(ev({ age: { lt: '10m' } }, lb(10 * MIN))).toEqual(NO);
+    expect(ev({ age: { lt: '10m' } }, lb(11 * MIN))).toEqual(NO);
+    expect(ev({ age: { lt: '10m' } }, lb(9 * MIN))).toEqual(U);
+    expect(ev({ age: { gt: '5m', lt: '10m' } }, lb(7 * MIN))).toEqual(U); // gt true, lt unknown
+    expect(ev({ age: { gt: '5m', lt: '10m' } }, lb(11 * MIN))).toEqual(NO); // lt definitely false
+    expect(ev({ age: { gt: '5m', lt: '10m' } }, lb(3 * MIN))).toEqual(U);
+  });
+  describe('age under not / any / all (three-valued, M3-R3)', () => {
     const A: Cond = { age: { lt: '1h' } };
-    expect(ev({ not: A }).ok).toBe(false);
-    expect(ev({ not: { not: A } }).ok).toBe(false);
-    expect(ev({ all: [{ url: 'github.com/*' }, { not: A }] }).ok).toBe(false);
-    expect(ev({ not: { any: [F, A] } }).ok).toBe(false);
-    expect(ev({ not: { all: [T, A] } }).ok).toBe(false);
-    expect(ev({ any: [T, A] }).ok).toBe(true); // a definite true still wins
-    expect(ev({ not: { all: [F, A] } }).ok).toBe(true); // a definite false still decides
-    expect(ev({ not: A }, facts({ createdAt: NOW - 2 * 60 * MIN })).ok).toBe(true); // known age: plain negation
+    const G: Cond = { age: { gt: '1h' } };
+    const cases: [string, TabFacts][] = [
+      ['absent', facts()],
+      ['a lower bound below the threshold', facts({}, { created: { at: NOW - 30 * MIN, exact: false } })],
+    ];
+    it.each(cases)('unknown (%s) never matches, including under not', (_label, f) => {
+      for (const c of [A, G]) {
+        expect(ev(c, f).ok).toBe(false);
+        expect(ev({ not: c }, f).ok).toBe(false);
+        expect(ev({ not: { not: c } }, f).ok).toBe(false);
+        expect(ev({ all: [{ url: 'github.com/*' }, { not: c }] }, f).ok).toBe(false);
+        expect(ev({ not: { any: [F, c] } }, f).ok).toBe(false);
+        expect(ev({ not: { all: [T, c] } }, f).ok).toBe(false);
+        expect(ev({ any: [T, c] }, f).ok).toBe(true); // a definite true still wins
+        expect(ev({ not: { all: [F, c] } }, f).ok).toBe(true); // a definite false still decides
+      }
+    });
+    it('a lower bound past the threshold decides: gt true, lt false, and not negates them', () => {
+      const f = facts({}, { created: { at: NOW - 2 * 60 * MIN, exact: false } });
+      expect(ev(G, f).ok).toBe(true);
+      expect(ev({ not: G }, f).ok).toBe(false);
+      expect(ev({ not: A }, f).ok).toBe(true);
+      expect(ev({ any: [F, G] }, f).ok).toBe(true);
+      expect(ev({ all: [T, { not: A }] }, f).ok).toBe(true);
+    });
+    it('an exact time is plain two-valued logic', () => {
+      const young = facts({}, { created: { at: NOW - 30 * MIN, exact: true } });
+      expect(ev({ not: A }, young).ok).toBe(false);
+      expect(ev({ not: G }, young).ok).toBe(true);
+      expect(ev({ all: [T, { not: G }] }, young).ok).toBe(true);
+      expect(ev({ any: [F, A] }, young).ok).toBe(true);
+    });
+    it('the opener age is known from the opener snapshot', () => {
+      const opener = tab({ id: 2, created: { at: NOW - 2 * 60 * MIN, exact: true } });
+      expect(ev({ opener: G }, facts({ opener })).ok).toBe(true);
+      expect(ev({ opener: A }, facts({ opener })).ok).toBe(false);
+      expect(ev({ not: { opener: A } }, facts({ opener })).ok).toBe(true);
+      expect(ev({ not: { opener: A } }, facts({ opener: tab({ id: 2 }) })).ok).toBe(false); // opener age unknown
+    });
   });
   it('pageText: needs the page when absent; case-insensitive substring; any needle, any text', () => {
     expect(ev({ pageText: 'you left the meeting' })).toEqual({ ok: false, captures: {}, needsPage: true });
@@ -171,5 +221,20 @@ describe('evalShow (view `show`, M2 T17)', () => {
     expect(evalShow({ field: 'tab.url', op: 'matches', value: '(' }, f)).toBe(false);
     expect(evalShow(null as never, f)).toBe(false);
     expect(evalShow({ field: 'tab.url', op: 'eq', value: 1 } as never, f)).toBe(false);
+  });
+});
+
+describe('usesAge (M3-R5: gates the age.tick alarm)', () => {
+  const rule = (match: Cond): Rule => ({ id: 'r', name: 'r', enabled: true, match, actions: [{ close: {} }] });
+  it('true for an age condition anywhere in the tree, including under opener', () => {
+    expect(usesAge(rule({ age: { gt: '1h' } }))).toBe(true);
+    expect(usesAge(rule({ all: [{ url: 'a.com/*' }, { not: { age: { lt: '1h' } } }] }))).toBe(true);
+    expect(usesAge(rule({ any: [{ pinned: true }, { all: [{ age: { gt: '1d' } }] }] }))).toBe(true);
+    expect(usesAge(rule({ opener: { not: { age: { gt: '1m' } } } }))).toBe(true);
+  });
+  it('false without one', () => {
+    expect(usesAge(rule({ url: 'a.com/*' }))).toBe(false);
+    expect(usesAge(rule({ all: [{ title: 'age' }, { not: { pageText: 'age' } }, { opener: { group: 'G' } }] }))).toBe(false);
+    expect(usesAge(rule({ any: [] }))).toBe(false);
   });
 });

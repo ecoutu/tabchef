@@ -512,6 +512,41 @@ describe('CloseExecutor', () => {
   });
 });
 
+describe('CloseExecutor: age conditions (R66, M3-R3)', () => {
+  beforeEach(() => {
+    fakeBrowser.reset();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    vi.setSystemTime(10_000_000);
+  });
+  afterEach(() => { vi.useRealTimers(); });
+  const H = 3_600_000;
+  const pendingIds = (e: ReturnType<typeof env>) => (e.store.get(PENDING_CLOSES_KEY) as { tabId: number }[]).map((x) => x.tabId);
+
+  it('a close rule age > 1h schedules a tab created over an hour ago (exact or lower bound), not a younger one', async () => {
+    const e = env([closeRule({ after: '3s' }, { match: { age: { gt: '1h' } } })]);
+    e.port.addTab(tab(2, 'https://a.test/', { created: { at: 10_000_000 - 2 * H, exact: true } }));
+    e.port.addTab(tab(3, 'https://b.test/', { created: { at: 10_000_000 - 2 * H, exact: false } }));
+    e.port.addTab(tab(4, 'https://c.test/', { created: { at: 10_000_000 - H / 2, exact: true } }));
+    e.port.addTab(tab(5, 'https://d.test/'));
+    const w = worker(e, { observesForm: () => false });
+    await w.ex.evaluateAll();
+    expect(pendingIds(e)).toEqual([2, 3]);
+  });
+
+  it('not: { age: { lt: 1h } } never closes a tab whose age is unknown', async () => {
+    const e = env([closeRule({ after: '3s' }, { match: { not: { age: { lt: '1h' } } } })]);
+    e.port.addTab(tab(2, 'https://a.test/')); // no created
+    e.port.addTab(tab(3, 'https://b.test/', { created: { at: 10_000_000 - H / 2, exact: false } })); // lower bound below 1h
+    e.port.addTab(tab(4, 'https://c.test/', { created: { at: 10_000_000 - 2 * H, exact: false } })); // at least 2h old
+    const w = worker(e, { observesForm: () => false });
+    for (const id of [2, 3, 4]) await w.ex.onCommitted(id); // activity known: a scheduled close fires
+    await w.ex.evaluateAll();
+    expect(pendingIds(e)).toEqual([4]);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(w.closes()).toEqual([4]);
+  });
+});
+
 describe('CloseExecutor robustness (M2 polish P1)', () => {
   beforeEach(() => {
     fakeBrowser.reset();

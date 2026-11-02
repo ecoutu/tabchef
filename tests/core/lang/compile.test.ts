@@ -401,18 +401,24 @@ describe('compileProgram: ruleEnabled overrides (R56)', () => {
   });
 });
 
-describe('compileProgram: age conditions are not supported yet (R66)', () => {
+describe('compileProgram: age conditions compile (M3-R6, was R66)', () => {
   const match = { all: [{ url: 'example.com/*' }, { not: { age: { lt: '1h' } } }] } as Rule['match'];
-  it('a user rule using age does not compile', () => {
+  it('a user rule using age compiles', () => {
     const { program, errors } = compileProgram(config({ rules: [rule('old', { match, actions: [{ close: { after: '3s' } }] })] }), {});
-    expect(program.rules).toEqual([]);
-    expect(errors).toEqual([{ key: 'user/old', error: expect.stringContaining('age conditions are not supported yet') }]);
+    expect(program.rules.map((r) => r.key)).toEqual(['user/old']);
+    expect(errors).toEqual([]);
   });
-  it('a recipe rule using age (nested under opener) skips its recipe', () => {
+  it('a recipe rule using age (nested under opener) compiles', () => {
     const b = { r: recipe('r', [rule('x', { match: { opener: { age: { gt: '1m' } } } })]) };
     const { program, errors } = compileProgram(config({ recipes: [ref('r')] }), b);
+    expect(program.rules.map((r) => r.key)).toEqual(['r/x']);
+    expect(errors).toEqual([]);
+  });
+  it('a bad age duration still does not compile', () => {
+    const bad = { age: { gt: 'soon' } } as Rule['match'];
+    const { program, errors } = compileProgram(config({ rules: [rule('bad', { match: bad })] }), {});
     expect(program.rules).toEqual([]);
-    expect(errors.map((e) => e.error).join()).toMatch(/age conditions are not supported yet/);
+    expect(errors).toEqual([{ key: 'user/bad', error: expect.stringContaining('must be a duration') }]);
   });
 });
 

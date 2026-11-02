@@ -580,6 +580,23 @@ describe('Reconciler: compiled program (M2 T6)', () => {
     expect(String(warn.mock.calls[0]?.[0])).toContain('user/c');
   });
 
+  it('groups by age (R66, M3-R3): exact and lower-bound times past the threshold, never an unknown one', async () => {
+    const now = Date.now();
+    const f = world();
+    f.addTab(tab(1, 'https://a.com/1', { created: { at: now - 2 * 86_400_000, exact: true } }));
+    f.addTab(tab(2, 'https://a.com/2', { created: { at: now - 2 * 86_400_000, exact: false } }));
+    f.addTab(tab(3, 'https://a.com/3', { created: { at: now - 60_000, exact: true } }));
+    f.addTab(tab(4, 'https://a.com/4'));
+    const c: Config = {
+      ...withGroupRules([]),
+      rules: [{ id: 'old', name: 'Old', enabled: true, match: { age: { gt: '1d' } }, actions: [{ group: { title: 'Old', color: 'grey' } }] }],
+    };
+    const r = new Reconciler(f, async () => programOf(c), {});
+    await r.flush();
+    expect(groupTitles(f)).toEqual(['Old']);
+    expect([1, 2, 3, 4].map((id) => groupOf(f, id))).toEqual(['Old', 'Old', undefined, undefined]);
+  });
+
   it('names recipe rules in the why-log by their program rule name', async () => {
     const f = world();
     f.addTab(tab(1, 'https://github.com/acme/widgets'));

@@ -49,7 +49,12 @@ export interface TabSnap { id: number; windowId: number; index: number; url: str
   /** The tab that opened this one (chrome.tabs.Tab.openerTabId), when Chrome reports it. */
   openerTabId?: number;
   /** http(s)/data: favicon only; never a chrome:// URL. */
-  favIconUrl?: string; }
+  favIconUrl?: string;
+  /**
+   * When the tab was created (engine TabAges, M3-R2). `exact: false` means a lower bound: the tab is at least
+   * `now - at` old (restored at startup, discarded, or first seen after a browser restart / install). Absent = unknown.
+   */
+  created?: { at: number; exact: boolean }; }
 export interface GroupSnap { id: number; windowId: number; title: string; color: GroupColor; collapsed: boolean; }
 export interface WindowSnap { id: number; type: 'normal'|'popup'|'app'|'devtools'; focused: boolean; }
 export interface Snapshot { tabs: TabSnap[]; groups: GroupSnap[]; windows: WindowSnap[]; }

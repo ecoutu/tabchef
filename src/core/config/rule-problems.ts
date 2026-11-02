@@ -11,7 +11,6 @@ import type { ValidateError } from './validate-config.generated.js';
 /** The 9 Chrome tab-group colors. */
 export const COLORS: ReadonlySet<string> = new Set<string>(['grey', 'blue', 'red', 'yellow', 'green', 'pink', 'purple', 'cyan', 'orange'] satisfies GroupColor[]);
 const DURATION_MSG = 'must be a duration like 500ms, 30s, 15m, 2h or 1d';
-export const AGE_MSG = 'age conditions are not supported yet';
 /** Caps on what the watch content script can report (MAX_FACT_TEXT in src/engine/messages.ts; core can't import it). */
 export const MAX_PAGE_TEXT = 500;
 export const MAX_EXTRACT_NAME = 64;
@@ -97,8 +96,6 @@ function condProblems(c: Cond, path: string, out: Problem[]): void {
       if (m) out.push({ path: `${path}/title`, message: m });
     }
   } else if ('age' in c) {
-    // R66: nothing feeds TabFacts.createdAt yet (M3), so an age condition would be dead, or inverted under `not`.
-    out.push({ path: `${path}/age`, message: AGE_MSG });
     for (const k of ['gt', 'lt'] as const) {
       const v = c.age[k];
       if (v !== undefined && !DURATION.test(v)) out.push({ path: `${path}/age/${k}`, message: DURATION_MSG });

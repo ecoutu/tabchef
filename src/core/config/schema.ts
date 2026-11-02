@@ -8,7 +8,7 @@ import { dedupeProblems, formatSchemaError, ruleProblems, type Problem, type Tab
 // The rule, regex, pattern and schema-error checks live in rule-problems.ts (no dependency on lang/schema, which
 // imports them); re-exported here for existing importers.
 export {
-  AGE_MSG, COLORS, dedupeProblems, formatSchemaError, MAX_EXTRACT_NAME, MAX_PAGE_TEXT, regexProblem, ruleProblems,
+  COLORS, dedupeProblems, formatSchemaError, MAX_EXTRACT_NAME, MAX_PAGE_TEXT, regexProblem, ruleProblems,
   ruleTitleProblems, schemaProblem, type Problem, type Tables,
 } from './rule-problems';
 

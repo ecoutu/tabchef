@@ -3,7 +3,7 @@ import { compilePattern, compileTextPattern } from '../match/pattern';
 import type { Matcher } from '../match/pattern';
 import { parseDuration } from './duration';
 import { foldText } from './fold-text';
-import type { Comparison, Cond, Show, TabFacts } from './types';
+import type { Comparison, Cond, Rule, Show, TabFacts } from './types';
 
 export interface CondResult {
   ok: boolean;
@@ -12,8 +12,9 @@ export interface CondResult {
   /** True when the result depended on `pageText` and `f.page` was undefined. `ok` is then false. */
   needsPage: boolean;
   /**
-   * Set (true) when the result depended on a fact that is unknown and that the page cannot supply (an `age` without
-   * `createdAt`, R66). `ok` is then false, and `not` keeps it false: an unknown is never negated into a match.
+   * Set (true) when the result depended on a fact that is unknown and that the page cannot supply (an `age` whose
+   * `tab.created` is absent or too low a lower bound, R66 / M3-R3). `ok` is then false, and `not` keeps it false: an
+   * unknown is never negated into a match.
    */
   unknown?: true;
 }
@@ -95,17 +96,25 @@ export function evalCond(c: Cond, f: TabFacts, now: number): CondResult {
       return bool(f.tab.audible === v);
     case 'age': {
       if (typeof v !== 'object' || v === null) return no();
-      if (f.createdAt === undefined) return no(false, true); // unknown, not false (R66)
       const { gt, lt } = v as { gt?: unknown; lt?: unknown };
       if (gt === undefined && lt === undefined) return no();
-      const age = now - f.createdAt;
+      const created = f.tab.created;
+      if (created === undefined) return no(false, true); // unknown, not false (R66)
+      const age = now - created.at;
+      // Not exact: `age` is a lower bound (the tab is at least that old), so `gt` can only become true and `lt` only
+      // false; anything else is unknown (M3-R3). Every verdict agrees with the true age.
+      let unknown = false;
       try {
-        if (gt !== undefined && !(age > parseDuration(gt as string))) return no();
+        if (gt !== undefined && !(age > parseDuration(gt as string))) {
+          if (created.exact) return no();
+          unknown = true;
+        }
         if (lt !== undefined && !(age < parseDuration(lt as string))) return no();
+        if (lt !== undefined && !created.exact) unknown = true;
       } catch {
         return no();
       }
-      return yes();
+      return unknown ? no(false, true) : yes();
     }
     case 'pageText': {
       const needles = (Array.isArray(v) ? v : [v]).filter((n): n is string => typeof n === 'string' && n !== '');
@@ -117,6 +126,20 @@ export function evalCond(c: Cond, f: TabFacts, now: number): CondResult {
     default:
       return no();
   }
+}
+
+function condUsesAge(c: Cond): boolean {
+  if ('age' in c) return true;
+  if ('all' in c) return c.all.some(condUsesAge);
+  if ('any' in c) return c.any.some(condUsesAge);
+  if ('not' in c) return condUsesAge(c.not);
+  if ('opener' in c) return condUsesAge(c.opener);
+  return false;
+}
+
+/** Whether a rule has an `age` condition anywhere (opener too): while one is in the Program, age is re-evaluated (M3-R5). */
+export function usesAge(r: Rule): boolean {
+  return condUsesAge(r.match);
 }
 
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x);

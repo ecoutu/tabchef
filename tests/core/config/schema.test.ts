@@ -47,7 +47,7 @@ describe('config schema', () => {
     const r = validateConfig(cfgRaw([v2({
       dryRun: true, trigger: { on: ['created', 'schedule'], every: '15m' },
       match: { all: [{ url: ['a.com/*'] }, { not: { pinned: true } }, { any: [{ title: '*x*' }, { opener: { group: 'G' } }, { audible: false }] },
-        { pageText: ['done'] }] }, // age: rejected until M3 (R66), see below
+        { pageText: ['done'] }, { age: { gt: '1h', lt: '7d' } }] },
       extract: { repo: { from: 'url', regex: '/(?<r>[^/]+)$', group: 'r' }, h: { selector: 'h1', attr: 'title' } },
       actions: [{ group: { title: '{repo}', color: 'blue', anchors: ['https://a.com/'] } }, { dedupe: { mode: 'ask', followFragment: false, keepFragment: true, matchTitle: true } },
         { close: { after: '30s', mode: 'suggest' } }, { showInView: { view: 'finished' } }],
@@ -304,23 +304,22 @@ describe('RecipeRef.ruleEnabled (R56)', () => {
   });
 });
 
-describe('age conditions are not supported yet (R66)', () => {
+describe('age conditions are accepted (M3-R6, was R66)', () => {
   const AGE_RULE = { all: [{ url: 'example.com/*' }, { not: { age: { lt: '1h' } } }] };
-  it('validateConfig rejects an enabled rule using age anywhere in the tree', () => {
-    const r = validateConfig(cfgRaw([v2({ match: AGE_RULE, actions: [{ close: { after: '3s' } }] })]));
-    expect(r).toEqual({ ok: false, errors: ['/rules/0/match/all/1/not/age age conditions are not supported yet'] });
-    expect(validateConfig(cfgRaw([v2({ match: { opener: { age: { gt: '1m' } } } })])).ok).toBe(false);
-    expect(validateConfig(cfgRaw([v2({ match: { any: [{ age: { gt: '1m' } }] } })])).ok).toBe(false);
+  it('validateConfig accepts an enabled rule using age anywhere in the tree', () => {
+    expect(validateConfig(cfgRaw([v2({ match: AGE_RULE, actions: [{ close: { after: '3s' } }] })])).ok).toBe(true);
+    expect(validateConfig(cfgRaw([v2({ match: { opener: { age: { gt: '1m' } } } })])).ok).toBe(true);
+    expect(validateConfig(cfgRaw([v2({ match: { any: [{ age: { gt: '1m' } }] } })])).ok).toBe(true);
   });
-  it('a disabled stored rule using age still validates', () => {
-    expect(validateConfig(cfgRaw([v2({ enabled: false, match: AGE_RULE })])).ok).toBe(true);
+  it('bad age durations are still rejected', () => {
+    const r = validateConfig(cfgRaw([v2({ match: { not: { age: { lt: '1 hour' } } } })]));
+    expect(r).toEqual({ ok: false, errors: [expect.stringMatching(/^\/rules\/0\/match\/not\/age\/lt must be a duration/)] });
   });
-  it('repairConfig disables a stored enabled age rule instead of failing the config', () => {
-    const r = repairConfig(cfgRaw([v2({ match: AGE_RULE }), v2({ id: 'ok', name: 'OK' })]));
+  it('repairConfig keeps an enabled age rule enabled, and leaves an M2-disabled one disabled', () => {
+    const r = repairConfig(cfgRaw([v2({ match: AGE_RULE }), v2({ id: 'old', name: 'Old', enabled: false, match: AGE_RULE })]));
     const rules = (r.config as { rules: { id: string; enabled: boolean }[] }).rules;
-    expect(rules.map((x) => [x.id, x.enabled])).toEqual([['r1', false], ['ok', true]]);
-    expect(r.warnings).toEqual([expect.stringContaining('1 rule(s) disabled: R')]);
-    expect(validateConfig(r.config).ok).toBe(true);
+    expect(rules.map((x) => [x.id, x.enabled])).toEqual([['r1', true], ['old', false]]);
+    expect(r.warnings).toEqual([]);
   });
 });
 

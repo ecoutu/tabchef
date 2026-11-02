@@ -61,7 +61,7 @@ export interface RecipeRef {
   ruleEnabled?: Record<string, boolean>;
 }
 export interface TabFacts {
-  tab: TabSnap; opener?: TabSnap; groupTitle?: string; createdAt?: number;
+  tab: TabSnap; opener?: TabSnap; groupTitle?: string;
   page?: { texts: string[]; extracts: Record<string, string>; formEdited: boolean };
 }
 export interface CompiledRule { key: string /* 'user/<id>' | '<recipeId>/<id>' */; rule: Rule; recipeId?: string; index: number; dryRun: boolean }
