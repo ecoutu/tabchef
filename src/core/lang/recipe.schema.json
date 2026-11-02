@@ -156,7 +156,8 @@
         "kind": {
           "enum": [
             "list",
-            "duplicates"
+            "duplicates",
+            "projects"
           ]
         },
         "rules": {

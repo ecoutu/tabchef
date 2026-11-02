@@ -40,7 +40,18 @@ export interface SafetyDeps {
   onResume?: () => void;
   /** A closed tab was reopened by undo: exempt it from auto-close until its URL changes (CloseExecutor.exempt, R24). */
   onUndone?: (tabId: number, url: string) => void;
+  /** Awaited before an undo recreates its tab (ProjectService.onUndo revives a closed project first, M3-R84). */
+  beforeUndo?: (entryId: string) => Promise<void>;
   now?: () => number;
+}
+
+const GROUP_UNDO_PREFIX = 'group:';
+/**
+ * One undo id for several recently-closed entries (a Close group, M3-R84): the banner and the notification carry it
+ * as their entry id, and undo() restores every entry. Entry ids contain no ','. One entry: its own id.
+ */
+export function groupUndoId(ids: string[]): string {
+  return ids.length === 1 ? ids[0]! : `${GROUP_UNDO_PREFIX}${ids.join(',')}`;
 }
 
 const hostPattern = (url: string): string | undefined => {
@@ -284,8 +295,15 @@ export class SafetyService {
 
   // ---- undo ----
 
-  /** Reopen a closed tab in its window (any normal window if that is gone); the reconciler then regroups it. */
+  /**
+   * Reopen a closed tab in its window (any normal window if that is gone); the reconciler then regroups it. A
+   * groupUndoId reopens each of its entries in turn.
+   */
   async undo(id: string): Promise<void> {
+    if (id.startsWith(GROUP_UNDO_PREFIX)) {
+      for (const one of id.slice(GROUP_UNDO_PREFIX.length).split(',')) if (one) await this.undo(one);
+      return;
+    }
     if (this.undoing.has(id)) return; // reserved synchronously: a concurrent call is a no-op
     this.undoing.add(id);
     try {
@@ -299,6 +317,7 @@ export class SafetyService {
     await this.deps.recentlyClosed.ready; // a freshly woken worker may not have loaded the list yet
     const e = this.deps.recentlyClosed.list().find((x) => x.id === id);
     if (!e) return;
+    await this.deps.beforeUndo?.(id).catch((err: unknown) => console.warn('[tabchef] before undo failed', err));
     const { windows } = await this.port.snapshot();
     const normal = windows.filter((w) => w.type === 'normal');
     const windowId = normal.find((w) => w.id === e.windowId)?.id ?? (normal.find((w) => w.focused) ?? normal[0])?.id;
@@ -328,8 +347,16 @@ export class SafetyService {
    * Offer Undo after an automatic close: banner in the newly focused tab if eligible, else a notification, else nothing
    * (the entry is still in the popup's Recently closed list). Without a tab to show it in, the notification. Never throws.
    */
-  async toast(entryId: string, entry: RecentlyClosedInput, focused: TabSnap | undefined): Promise<void> {
-    const text = undoText(entry);
+  toast(entryId: string, entry: RecentlyClosedInput, focused: TabSnap | undefined): Promise<void> {
+    return this.offerUndo(entryId, undoText(entry), focused);
+  }
+
+  /** The same undo offer for several closed tabs at once (Close group, M3-R84): one Undo restores them all. */
+  toastGroup(entryIds: string[], text: string, focused: TabSnap | undefined): Promise<void> {
+    return this.offerUndo(groupUndoId(entryIds), text, focused);
+  }
+
+  private async offerUndo(entryId: string, text: string, focused: TabSnap | undefined): Promise<void> {
     try {
       if (focused && await this.bannerEligible(focused)) {
         await this.deps.api.executeScript(focused.id, this.deps.bannerFile);

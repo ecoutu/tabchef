@@ -1,3 +1,4 @@
+import { readdirSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { manifestConfig } from '../wxt.config';
 
@@ -36,5 +37,14 @@ describe('manifest permissions', () => {
   });
   it('requires Chrome 116+ (storage.session, sidePanel.open, tab group APIs)', () => {
     expect(manifestConfig.minimum_chrome_version).toBe('116');
+  });
+  it('M3 T17: the side panel is an unlisted page; sidePanel stays optional (no side_panel key)', () => {
+    expect(manifestConfig).not.toHaveProperty('side_panel');
+    expect(manifestConfig.permissions).not.toContain('sidePanel');
+    expect(manifestConfig.optional_permissions).toContain('sidePanel');
+    // WXT adds `side_panel` and a required `sidePanel` for an entrypoint named sidepanel; the panel page is `panel`.
+    const entries = readdirSync(new URL('../src/entrypoints/', import.meta.url));
+    expect(entries.filter((e) => /^sidepanel/i.test(e) || /\.sidepanel\./i.test(e))).toEqual([]);
+    expect(entries).toContain('panel');
   });
 });

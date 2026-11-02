@@ -8,6 +8,9 @@
 //   M3 T13: `show` / `groupBy` / `sort` also read `source.<name>` (the tab's source data of the first feeding rule
 //   that has an entry; missing = unknown, so an unknown or data-less PR never matches `==`) and `params.<name>` (the
 //   view's recipe params). Rows carry that source data and `stale` (the state pill and the stale marker).
+// - kind 'projects' (M3 T17): the popup's Projects tab, which reads projects.list itself; its data is only the kind,
+//   and its count is the open projects (`projectCount`). They are not items to act on, so the toolbar badge and the
+//   popup header total leave them out.
 // - Which views: every enabled recipe's views (paused ones too, faded with their reason, R45), the first declaration
 //   of an id winning; plus the built-in Duplicates view while global dedupe is active (R58) and the built-in Finished
 //   view while close suggestions exist, whichever rule made them (R59).
@@ -59,7 +62,8 @@ export interface ViewSummary {
 
 export type ViewData =
   | { kind: 'duplicates'; sets: DupeSetView[]; pending: PendingAsk[] }
-  | { kind: 'list'; rows: ViewRow[] };
+  | { kind: 'list'; rows: ViewRow[] }
+  | { kind: 'projects' };
 
 export interface ViewsDeps {
   builtins: Record<string, Recipe>;
@@ -73,6 +77,8 @@ export interface ViewsDeps {
   closes?: { ready: Promise<void>; suggestions(): CloseSuggestion[]; exempt(tabId: number, url: string): Promise<void> };
   /** Connection ids and labels, for the locked state's copy (ConnectionManager defs). Default: the ids. */
   connections?: () => Promise<{ id: string; label: string }[]>;
+  /** How many projects are open (ProjectService, as of its last pass): a projects view's count. Default: 0. */
+  projectCount?: () => number;
 }
 
 export interface ViewsInput {
@@ -252,7 +258,7 @@ export async function readViews(d: ViewsDeps, input: ViewsInput): Promise<Comput
   await d.closes?.ready;
   const suggestions = new Map((d.closes?.suggestions() ?? []).map((s) => [s.tabId, s]));
   const views = declaredViews(p, config, d.builtins, suggestions.size > 0)
-    .filter((v) => (input.only === undefined || v.id === input.only) && (v.kind === 'list' || input.dupes));
+    .filter((v) => (input.only === undefined || v.id === input.only) && (v.kind !== 'duplicates' || input.dupes));
   if (views.length === 0) return [];
   const live = liveProgram(p);
   const evals = new Map<number, EvalResult>();
@@ -271,12 +277,11 @@ export async function readViews(d: ViewsDeps, input: ViewsInput): Promise<Comput
   const dupes = views.some((v) => v.kind === 'duplicates') ? await input.dupes!() : undefined;
   const out: ComputedView[] = [];
   for (const v of views) {
-    const data: ViewData = v.kind === 'duplicates' && dupes
-      ? { kind: 'duplicates', ...dupes }
+    const data: ViewData = v.kind === 'projects' ? { kind: 'projects' }
+      : v.kind === 'duplicates' && dupes ? { kind: 'duplicates', ...dupes }
       : { kind: 'list', rows: listRows(v, snap, p, evalOf, suggestions, (t) => extraOf(t).source) };
-    const count = data.kind === 'duplicates'
-      ? data.sets.reduce((n, s) => n + s.closable, 0) + data.pending.length
-      : data.rows.length;
+    const count = data.kind === 'duplicates' ? data.sets.reduce((n, s) => n + s.closable, 0) + data.pending.length
+      : data.kind === 'list' ? data.rows.length : d.projectCount?.() ?? 0;
     const pause = full && d.permissions ? await pauseOf(v, full, d) : {};
     out.push({ view: v, data, summary: { id: v.id, tab: v.tab, kind: v.kind, actions: [...v.actions], count, ...pause } });
   }

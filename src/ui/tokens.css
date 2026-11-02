@@ -1,0 +1,15 @@
+/* Shared by the popup and the side panel (imported by their main.ts): the color tokens, the page base and the small
+   action button (.act). Components keep their own layout rules. */
+:root {
+  --bg: #fff; --surface: #f6f6f8; --hover: #eef0f4; --border: #d4d7de; --text: #1c1e24; --muted: #6a6f7b;
+  --accent: #3b6df0; --danger: #b3261e;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1b1d22; --surface: #25282f; --hover: #2b2f37; --border: #3a3e48; --text: #e8eaef; --muted: #9aa0ad;
+    --accent: #7a9bff; --danger: #ff8a80;
+  }
+}
+body { margin: 0; background: var(--bg); color: var(--text); font: 13px/1.4 system-ui, sans-serif; }
+.act { border: 1px solid var(--border); background: var(--surface); color: inherit; border-radius: 6px; padding: 2px 8px; cursor: pointer; font: inherit; }
+.act:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }

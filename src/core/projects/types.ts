@@ -32,6 +32,13 @@ export interface Project {
   linkedFetchedAt?: number;
   /** Browser running time (ms) without an open tab, counted by T15's passes; pruned on startup once 7 days. */
   closedFor?: number;
+  /**
+   * Tombstone (M3-R84): set by Close group. A tombstoned project takes no tab by its manual entries, is hidden from the
+   * UI and is pruned like any project without tabs; undo of one of `closedIds` (its recently-closed entries), or a rule
+   * assigning its key again, revives it with its manual entries, linked PRs and summary.
+   */
+  closedAt?: number;
+  closedIds?: string[];
 }
 
 /** One project as listed to the UI (`projects.list`, T15); T17's buildProjectCards shapes it into a card. */
@@ -39,6 +46,7 @@ export interface ProjectCardData {
   id: string; key: string; title: string; summary?: string;
   /** Best first: the Jira API (or its page read), the ticket tab's own source entry, the last stored status. */
   status?: NonNullable<Project['status']>;
+  /** The status is Done by fresh data (via api or page, not stale, M3-R90); a stale or stored Done is only shown. */
   done: boolean;
   tabs: { tabId: number; windowId: number; title: string; url: string; favIconUrl?: string; lastAccessed?: number; pill?: PrState; stale?: boolean }[];
   /** Linked PRs not open in the project. */

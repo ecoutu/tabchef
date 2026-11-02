@@ -67,7 +67,7 @@ export interface Rule {
 export interface Comparison { field: string; op: '==' | '!=' | '<' | '>' | 'in' | 'matches'; value: unknown }
 export type Show = Comparison | { all: Show[] } | { any: Show[] } | { not: Show };
 export interface View {
-  id: string; tab: string; kind: 'list' | 'duplicates'; rules?: string[];
+  id: string; tab: string; kind: 'list' | 'duplicates' | 'projects'; rules?: string[];
   show?: Show; groupBy?: string; sort?: { field: string; dir: 'asc' | 'desc' }; actions: ('focus' | 'close' | 'close-all' | 'keep')[];
 }
 export interface ParamDef {

@@ -31,6 +31,19 @@ const CATEGORIES = new Set(['new', 'indeterminate', 'done']);
 const PR_OWNER = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/[A-Za-z0-9_.-]+\/pull\/\d+/;
 const urlOf = (t: TabSnap): string => (t.pendingUrl ? t.pendingUrl : t.url);
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null;
+/** Closed by Close group (M3-R84): kept for undo, out of membership and the UI. */
+const isTomb = (p: Project): boolean => p.closedAt !== undefined;
+const revive = (p: Project): void => { delete p.closedAt; delete p.closedIds; };
+/**
+ * The projects of a pass: the stored ones plus those resolveProjects created, where a created project whose key has a
+ * tombstone is that stored record (`revived`, not yet revived), never the bare copy (live and preview agree on it).
+ */
+function withCreated(stored: Project[], r: ResolveResult): { projects: Project[]; created: Project[]; revived: Project[] } {
+  const tombs = new Map(stored.filter(isTomb).map((p) => [p.id, p]));
+  const revived = r.created.flatMap((c) => tombs.get(c.id) ?? []);
+  const created = r.created.filter((c) => !tombs.has(c.id));
+  return { projects: [...stored, ...created], created, revived };
+}
 export interface ProjectServiceDeps {
   store: ProjectStore;
   port: Pick<BrowserPort, 'snapshot' | 'createTab' | 'closeTab'>;
@@ -43,6 +56,11 @@ export interface ProjectServiceDeps {
   safety: Pick<SafetyService, 'isProtected'>;
   /** The reconciler's LiveState (Reconciler.liveState): sticky membership lives in its RuntimeState. */
   state: () => Promise<LiveState>;
+  /**
+   * After Close group: offer M1's undo (banner, else notification) for all its entries in the newly focused tab
+   * (SafetyService.toastGroup). Default: none (the popup's own toast only).
+   */
+  toast?: (entryIds: string[], text: string, focused: TabSnap | undefined) => void;
   /** Re-plan after a user action (Reconciler.schedule). */
   schedule?: (reason: string) => void;
   /** After each pass: the open projects and their group titles (the context menu). */
@@ -92,14 +110,14 @@ export class ProjectService {
     if (defs.length === 0) return new Map();
     const [st, stored] = await Promise.all([this.deps.state(), this.deps.store.list()]);
     const r = this.run(snap, program, stored, st.projectTabs);
-    return projectTargets(r.assignments, [...stored, ...r.created], defs);
+    return projectTargets(r.assignments, withCreated(stored, r).projects, defs);
   }
 
   /** resolveProjects over `program` with this service's facts and prefixes. Pure apart from reading facts. */
   private run(snap: Snapshot, program: Program, stored: Project[], sticky: StickyMap): ResolveResult {
     const tabs = new Map(snap.tabs.map((t) => [t.id, t]));
     return resolveProjects({
-      snap, program, now: this.now(), projects: stored, sticky,
+      snap, program, now: this.now(), projects: stored.filter((p) => !isTomb(p)), sticky,
       facts: (id): Partial<TabFacts> => {
         const t = tabs.get(id);
         const page = this.deps.facts.get(id);
@@ -127,10 +145,15 @@ export class ProjectService {
     }
     const [st, stored] = await Promise.all([this.deps.state(), this.deps.store.list()]);
     const r = this.run(snap, program, stored, st.projectTabs);
-    let projects = [...stored, ...r.created];
+    // A rule assigning a tombstoned key again revives the stored project rather than replacing it.
+    const pass = withCreated(stored, r);
+    const { created, revived } = pass;
+    let projects = pass.projects;
     const open = new Set([...r.assignments.values()].map((a) => a.projectId));
     if (!full.dryRun) {
-      const changed = new Set<Project>(r.created);
+      const changed = new Set<Project>([...created, ...revived]);
+      for (const p of revived) revive(p);
+      if (revived.length) this.deps.schedule?.('project'); // its manual entries take their tabs on the next pass
       for (const p of projects) {
         const summary = r.summaries.get(p.id);
         if (summary !== undefined && p.summary === undefined) { p.summary = summary; changed.add(p); }
@@ -149,7 +172,8 @@ export class ProjectService {
     }
     const defOf = new Map(defs.map((d) => [d.recipeId, d]));
     // Under global dry run only stored projects are listed: addTab takes no unstored one.
-    this.deps.onProjectsChanged?.((full.dryRun ? stored : projects).flatMap((p) => {
+    // Tombstones are never offered (addTab rejects them); under dry run none was revived.
+    this.deps.onProjectsChanged?.((full.dryRun ? stored.filter((p) => !isTomb(p)) : projects).flatMap((p) => {
       const def = defOf.get(p.recipeId);
       return def && open.has(p.id) ? [{ id: p.id, title: projectGroupTitle(def, p) }] : [];
     }));
@@ -180,7 +204,7 @@ export class ProjectService {
 
   private async project(id: string): Promise<{ program: Program; projects: Project[]; p: Project }> {
     const [program, projects] = await Promise.all([this.deps.getProgram(), this.deps.store.list()]);
-    const p = projects.find((x) => x.id === id);
+    const p = projects.find((x) => x.id === id && !isTomb(x));
     if (!p) throw new Error('unknown project');
     return { program, projects, p };
   }
@@ -229,16 +253,22 @@ export class ProjectService {
     });
   }
 
-  /** Closes the project's tabs except protected ones; the project is removed when none remains. */
-  closeGroup(projectId: string): Promise<{ closed: number; skipped: number }> {
+  /**
+   * Closes the project's tabs except protected ones, the active ones last (closing the active tab closes the popup).
+   * When none remains the project becomes a tombstone (M3-R84), so undo restores it whole. `ids`: the closed tabs'
+   * recently-closed entries, which the popup's Undo reopens (recent.undo); M1's undo (banner / notification) is
+   * offered for all of them at once.
+   */
+  closeGroup(projectId: string): Promise<{ closed: number; skipped: number; ids: string[] }> {
     return this.serial(async () => {
       const snap = await this.deps.port.snapshot();
       const { assignments, projects } = await this.resolve(snap);
       const p = projects.find((x) => x.id === projectId);
       if (!p) throw new Error('unknown project');
-      let closed = 0;
+      const ids: string[] = [];
       let skipped = 0;
-      for (const t of snap.tabs.filter((x) => assignments.get(x.id)?.projectId === projectId)) {
+      const members = snap.tabs.filter((x) => assignments.get(x.id)?.projectId === projectId);
+      for (const t of [...members.filter((x) => !x.active), ...members.filter((x) => x.active)]) {
         if (this.deps.safety.isProtected(t)) { skipped++; continue; }
         try {
           await this.deps.port.closeTab(t.id);
@@ -247,15 +277,36 @@ export class ProjectService {
           continue;
         }
         const groupTitle = snap.groups.find((g) => g.id === t.groupId)?.title;
-        this.deps.recentlyClosed.add({
+        ids.push(this.deps.recentlyClosed.add({
           url: urlOf(t), title: t.title, ...(groupTitle && { groupTitle }), windowId: t.windowId, reason: 'project-closed', at: this.now(),
-        });
+        }));
         this.log(t.id, `Closed with project ${p.key}`, undefined, 'project-close');
-        closed++;
       }
-      if (skipped === 0) await this.deps.store.remove(projectId);
+      if (skipped === 0 && ids.length > 0) {
+        p.closedAt = this.now();
+        p.closedIds = ids;
+        await this.deps.store.put(p);
+      } else if (skipped === 0) await this.deps.store.remove(projectId); // nothing open: nothing to undo
       this.deps.schedule?.('project');
-      return { closed, skipped };
+      if (ids.length > 0 && this.deps.toast) {
+        const after = await this.deps.port.snapshot();
+        const focused = after.tabs.find((t) => t.active && after.windows.some((w) => w.focused && w.id === t.windowId));
+        this.deps.toast(ids, `Closed ${ids.length} ${ids.length === 1 ? 'tab' : 'tabs'} of ${p.key} (project-closed).`, focused);
+      }
+      return { closed: ids.length, skipped, ids };
+    });
+  }
+
+  /**
+   * SafetyService.beforeUndo: a recently-closed entry of a Close group is about to be reopened. Revives its tombstone
+   * first, so the restored tab rejoins the same project (rules by key, manual entries by URL).
+   */
+  onUndo(entryId: string): Promise<void> {
+    return this.serial(async () => {
+      const p = (await this.deps.store.list()).find((x) => isTomb(x) && x.closedIds?.includes(entryId));
+      if (!p) return;
+      revive(p);
+      await this.deps.store.put(p);
     });
   }
 
@@ -312,13 +363,17 @@ export class ProjectService {
         }
         const issue = issues.get(p.key);
         if (p.summary === undefined && issue?.data?.summary) p.summary = issue.data.summary;
-        const status = statusOf(issue?.data, issue?.via) ?? tabs.flatMap(factsOf).map((e) => statusOf(e.data, e.via)).find((x) => x) ?? p.status;
+        // M3-R90: the status shown may be last known (a stale entry, else the stored one), but only a fresh entry
+        // (via api or page, not stale) says Done: stale or unknown data never drives the close prompt.
+        const src = [issue, ...tabs.flatMap(factsOf)].find((e) => e && statusOf(e.data, e.via));
+        const status = (src && statusOf(src.data, src.via)) ?? p.status;
+        const done = src !== undefined && !src.stale && status?.category === 'done';
         if (status) p.status = status;
         if (JSON.stringify(p) !== before) changed.push(p);
         const openUrls = new Set(tabs.map((t) => this.norm(program, urlOf(t))));
         return [{
           id: p.id, key: p.key, title: projectGroupTitle(defOf.get(p.recipeId)!, p), ...(p.summary !== undefined && { summary: p.summary }),
-          ...(status && { status }), done: status?.category === 'done',
+          ...(status && { status }), done,
           tabs: tabs.map((t) => {
             const pr = factsOf(t).find((e) => PILLS.has(e.data?.state as PrState));
             return {

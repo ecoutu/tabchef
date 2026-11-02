@@ -21,6 +21,7 @@ import type { PendingAsk } from './ask';
 import type { EarlyReport, PageFacts, WatchSelector } from './page-facts';
 import type { PauseDuration, SafetyService } from './safety';
 import type { ProjectService } from './projects';
+import type { SourceService } from './sources';
 import type { ProjectCardData } from '../core/projects/types';
 import { dedupeDecision, openerOf } from './dedupe-handler';
 import { readViews, samePage, type ViewData, type ViewsDeps, type ViewSummary } from './views';
@@ -217,8 +218,11 @@ export type Request =
   | { type: 'projects.removeTab'; tabId: number }
   /** `url` must be one of the project's linked PRs; answers `{ tabId }`. */
   | { type: 'projects.openLinked'; projectId: string; url: string }
-  /** Answers `{ closed, skipped }`. */
-  | { type: 'projects.closeGroup'; projectId: string };
+  /** Answers `{ closed, skipped, ids }`: `ids` are the recently-closed entries (the popup's Undo). */
+  | { type: 'projects.closeGroup'; projectId: string }
+  // ---- Sources (M3 T17) ----
+  /** The Projects tab opened: SourceService.refresh('popup') (throttled, M3-R83); answers once it is done. */
+  | { type: 'sources.refresh' };
 
 /** explain.tab's answer: the tab and its relevant rules in priority order (src/core/lang/explain.ts). */
 export interface ExplainView {
@@ -326,7 +330,8 @@ export interface ResponseData {
   'projects.addTab': null;
   'projects.removeTab': null;
   'projects.openLinked': { tabId: number };
-  'projects.closeGroup': { closed: number; skipped: number };
+  'projects.closeGroup': { closed: number; skipped: number; ids: string[] };
+  'sources.refresh': null;
 }
 export type ResponseFor<R extends Request> = Response<ResponseData[R['type']]>;
 
@@ -334,7 +339,7 @@ const num = (v: unknown): v is number => typeof v === 'number' && Number.isFinit
 const str = (v: unknown): v is string => typeof v === 'string';
 const NO_ARGS = new Set(['config.get', 'config.backups', 'config.status', 'tabs.list', 'dupes.list', 'dupes.closeAll', 'recent.list', 'why.all',
   'safety.resume', 'safety.status', 'recipes.list', 'views.list', 'connections.list', 'connections.github.start', 'connections.github.poll',
-  'projects.list']);
+  'projects.list', 'sources.refresh']);
 const optRev = (x: Record<string, unknown>) => x.baseRev === undefined || str(x.baseRev);
 const isParams = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
@@ -503,6 +508,8 @@ export interface HandlerDeps {
   connections?: ConnectionsDeps;
   /** projects.* (M3 T15). Without it they fail. */
   projects?: Pick<ProjectService, 'cards' | 'addTab' | 'removeTab' | 'openLinked' | 'closeGroup'>;
+  /** sources.refresh (M3 T17). Without it the request fails. */
+  sources?: Pick<SourceService, 'refresh'>;
   now?: () => number;
 }
 
@@ -601,7 +608,7 @@ export async function refreshBadge(deps: BadgeDeps): Promise<void> {
     const views = await readViews(deps.views, {
       snap, now: (deps.now ?? Date.now)(), dupes: () => dupesDataOf(deps), noStatus: true, ...(config && { config }),
     });
-    n = views.reduce((sum, v) => sum + v.summary.count, 0);
+    n = views.reduce((sum, v) => sum + (v.summary.kind === 'projects' ? 0 : v.summary.count), 0); // projects: not items to act on
   }
   await deps.port.setBadge(n > 0 ? String(n) : '');
 }
@@ -990,6 +997,15 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
       }
       case 'projects.list': case 'projects.addTab': case 'projects.removeTab': case 'projects.openLinked': case 'projects.closeGroup':
         return deps.projects ? runProjects(req, deps.projects) : fail('projects unavailable');
+      case 'sources.refresh': {
+        if (!deps.sources) return fail('sources unavailable');
+        try {
+          await deps.sources.refresh('popup');
+          return ok(null);
+        } catch (e) {
+          return fail(e instanceof Error ? e.message : String(e));
+        }
+      }
       case 'explain.tab': return deps.explain ? runExplain(req.tabId, deps.explain) : fail('explain unavailable');
       case 'rules.shadowed': return deps.explain ? runShadowed(req.config, deps.explain) : fail('explain unavailable');
       case 'preview.change': return deps.preview ? runPreview(req, deps.preview) : fail('preview unavailable');

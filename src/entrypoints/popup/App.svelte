@@ -2,12 +2,14 @@
   import { onDestroy, onMount } from 'svelte';
   import { browser } from 'wxt/browser';
   import { send } from '../../ui/send';
+  import { requestPermissions } from '../../ui/permissions';
   import { buildPopupModel, parsePopupPrefs, POPUP_PREFS_KEY, type PopupPrefs } from '../../ui/popup-model';
   import type { ViewData, ViewSummary } from '../../engine/views';
   import { CLOSE_SUGGESTIONS_KEY } from '../../engine/close-executor';
   import type { PauseDuration } from '../../engine/safety';
   import Duplicates from './tabs/Duplicates.svelte';
   import ListView from './tabs/ListView.svelte';
+  import Projects from './tabs/Projects.svelte';
 
   /** Recipe-declared views (M2 T17): one popup tab each, the rest under More ▾. */
   let views = $state<ViewSummary[]>([]);
@@ -18,6 +20,11 @@
   let paused = $state(false);
   let locked = $state<number[]>([]);
   let currentTabId = $state<number | undefined>(undefined);
+  let currentWindowId = $state<number | undefined>(undefined);
+  /** sidePanel already granted: the side panel button opens without a permission request (M3-R82). */
+  let panelGranted = $state(false);
+  /** The panel did not open (the user gesture was lost to the permission prompt): the next click opens it directly. */
+  let panelRetry = $state(false);
   let syncWarning = $state('');
   /** Global dry run (config.dryRun, M2 T12): the engine only logs. T17's popup rewrite keeps this header chip. */
   let dryRun = $state(false);
@@ -32,7 +39,8 @@
   const activeInMore = $derived(model.more.some((m) => m.id === model.activeTab));
 
   async function loadData(viewId: string): Promise<void> {
-    if (!viewId) { data = undefined; return; }
+    // The Projects view reads projects.list itself (M3 T17).
+    if (!viewId || views.find((v) => v.id === viewId)?.kind === 'projects') { data = undefined; return; }
     const r = await send({ type: 'view.data', viewId });
     if (r.ok) data = { viewId, data: r.data };
     else error = r.error;
@@ -67,8 +75,13 @@
       prefs = parsePopupPrefs(got[POPUP_PREFS_KEY]);
     } catch { /* storage unavailable: default tab, order and visible count */ }
     try {
-      currentTabId = (await browser.tabs.query({ active: true, currentWindow: true }))[0]?.id;
-    } catch { /* no current tab (e.g. devtools): no lock button */ }
+      const tab = (await browser.tabs.query({ active: true, currentWindow: true }))[0];
+      currentTabId = tab?.id;
+      currentWindowId = tab?.windowId;
+    } catch { /* no current tab (e.g. devtools): no lock or side panel button */ }
+    try {
+      panelGranted = await browser.permissions.contains({ permissions: ['sidePanel'] });
+    } catch { /* unknown: the click requests it */ }
     await refresh();
   });
   onDestroy(() => { browser.storage.onChanged.removeListener(onStorage); });
@@ -105,6 +118,37 @@
     await refresh();
   }
 
+  const hasProjects = $derived(views.some((v) => v.kind === 'projects'));
+
+  /**
+   * "Open in side panel" (M3-R82). Not granted yet: the permission request is the handler's first statement (user
+   * gesture), then the panel opens. If that open fails (the gesture did not survive the prompt) the label becomes
+   * "Open side panel", and that click opens it with no request in between.
+   */
+  function openPanel(): void {
+    const windowId = currentWindowId;
+    if (windowId === undefined) return;
+    if (panelGranted || panelRetry) { void showPanel(windowId); return; }
+    requestPermissions({ permissions: ['sidePanel'] }).then(async (granted) => {
+      if (!granted) return;
+      panelGranted = true;
+      await showPanel(windowId);
+    }, (e: unknown) => { error = e instanceof Error ? e.message : String(e); });
+  }
+
+  /** setOptions and open are both called before any await, so a click's user gesture reaches open. */
+  async function showPanel(windowId: number): Promise<void> {
+    try {
+      await Promise.all([browser.sidePanel.setOptions({ path: 'panel.html', enabled: true }), browser.sidePanel.open({ windowId })]);
+      panelRetry = false;
+    } catch (e) {
+      const m = e instanceof Error ? e.message : String(e);
+      // Only a lost user gesture is worth a second click; anything else (no sidePanel API, ...) is an error.
+      if (!panelRetry && /user gesture/i.test(m)) panelRetry = true;
+      else error = m;
+    }
+  }
+
   async function openOptions(hash: string): Promise<void> {
     try {
       await browser.tabs.create({ url: browser.runtime.getURL('/options.html') + hash });
@@ -120,6 +164,9 @@
     <h1>Tabchef</h1>
     {#if dryRun}<span class="chip" role="status" title="Dry run: Tabchef only logs what it would do">Dry run</span>{/if}
     <span class="total" aria-label="{model.header.total} items">{model.header.total}</span>
+    {#if hasProjects && currentWindowId !== undefined}
+      <button type="button" class="panel" onclick={openPanel}>{panelRetry ? 'Open side panel' : 'Open in side panel'}</button>
+    {/if}
     {#if currentTabId !== undefined}
       <button type="button" class="lock" aria-pressed={currentLocked} onclick={toggleCurrentLock}>
         {currentLocked ? 'Unlock current tab' : 'Lock current tab'}
@@ -174,10 +221,12 @@
   </div>
 
   <div class="body" role="tabpanel">
-    {#if activeView && data?.viewId === activeView.id}
+    {#if activeView?.kind === 'projects'}
+      <Projects />
+    {:else if activeView && data?.viewId === activeView.id}
       {#if data.data.kind === 'duplicates'}
         <Duplicates data={{ sets: data.data.sets, pending: data.data.pending, locked }} onChange={refresh} />
-      {:else}
+      {:else if data.data.kind === 'list'}
         <ListView view={activeView} rows={data.data.rows} onChange={refresh} />
       {/if}
     {/if}
@@ -190,17 +239,7 @@
 </main>
 
 <style>
-  :global(:root) {
-    --bg: #fff; --surface: #f6f6f8; --hover: #eef0f4; --border: #d4d7de; --text: #1c1e24; --muted: #6a6f7b;
-    --accent: #3b6df0; --danger: #b3261e;
-  }
-  @media (prefers-color-scheme: dark) {
-    :global(:root) {
-      --bg: #1b1d22; --surface: #25282f; --hover: #2b2f37; --border: #3a3e48; --text: #e8eaef; --muted: #9aa0ad;
-      --accent: #7a9bff; --danger: #ff8a80;
-    }
-  }
-  :global(body) { margin: 0; background: var(--bg); color: var(--text); font: 13px/1.4 system-ui, sans-serif; }
+  /* Color tokens and the page base: src/ui/tokens.css (main.ts). */
   main { width: 380px; }
   header { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
   h1 { font-size: 15px; margin: 0; flex: 1; }
@@ -212,7 +251,7 @@
   .menu button { text-align: left; border: 0; background: none; padding: 5px 8px; border-radius: 4px; }
   .menu button:hover { background: var(--hover); }
   button { font: inherit; color: inherit; cursor: pointer; }
-  header > .pause > button, header > .lock, footer button { border: 1px solid var(--border); background: var(--surface); border-radius: 6px; padding: 3px 8px; }
+  header > .pause > button, header > .lock, header > .panel, footer button { border: 1px solid var(--border); background: var(--surface); border-radius: 6px; padding: 3px 8px; }
   .tabs { display: flex; border-bottom: 1px solid var(--border); }
   .tablist { display: flex; flex: 1; min-width: 0; overflow: hidden; }
   .tabs button { background: none; border: 0; border-bottom: 2px solid transparent; padding: 8px 12px; white-space: nowrap; }

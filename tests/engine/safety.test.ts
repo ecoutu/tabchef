@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fakeBrowser } from 'wxt/testing/fake-browser';
 import { browser } from 'wxt/browser';
-import { SafetyService, type SafetyDeps } from '../../src/engine/safety';
+import { groupUndoId, SafetyService, type SafetyDeps } from '../../src/engine/safety';
 import { RecentlyClosed } from '../../src/core/safety/recently-closed';
 import { DedupeHandler } from '../../src/engine/dedupe-handler';
 import { Reconciler } from '../../src/engine/reconciler';
@@ -435,6 +435,33 @@ describe('SafetyService', () => {
       w.port.state.tabs.find((t) => t.id === restored.id)!.url = 'https://github.com/acme/api/pull/2';
       await handler.onCandidate(restored.id, 'https://github.com/acme/api/pull/2', 'pending');
       expect(w.port.calls.filter((c) => c.method === 'closeTab')).toHaveLength(1);
+    });
+  });
+
+  describe('group undo (M3-R84)', () => {
+    it('one id undoes every entry of a group close; beforeUndo runs for each entry before its tab is created', async () => {
+      const order: string[] = [];
+      const w = setup({ beforeUndo: async (id) => { order.push(`before:${id}`); } });
+      const a = w.recentlyClosed.add({ ...closedEntry, url: 'https://a.example/' });
+      const b = w.recentlyClosed.add({ ...closedEntry, url: 'https://b.example/' });
+      const create = w.port.createTab.bind(w.port);
+      vi.spyOn(w.port, 'createTab').mockImplementation(async (o) => { order.push(`create:${o.url}`); return create(o); });
+      expect(groupUndoId([a])).toBe(a);
+      await w.svc.undo(groupUndoId([a, b]));
+      expect(order).toEqual([`before:${a}`, 'create:https://a.example/', `before:${b}`, 'create:https://b.example/']);
+      expect(w.recentlyClosed.list()).toEqual([]);
+    });
+
+    it('toastGroup offers that one id through the banner (and the notification fallback)', async () => {
+      const w = setup();
+      vi.spyOn(w.port, 'hasPermission').mockResolvedValue(true);
+      const t = { ...tab(1, PR), groupId: -1, index: 0 } as TabSnap;
+      await w.svc.toastGroup(['rc1', 'rc2'], 'Closed 2 tabs of ABC-1 (project-closed).', t);
+      expect(w.api.sendMessage).toHaveBeenCalledWith(1, {
+        type: 'banner.show', payload: { kind: 'undo', entryId: groupUndoId(['rc1', 'rc2']), text: 'Closed 2 tabs of ABC-1 (project-closed).' },
+      });
+      await w.svc.toastGroup(['rc3', 'rc4'], 'x', undefined);
+      expect(w.api.createNotification).toHaveBeenCalledWith(`undo:${groupUndoId(['rc3', 'rc4'])}`, expect.objectContaining({ message: 'x' }));
     });
   });
 

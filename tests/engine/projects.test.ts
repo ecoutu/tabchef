@@ -82,19 +82,20 @@ function harness(o: {
     linkedFor: vi.fn<(keys: string[], orgs: string[]) => Promise<Map<string, PrInfo[]>>>(async () => new Map()),
   };
   const schedule = vi.fn();
+  const toast = vi.fn();
   const store = new ProjectStore(local);
   // eslint-disable-next-line prefer-const -- the service reads the reconciler's state lazily
   let r: Reconciler;
   const svc = new ProjectService({
     store, port: f, getProgram: async () => p, sources, facts: { get: () => undefined }, log: { add: (e) => logs.push(e) },
-    recentlyClosed: { add: (e) => { closed.push(e); return 'rc'; } },
+    recentlyClosed: { add: (e) => { closed.push(e); return `rc${closed.length}`; } },
     safety: { isProtected: (t) => t.pinned || locked.has(t.id) },
-    state: () => r.liveState(), schedule, now: () => clock.now, ...(o.onProjectsChanged && { onProjectsChanged: o.onProjectsChanged }),
+    state: () => r.liveState(), schedule, toast, now: () => clock.now, ...(o.onProjectsChanged && { onProjectsChanged: o.onProjectsChanged }),
     ...(o.session && { session: o.session }),
   });
   r = new Reconciler(f, async () => p, { projects: svc, now: () => clock.now, log: { add: (e) => logs.push(e) } });
   const groupOf = (id: number) => f.state.groups.find((g) => g.id === f.state.tabs.find((t) => t.id === id)?.groupId)?.title;
-  return { f, local, logs, closed, locked, clock, sources, schedule, store, svc, r, groupOf };
+  return { f, local, logs, closed, locked, clock, sources, schedule, toast, store, svc, r, groupOf };
 }
 
 describe('ProjectService.targets and the reconciler', () => {
@@ -226,16 +227,95 @@ describe('ProjectService actions', () => {
     h.f.addTab(tab(3, 'https://github.com/acme/api/pull/7', 'ABC-1 more'));
     await h.r.flush();
     h.locked.add(3);
-    expect(await h.svc.closeGroup(PID)).toEqual({ closed: 2, skipped: 1 });
+    expect(await h.svc.closeGroup(PID)).toEqual({ closed: 2, skipped: 1, ids: ['rc1', 'rc2'] }); // ids: the popup's undo (T17)
     expect(h.f.state.tabs.map((t) => t.id)).toEqual([3]);
     expect(h.closed.map((c) => [c.url, c.reason, c.windowId])).toEqual([[TICKET, 'project-closed', 1], [PR, 'project-closed', 1]]);
     expect(h.closed[0]!.title).toBe('[ABC-1] Login fails - Jira');
     expect((await h.store.list()).map((p) => p.id)).toEqual([PID]); // a tab remains
   });
 
-  it('closeGroup with nothing protected removes the project', async () => {
-    const h = await withPair();
-    expect(await h.svc.closeGroup(PID)).toEqual({ closed: 2, skipped: 0 });
+  it('closeGroup with nothing protected keeps the project as a tombstone that cards and the menu hide (M3-R84)', async () => {
+    const seen: { id: string }[][] = [];
+    const h = harness({ onProjectsChanged: (ps) => seen.push(ps) });
+    await h.store.put(stored());
+    h.f.addTab(tab(1, TICKET, '[ABC-1] Login fails - Jira'));
+    h.f.addTab(tab(2, PR, 'ABC-1: fix login'));
+    await h.r.flush();
+    expect(await h.svc.closeGroup(PID)).toEqual({ closed: 2, skipped: 0, ids: ['rc1', 'rc2'] });
+    expect(await h.store.list()).toEqual([expect.objectContaining({ id: PID, closedAt: NOW, closedIds: ['rc1', 'rc2'] })]);
+    expect(await h.svc.cards()).toEqual([]);
+    expect(seen.at(-1)).toEqual([]);
+    await expect(h.svc.addTab(1, PID)).rejects.toThrow(); // gone from the UI: no manual adds either
+  });
+
+  it('closeGroup closes the active tab last and offers M1 undo for the whole group in the newly focused tab (M3-R84)', async () => {
+    const h = harness();
+    await h.store.put(stored());
+    h.f.addTab(tab(1, TICKET, '[ABC-1] Login fails - Jira', { active: true }));
+    h.f.addTab(tab(2, PR, 'ABC-1: fix login'));
+    h.f.addTab(tab(3, 'https://example.com/', 'Other'));
+    await h.r.flush();
+    const order: number[] = [];
+    const close = h.f.closeTab.bind(h.f);
+    vi.spyOn(h.f, 'closeTab').mockImplementation(async (id: number) => {
+      order.push(id);
+      await close(id);
+      if (id === 1) h.f.state.tabs.find((t) => t.id === 3)!.active = true; // Chrome activates a neighbour
+    });
+    await h.svc.closeGroup(PID);
+    expect(order).toEqual([2, 1]);
+    expect(h.toast).toHaveBeenCalledTimes(1);
+    const [ids, text, focused] = h.toast.mock.calls[0]!;
+    expect(ids).toEqual(['rc1', 'rc2']);
+    expect(text).toBe('Closed 2 tabs of ABC-1 (project-closed).');
+    expect(focused).toMatchObject({ id: 3 });
+  });
+
+  it('undo after closeGroup restores the same project: manual tab back in it, linked and summary kept (M3-R84)', async () => {
+    const h = await withPair({ summary: 'Login fails', linked: [{ url: PR2, title: 'ABC-1 web', state: 'merged' }] });
+    h.f.addTab(tab(3, 'https://example.com/notes', 'Notes'));
+    await h.svc.addTab(3, PID);
+    await h.r.flush();
+    const { ids } = await h.svc.closeGroup(PID);
+    expect(ids).toHaveLength(3);
+    await h.r.flush();
+    // recent.undo / the banner: SafetyService calls beforeUndo for each entry before it recreates the tab.
+    for (const id of ids) await h.svc.onUndo(id);
+    h.f.addTab(tab(11, TICKET, '[ABC-1] Login fails - Jira'));
+    h.f.addTab(tab(12, PR, 'ABC-1: fix login'));
+    h.f.addTab(tab(13, 'https://example.com/notes', 'Notes'));
+    await h.r.flush();
+    expect([11, 12, 13].map(h.groupOf)).toEqual(['ABC-1', 'ABC-1', 'ABC-1']);
+    const [p] = await h.store.list();
+    expect(p).toMatchObject({ id: PID, summary: 'Login fails', linked: [{ url: PR2, title: 'ABC-1 web', state: 'merged' }] });
+    expect(p).not.toHaveProperty('closedAt');
+    expect(p!.manual.map((m) => m.url)).toEqual(['https://example.com/notes']);
+    expect((await h.svc.cards()).map((c) => [c.id, c.tabs.length])).toEqual([[PID, 3]]);
+  });
+
+  it('a rule reopening a tombstoned key revives the stored project instead of overwriting it; a manual URL alone does not', async () => {
+    const h = await withPair({ summary: 'Login fails' });
+    h.f.addTab(tab(3, 'https://example.com/notes', 'Notes'));
+    await h.svc.addTab(3, PID);
+    await h.r.flush();
+    await h.svc.closeGroup(PID);
+    h.f.addTab(tab(13, 'https://example.com/notes', 'Notes'));
+    await h.r.flush();
+    expect(h.groupOf(13)).toBeUndefined(); // a tombstone's manual entries take no tab
+    h.f.addTab(tab(11, TICKET, '[ABC-1] Login fails - Jira'));
+    await h.r.flush();
+    const list = await h.store.list();
+    expect(list).toHaveLength(1);
+    expect(list[0]).toMatchObject({ id: PID, summary: 'Login fails' });
+    expect(list[0]).not.toHaveProperty('closedAt');
+    expect(h.groupOf(11)).toBe('ABC-1');
+  });
+
+  it('a tombstone is pruned like any project without open tabs', async () => {
+    const h = harness();
+    await h.store.put(stored({ closedAt: NOW - 30 * DAY, closedIds: ['rc9'], closedFor: PRUNE_AFTER_MS }));
+    h.f.addTab(tab(5, 'https://example.com/', 'x'));
+    await h.r.flush();
     expect(await h.store.list()).toEqual([]);
   });
 
@@ -356,6 +436,18 @@ describe('ProjectService: dry run (fix I2)', () => {
     expect(h.groupOf(1)).toBe('ABC-1');
     expect(h.groupOf(2)).toBeUndefined();
     expect(h.logs.filter((l) => l.action === 'project-join').map((l) => l.tabId)).toEqual([1]);
+  });
+
+  it('previewTargets builds a recreated tombstone from its stored record, as the live pass does (summary kept)', async () => {
+    const r: Recipe = { ...recipe, project: { ...recipe.project!, title: '{key} · {summary}' } };
+    const p = compiled({}, r);
+    const h = harness({ program: p });
+    await h.store.put(stored({ summary: 'Stored summary', closedAt: NOW, closedIds: ['rc1'] }));
+    h.f.addTab(tab(1, TICKET, 'ABC-1'));
+    const preview = (await h.svc.previewTargets(await h.f.snapshot(), p)).get(1)?.title;
+    const live = (await h.svc.targets(await h.f.snapshot())).get(1)?.title;
+    expect(live).toBe('ABC-1 · Stored summary');
+    expect(preview).toBe(live);
   });
 
   it('previewTargets has no side effects', async () => {
@@ -501,6 +593,16 @@ describe('ProjectService fixes (round 2)', () => {
     await h.svc.targets(await h.f.snapshot());
     expect(await h.store.list()).toEqual([]);
     expect(seen).toEqual([[]]);
+  });
+
+  it('under global dry run a tombstoned project is not offered in the menu (addTab would reject it)', async () => {
+    const seen: { id: string }[][] = [];
+    const h = harness({ program: { ...program(), dryRun: true }, onProjectsChanged: (ps) => seen.push(ps) });
+    await h.store.put(stored({ closedAt: NOW, closedIds: ['rc1'] }), stored({ id: `${RID}:XYZ-2`, key: 'XYZ-2' }));
+    h.f.addTab(tab(1, TICKET, '[ABC-1] Login fails - Jira'));
+    h.f.addTab(tab(2, 'https://acme.atlassian.net/browse/XYZ-2', '[XYZ-2] Other - Jira'));
+    await h.svc.targets(await h.f.snapshot());
+    expect(seen.at(-1)!.map((p) => p.id)).toEqual([`${RID}:XYZ-2`]);
   });
 
   it('M3-R73 N4: an older linked fetch finishing last does not overwrite newer linked PRs', async () => {

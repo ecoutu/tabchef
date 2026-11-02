@@ -83,6 +83,21 @@ function setup(o: { suggestions?: CloseSuggestion[]; granted?: (origin: string) 
 const oauth: CloseSuggestion = { tabId: 3, url: CB, ruleKey: 'finished/oauth-callback', reason: 'Close OAuth callback tabs' };
 
 describe('view.data', () => {
+  it("kind 'projects' (M3 T17): counts the open projects, never in the toolbar badge; data {kind:'projects'}, no view actions", async () => {
+    const s = setup();
+    s.deps.views!.projectCount = () => 2;
+    const view: View = { id: 'projects', tab: 'Projects', kind: 'projects', actions: [] };
+    await s.setCfg({ ...defaultConfig(), recipes: [userRecipe('mine', [], [view])] });
+    s.mk(1, 'https://example.com/');
+    const list = (await s.handle({ type: 'views.list' }, ui)) as Loose;
+    expect(list.data.find((v: { id: string }) => v.id === 'projects')).toMatchObject({ kind: 'projects', count: 2 });
+    await refreshBadge(s.deps as never);
+    expect(s.port.badge).toBe('');
+    expect(((await s.handle({ type: 'view.data', viewId: 'projects' }, ui)) as Loose).data).toEqual({ kind: 'projects' });
+    expect(((await s.handle({ type: 'view.close', viewId: 'projects', tabId: 1 }, ui)) as Loose).ok).toBe(false);
+    expect(s.port.state.tabs.map((t) => t.id)).toEqual([1]);
+  });
+
   it("view.data('finished') returns a suggested localhost tab", async () => {
     const s = setup({ suggestions: [oauth] });
     await s.setCfg(enable(defaultConfig(), 'finished', { params: { mode: 'suggest' } }));

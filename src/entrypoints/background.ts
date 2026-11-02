@@ -204,6 +204,8 @@ export default defineBackground(() => {
     pageFormEdited: (id) => pageFacts.get(id)?.formEdited === true,
     onResume: () => { void closeExecutor.rearm(); },
     onUndone: (id, url) => { void closeExecutor.exempt(id, url); },
+    // Undo of a Close group entry revives the project first (M3-R84).
+    beforeUndo: (entryId) => projects.onUndo(entryId),
   });
   // Delayed / suggested closes (M2 T9), persisted in storage.session.
   const closeExecutor: CloseExecutor = new CloseExecutor(port, getProgram, {
@@ -290,11 +292,14 @@ export default defineBackground(() => {
   // Projects (M3 T15): stored in storage.local `projects` (not synced); sticky membership in the reconciler's state.
   // Each pass reports the open projects, which the "Add to project" submenu follows.
   const projectMenu = createProjectMenu(menuApi);
+  /** Open projects as of the last pass: the Projects tab's count. */
+  let openProjects = 0;
   const projects: ProjectService = new ProjectService({
     store: new ProjectStore(localArea), port, getProgram, sources, facts: pageFacts, log: whyLog, recentlyClosed, safety, session,
     state: () => reconciler.liveState(),
     schedule: (r) => reconciler.schedule(r),
-    onProjectsChanged: (ps) => { projectMenu.sync(ps).catch(warn('project menu')); },
+    onProjectsChanged: (ps) => { openProjects = ps.length; projectMenu.sync(ps).catch(warn('project menu')); },
+    toast: (ids, text, focused) => { safety.toastGroup(ids, text, focused).catch(warn('undo toast')); },
   });
   // Tabs and page facts changed: look up what new or navigated tabs need (cache first; at most every few seconds).
   const scheduleSources = createDebounce(() => { sources.refresh('tabs').catch(warn('source refresh')); }, 1000, 5000);
@@ -419,6 +424,7 @@ export default defineBackground(() => {
       facts: tabFacts,
       permissions,
       connections: () => connectionInfo(),
+      projectCount: () => openProjects,
       closes: {
         ready: closeExecutor.ready,
         suggestions: () => closeExecutor.suggestions(),
@@ -476,6 +482,8 @@ export default defineBackground(() => {
       knownSecrets: () => secrets.knownSecrets(),
     },
     projects,
+    // sources.refresh (M3 T17): the popup's Projects tab refreshes source data (refresh('popup'), throttled).
+    sources,
     // explain.tab / rules.shadowed (M2 T14): read-only, like preview.
     explain: {
       builtins: builtinRecipes(),

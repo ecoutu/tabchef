@@ -541,9 +541,15 @@ describe('background wiring', () => {
     expect(I('projects').previewTargets).toHaveBeenCalledWith(snap, h.state.program);
     const hd = vi.mocked(createHandler).mock.calls[0]![0] as unknown as { projects: unknown; preview: { projectOverrides: (s: unknown, p: unknown) => Promise<unknown> } };
     expect(hd.projects).toBe(I('projects'));
+    expect((vi.mocked(createHandler).mock.calls[0]![0] as unknown as { sources: unknown }).sources).toBe(I('sources')); // sources.refresh (T17)
     await hd.preview.projectOverrides(snap, h.state.program); // previews plan each side with its own overrides (N1)
     expect(I('reconciler').previewOverrides).toHaveBeenCalledWith(snap, h.state.program);
     expect(d.session).toEqual({ get: expect.any(Function), set: expect.any(Function) }); // the closed-time clock (N2)
+    // M3-R84: Close group offers M1's group undo; an undo revives the closed project before recreating the tab.
+    (d as unknown as { toast: (ids: string[], text: string, f: unknown) => void }).toast(['rc1', 'rc2'], 'Closed 2 tabs', undefined);
+    expect(I('safety').toastGroup).toHaveBeenCalledWith(['rc1', 'rc2'], 'Closed 2 tabs', undefined);
+    await (I('safety').args[1] as { beforeUndo: (id: string) => Promise<void> }).beforeUndo('rc1');
+    expect(I('projects').onUndo).toHaveBeenCalledWith('rc1');
     await fire('contextMenus.onClicked', { menuItemId: 'tc-project:r:ABC-1' }, { id: 8 });
     expect(onMenuClick).toHaveBeenCalledWith({ menuItemId: 'tc-project:r:ABC-1' }, { id: 8 }, expect.objectContaining({ projects: I('projects') }));
   });

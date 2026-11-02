@@ -363,8 +363,9 @@ describe('M3 T1: sources, fields, keys and projects', () => {
     const r = recipe({ rules: [rule({ actions: [{ assignProject: { key: 'ABC-1' } }] })] });
     expect(at(validateRecipe(r), '/rules/0/actions/0/assignProject').length).toBe(1);
   });
-  it("rejects View.kind 'projects' (deferred to T17, M3-R18)", () => {
-    expect(validateRecipe(recipe({ views: [{ id: 'p', tab: 'P', kind: 'projects', actions: [] }] })).ok).toBe(false);
+  it("accepts View.kind 'projects' (M3-R81 lifts M3-R18 now that T17 renders it)", () => {
+    expect(errorsOf(validateRecipe(recipe({ views: [{ id: 'p', tab: 'P', kind: 'projects', actions: [] }] })))).toEqual([]);
+    expect(validateRecipe(recipe({ views: [{ id: 'p', tab: 'P', kind: 'nope', actions: [] }] })).ok).toBe(false);
   });
 });
 

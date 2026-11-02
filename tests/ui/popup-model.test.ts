@@ -30,6 +30,13 @@ describe('buildPopupModel (M2 T17: recipe views)', () => {
     expect(m.tabs[0]).toMatchObject({ id: 'finished', count: 2, faded: true, paused: 'Paused: needs access to meet.google.com' });
   });
 
+  it("a projects view shows its open projects but stays out of the header total (not badge items); never faded at 0 (M3 T17)", () => {
+    expect(buildPopupModel({ ...base, views: [v('projects', 0, { kind: 'projects' })] }).tabs[0]!.faded).toBe(false);
+    const m = buildPopupModel({ ...base, views: [v('duplicates', 1), v('projects', 3, { kind: 'projects' })] });
+    expect(m.tabs.map((t) => t.count)).toEqual([1, 3]);
+    expect(m.header.total).toBe(1);
+  });
+
   it('zero-count views are faded; others are not', () => {
     const m = buildPopupModel({ ...base, views: [v('a', 0), v('b', 1)] });
     expect(m.tabs.map((t) => t.faded)).toEqual([true, false]);

@@ -3,7 +3,7 @@
 // (ruling R20 as amended), not Config: reordering must not change configRev.
 
 /** A view as the popup gets it from views.list (only the fields the model reads). */
-export interface PopupViewInput { id: string; tab: string; count: number; paused?: string; notice?: string }
+export interface PopupViewInput { id: string; tab: string; count: number; kind?: string; paused?: string; notice?: string }
 
 export interface PopupPrefs { tabOrder?: string[]; visibleCount?: number }
 export const POPUP_PREFS_KEY = 'popup.prefs';
@@ -48,12 +48,13 @@ function ordered<T extends { id: string }>(items: T[], order: string[] = []): T[
 
 export function buildPopupModel(input: PopupModelInput): PopupModel {
   const all = ordered(input.views, input.tabOrder).map((v): PopupTab => ({
-    id: v.id, label: v.tab, count: v.count, faded: v.count === 0 || v.paused !== undefined,
+    // A projects view counts its open projects (M3 T17): faded only while paused, and left out of the header total.
+    id: v.id, label: v.tab, count: v.count, faded: (v.count === 0 && v.kind !== 'projects') || v.paused !== undefined,
     ...(v.paused !== undefined && { paused: v.paused }), ...(v.notice !== undefined && { notice: v.notice }),
   }));
   const n = Number.isInteger(input.visibleCount) ? Math.max(1, input.visibleCount as number) : DEFAULT_VISIBLE_COUNT;
   const tabs = all.slice(0, n);
   const more = all.slice(n).map((t) => ({ id: t.id, label: t.label, count: t.count }));
   const activeTab = all.find((t) => t.id === input.lastTab)?.id ?? all[0]?.id ?? '';
-  return { tabs, more, activeTab, header: { paused: input.paused, total: all.reduce((s, t) => s + t.count, 0), recentCount: input.recentCount } };
+  return { tabs, more, activeTab, header: { paused: input.paused, total: input.views.reduce((s, v) => s + (v.kind === 'projects' ? 0 : v.count), 0), recentCount: input.recentCount } };
 }

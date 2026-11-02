@@ -1081,7 +1081,7 @@ describe('projects.* (M3 T15)', () => {
     addTab: vi.fn(async () => {}),
     removeTab: vi.fn(async () => {}),
     openLinked: vi.fn(async () => 77),
-    closeGroup: vi.fn(async () => ({ closed: 2, skipped: 1 })),
+    closeGroup: vi.fn(async () => ({ closed: 2, skipped: 1, ids: ['rc-1', 'rc-2'] })),
   });
 
   it('validates the requests', () => {
@@ -1107,7 +1107,7 @@ describe('projects.* (M3 T15)', () => {
     expect(p.removeTab).toHaveBeenCalledWith(3);
     expect(await s.handle({ type: 'projects.openLinked', projectId: 'r:ABC-1', url: 'https://x/' }, ui)).toEqual({ ok: true, data: { tabId: 77 } });
     expect(p.openLinked).toHaveBeenCalledWith('r:ABC-1', 'https://x/');
-    expect(await s.handle({ type: 'projects.closeGroup', projectId: 'r:ABC-1' }, ui)).toEqual({ ok: true, data: { closed: 2, skipped: 1 } });
+    expect(await s.handle({ type: 'projects.closeGroup', projectId: 'r:ABC-1' }, ui)).toEqual({ ok: true, data: { closed: 2, skipped: 1, ids: ['rc-1', 'rc-2'] } });
     p.openLinked.mockRejectedValue(new Error('not a linked PR of this project'));
     expect(await s.handle({ type: 'projects.openLinked', projectId: 'r:ABC-1', url: 'https://evil/' }, ui)).toEqual({ ok: false, error: 'not a linked PR of this project' });
   });
@@ -1115,6 +1115,25 @@ describe('projects.* (M3 T15)', () => {
   it('fail without the ProjectService, and from content scripts', async () => {
     expect(await setup().handle({ type: 'projects.list' }, ui)).toEqual({ ok: false, error: 'projects unavailable' });
     expect(await setup({ projects: projects() }).handle({ type: 'projects.list' }, content)).toEqual({ ok: false, error: 'forbidden' });
+  });
+});
+
+describe('sources.refresh (M3 T17, M3-R83)', () => {
+  it('is a no-argument request that runs SourceService.refresh(\'popup\') and answers once it is done', async () => {
+    expect(isRequest({ type: 'sources.refresh' })).toBe(true);
+    let done = false;
+    const refresh = vi.fn(async () => { await Promise.resolve(); done = true; });
+    const s = setup({ sources: { refresh } });
+    expect(await s.handle({ type: 'sources.refresh' }, ui)).toEqual({ ok: true, data: null });
+    expect(refresh).toHaveBeenCalledWith('popup');
+    expect(done).toBe(true);
+  });
+
+  it('fails without the SourceService, on a refresh error, and from content scripts', async () => {
+    expect(await setup().handle({ type: 'sources.refresh' }, ui)).toEqual({ ok: false, error: 'sources unavailable' });
+    const refresh = vi.fn(async () => { throw new Error('offline'); });
+    expect(await setup({ sources: { refresh } }).handle({ type: 'sources.refresh' }, ui)).toEqual({ ok: false, error: 'offline' });
+    expect(await setup({ sources: { refresh } }).handle({ type: 'sources.refresh' }, content)).toEqual({ ok: false, error: 'forbidden' });
   });
 });
 
