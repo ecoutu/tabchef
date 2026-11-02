@@ -12,6 +12,7 @@ import type { ConfigStore, Backup } from '../storage/config-store';
 import { compileProgram, paramProblem } from '../core/lang/compile';
 import type { Program, Recipe, RecipeRef, TabFacts } from '../core/lang/types';
 import { emptyProgram, previewChange, type PreviewContext, type PreviewResult } from '../core/lang/preview';
+import { explainTab, findShadowed, type ExplainEntry } from '../core/lang/explain';
 import { effectiveNeeds, type Needs, type NeedStatus, type PermissionsManager } from './permissions';
 import type { PendingAsk } from './ask';
 import type { PageFacts, WatchSelector } from './page-facts';
@@ -139,7 +140,21 @@ export type Request =
    * shows PreviewDialog when it has effects. `only` (a rule key) tests that one rule alone against the open tabs
    * ("test against my open tabs"): enabled, live, against a Program with no rules.
    */
-  | { type: 'preview.change'; config: unknown; only?: string };
+  | { type: 'preview.change'; config: unknown; only?: string }
+  /** The conflict view (M2 T14): the rules relevant to one open tab, what each won and to whom it lost. Read-only. */
+  | { type: 'explain.tab'; tabId: number }
+  /** Rules that likely never win (M2 T14, heuristic): of the stored config, or of the draft `config` when given. */
+  | { type: 'rules.shadowed'; config?: unknown };
+
+/** explain.tab's answer: the tab and its relevant rules in priority order (src/core/lang/explain.ts). */
+export interface ExplainView {
+  tab: { id: number; title: string; url: string; groupTitle?: string };
+  /** The tab has page facts (pageText / selector extracts); without them, rules that need them are "needs page facts". */
+  hasPageFacts: boolean;
+  rules: ExplainEntry[];
+}
+/** A shadowed rule (`key`), the earlier rule that catches its tabs (`shadowedBy`) and that rule's name (R19). */
+export interface ShadowedRule { key: string; shadowedBy: string; name: string }
 
 /**
  * One recipe as listed to the UI: its ref, header, effective needs (host needs add `scripting`) and their status.
@@ -206,6 +221,8 @@ export interface ResponseData {
   'recipes.disable': null;
   'recipes.setParams': null;
   'preview.change': PreviewResult;
+  'explain.tab': ExplainView;
+  'rules.shadowed': ShadowedRule[];
 }
 export type ResponseFor<R extends Request> = Response<ResponseData[R['type']]>;
 
@@ -252,6 +269,8 @@ export function isRequest(m: unknown): m is Request {
     case 'recipes.setParams':
       return str(x.id) && typeof x.params === 'object' && x.params !== null && !Array.isArray(x.params) && optRev(x);
     case 'preview.change': return typeof x.config === 'object' && x.config !== null && (x.only === undefined || str(x.only));
+    case 'explain.tab': return num(x.tabId);
+    case 'rules.shadowed': return x.config === undefined || (typeof x.config === 'object' && x.config !== null);
     default: return false;
   }
 }
@@ -282,6 +301,14 @@ export interface HandlerDeps {
     /** Per-tab facts the snapshot lacks (page facts). Default: none. */
     facts?: (tabId: number) => Partial<TabFacts>;
     /** Needs that are not granted pause their recipe / rule in the draft, as ProgramCache does. Default: all granted. */
+    permissions?: Pick<PermissionsManager, 'check'>;
+  };
+  /** explain.tab and rules.shadowed (M2 T14). Without it they fail. Read-only: nothing here may change engine state. */
+  explain?: {
+    builtins: Record<string, Recipe>;
+    /** Per-tab facts the snapshot lacks (page facts). Default: none. */
+    facts?: (tabId: number) => Partial<TabFacts>;
+    /** Needs that are not granted pause their recipe / rule (R45): shown with the reason. Default: all granted. */
     permissions?: Pick<PermissionsManager, 'check'>;
   };
   now?: () => number;
@@ -478,8 +505,51 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
     return ok(previewChange(snap, emptyProgram(after), after, facts, { ...ctx, managedTitles: new Set() }, now()));
   }
 
+  /**
+   * explain.tab: the stored config compiled with no paused set (paused rules stay listed, with their reason, R45) and
+   * dry-run rules included (R48); explainTab decides who won. Reads the snapshot and the config only.
+   */
+  async function runExplain(tabId: number, d: NonNullable<HandlerDeps['explain']>): Promise<Response> {
+    const snap = await deps.port.snapshot();
+    const tab = snap.tabs.find((t) => t.id === tabId);
+    if (!tab) return fail('tab not found');
+    const p = compileProgram(await deps.store.get(), d.builtins).program;
+    const paused: Record<string, string> = {};
+    if (d.permissions) {
+      for (const [k, n] of Object.entries(p.needs)) {
+        const st = await d.permissions.check(n);
+        if (!st.ok) paused[k] = st.reason ?? 'Paused';
+      }
+    }
+    const opener = tab.openerTabId !== undefined ? snap.tabs.find((t) => t.id === tab.openerTabId) : undefined;
+    const groupTitle = tab.groupId !== -1 ? snap.groups.find((g) => g.id === tab.groupId)?.title : undefined;
+    const extra = d.facts?.(tabId) ?? {};
+    const facts: TabFacts = { ...extra, tab, ...(opener && { opener }), ...(groupTitle !== undefined && { groupTitle }) };
+    const view: ExplainView = {
+      tab: { id: tab.id, title: tab.title, url: tab.pendingUrl || tab.url, ...(groupTitle !== undefined && { groupTitle }) },
+      hasPageFacts: facts.page !== undefined,
+      rules: explainTab(p, facts, now(), paused),
+    };
+    return ok(view);
+  }
+
+  async function runShadowed(config: unknown, d: NonNullable<HandlerDeps['explain']>): Promise<Response> {
+    let cfg: Config;
+    if (config === undefined) cfg = await deps.store.get();
+    else {
+      const v = validateConfig(config);
+      if (!v.ok) return fail('invalid config', v.errors);
+      cfg = v.config;
+    }
+    const p = compileProgram(cfg, d.builtins).program;
+    const names = new Map(p.rules.map((r) => [r.key, r.rule.name]));
+    return ok(findShadowed(p).map((x): ShadowedRule => ({ ...x, name: names.get(x.shadowedBy) ?? x.shadowedBy })));
+  }
+
   async function run(req: Request): Promise<Response> {
     switch (req.type) {
+      case 'explain.tab': return deps.explain ? runExplain(req.tabId, deps.explain) : fail('explain unavailable');
+      case 'rules.shadowed': return deps.explain ? runShadowed(req.config, deps.explain) : fail('explain unavailable');
       case 'preview.change': return deps.preview ? runPreview(req, deps.preview) : fail('preview unavailable');
       case 'recipes.list': case 'recipes.enable': case 'recipes.disable': case 'recipes.setParams':
         return deps.recipes ? runRecipes(req, deps.recipes) : fail('recipes unavailable');

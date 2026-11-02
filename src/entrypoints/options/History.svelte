@@ -3,6 +3,7 @@
   import { send } from '../../ui/send';
   import type { WhyEntry } from '../../core/safety/why-log';
   import type { RecentlyClosedItem } from '../../core/safety/recently-closed';
+  import { explainHash } from '../../ui/routes';
 
   let why = $state<WhyEntry[]>([]);
   let recent = $state<RecentlyClosedItem[]>([]);
@@ -62,6 +63,9 @@
           <span class="title">{#if e.dryRun}<span class="chip">dry run</span> {/if}{e.action}{e.tabId !== undefined ? ` · tab ${e.tabId}` : ''}{e.ruleId ? ` · rule ${e.ruleId}` : ''}</span>
           <span class="meta">{e.detail} · {time(e.at)}</span>
         </div>
+        {#if e.tabId !== undefined}
+          <a class="why" href={explainHash(e.tabId)} aria-label={`Why is this tab here? (tab ${e.tabId})`}>Why?</a>
+        {/if}
       </li>
     {/each}
   </ul>
@@ -78,5 +82,6 @@
   .filters { display: flex; flex-wrap: wrap; gap: 6px 16px; }
   .filter { display: inline-flex; gap: 6px; align-items: center; margin-bottom: 6px; }
   .chip { display: inline-block; border: 1px solid var(--border); background: var(--hover); color: var(--muted); border-radius: 8px; padding: 0 6px; font-size: 11px; }
+  .why { font-size: 12px; white-space: nowrap; color: var(--accent); }
   .err { color: var(--danger); }
 </style>

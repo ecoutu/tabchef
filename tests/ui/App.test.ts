@@ -21,6 +21,7 @@ beforeEach(() => {
     if (req.type === 'config.get') return { ok: true, data: { config: stored, rev } };
     if (req.type === 'tabs.list') return { ok: true, data: [] };
     if (req.type === 'config.status') return { ok: true, data: status };
+    if (req.type === 'explain.tab') return { ok: true, data: { tab: { id: 12, title: 'T', url: 'https://t.example/' }, hasPageFacts: false, rules: [] } };
     if (req.type === 'config.set') {
       if (req.baseRev !== undefined && req.baseRev !== rev) return { ok: false, error: 'conflict' };
       stored = req.config!; rev = 'r-saved'; return { ok: true, data: null };
@@ -184,5 +185,15 @@ describe('App: preview before Save (M2 T13)', () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await screen.findByText('Could not save:');
     expect(types()).toContain('config.set');
+  });
+});
+
+describe('App routing (R28, M2 T14)', () => {
+  it('#/explain/<tabId> opens the conflict view for that tab, and is not in the nav', async () => {
+    window.location.hash = '#/explain/12';
+    render(App);
+    await screen.findByText('No rule applies to this tab.');
+    expect(send.mock.calls.some((c) => c[0].type === 'explain.tab' && c[0].tabId === 12)).toBe(true);
+    expect(screen.queryByRole('link', { name: /explain/i })).toBeNull();
   });
 });
