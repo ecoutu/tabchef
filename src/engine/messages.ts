@@ -17,6 +17,8 @@ import { effectiveNeeds, type Needs, type NeedStatus, type PermissionsManager } 
 import type { PendingAsk } from './ask';
 import type { PageFacts, WatchSelector } from './page-facts';
 import type { PauseDuration, SafetyService } from './safety';
+import { dedupeDecision, openerOf } from './dedupe-handler';
+import { readViews, type ViewData, type ViewsDeps, type ViewSummary } from './views';
 
 /** Messages between the background worker and the dedupe banner content script. */
 export type BannerShowMessage = {
@@ -149,7 +151,15 @@ export type Request =
   /** The conflict view (M2 T14): the rules relevant to one open tab, what each won and to whom it lost. Read-only. */
   | { type: 'explain.tab'; tabId: number }
   /** Rules that likely never win (M2 T14, heuristic): of the stored config, or of the draft `config` when given. */
-  | { type: 'rules.shadowed'; config?: unknown };
+  | { type: 'rules.shadowed'; config?: unknown }
+  /** The popup's recipe views (M2 T17) with counts and paused status, in display order. Read-only. */
+  | { type: 'views.list' }
+  /** One view's rows (`list`) or duplicate sets and pending asks (`duplicates`). Read-only. */
+  | { type: 'view.data'; viewId: string }
+  /** Closes one row tab of a list view with a close / close-all action (user-initiated: also under dry run, R50). */
+  | { type: 'view.close'; viewId: string; tabId: number }
+  /** Dismisses a Finished suggestion: CloseExecutor.exempt, so the tab is not suggested again at that URL. */
+  | { type: 'view.keep'; viewId: string; tabId: number };
 
 /** explain.tab's answer: the tab and its relevant rules in priority order (src/core/lang/explain.ts). */
 export interface ExplainView {
@@ -228,13 +238,17 @@ export interface ResponseData {
   'preview.change': PreviewResult;
   'explain.tab': ExplainView;
   'rules.shadowed': ShadowedRule[];
+  'views.list': ViewSummary[];
+  'view.data': ViewData;
+  'view.close': null;
+  'view.keep': null;
 }
 export type ResponseFor<R extends Request> = Response<ResponseData[R['type']]>;
 
 const num = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
 const str = (v: unknown): v is string => typeof v === 'string';
 const NO_ARGS = new Set(['config.get', 'config.backups', 'config.status', 'tabs.list', 'dupes.list', 'dupes.closeAll', 'recent.list', 'why.all',
-  'safety.resume', 'safety.status', 'recipes.list']);
+  'safety.resume', 'safety.status', 'recipes.list', 'views.list']);
 const optRev = (x: Record<string, unknown>) => x.baseRev === undefined || str(x.baseRev);
 const isParams = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
@@ -277,6 +291,8 @@ export function isRequest(m: unknown): m is Request {
     case 'preview.change': return typeof x.config === 'object' && x.config !== null && (x.only === undefined || str(x.only));
     case 'explain.tab': return num(x.tabId);
     case 'rules.shadowed': return x.config === undefined || (typeof x.config === 'object' && x.config !== null);
+    case 'view.data': return str(x.viewId);
+    case 'view.close': case 'view.keep': return str(x.viewId) && num(x.tabId);
     default: return false;
   }
 }
@@ -289,6 +305,13 @@ export interface HandlerDeps {
   port: BrowserPort;
   /** Effective dedupe settings: the compiled Program's `dedupe` (config + recipe urlTransforms, ruling R4). */
   getSettings: () => Promise<DedupeSettings>;
+  /**
+   * The Program the engine runs (ProgramCache.get). With it, duplicate sets (dupes.*, the badge, the Duplicates view)
+   * honor per-rule dedupe overrides as the engine does (R25, M2 T17); without it only the global settings apply.
+   */
+  getProgram?: () => Promise<Program>;
+  /** views.list / view.* (M2 T17). Without it they fail. The list and data are read-only. */
+  views?: ViewsDeps;
   safety: Pick<SafetyService, 'pause' | 'resume' | 'isPaused' | 'lock' | 'unlock' | 'isLocked' | 'lockedTabIds' | 'undo'>;
   /** Anchor tabs (M2 T11) are never closed by dupes.close* (R11). Default: none. */
   isAnchor?: (tabId: number) => boolean;
@@ -329,17 +352,38 @@ export function isExtensionPage(sender: MessageSender, d: Pick<HandlerDeps, 'run
   return typeof sender.url === 'string' && (sender.url === d.extensionOrigin || sender.url.startsWith(`${d.extensionOrigin}/`));
 }
 
-type BadgeDeps = Pick<HandlerDeps, 'port' | 'getSettings' | 'ask'> & { isLocked: (tabId: number) => boolean };
+type BadgeDeps = Pick<HandlerDeps, 'port' | 'getSettings' | 'getProgram' | 'ask' | 'views' | 'now'> & { isLocked: (tabId: number) => boolean };
+
+/** Duplicate sets of the open tabs: each tab's winning dedupe override applied when the Program is known (R25). */
+async function duplicateSets(deps: Pick<HandlerDeps, 'port' | 'getSettings' | 'getProgram' | 'now'>): Promise<DupeSet[]> {
+  const snap = await deps.port.snapshot();
+  if (!deps.getProgram) return findDuplicateSets(snap.tabs, await deps.getSettings());
+  const p = await deps.getProgram();
+  const at = (deps.now ?? Date.now)();
+  // The same facts DedupeHandler decides a candidate with: the tab and its opener (dry-run rules fall through, R48).
+  return findDuplicateSets(snap.tabs, p.dedupe, (t) => dedupeDecision(p, { tab: t, ...openerOf(snap, t) }, at).o);
+}
 
 /** Closable duplicate extras (tabs after the oldest, excluding pinned and locked) plus pending asks. */
 export async function badgeCount(deps: BadgeDeps): Promise<number> {
-  const [snap, settings, pending] = await Promise.all([deps.port.snapshot(), deps.getSettings(), deps.ask.listPending()]);
-  const extras = findDuplicateSets(snap.tabs, settings).reduce((n, s) => n + s.tabs.slice(1).filter((t) => !t.pinned && !deps.isLocked(t.id)).length, 0);
+  const [sets, pending] = await Promise.all([duplicateSets(deps), deps.ask.listPending()]);
+  const extras = sets.reduce((n, s) => n + s.tabs.slice(1).filter((t) => !t.pinned && !deps.isLocked(t.id)).length, 0);
   return extras + pending.length;
 }
 
+/**
+ * Toolbar badge (R20): M1 badgeCount (the Duplicates view's count) plus every list view's count, i.e. the Finished
+ * suggestions with the built-in recipes. The popup header total is the same sum over its views. Each view counts a tab
+ * once (a Finished row is one tab whether it is suggested, shown by showInView or both).
+ */
 export async function refreshBadge(deps: BadgeDeps): Promise<void> {
-  const n = await badgeCount(deps);
+  const [dupes, lists] = await Promise.all([
+    badgeCount(deps),
+    deps.views
+      ? readViews(deps.views, { snap: await deps.port.snapshot(), now: (deps.now ?? Date.now)() }).then((vs) => vs.reduce((n, v) => n + v.summary.count, 0))
+      : 0,
+  ]);
+  const n = dupes + lists;
   await deps.port.setBadge(n > 0 ? String(n) : '');
 }
 
@@ -407,9 +451,53 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
     return closed;
   }
 
-  async function sets(): Promise<DupeSet[]> {
-    const [snap, settings] = await Promise.all([deps.port.snapshot(), deps.getSettings()]);
-    return findDuplicateSets(snap.tabs, settings);
+  function sets(): Promise<DupeSet[]> {
+    return duplicateSets(deps);
+  }
+
+  async function dupesData(): Promise<{ sets: DupeSetView[]; pending: PendingAsk[] }> {
+    const views = (await sets()).map((s): DupeSetView => ({
+      ...s, closable: s.tabs.slice(1).filter((t) => !t.pinned && !kept(t.id)).length,
+    }));
+    return { sets: views, pending: await deps.ask.listPending() };
+  }
+
+  /** views.list / view.* : the listed views (or only `only`), computed from the snapshot, Program and stored config. */
+  async function listViews(d: ViewsDeps, only?: string) {
+    const [snap, config] = await Promise.all([deps.port.snapshot(), deps.store.get()]);
+    return { snap, views: await readViews(d, { snap, config, now: now(), dupes: dupesData, ...(only !== undefined && { only }) }) };
+  }
+
+  /** view.close / view.keep: user-initiated (R50: they apply under global dry run too), only on a row of that view. */
+  async function runViewAction(req: Extract<Request, { type: 'view.close' | 'view.keep' }>, d: ViewsDeps): Promise<Response> {
+    const { snap, views } = await listViews(d, req.viewId);
+    const v = views[0];
+    if (!v) return fail('unknown view');
+    const allowed = req.type === 'view.keep' ? v.summary.actions.includes('keep') : v.summary.actions.some((a) => a === 'close' || a === 'close-all');
+    if (!allowed) return fail('action not allowed');
+    const row = v.data.kind === 'list' ? v.data.rows.find((r) => r.tabId === req.tabId) : undefined;
+    const tab = snap.tabs.find((t) => t.id === req.tabId);
+    if (!row || !tab) return fail('not in view');
+    if (req.type === 'view.keep') {
+      if (!row.suggested || !d.closes) return fail('not in view');
+      await d.closes.exempt(tab.id, row.url);
+    } else {
+      if (tab.pinned) return fail('tab is pinned');
+      if (kept(tab.id)) return fail('tab is locked');
+      const at = now();
+      const groupTitle = tab.groupId !== -1 ? snap.groups.find((g) => g.id === tab.groupId)?.title : undefined;
+      await deps.port.closeTab(tab.id);
+      deps.recentlyClosed.add({
+        url: row.url, title: tab.title, windowId: tab.windowId, reason: row.reason ?? v.view.tab, at,
+        ...(row.ruleKey !== undefined && { ruleId: row.ruleKey }), ...(groupTitle !== undefined && { groupTitle }),
+      });
+      deps.whyLog.add({
+        tabId: tab.id, action: 'view-close', detail: `Closed from the popup's ${v.view.tab} view`, at,
+        ...(row.ruleKey !== undefined && { ruleId: row.ruleKey }),
+      });
+    }
+    await refreshBadge({ ...deps, isLocked: kept });
+    return ok(null);
   }
 
   /** The recipe `id` compiled as if enabled with `over` applied: its needs, its rules' own needs and its compile errors. */
@@ -623,12 +711,14 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
       case 'config.restore': await deps.store.restore(req.at); return ok(null);
       case 'config.status': return ok(await deps.store.status());
       case 'tabs.list': return ok((await deps.port.snapshot()).tabs);
-      case 'dupes.list': {
-        const views = (await sets()).map((s): DupeSetView => ({
-          ...s, closable: s.tabs.slice(1).filter((t) => !t.pinned && !kept(t.id)).length,
-        }));
-        return ok({ sets: views, pending: await deps.ask.listPending() });
+      case 'dupes.list': return ok(await dupesData());
+      case 'views.list': return deps.views ? ok((await listViews(deps.views)).views.map((v) => v.summary)) : fail('views unavailable');
+      case 'view.data': {
+        if (!deps.views) return fail('views unavailable');
+        const v = (await listViews(deps.views, req.viewId)).views[0];
+        return v ? ok(v.data) : fail('unknown view');
       }
+      case 'view.close': case 'view.keep': return deps.views ? runViewAction(req, deps.views) : fail('views unavailable');
       case 'dupes.closeExtras': {
         const set = (await sets()).find((s) => s.key === req.key);
         const n = set ? await closeSet(set) : 0;

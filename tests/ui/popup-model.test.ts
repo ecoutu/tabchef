@@ -1,28 +1,57 @@
 import { describe, it, expect } from 'vitest';
-import { buildPopupModel, TAB_REGISTRY } from '../../src/ui/popup-model';
+import { buildPopupModel, DEFAULT_VISIBLE_COUNT, parsePopupPrefs, type PopupModelInput } from '../../src/ui/popup-model';
 
-const set = (key: string) => ({ key, tabs: [] });
-const ask = { newTabId: 2, existingTabId: 1, key: 'k', at: 0 };
-const base = { dupes: [], pending: [], paused: false, recentCount: 0 };
+const v = (id: string, count = 0, o: Partial<PopupModelInput['views'][number]> = {}) => ({ id, tab: id.toUpperCase(), count, ...o });
+const base: PopupModelInput = { views: [v('duplicates')], paused: false, recentCount: 0 };
+const seven = ['a', 'b', 'c', 'd', 'e', 'f', 'g'].map((id, i) => v(id, i));
 
-describe('buildPopupModel', () => {
-  it('registry has only duplicates in M1', () => {
-    expect(TAB_REGISTRY.map((t) => t.id)).toEqual(['duplicates']);
+describe('buildPopupModel (M2 T17: recipe views)', () => {
+  it('7 views with visibleCount 5: 5 tabs, the other 2 under More, in tabOrder order', () => {
+    const m = buildPopupModel({ ...base, views: seven, visibleCount: 5, tabOrder: ['g', 'f', 'a'] });
+    expect(m.tabs.map((t) => t.id)).toEqual(['g', 'f', 'a', 'b', 'c']);
+    expect(m.more).toEqual([{ id: 'd', label: 'D', count: 3 }, { id: 'e', label: 'E', count: 4 }]);
   });
-  it('marks zero-count tabs faded', () => {
-    expect(buildPopupModel(base).tabs[0]).toMatchObject({ id: 'duplicates', count: 0, faded: true });
-    expect(buildPopupModel({ ...base, dupes: [set('a')] }).tabs[0]).toMatchObject({ count: 1, faded: false });
+
+  it('defaults to 5 visible tabs in view order; unknown tabOrder ids are ignored', () => {
+    expect(DEFAULT_VISIBLE_COUNT).toBe(5);
+    const m = buildPopupModel({ ...base, views: seven, tabOrder: ['zz', 'c'] });
+    expect(m.tabs.map((t) => t.id)).toEqual(['c', 'a', 'b', 'd', 'e']);
+    expect(m.more.map((t) => t.id)).toEqual(['f', 'g']);
   });
-  it('counts pending asks with sets', () => {
-    expect(buildPopupModel({ ...base, dupes: [set('a')], pending: [ask] }).tabs[0]!.count).toBe(2);
+
+  it('a bad visibleCount falls back to the default; at least one tab stays visible', () => {
+    expect(buildPopupModel({ ...base, views: seven, visibleCount: Number.NaN }).tabs).toHaveLength(5);
+    expect(buildPopupModel({ ...base, views: seven, visibleCount: 0 }).tabs).toHaveLength(1);
+    expect(buildPopupModel({ ...base, views: seven, visibleCount: 99 }).more).toEqual([]);
   });
-  it('falls back to the first tab when lastTab is unknown or absent', () => {
-    expect(buildPopupModel({ ...base, lastTab: 'nope' }).activeTab).toBe('duplicates');
-    expect(buildPopupModel(base).activeTab).toBe('duplicates');
-    expect(buildPopupModel({ ...base, lastTab: 'duplicates' }).activeTab).toBe('duplicates');
+
+  it('a paused view is faded and carries its reason, even with items (R45)', () => {
+    const m = buildPopupModel({ ...base, views: [v('finished', 2, { paused: 'Paused: needs access to meet.google.com' })] });
+    expect(m.tabs[0]).toMatchObject({ id: 'finished', count: 2, faded: true, paused: 'Paused: needs access to meet.google.com' });
   });
-  it('total is the sum of counts; header carries paused and recentCount', () => {
-    const m = buildPopupModel({ ...base, dupes: [set('a'), set('b')], paused: true, recentCount: 4 });
-    expect(m.header).toEqual({ paused: true, total: 2, recentCount: 4 });
+
+  it('zero-count views are faded; others are not', () => {
+    const m = buildPopupModel({ ...base, views: [v('a', 0), v('b', 1)] });
+    expect(m.tabs.map((t) => t.faded)).toEqual([true, false]);
+  });
+
+  it('opens the last-used view (also an overflow one), else the first visible', () => {
+    expect(buildPopupModel({ ...base, views: seven, lastTab: 'g' }).activeTab).toBe('g');
+    expect(buildPopupModel({ ...base, views: seven, lastTab: 'nope' }).activeTab).toBe('a');
+    expect(buildPopupModel({ ...base, views: [] }).activeTab).toBe('');
+  });
+
+  it('header total is the sum of the visible and overflow view counts', () => {
+    const m = buildPopupModel({ ...base, views: seven, visibleCount: 2, paused: true, recentCount: 4 });
+    expect(m.header).toEqual({ paused: true, total: 0 + 1 + 2 + 3 + 4 + 5 + 6, recentCount: 4 });
+  });
+});
+
+describe('parsePopupPrefs (R20: storage.local popup.prefs)', () => {
+  it('keeps valid fields and drops the rest', () => {
+    expect(parsePopupPrefs({ tabOrder: ['a', 'b'], visibleCount: 3 })).toEqual({ tabOrder: ['a', 'b'], visibleCount: 3 });
+    expect(parsePopupPrefs({ tabOrder: ['a', 1], visibleCount: 'x' })).toEqual({});
+    expect(parsePopupPrefs(undefined)).toEqual({});
+    expect(parsePopupPrefs('junk')).toEqual({});
   });
 });

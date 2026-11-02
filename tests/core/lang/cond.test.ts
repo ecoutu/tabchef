@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { evalCond } from '../../../src/core/lang/cond';
+import { evalCond, evalShow } from '../../../src/core/lang/cond';
 import type { Cond, TabFacts } from '../../../src/core/lang/types';
 import type { TabSnap } from '../../../src/core/types';
 
@@ -127,5 +127,33 @@ describe('evalCond: leaf conditions', () => {
     expect(ev(null as unknown as Cond).ok).toBe(false);
     expect(ev({ all: 'x' } as unknown as Cond).ok).toBe(false);
     expect(ev({ url: 1 } as unknown as Cond).ok).toBe(false);
+  });
+});
+
+describe('evalShow (view `show`, M2 T17)', () => {
+  const fields: Record<string, unknown> = { 'tab.url': 'http://localhost:3000/cb', 'tab.id': 7, 'extract.repo': 'api' };
+  const f = (n: string) => fields[n];
+  it('comparisons', () => {
+    expect(evalShow({ field: 'tab.url', op: 'matches', value: 'localhost' }, f)).toBe(true);
+    expect(evalShow({ field: 'tab.url', op: 'matches', value: '^https://' }, f)).toBe(false);
+    expect(evalShow({ field: 'extract.repo', op: '==', value: 'api' }, f)).toBe(true);
+    expect(evalShow({ field: 'extract.repo', op: '!=', value: 'api' }, f)).toBe(false);
+    expect(evalShow({ field: 'tab.id', op: '<', value: 8 }, f)).toBe(true);
+    expect(evalShow({ field: 'tab.id', op: '>', value: 8 }, f)).toBe(false);
+    expect(evalShow({ field: 'tab.id', op: '>', value: '8' }, f)).toBe(false); // mixed types never compare
+    expect(evalShow({ field: 'extract.repo', op: 'in', value: ['web', 'api'] }, f)).toBe(true);
+    expect(evalShow({ field: 'extract.none', op: '==', value: 'api' }, f)).toBe(false);
+  });
+  it('all / any / not', () => {
+    const T = { field: 'tab.id', op: '==', value: 7 } as const;
+    const F = { field: 'tab.id', op: '==', value: 8 } as const;
+    expect(evalShow({ all: [T, F] }, f)).toBe(false);
+    expect(evalShow({ any: [T, F] }, f)).toBe(true);
+    expect(evalShow({ not: F }, f)).toBe(true);
+  });
+  it('malformed input is false, never a throw', () => {
+    expect(evalShow({ field: 'tab.url', op: 'matches', value: '(' }, f)).toBe(false);
+    expect(evalShow(null as never, f)).toBe(false);
+    expect(evalShow({ field: 'tab.url', op: 'eq', value: 1 } as never, f)).toBe(false);
   });
 });

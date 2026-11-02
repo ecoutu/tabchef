@@ -70,6 +70,13 @@ describe('evaluateTab: action kinds come from different rules', () => {
     ] });
     expect(ev(c).views).toEqual(['a', 'b']);
   });
+  it('viewVars: the first showInView rule template vars per view (captures + extracts), for view `extract.*` (T17)', () => {
+    const c = config({ rules: [
+      rule('v1', { url: 'github.com/:owner/:repo/*' }, [{ showInView: { view: 'a' } }], { extract: { n: { from: 'title', regex: '^(\\d+)' } } }),
+      rule('v2', { url: '*' }, [{ showInView: { view: 'a' } }, { showInView: { view: 'b' } }]),
+    ] });
+    expect(ev(c).viewVars).toEqual({ a: { owner: 'acme', repo: 'api', n: '42' }, b: {} });
+  });
   it('no discard or notify fields (R26)', () => {
     const r = ev(config({ rules: [rule('g', { url: '*' }, [group('G')])] }));
     expect(r).not.toHaveProperty('discard');

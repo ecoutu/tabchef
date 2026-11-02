@@ -9,7 +9,7 @@ import {
   UNDO_NOTIFICATION_PREFIX,
 } from '../engine/messages';
 import { listPendingAsks } from '../engine/ask';
-import { afterConfigChange, CLOSE_ALARM_PREFIX, CloseExecutor } from '../engine/close-executor';
+import { afterConfigChange, CLOSE_ALARM_PREFIX, CLOSE_SUGGESTIONS_KEY, CloseExecutor } from '../engine/close-executor';
 import { DedupeHandler } from '../engine/dedupe-handler';
 import { PageFacts } from '../engine/page-facts';
 import { createWatchScripting, WATCH_FILE, WATCH_SCRIPT_ID } from '../engine/watch-registration';
@@ -292,6 +292,20 @@ export default defineBackground(() => {
     isLocked: (id: number) => safety.isLocked(id) || anchors.isAnchor(id),
     // Effective settings (config dedupe + recipe urlTransforms), so the popup and badge agree with the engine.
     getSettings: async () => (await getProgram()).dedupe,
+    // Per-rule dedupe overrides (R25) for duplicate sets, as the engine decides them (M2 T17).
+    getProgram,
+    // Recipe views (M2 T17): the popup tabs, and the list views' counts in the toolbar badge (R20).
+    views: {
+      builtins: builtinRecipes(),
+      getProgram,
+      facts: (id: number) => { const page = pageFacts.get(id); return page ? { page } : {}; },
+      permissions,
+      closes: {
+        ready: closeExecutor.ready,
+        suggestions: () => closeExecutor.suggestions(),
+        exempt: (id: number, url: string) => closeExecutor.exempt(id, url),
+      },
+    },
     ask: {
       listPending: () => listPendingAsks(session),
       resolvePending: (n: number, e: number, c: 'switch' | 'keep') => askController.resolvePending(n, e, c),
@@ -301,6 +315,10 @@ export default defineBackground(() => {
   for (const ev of [browser.tabs.onCreated, browser.tabs.onRemoved, browser.tabs.onUpdated, browser.tabs.onReplaced, browser.tabs.onAttached]) {
     ev.addListener(scheduleBadge);
   }
+  // Finished suggestions are counted in the badge: recount when CloseExecutor stores a change to them.
+  browser.storage.onChanged.addListener((changes, area) => {
+    if (area === 'session' && CLOSE_SUGGESTIONS_KEY in changes) scheduleBadge();
+  });
   scheduleBadge();
   const handleRequest = createHandler({
     ...badgeDeps,

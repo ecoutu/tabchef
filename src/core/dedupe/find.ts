@@ -52,11 +52,19 @@ export function findDuplicate(
   return best ? { existing: best, fragment: mine.fragment } : null;
 }
 
-/** All sets of 2+ tabs sharing a dedupe key; tabs within a set sorted by id ascending (index 0 = oldest), sets by size descending. */
-export function findDuplicateSets(tabs: TabSnap[], s: DedupeSettings): { key: string; tabs: TabSnap[] }[] {
+/**
+ * All sets of 2+ tabs sharing a dedupe key; tabs within a set sorted by id ascending (index 0 = oldest), sets by size
+ * descending. `overrideOf` (M2 T17) is each tab's winning dedupe action (R25), as the engine decides it: a tab whose
+ * override mode is 'off' is left out, and a tab is keyed with its own override (keepFragment).
+ */
+export function findDuplicateSets(
+  tabs: TabSnap[], s: DedupeSettings, overrideOf?: (t: TabSnap) => DedupeOverride | undefined,
+): { key: string; tabs: TabSnap[] }[] {
   const byKey = new Map<string, { key: string; tabs: TabSnap[] }>();
   for (const t of tabs) {
-    const k = keyOf(tabUrl(t), t.incognito, s)?.key;
+    const o = overrideOf?.(t);
+    if (o?.mode === 'off') continue;
+    const k = keyOf(tabUrl(t), t.incognito, s, o)?.key;
     if (k === undefined) continue;
     const bucket = s.scope === 'same-window' ? `${t.windowId}\n${k}` : k;
     let set = byKey.get(bucket);

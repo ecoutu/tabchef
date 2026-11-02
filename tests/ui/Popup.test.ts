@@ -11,17 +11,26 @@ import Popup from '../../src/entrypoints/popup/App.svelte';
 let locked: number[];
 let warning: string | undefined;
 let dryRun: boolean;
+type V = { id: string; tab: string; kind: 'list' | 'duplicates'; actions: string[]; count: number; paused?: string; notice?: string };
+let views: V[];
+const dupView: V = { id: 'duplicates', tab: 'Duplicates', kind: 'duplicates', actions: ['focus', 'close', 'close-all'], count: 0 };
+const finView: V = { id: 'finished', tab: 'Finished', kind: 'list', actions: ['focus', 'close', 'keep'], count: 1 };
+const listView = (id: string, count = 0): V => ({ id, tab: id.toUpperCase(), kind: 'list', actions: ['focus'], count });
 
 beforeEach(() => {
   fakeBrowser.reset();
   locked = [];
   warning = undefined;
   dryRun = false;
+  views = [dupView];
   (vi.spyOn(browser.tabs, 'query') as unknown as { mockResolvedValue: (v: unknown) => void }).mockResolvedValue([{ id: 5 }]);
   send.mockReset();
-  send.mockImplementation(async (req: { type: string; tabId?: number }) => {
+  send.mockImplementation(async (req: { type: string; tabId?: number; viewId?: string }) => {
     switch (req.type) {
-      case 'dupes.list': return { ok: true, data: { sets: [], pending: [] } };
+      case 'views.list': return { ok: true, data: views };
+      case 'view.data': return req.viewId === 'duplicates'
+        ? { ok: true, data: { kind: 'duplicates', sets: [], pending: [] } }
+        : { ok: true, data: { kind: 'list', rows: req.viewId === 'finished' ? [{ tabId: 3, windowId: 1, title: 'Callback', url: 'http://localhost/cb', pinned: false, suggested: true, reason: 'Close OAuth callback tabs' }] : [] } };
       case 'safety.status': return { ok: true, data: { paused: false, locked } };
       case 'recent.list': return { ok: true, data: [] };
       case 'config.get': return { ok: true, data: { config: { dryRun }, rev: 'r' } };
@@ -64,5 +73,69 @@ describe('Popup', () => {
     await fireEvent.click(await screen.findByRole('button', { name: 'Unlock current tab' }));
     expect(send).toHaveBeenCalledWith({ type: 'tab.unlock', tabId: 5 });
     await screen.findByRole('button', { name: 'Lock current tab' });
+  });
+
+  it('one tab per view; the Duplicates view renders the M1 Duplicates tab (M2 T17)', async () => {
+    views = [dupView, finView];
+    render(Popup);
+    expect((await screen.findByRole('tab', { name: /Finished/ })).textContent).toContain('1');
+    expect(screen.getByRole('tab', { name: /Duplicates/ }).getAttribute('aria-selected')).toBe('true');
+    expect(await screen.findByText('No duplicate tabs.')).toBeTruthy();
+    expect(send).toHaveBeenCalledWith({ type: 'view.data', viewId: 'duplicates' });
+  });
+
+  it('opening the Finished view lists its suggestion and remembers the tab', async () => {
+    views = [dupView, finView];
+    render(Popup);
+    await fireEvent.click(await screen.findByRole('tab', { name: /Finished/ }));
+    expect(await screen.findByText('Close OAuth callback tabs')).toBeTruthy();
+    expect(send).toHaveBeenCalledWith({ type: 'view.data', viewId: 'finished' });
+    expect((await browser.storage.local.get('popup.lastTab'))['popup.lastTab']).toBe('finished');
+  });
+
+  it('views past visibleCount go under More ▾, in the popup.prefs order (R20)', async () => {
+    views = ['a', 'b', 'c', 'd', 'e', 'f', 'g'].map((id, i) => listView(id, i));
+    await browser.storage.local.set({ 'popup.prefs': { tabOrder: ['g'], visibleCount: 3 } });
+    render(Popup);
+    await screen.findByRole('tab', { name: /^G/ });
+    expect(screen.getAllByRole('tab').map((t) => t.textContent?.trim().charAt(0))).toEqual(['G', 'A', 'B']);
+    await fireEvent.click(screen.getByRole('button', { name: /More/ }));
+    const items = screen.getAllByRole('menuitem').filter((m) => /^[C-F]/.test(m.textContent?.trim() ?? ''));
+    expect(items.map((m) => m.textContent?.trim().charAt(0))).toEqual(['C', 'D', 'E', 'F']);
+    await fireEvent.click(items[1]!);
+    await waitFor(() => expect(send).toHaveBeenCalledWith({ type: 'view.data', viewId: 'd' }));
+  });
+
+  it('"Show in tab bar" moves an overflow view into the visible tabs and stores popup.prefs', async () => {
+    views = ['a', 'b', 'c'].map((id) => listView(id));
+    await browser.storage.local.set({ 'popup.prefs': { visibleCount: 2 } });
+    render(Popup);
+    await fireEvent.click(await screen.findByRole('button', { name: /More/ }));
+    await fireEvent.click(screen.getByRole('menuitem', { name: 'Show C in tab bar' }));
+    await waitFor(() => expect(screen.getAllByRole('tab').map((t) => t.textContent?.trim().charAt(0))).toEqual(['A', 'C']));
+    expect((await browser.storage.local.get('popup.prefs'))['popup.prefs']).toEqual({ visibleCount: 2, tabOrder: ['a', 'c', 'b'] });
+  });
+
+  it('popup.prefs that cannot be read fall back to the defaults (5 visible)', async () => {
+    views = ['a', 'b', 'c', 'd', 'e', 'f'].map((id) => listView(id));
+    vi.spyOn(browser.storage.local, 'get').mockRejectedValue(new Error('no storage'));
+    render(Popup);
+    await screen.findByRole('tab', { name: /^A/ });
+    expect(screen.getAllByRole('tab')).toHaveLength(5);
+  });
+
+  it('a paused view is faded with its reason (R45)', async () => {
+    views = [dupView, { ...finView, paused: 'Paused: needs access to meet.google.com' }];
+    render(Popup);
+    const tab = await screen.findByRole('tab', { name: /Finished/ });
+    expect(tab.classList.contains('faded')).toBe(true);
+    expect(tab.getAttribute('title')).toBe('Paused: needs access to meet.google.com');
+  });
+
+  it('refreshes when the Finished suggestions change (storage.session closeSuggestions)', async () => {
+    render(Popup);
+    await waitFor(() => expect(send.mock.calls.filter((c) => c[0].type === 'views.list')).toHaveLength(1));
+    await browser.storage.session.set({ closeSuggestions: [{ tabId: 3 }] });
+    await waitFor(() => expect(send.mock.calls.filter((c) => c[0].type === 'views.list')).toHaveLength(2));
   });
 });
