@@ -5,6 +5,9 @@
   import { fillConfigDefaults, migrateConfig } from '../../core/config/migrate';
   import type { Config, ConfigV1 } from '../../core/types';
   import type { Backup } from '../../storage/config-store';
+  import type { PreviewResult } from '../../core/lang/preview';
+  import { previewThenApply } from '../../ui/preview-flow';
+  import PreviewDialog from './PreviewDialog.svelte';
 
   const MAX_IMPORT_BYTES = 5 * 1024 * 1024;
   const UNSAVED = 'You have unsaved changes on this page; they will be discarded.';
@@ -20,6 +23,21 @@
 
   const time = (at: number): string => new Date(at).toLocaleString();
 
+  /** The open preview dialog (M1/R68: a restore or import with real effects is confirmed in it first, as Save is). */
+  let dialog = $state<{ result: PreviewResult; answer: (apply: boolean) => void } | null>(null);
+  const confirmPreview = (result: PreviewResult): Promise<boolean> => new Promise((resolve) => {
+    dialog = { result, answer: (ok) => { dialog = null; resolve(ok); } };
+  });
+
+  /** The stored-config load path (as ConfigStore runs it): migrate, fill defaults, repair, validate. */
+  function loadConfig(raw: unknown): { ok: true; config: Config; warnings: string[] } | { ok: false; error: string } {
+    const m = migrateConfig(raw);
+    if (!m.ok) return { ok: false, error: `Invalid config: ${m.errors.join('; ')}` };
+    const repaired = repairConfig(fillConfigDefaults(m.config));
+    const v = validateConfig(repaired.config);
+    return v.ok ? { ok: true, config: v.config, warnings: repaired.warnings } : { ok: false, error: `Invalid config: ${v.errors.join('; ')}` };
+  }
+
   async function load(): Promise<void> {
     const r = await send({ type: 'config.backups' });
     if (r.ok) backups = r.data.slice().sort((a, b) => b.at - a.at); else error = r.error;
@@ -27,7 +45,17 @@
 
   async function restore(b: Backup): Promise<void> {
     if (!window.confirm(warn(`Restore the config from ${time(b.at)}? Your current config is backed up first.`))) return;
-    const r = await send({ type: 'config.restore', at: b.at });
+    // Preview the backup as the store will load it (M1/R68); a backup that does not load is reported by the restore.
+    const loaded = loadConfig(b.config);
+    error = '';
+    const restoreIt = () => send({ type: 'config.restore', at: b.at });
+    let r: Awaited<ReturnType<typeof restoreIt>>;
+    if (loaded.ok) {
+      const out = await previewThenApply(loaded.config, confirmPreview, restoreIt);
+      if (out.status === 'cancelled') return;
+      if (out.status === 'failed') { error = `Could not preview: ${out.error}`; return; }
+      r = out.value;
+    } else r = await restoreIt();
     error = r.ok ? '' : r.error;
     if (r.ok) {
       // The store repairs a backup as it loads one (repairConfig); show what that changed.
@@ -72,20 +100,22 @@
     if (file.size > MAX_IMPORT_BYTES) { error = 'File too large (max 5 MB).'; return; }
     let parsed: unknown;
     try { parsed = JSON.parse(await file.text()); } catch { error = 'Not valid JSON.'; return; }
-    // An exported M1 (v1) file is migrated first, as stored configs are.
-    const m = migrateConfig(parsed);
-    if (!m.ok) { error = `Invalid config: ${m.errors.join('; ')}`; return; }
-    // Same load path as stored configs: fill defaults, repair (disable/remove what older versions allowed), validate.
-    const repaired = repairConfig(fillConfigDefaults(m.config));
-    const v = validateConfig(repaired.config);
-    if (!v.ok) { error = `Invalid config: ${v.errors.join('; ')}`; return; }
-    pendingImport = { config: v.config, changes: diffCount(saved, v.config), warnings: repaired.warnings };
+    // Same load path as stored configs (an exported M1 file is migrated first): fill defaults, repair (disable/remove
+    // what older versions allowed), validate.
+    const v = loadConfig(parsed);
+    if (!v.ok) { error = v.error; return; }
+    pendingImport = { config: v.config, changes: diffCount(saved, v.config), warnings: v.warnings };
   }
 
   async function applyImport(): Promise<void> {
     if (!pendingImport) return;
     if (!window.confirm(warn(`Replace your current config with the imported one (${pendingImport.changes} changes)?`))) return;
-    const r = await send({ type: 'config.set', config: pendingImport.config });
+    const config = pendingImport.config;
+    error = '';
+    const out = await previewThenApply(config, confirmPreview, () => send({ type: 'config.set', config }));
+    if (out.status === 'cancelled') return;
+    if (out.status === 'failed') { error = `Could not preview: ${out.error}`; return; }
+    const r = out.value;
     if (r.ok) { notice = 'Imported.'; pendingImport = null; error = ''; onApplied(); await load(); }
     else error = r.errors?.length ? `${r.error}: ${r.errors.join('; ')}` : r.error;
   }
@@ -94,6 +124,9 @@
 </script>
 
 <section>
+  {#if dialog}
+    <PreviewDialog result={dialog.result} onApply={() => dialog?.answer(true)} onCancel={() => dialog?.answer(false)} />
+  {/if}
   {#if error}<p class="err" role="alert">{error}</p>{/if}
   {#if notice}<p class="ok" role="status">{notice}</p>{/if}
 

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/svelte';
+import { render, screen, fireEvent, cleanup, waitFor, within } from '@testing-library/svelte';
 import type { Config } from '../../src/core/types';
 import { v1Config, withGroupRules } from '../helpers/config';
 
@@ -100,4 +100,73 @@ describe('Backups', () => {
     await waitFor(() => expect(screen.getByText('File too large (max 5 MB).')).toBeTruthy());
     expect(text).not.toHaveBeenCalled();
   });
+
+  describe('M1/R68: restore and file import go through the preview', () => {
+    const effects = { moves: [], closes: [{ tabId: 3, title: 'Callback', ruleKey: 'user/x', afterMs: 3000 }], groupsCreated: [], unchanged: 0, anchorsOpened: 0, dryRun: false };
+    let previewReply: unknown;
+    beforeEach(() => {
+      previewReply = { ok: true, data: effects };
+      send.mockImplementation(async (req: { type: string }) => {
+        if (req.type === 'config.backups') return { ok: true, data: [{ at: 1000, config: cfgWith('x') }] };
+        if (req.type === 'preview.change') return previewReply;
+        return { ok: true, data: null };
+      });
+      vi.spyOn(window, 'confirm').mockReturnValue(true);
+    });
+    const sent = (type: string) => send.mock.calls.map((c) => c[0] as { type: string; config?: Config }).filter((r) => r.type === type);
+
+    it('restore previews the backup as it would load; with effects, Cancel sends nothing and Apply restores', async () => {
+      const p = props();
+      render(Backups, p);
+      await fireEvent.click(await screen.findByRole('button', { name: /Restore backup/ }));
+      await fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Cancel' }));
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      expect(sent('config.restore')).toHaveLength(0);
+      expect(sent('preview.change')[0]!.config).toEqual(cfgWith('x'));
+      await fireEvent.click(screen.getByRole('button', { name: /Restore backup/ }));
+      await fireEvent.click(await screen.findByRole('button', { name: 'Apply' }));
+      await waitFor(() => expect(sent('config.restore')).toEqual([{ type: 'config.restore', at: 1000 }]));
+      await waitFor(() => expect(p.onApplied).toHaveBeenCalled());
+    });
+
+    it('restore with no effects goes straight through (R52)', async () => {
+      previewReply = { ok: true, data: { ...effects, closes: [] } };
+      render(Backups, props());
+      await fireEvent.click(await screen.findByRole('button', { name: /Restore backup/ }));
+      await waitFor(() => expect(sent('config.restore')).toHaveLength(1));
+      expect(screen.queryByRole('dialog')).toBeNull();
+    });
+
+    it('a failed restore preview shows the error and restores nothing', async () => {
+      previewReply = { ok: false, error: 'boom' };
+      render(Backups, props());
+      await fireEvent.click(await screen.findByRole('button', { name: /Restore backup/ }));
+      expect(await screen.findByText('Could not preview: boom')).toBeTruthy();
+      expect(sent('config.restore')).toHaveLength(0);
+    });
+
+    it('file import previews the repaired config; Cancel sends nothing, Apply stores it, a failure stores nothing', async () => {
+      const p = props();
+      render(Backups, p);
+      await pick(file(JSON.stringify(cfgWith('a', 'b'))));
+      await fireEvent.click(await screen.findByRole('button', { name: 'Apply import' }));
+      await fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Cancel' }));
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      expect(sent('config.set')).toHaveLength(0);
+      expect(sent('preview.change')[0]!.config).toEqual(cfgWith('a', 'b'));
+      await fireEvent.click(screen.getByRole('button', { name: 'Apply import' }));
+      await fireEvent.click(await screen.findByRole('button', { name: 'Apply' }));
+      await waitFor(() => expect(sent('config.set')).toHaveLength(1));
+      await waitFor(() => expect(p.onApplied).toHaveBeenCalled());
+      cleanup();
+      send.mockClear();
+      previewReply = { ok: false, error: 'boom' };
+      render(Backups, props());
+      await pick(file(JSON.stringify(cfgWith('a', 'b'))));
+      await fireEvent.click(await screen.findByRole('button', { name: 'Apply import' }));
+      expect(await screen.findByText('Could not preview: boom')).toBeTruthy();
+      expect(sent('config.set')).toHaveLength(0);
+    });
+  });
 });
+
