@@ -237,6 +237,18 @@ function compileGlob(p: string): Matcher {
       ? [{ username: '', password: '', hostname: ciGroup(host, '.*'), port: '*' }, { username: ciGroup(host, '.*'), password: '*', hostname: '*', port: '*' }]
       : [{ username: '', password: '', hostname: ciGroup(host), port: more(port) }, { username: ciGroup(host), password: more(port), hostname: '*', port: '*' }];
     toks = null;
+  } else if (a.endsWith(':*') && a.indexOf('*') === a.length - 1 && tail && !prefix) {
+    // Port wildcard `host:*` + path (R36): a literal ':' after the host, then a `*` that may run on into the path. On a
+    // canonical URL the text after `host:` is a non-empty port (a default port is dropped, so `host/` has no ':'), or
+    // the literal is userinfo `host:password@` (a non-empty password; `/ ? #` are percent-encoded there). Either way
+    // the tail starts in the path, so the `*` becomes a leading path `*` after any port, as for a bare `*` host.
+    const { host, port } = hostPort(a.slice(0, -2));
+    if (port !== undefined) throw new PatternError(`unsupported port in URL glob host: "${a}"`);
+    auths = [
+      { username: '', password: '', hostname: ciGroup(host), port: '(.+)' },
+      { username: ciGroup(host), password: '(.+)', hostname: '*', port: '*' },
+    ];
+    toks = [{ k: 'star' }, ...tokenize(tail, names, false)];
   } else if (a.includes('*')) {
     throw new PatternError(`a * in a URL glob host can only end the pattern or be the whole host: "${a}"`);
   } else {

@@ -155,6 +155,8 @@ describe('R31 equivalence: synthetic patterns (match and captures)', () => {
     'a.com/x?a=:b', 'a.com/:a/*/:b?c=*#*', 'meet.google.com/*-*-*', 'chrome://settings/*', 'file:///home/*',
     'localhost:*', 'CHROME://Settings/*', 'chrome://*', '*.Example.COM/*', 'Github.com/Acme/*', 'github.com', 'github.com?x',
     '/foo*', '123/*', 'a.com:0080/*', 'localhost:/x', 'Foo Bar!.example/*', '[::1]:8080/*', 'https:///.example/*', 'a!b.example/*', 'a.com/x?y?z*', 'a.com/x#y?z*', 'a.com/:p:q/*', 'a.com/:/*', 'a.com/%41*',
+    // Port wildcard `host:*` + path (R36): a literal ':' after the host, then `*` runs on through the port into the path.
+    'http://localhost:*/*callback*', 'http://127.0.0.1:*/*callback*', 'example.com:*/x', 'example.com:*/:seg/*', 'Example.COM:*/x?*',
   ];
   const base = [
     ...corpusFor(PATTERNS.filter((p) => !p.startsWith('chrome') && !p.startsWith('file') && !p.startsWith('*') && !p.startsWith('localhost'))),
@@ -163,6 +165,16 @@ describe('R31 equivalence: synthetic patterns (match and captures)', () => {
     'https://a.com/x', 'https://a.com/x?', 'https://a.com/x#', 'https://a.com/x?#', 'https://a.com/x?y#z', 'https://a.com/p?r/s',
     'https://a.com/p-q-r', 'https://a.com/a/b/c?c=1#h', 'https://a.com/a/b?c=1', 'https://a.com/x?a=/v', 'https://a.com/x?a=v',
     'https://a.com/x?y?z', 'https://a.com/x#y?z1', 'https://a.com/pq:q/r', 'https://a.com/:/x', 'https://a.com/%41b', 'https://a.com/Ab',
+    // Ports for R36: with and without a port, port-like userinfo (`host:pw@other`), and the path just after the port.
+    ...variants('http://localhost:8080/auth/callback?code=x'), ...variants('http://127.0.0.1:5173/oauth/callback'),
+    ...variants('https://example.com:8443/x'), ...variants('https://example.com/x'), ...variants('https://example.com:8443/a/x'),
+    'http://localhost/callback', 'http://localhost:1/callback', 'http://localhost:8080/', 'http://localhost:8080/x/callbacks/y',
+    'http://localhost:8080/?next=callback', 'http://localhost:8080/#callback', 'http://localhost:pw@evil.com/callback',
+    'http://LOCALHOST:pw@evil.com:9/a/callback', 'http://localhost@evil.com/callback', 'http://localhostx:1/callback',
+    'http://127.0.0.1:8080/callback', 'http://127.0.0.1:pw@evil.com/callback', 'http://127.0.0.10:80/callback',
+    'https://example.com:1/x', 'https://example.com:1/x/', 'https://example.com:1/xx', 'https://example.com:1/a/x',
+    'https://example.com:pw@evil.com/x', 'https://example.com:pw@evil.com:8/x', 'https://example.com:1/x?q', 'https://example.com:1/seg/x',
+    'https://example.com.evil.com:1/x', 'https://www.example.com:1/x', 'ftp://example.com:21/x', 'http://example.com:8080/x',
     'http://[::1]:8080/x', 'http://0.0.0.123/x', 'https://a!b.example/x', 'http://a.com:80/x', 'http://localhost/x', 'https://www.example.com/x', 'https://u@www.example.com/x', 'chrome://settings', 'chrome://extensions/?id=x',
   ];
   const canon = (u: string) => (URL.canParse(u) ? new URL(u).href : u);
@@ -174,4 +186,9 @@ describe('R31 equivalence: synthetic patterns (match and captures)', () => {
     const diffs = corpus.filter((u) => show(newM(u)) !== show(oldM(u))).map((u) => `${u}: old ${show(oldM(u))} new ${show(newM(u))}`);
     expect(diffs).toEqual([]);
   }, 60_000);
+  it.each(PATTERNS.filter((p) => /:\*\//.test(p)))('port wildcard %s: the corpus has both matches and misses', (p) => {
+    const m = compilePattern(p);
+    expect(corpus.filter((u) => m(u)).length).toBeGreaterThan(3);
+    expect(corpus.some((u) => !m(u))).toBe(true);
+  });
 });
