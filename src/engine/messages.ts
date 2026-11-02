@@ -10,7 +10,8 @@ import type { WhyEntry, WhyLog } from '../core/safety/why-log';
 import type { BrowserPort } from '../platform/browser-port';
 import type { ConfigStore, Backup } from '../storage/config-store';
 import { compileProgram, paramProblem } from '../core/lang/compile';
-import type { Program, Recipe, RecipeRef, TabFacts } from '../core/lang/types';
+import { applyCollapse, suggestCollapse, type CollapseSuggestion } from '../core/lang/collapse';
+import type { Program, Recipe, RecipeRef, Rule, TabFacts } from '../core/lang/types';
 import { emptyProgram, previewChange, type PreviewContext, type PreviewResult } from '../core/lang/preview';
 import { explainTab, findShadowed, type ExplainEntry } from '../core/lang/explain';
 import { effectiveNeeds, type Needs, type NeedStatus, type PermissionsManager } from './permissions';
@@ -131,7 +132,8 @@ export type Request =
   | { type: 'tab.unlock'; tabId: number }
   | { type: 'tab.focus'; tabId: number }
   | { type: 'import.preview'; source: ImportSource; data: unknown }
-  | { type: 'import.apply'; source: ImportSource; data: unknown; baseRev: string }
+  /** `collapse`: indices into the preview's `collapse` suggestions to apply (re-derived here from the same input). */
+  | { type: 'import.apply'; source: ImportSource; data: unknown; baseRev: string; collapse?: number[] }
   | { type: 'recipes.list' }
   /**
    * R5 flow (Recipes page, T15): requestNeeds first in the click's user gesture, then preview.change, then on Apply
@@ -186,7 +188,11 @@ export interface RecipeListItem {
 }
 
 export type ImportSource = 'auto-group-tabs' | 'tab-deduper';
-export interface ImportPreview { rules: GroupRule[]; dedupe: Partial<DedupeSettings>; warnings: string[]; changes: string[] }
+export interface ImportPreview {
+  rules: GroupRule[]; dedupe: Partial<DedupeSettings>; warnings: string[]; changes: string[];
+  /** M2 T19: optional "replace N similar rules with 1 templated rule" suggestions; import.apply applies chosen ones. */
+  collapse: CollapseSuggestion[];
+}
 const MAX_IMPORT_BYTES = 5 * 1024 * 1024;
 
 export type Response<T = unknown> = { ok: true; data: T } | { ok: false; error: string; errors?: string[] };
@@ -257,7 +263,24 @@ const isParams = (v: unknown): v is Record<string, unknown> => typeof v === 'obj
 
 const isImportSource = (v: unknown): v is ImportSource => v === 'auto-group-tabs' || v === 'tab-deduper';
 
-async function runImport(source: ImportSource, data: unknown, current: Config): Promise<ImportPreview> {
+/**
+ * Imported rules as v2 rules, with ids mapped to the v2 pattern and unique among `current`'s rules (as import.apply
+ * stores them), and the collapse suggestions on them (D27). Deterministic in its input, so import.apply re-derives
+ * exactly the suggestions the preview showed for the same baseRev; a client-sent rule is never used.
+ */
+function importedRules(rules: GroupRule[], current: Config, builtins: Record<string, Recipe> | undefined): { rules: Rule[]; collapse: CollapseSuggestion[] } {
+  const ids = new Set(current.rules.map((r) => r.id));
+  const out = rules.map((r) => groupRuleToRule(r, sanitizeRuleId(r.id, ids)));
+  const tableNames = (t: unknown) => (typeof t === 'object' && t !== null ? Object.keys(t) : []);
+  const tables = [
+    ...tableNames(current.tables),
+    ...(Array.isArray(current.recipes) ? current.recipes : []).flatMap((ref) => tableNames(ref?.body?.tables)),
+    ...Object.values(builtins ?? {}).flatMap((b) => tableNames(b?.tables)),
+  ];
+  return { rules: out, collapse: suggestCollapse(out, { ids, tables }) };
+}
+
+async function runImport(source: ImportSource, data: unknown, current: Config, builtins?: Record<string, Recipe>): Promise<ImportPreview> {
   if ((JSON.stringify(data) ?? '').length > MAX_IMPORT_BYTES) throw new Error('Import data too large (max 5 MB)');
   const raw = source === 'auto-group-tabs' ? { dedupe: {}, ...(await importAutoGroupTabs(data)) } : { rules: [] as GroupRule[], ...importTabDeduper(data) };
   const skipped: string[] = [];
@@ -269,7 +292,7 @@ async function runImport(source: ImportSource, data: unknown, current: Config): 
   const r = { ...raw, rules };
   const titles = new Set(current.rules.flatMap((x) => x.actions.flatMap((a) => ('group' in a ? [a.group.title] : []))));
   const warnings = [...r.warnings, ...skipped, ...r.rules.filter((x) => titles.has(x.group.title)).map((x) => `Already have a rule titled "${x.group.title}"`)];
-  return { ...r, warnings, changes: mergeDedupe(current.dedupe, r.dedupe).changes };
+  return { ...r, warnings, changes: mergeDedupe(current.dedupe, r.dedupe).changes, collapse: importedRules(r.rules, current, builtins).collapse };
 }
 
 /** Structural check of an untrusted message. */
@@ -286,7 +309,8 @@ export function isRequest(m: unknown): m is Request {
     case 'recent.undo': return str(x.id);
     case 'why.forTab': case 'tab.lock': case 'tab.unlock': case 'tab.focus': return num(x.tabId);
     case 'import.preview': return isImportSource(x.source);
-    case 'import.apply': return isImportSource(x.source) && 'data' in x && str(x.baseRev);
+    case 'import.apply': return isImportSource(x.source) && 'data' in x && str(x.baseRev)
+      && (x.collapse === undefined || (Array.isArray(x.collapse) && x.collapse.every((i) => Number.isInteger(i) && (i as number) >= 0)));
     case 'safety.pause': return x.d === '15m' || x.d === '1h' || x.d === 'restart';
     case 'recipes.enable': return str(x.id) && (x.params === undefined || isParams(x.params)) && optRev(x);
     case 'recipes.disable': return str(x.id) && optRev(x);
@@ -451,6 +475,8 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
   const now = deps.now ?? Date.now;
   /** Never closed from the popup: locked and anchor tabs (pinned are checked per tab). */
   const kept = (id: number): boolean => deps.safety.isLocked(id) || (deps.isAnchor?.(id) ?? false);
+  /** Built-in recipe bodies, when wired: their table names are avoided by import collapse suggestions (T19). */
+  const importBuiltins = (): Record<string, Recipe> | undefined => deps.recipes?.builtins ?? deps.preview?.builtins ?? deps.explain?.builtins;
 
   /** Closes everything but the oldest tab; pinned, locked and anchor tabs are never closed. */
   async function closeSet(set: DupeSet): Promise<number> {
@@ -699,22 +725,27 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
         }
         return ok(null);
       }
-      case 'import.preview': return ok(await runImport(req.source, req.data, await deps.store.get()));
+      case 'import.preview': return ok(await runImport(req.source, req.data, await deps.store.get(), importBuiltins()));
       case 'import.apply': {
         const current = await deps.store.get();
-        const imp = await runImport(req.source, req.data, current);
+        const imp = await runImport(req.source, req.data, current, importBuiltins());
         if (imp.rules.length === 0 && Object.keys(imp.dedupe).length === 0) return fail('nothing to import', imp.warnings);
         if (req.baseRev !== configRev(current)) return fail('conflict');
         let added = 0;
         let invalid: string[] | undefined;
+        let unknownCollapse = false;
         try {
           await deps.store.update((cur) => {
             if (configRev(cur) !== req.baseRev) throw new Conflict();
             // Imported ids are mapped to the v2 id pattern, unique among the user rules; keys append to order.
-            const ids = new Set(cur.rules.map((r) => r.id));
-            const rules = imp.rules.map((r) => groupRuleToRule(r, sanitizeRuleId(r.id, ids)));
+            // Chosen collapse suggestions (T19) are re-derived from the same input and replace their runs in place.
+            const derived = importedRules(imp.rules, cur, importBuiltins());
+            const chosen = [...new Set(req.collapse ?? [])].sort((a, b) => a - b).map((i) => derived.collapse[i]);
+            if (chosen.some((c) => c === undefined)) { unknownCollapse = true; throw new Conflict(); }
+            const { rules, tables } = applyCollapse(derived.rules, cur.tables ?? {}, chosen as CollapseSuggestion[]);
             const next: Config = {
               ...cur, rules: [...cur.rules, ...rules], order: [...new Set([...cur.order, ...rules.map((r) => userKey(r.id))])],
+              ...(chosen.length > 0 && { tables }),
               dedupe: mergeDedupe(cur.dedupe, imp.dedupe).merged,
             };
             const v = validateConfig(next);
@@ -724,6 +755,7 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
           });
         } catch (e) {
           if (!(e instanceof Conflict)) throw e;
+          if (unknownCollapse) return fail('unknown collapse suggestion');
           return invalid ? fail('invalid config', invalid) : fail('conflict');
         }
         return ok({ rules: added });
