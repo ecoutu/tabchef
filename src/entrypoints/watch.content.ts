@@ -8,6 +8,7 @@ export default defineContentScript({
     const w = window as unknown as { __tabchefWatch?: boolean };
     if (w.__tabchefWatch) return; // injected twice: keep the single watcher
     w.__tabchefWatch = true;
-    startPageWatch({ doc: document, win: window, send: (m) => browser.runtime.sendMessage(m) });
+    // runtime.id is undefined once the extension was reloaded or updated under this page (the context is invalidated).
+    startPageWatch({ doc: document, win: window, send: (m) => browser.runtime.sendMessage(m), alive: () => browser.runtime?.id !== undefined });
   },
 });

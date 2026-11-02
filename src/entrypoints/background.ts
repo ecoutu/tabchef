@@ -5,8 +5,8 @@ import { createAskController } from '../engine/ask';
 import { RecentlyClosed } from '../core/safety/recently-closed';
 import { WhyLog } from '../core/safety/why-log';
 import {
-  configRev, createContentHandler, createDebounce, createHandler, createOnMessage, isBannerChoiceMessage, isUndoChoiceMessage, refreshBadge,
-  UNDO_NOTIFICATION_PREFIX,
+  adoptReport, configRev, createContentHandler, createDebounce, createHandler, createOnMessage, isBannerChoiceMessage, isUndoChoiceMessage, refreshBadge,
+  UNDO_NOTIFICATION_PREFIX, type ContentDeps,
 } from '../engine/messages';
 import { listPendingAsks } from '../engine/ask';
 import { afterConfigChange, CLOSE_ALARM_PREFIX, CLOSE_SUGGESTIONS_KEY, CloseExecutor } from '../engine/close-executor';
@@ -65,6 +65,8 @@ export default defineBackground(() => {
     onHoldExpired: () => reconciler.schedule('pageFacts-hold'),
     // Hold only where the watch is registered: elsewhere no facts will come.
     covers: (url) => permissions.covers(url),
+    // A report that beat its document's commit, adopted by that commit: applied like an accepted one (contentDeps).
+    onAdopt: (id, r) => { adoptReport(contentDeps, id, r); },
   });
   // `safety` is used lazily by the closures below (it needs the reconciler and dedupe handler, which need it).
   const reconciler: Reconciler = new Reconciler(port, getProgram, {
@@ -360,7 +362,7 @@ export default defineBackground(() => {
     },
   });
   // Watch content script (ruling R12): its own sender-checked channel, never createHandler.
-  const handleContent = createContentHandler({
+  const contentDeps: ContentDeps = {
     runtimeId: browser.runtime.id,
     extensionOrigin: new URL(browser.runtime.getURL('/')).origin,
     getProgram,
@@ -370,7 +372,8 @@ export default defineBackground(() => {
     // New page facts can change list views (pageText showInView), hence the badge (R60).
     onFacts: (id) => { void closeExecutor.onFacts(id); scheduleBadge(); },
     onCloseChoice: (id, choice) => { void closeExecutor.onCloseChoice(id, choice); },
-  });
+  };
+  const handleContent = createContentHandler(contentDeps);
   // UI requests (popup / options), banner choices (content script in the duplicate tab) and the watch script.
   browser.runtime.onMessage.addListener(createOnMessage({
     runtimeId: browser.runtime.id,

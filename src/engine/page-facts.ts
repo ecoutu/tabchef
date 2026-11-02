@@ -14,6 +14,14 @@ export const PAGE_FACTS_KEY = 'pageFacts';
 export const PAGE_HOLD_MS = 5000;
 /** How many replaced documents per tab PageFacts remembers (isRetiredDocument). */
 export const RETIRED_DOCS_MAX = 4;
+/** How many documents' early reports PageFacts keeps per tab (buffer). */
+export const EARLY_DOCS_MAX = 2;
+
+/**
+ * A report from a document that was not the tab's current one when it arrived: a hello's form state (no facts) or a
+ * page.facts report, with the frame URL it came from. Adopted when that document commits (PageFacts.buffer).
+ */
+export interface EarlyReport { facts?: PageFactsData; formEdited: boolean; url: string }
 
 export interface PageFactsDeps {
   session: { get(k: string): Promise<unknown>; set(k: string, v: unknown): Promise<void> };
@@ -25,6 +33,11 @@ export interface PageFactsDeps {
    * arms no hold: no facts will come (no scripting, an ungranted host, a non-http page). Default: every URL.
    */
   covers?: (url: string) => boolean;
+  /**
+   * A commit adopted its document's early report (the facts are already set): apply the rest, i.e. form state, re-plan
+   * and close re-evaluation (background / tests: messages.adoptReport).
+   */
+  onAdopt?: (tabId: number, report: EarlyReport) => void;
 }
 
 const isFacts = (v: unknown): v is PageFactsData => {
@@ -104,6 +117,8 @@ export class PageFacts implements PageLookup {
    * for sure, unlike a document not seen yet: a new page's hello can reach the worker before its own commit.
    */
   private readonly retired = new Map<number, string[]>();
+  /** Per tab, the latest early report of up to EARLY_DOCS_MAX documents (oldest first), by document id. */
+  private readonly early = new Map<number, Map<string, EarlyReport>>();
   private loaded = false;
   private chain: Promise<void> = Promise.resolve();
   private readonly now: () => number;
@@ -144,6 +159,7 @@ export class PageFacts implements PageLookup {
   /** Wire to tabs.onRemoved (and the replaced tab of tabs.onReplaced). */
   clear(tabId: number): void {
     this.retired.delete(tabId);
+    this.early.delete(tabId);
     this.docs.delete(tabId);
     this.clearFacts(tabId);
   }
@@ -171,8 +187,34 @@ export class PageFacts implements PageLookup {
       else this.retired.delete(tabId);
       this.docs.set(tabId, documentId);
     }
-    if (url !== undefined && this.deps.covers && !this.deps.covers(url)) return;
-    this.committedAt.set(tabId, this.now());
+    const adopted = documentId !== undefined ? this.takeEarly(tabId, documentId) : undefined;
+    if (!(url !== undefined && this.deps.covers && !this.deps.covers(url))) this.committedAt.set(tabId, this.now());
+    // Its hello or report arrived before this commit (e.g. a back/forward-cache restore): not lost, applied now.
+    if (adopted) {
+      if (adopted.facts) this.set(tabId, adopted.facts);
+      this.deps.onAdopt?.(tabId, adopted);
+    }
+  }
+
+  /**
+   * Keep the latest report of `documentId`, a document that is not the tab's current one, until it commits
+   * (onCommitted adopts it). One that never commits ages out (EARLY_DOCS_MAX per tab) and is never applied to another.
+   */
+  buffer(tabId: number, documentId: string, report: EarlyReport): void {
+    const docs = this.early.get(tabId) ?? new Map<string, EarlyReport>();
+    docs.delete(documentId);
+    docs.set(documentId, report);
+    while (docs.size > EARLY_DOCS_MAX) docs.delete(docs.keys().next().value!);
+    this.early.set(tabId, docs);
+  }
+
+  private takeEarly(tabId: number, documentId: string): EarlyReport | undefined {
+    const docs = this.early.get(tabId);
+    const r = docs?.get(documentId);
+    if (!docs || !r) return undefined;
+    docs.delete(documentId);
+    if (docs.size === 0) this.early.delete(tabId);
+    return r;
   }
 
   /**

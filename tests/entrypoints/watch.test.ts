@@ -70,6 +70,29 @@ describe('page watch content script', () => {
     w.stop();
   });
 
+  it('a report the worker answered as stale (its document not committed yet) is sent again on the next scan', async () => {
+    document.body.innerHTML = '<div id="app">Call ended</div>';
+    const sent: Sent[] = [];
+    let staleNext = true;
+    const send = vi.fn(async (m: Sent) => {
+      if (m.type === 'watch.hello') return { type: 'watch.config', needles: ['call ended'], selectors: [] } satisfies WatchConfigMessage;
+      sent.push(structuredClone(m));
+      if (staleNext) { staleNext = false; return { ok: false, error: 'stale document' }; }
+      return { ok: true };
+    });
+    const w = startPageWatch({ doc: document, win: window, send });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sent).toHaveLength(1);
+    document.getElementById('app')!.append(document.createElement('span')); // same text, so the same facts
+    await vi.advanceTimersByTimeAsync(WATCH_SCAN_MS);
+    expect(sent).toHaveLength(2);
+    expect(sent[1]).toEqual(sent[0]);
+    document.getElementById('app')!.append(document.createElement('span'));
+    await vi.advanceTimersByTimeAsync(WATCH_SCAN_MS);
+    expect(sent).toHaveLength(2); // accepted this time: unchanged facts are not re-sent
+    w.stop();
+  });
+
   it('never reports more than the worker guard accepts: needles over MAX_FACT_TEXT, more than MAX_FACT_ITEMS items, long keys (I2)', async () => {
     const long = 'y'.repeat(MAX_FACT_TEXT + 1);
     const many = Array.from({ length: MAX_FACT_ITEMS + 20 }, (_, i) => `n${i}`);
@@ -274,3 +297,52 @@ describe('page watch content script', () => {
   });
 });
 
+describe('page watch: extension context invalidated', () => {
+  it('the extension reloaded under an open page: no uncaught error, and the orphaned watcher stops calling in', async () => {
+    document.body.innerHTML = '<div id="app">x</div>';
+    let alive = true;
+    const send = vi.fn((m: Sent) => {
+      // Chrome throws synchronously from runtime.sendMessage once the extension was reloaded or updated.
+      if (!alive) throw new Error('Extension context invalidated.');
+      return Promise.resolve(m.type === 'watch.hello' ? ({ type: 'watch.config', needles: ['done'], selectors: [] } satisfies WatchConfigMessage) : undefined);
+    });
+    const rejections: unknown[] = [];
+    const onRejection = (e: unknown) => { rejections.push(e); };
+    process.on('unhandledRejection', onRejection);
+    const w = startPageWatch({ doc: document, win: window, send, alive: () => alive });
+    await vi.advanceTimersByTimeAsync(0);
+    alive = false;
+    document.getElementById('app')!.textContent = 'done';
+    const pageshow = new Event('pageshow');
+    Object.defineProperty(pageshow, 'persisted', { value: true });
+    window.dispatchEvent(pageshow);
+    await vi.advanceTimersByTimeAsync(WATCH_SCAN_MS * 3);
+    const calls = send.mock.calls.length;
+    document.getElementById('app')!.textContent = 'done again';
+    await vi.advanceTimersByTimeAsync(WATCH_SCAN_MS * 3);
+    process.off('unhandledRejection', onRejection);
+    expect(rejections).toEqual([]);
+    expect(send.mock.calls.length).toBe(calls); // stopped: no more calls into the dead context
+    w.stop();
+  });
+
+  it('a send that throws synchronously (not a rejection) counts as unsent and is never thrown out of a scan', async () => {
+    document.body.innerHTML = '<div id="app">x</div>';
+    let fail = false;
+    const send = vi.fn((m: Sent) => {
+      if (fail && m.type === 'page.facts') throw new Error('boom');
+      return Promise.resolve(m.type === 'watch.hello' ? ({ type: 'watch.config', needles: ['done'], selectors: [] } satisfies WatchConfigMessage) : undefined);
+    });
+    const w = startPageWatch({ doc: document, win: window, send });
+    await vi.advanceTimersByTimeAsync(0);
+    fail = true;
+    document.getElementById('app')!.textContent = 'done';
+    await vi.advanceTimersByTimeAsync(WATCH_SCAN_MS * 2);
+    fail = false;
+    document.getElementById('app')!.textContent = 'done!';
+    await vi.advanceTimersByTimeAsync(WATCH_SCAN_MS * 2);
+    const facts = send.mock.calls.map(([m]) => m).filter((m) => m.type === 'page.facts');
+    expect(facts.at(-1)).toMatchObject({ texts: ['done'] }); // sent once sending works again
+    w.stop();
+  });
+});

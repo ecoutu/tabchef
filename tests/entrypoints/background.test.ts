@@ -1,6 +1,8 @@
 // Wiring tests for the service worker entrypoint: browser events and readiness gates reach the right engine calls.
 // The engine classes are replaced by recording fakes and `browser` by a recording proxy, so only the wiring is tested.
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 type Fn = (...a: never[]) => unknown;
 type Fake = Record<string, ReturnType<typeof vi.fn>> & { args: unknown[] };
@@ -91,17 +93,38 @@ const background = (await import('../../src/entrypoints/background')).default;
 
 /**
  * Listeners by `<event>#<position>` (each main() registers them in the same order): `registered` collects every one
- * a test saw registered, `invoked` every one a test fired. afterAll checks that each registered listener was invoked,
- * so a second listener on an event that is already tested still needs a test of its own.
+ * a test saw registered, `invoked` every one a test exercised on its own. afterAll checks that each registered
+ * listener was exercised. fire() runs every listener of an event but counts as coverage only when the event has
+ * exactly one; a listener of an event that has several is covered only by fireAt(event, position), so a second
+ * listener on an event that is already tested still needs a test of its own.
  */
 const registered = new Set<string>();
 const invoked = new Set<string>();
-const fire = async (event: string, ...a: unknown[]) => {
+const listenersOf = (event: string) => {
   const fns = h.listeners[event] ?? [];
   expect(fns.length, `no listener on ${event}`).toBeGreaterThan(0);
-  fns.forEach((fn, i) => { invoked.add(`${event}#${i}`); (fn as (...x: unknown[]) => unknown)(...a); });
+  return fns as ((...x: unknown[]) => unknown)[];
+};
+const fire = async (event: string, ...a: unknown[]) => {
+  const fns = listenersOf(event);
+  if (fns.length === 1) invoked.add(`${event}#0`);
+  for (const fn of fns) fn(...a);
   await vi.advanceTimersByTimeAsync(0);
 };
+/** Runs only the listener at `position` of `event` (registration order in background.ts). */
+const fireAt = async (event: string, position: number, ...a: unknown[]) => {
+  const fn = listenersOf(event)[position];
+  expect(fn, `no listener #${position} on ${event}`).toBeDefined();
+  invoked.add(`${event}#${position}`);
+  fn!(...a);
+  await vi.advanceTimersByTimeAsync(0);
+};
+/** tabs.onCreated / onRemoved / onUpdated / onReplaced / onAttached: the event's own handler, then the badge recount. */
+const TAB = 0;
+const BADGE = 1;
+/** permissions.onAdded: notifications wiring (an optional permission), then the needs / paused-set sync. */
+const WIRE_NOTIFICATIONS = 0;
+const SYNC_PERMISSIONS = 1;
 /** Tests of this file that ran: when fewer than declared (`-t`, `.only`), the afterAll guard does not apply. */
 let ran = 0;
 const I = (name: string) => h.instances[name] as Fake;
@@ -132,9 +155,16 @@ afterEach(() => {
   ran++;
   vi.useRealTimers();
 });
-interface TaskTree { type: string; tasks?: readonly TaskTree[] }
-/** The tests declared under a suite (vitest's task tree), whether or not they ran. */
-const testsIn = (t: TaskTree): number => (t.tasks ? t.tasks.reduce((n, x) => n + testsIn(x), 0) : t.type === 'suite' ? 0 : 1);
+interface TaskTree { type: string; mode: string; tasks?: readonly TaskTree[] }
+/** The tests declared under a suite (vitest's task tree) and not it.todo, whether or not they ran. */
+const testsIn = (t: TaskTree): number =>
+  (t.tasks ? t.tasks.reduce((n, x) => n + testsIn(x), 0) : t.type === 'suite' || t.mode === 'todo' ? 0 : 1);
+/**
+ * `it.skip` / `test.skip` declarations in this file. vitest gives a test that a -t / .only filter left out the same
+ * 'skip' mode as an explicit skip, so explicit ones are counted in the source: each is one declared test that never
+ * runs, and must not switch the guard off. (`it.skip.each` would declare several: not used here.)
+ */
+const explicitSkips = readFileSync(fileURLToPath(import.meta.url), 'utf8').match(/^\s*(?:it|test)\.skip\(/gm)?.length ?? 0;
 
 describe('background wiring', () => {
   it('a config change schedules the reconciler and runs afterConfigChange (needs → close re-evaluation → badge)', async () => {
@@ -169,7 +199,7 @@ describe('background wiring', () => {
   ] as const)('%s recounts the badge (after the debounce)', async (event, args) => {
     await vi.advanceTimersByTimeAsync(3000); // the startup badge refresh
     vi.mocked(refreshBadge).mockClear();
-    await fire(event, ...args);
+    await fireAt(event, BADGE, ...args);
     expect(refreshBadge).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(500);
     expect(refreshBadge).toHaveBeenCalledTimes(1);
@@ -183,10 +213,10 @@ describe('background wiring', () => {
     expect(h.listeners['notifications.onButtonClicked']).toBeUndefined();
     expect(h.listeners['notifications.onClosed']).toBeUndefined();
     h.flags.notificationsAbsent = false; // the user granted the optional permission
-    await fire('permissions.onAdded', { permissions: ['notifications'] });
+    await fireAt('permissions.onAdded', WIRE_NOTIFICATIONS, { permissions: ['notifications'] });
     expect(h.listeners['notifications.onButtonClicked']).toHaveLength(1);
     expect(h.listeners['notifications.onClosed']).toHaveLength(1);
-    await fire('permissions.onAdded', { permissions: ['scripting'] });
+    await fireAt('permissions.onAdded', WIRE_NOTIFICATIONS, { permissions: ['scripting'] });
     expect(h.listeners['notifications.onButtonClicked']).toHaveLength(1);
     expect(h.listeners['notifications.onClosed']).toHaveLength(1);
     await fire('notifications.onClosed', 'dedupe:5');
@@ -213,7 +243,7 @@ describe('background wiring', () => {
   });
 
   it('a removed tab is cleaned up everywhere, anchors told whether its window is closing', async () => {
-    await fire('tabs.onRemoved', 5, { isWindowClosing: true, windowId: 1 });
+    await fireAt('tabs.onRemoved', TAB, 5, { isWindowClosing: true, windowId: 1 });
     expect(I('anchors').onTabRemoved).toHaveBeenCalledWith(5, true);
     expect(I('safety').onTabRemoved).toHaveBeenCalledWith(5, true);
     expect(I('pageFacts').clear).toHaveBeenCalledWith(5);
@@ -236,6 +266,14 @@ describe('background wiring', () => {
     expect(I('closeExecutor').evaluate).toHaveBeenCalledWith(2);
   });
 
+  it('a report adopted by its document\'s commit (PageFacts onAdopt) marks form edits and re-plans like an accepted one', () => {
+    const onAdopt = (I('pageFacts').args[0] as { onAdopt: (id: number, r: unknown) => void }).onAdopt;
+    onAdopt(7, { facts: { texts: [], extracts: {}, formEdited: true }, formEdited: true, url: 'https://a.test/' });
+    expect(I('safety').markFormEdited).toHaveBeenCalledWith(7, 'https://a.test/');
+    expect(I('reconciler').schedule).toHaveBeenCalledWith('pageFacts');
+    expect(I('closeExecutor').onFacts).toHaveBeenCalledWith(7);
+  });
+
   it('close alarms go to the close executor, others to safety', async () => {
     await fire('alarms.onAlarm', { name: 'close:4' });
     await fire('alarms.onAlarm', { name: 'resume' });
@@ -243,40 +281,36 @@ describe('background wiring', () => {
     expect(I('safety').onAlarm).toHaveBeenCalledWith({ name: 'resume' });
   });
 
-  it('a created tab is seen by safety and dedupe (its pending URL is a candidate), re-planned and recounted', async () => {
-    await vi.advanceTimersByTimeAsync(3000); // the startup badge refresh
-    vi.mocked(refreshBadge).mockClear();
-    await fire('tabs.onCreated', { id: 3, url: '', pendingUrl: 'https://b.test/', windowId: 1, discarded: false, status: 'loading' });
+  it('a created tab is seen by safety and dedupe (its pending URL is a candidate) and re-planned (badge: see below)', async () => {
+    await fireAt('tabs.onCreated', TAB, { id: 3, url: '', pendingUrl: 'https://b.test/', windowId: 1, discarded: false, status: 'loading' });
     expect(I('safety').onTabSeen).toHaveBeenCalledWith({ id: 3, url: 'https://b.test/', windowId: 1 });
     expect(I('dedupe').recordCreated).toHaveBeenCalledWith(3, { discarded: false, status: 'loading' });
     expect(I('dedupe').onCandidate).toHaveBeenCalledWith(3, 'https://b.test/', 'pending');
     expect(I('reconciler').schedule).toHaveBeenCalledWith('tab-created');
-    await vi.advanceTimersByTimeAsync(500);
-    expect(refreshBadge).toHaveBeenCalledTimes(1);
   });
 
   it('tab updates: a URL change reaches dedupe, safety, the reconciler and the close executor; title and group changes too', async () => {
     const t = { id: 4, windowId: 1, url: 'https://c.test/', active: false };
-    await fire('tabs.onUpdated', 4, { url: 'https://c.test/' }, t);
+    await fireAt('tabs.onUpdated', TAB, 4, { url: 'https://c.test/' }, t);
     expect(I('dedupe').onCandidate).toHaveBeenCalledWith(4, 'https://c.test/', 'pending');
     expect(I('safety').onTabSeen).toHaveBeenCalledWith({ id: 4, url: 'https://c.test/', windowId: 1 });
     expect(I('reconciler').onTabUrlChanged).toHaveBeenCalledWith(4, 'https://c.test/');
     expect(I('closeExecutor').evaluate).toHaveBeenCalledWith(4);
     expect(I('reconciler').schedule).toHaveBeenCalledWith('tab-updated');
-    await fire('tabs.onUpdated', 4, { title: 'C' }, t);
+    await fireAt('tabs.onUpdated', TAB, 4, { title: 'C' }, t);
     expect(I('dedupe').onTitleChanged).toHaveBeenCalledWith(4, 'https://c.test/');
-    await fire('tabs.onUpdated', 4, { groupId: 9 }, t);
+    await fireAt('tabs.onUpdated', TAB, 4, { groupId: 9 }, t);
     expect(I('reconciler').onTabGroupChanged).toHaveBeenCalledWith(4, 9, 'https://c.test/');
   });
 
   it.each([['tabs.onMoved', 'tab-moved'], ['tabs.onAttached', 'tab-attached']])('%s re-plans the tab order (%s)', async (event, reason) => {
-    await fire(event, 1, {});
+    await fireAt(event, TAB, 1, {});
     expect(I('reconciler').onTabMovedOrAttached).toHaveBeenCalled();
     expect(I('reconciler').schedule).toHaveBeenCalledWith(reason);
   });
 
   it('a replaced tab hands its state to the new tab id', async () => {
-    await fire('tabs.onReplaced', 10, 9);
+    await fireAt('tabs.onReplaced', TAB, 10, 9);
     expect(I('pageFacts').clear).toHaveBeenCalledWith(9);
     expect(I('closeExecutor').onTabRemoved).toHaveBeenCalledWith(9);
     expect(I('dedupe').onReplaced).toHaveBeenCalledWith(10, 9);
@@ -353,7 +387,7 @@ describe('background wiring', () => {
 
   it('permission grants and revocations re-sync the needs, paused set and watch registration', async () => {
     I('permissions').onChanged!.mockClear();
-    await fire('permissions.onAdded', { permissions: ['scripting'] });
+    await fireAt('permissions.onAdded', SYNC_PERMISSIONS, { permissions: ['scripting'] });
     await fire('permissions.onRemoved', { origins: ['https://a.test/*'] });
     expect(I('permissions').onChanged).toHaveBeenCalledTimes(2);
   });
@@ -364,8 +398,9 @@ describe('background wiring', () => {
   });
 
   afterAll(({}, suite) => {
-    // A listener added to background.ts without a test here fails this suite; not when only some tests ran.
-    if (ran < testsIn(suite)) return;
+    // A listener added to background.ts without a test here fails this suite; not when a filter (-t, .only) left
+    // tests out. it.todo and it.skip declarations are not left-out tests.
+    if (ran < testsIn(suite) - explicitSkips) return;
     expect([...registered].filter((k) => !invoked.has(k)).sort()).toEqual([]);
   });
 });

@@ -17,6 +17,11 @@ export interface PageWatchEnv {
   /** The Navigation API (`window.navigation`, Chrome 102+): `currententrychange` reports same-document navigations. */
   nav?: EventTarget;
   now?: () => number;
+  /**
+   * False once the extension context is gone (the extension was reloaded or updated under this page: the old script
+   * keeps running, and runtime.sendMessage throws "Extension context invalidated"). The watcher then stops.
+   */
+  alive?: () => boolean;
 }
 
 const EMPTY: WatchConfig = { needles: [], selectors: [] };
@@ -29,6 +34,11 @@ function asConfig(r: unknown): WatchConfig {
     selectors: x.selectors.filter((s) => typeof s?.key === 'string' && typeof s.selector === 'string'),
   };
 }
+
+const isStaleReply = (r: unknown): boolean => {
+  const x = r as { ok?: unknown; error?: unknown } | null | undefined;
+  return x?.ok === false && x.error === 'stale document';
+};
 
 function editable(t: EventTarget | null): boolean {
   if (!(t instanceof Element)) return false;
@@ -56,6 +66,17 @@ export function startPageWatch(env: PageWatchEnv): { stop(): void } {
   /** Hellos sent; only the latest one's answer applies. While one is in flight, nothing is reported. */
   let helloSeq = 0;
   let helloPending = false;
+
+  /** env.send with a synchronous throw turned into a rejection; a dead extension context stops the watcher instead. */
+  const send = (m: WatchHelloMessage | PageFactsMessage): Promise<unknown> => {
+    if (env.alive && !env.alive()) { stop(); return Promise.reject(new Error('Extension context invalidated.')); }
+    try {
+      return Promise.resolve(env.send(m));
+    } catch (e) {
+      if (env.alive && !env.alive()) stop();
+      return Promise.reject(e);
+    }
+  };
 
   const facts = (): PageFactsMessage => {
     const text = foldText(doc.body?.textContent ?? '');
@@ -87,8 +108,10 @@ export function startPageWatch(env: PageWatchEnv): { stop(): void } {
     const key = JSON.stringify(m);
     if (!force && key === lastSent) return;
     lastSent = key;
-    // A failed send (e.g. the worker restarting) is not a report: the next scan sends the same facts again.
-    void env.send(m).catch(() => { if (lastSent === key) lastSent = undefined; });
+    // A failed send (e.g. the worker restarting) is not a report, and neither is one the worker answered as stale (its
+    // document's commit had not reached it yet): the next scan sends the same facts again.
+    const unsent = () => { if (lastSent === key) lastSent = undefined; };
+    void send(m).then((r) => { if (isStaleReply(r)) unsent(); }, unsent);
   };
 
   const scan = () => {
@@ -121,7 +144,7 @@ export function startPageWatch(env: PageWatchEnv): { stop(): void } {
     const edited = formEdited && editedHref === configHref;
     let r: unknown;
     try {
-      r = await env.send({ type: 'watch.hello', formEdited: edited });
+      r = await send({ type: 'watch.hello', formEdited: edited });
     } catch {
       r = undefined; // worker unreachable: still report form edits
     }
@@ -172,18 +195,17 @@ export function startPageWatch(env: PageWatchEnv): { stop(): void } {
   win.addEventListener('popstate', onUrlMaybeChanged);
   const nav = env.nav ?? (win as unknown as { navigation?: EventTarget }).navigation;
   nav?.addEventListener('currententrychange', onUrlMaybeChanged);
+  function stop(): void {
+    stopped = true;
+    observer?.disconnect();
+    if (timer !== undefined) clearTimeout(timer);
+    win.removeEventListener('input', onInput, true);
+    win.removeEventListener('submit', onSubmit, true);
+    win.removeEventListener('pageshow', onPageShow);
+    win.removeEventListener('popstate', onUrlMaybeChanged);
+    nav?.removeEventListener('currententrychange', onUrlMaybeChanged);
+  }
   void hello(true);
 
-  return {
-    stop() {
-      stopped = true;
-      observer?.disconnect();
-      if (timer !== undefined) clearTimeout(timer);
-      win.removeEventListener('input', onInput, true);
-      win.removeEventListener('submit', onSubmit, true);
-      win.removeEventListener('pageshow', onPageShow);
-      win.removeEventListener('popstate', onUrlMaybeChanged);
-      nav?.removeEventListener('currententrychange', onUrlMaybeChanged);
-    },
-  };
+  return { stop };
 }

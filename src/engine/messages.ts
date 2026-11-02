@@ -17,7 +17,7 @@ import { emptyProgram, previewChange, type PreviewContext, type PreviewResult } 
 import { explainTab, findShadowed, type ExplainEntry } from '../core/lang/explain';
 import { effectiveNeeds, type Needs, type NeedStatus, type PermissionsManager } from './permissions';
 import type { PendingAsk } from './ask';
-import type { PageFacts, WatchSelector } from './page-facts';
+import type { EarlyReport, PageFacts, WatchSelector } from './page-facts';
 import type { PauseDuration, SafetyService } from './safety';
 import { dedupeDecision, openerOf } from './dedupe-handler';
 import { readViews, samePage, type ViewData, type ViewsDeps, type ViewSummary } from './views';
@@ -869,7 +869,7 @@ export interface ContentDeps {
   /** e.g. `chrome-extension://<id>` */
   extensionOrigin: string;
   getProgram: () => Promise<Program>;
-  pageFacts: Pick<PageFacts, 'set' | 'onHello' | 'watchConfigFor' | 'isCurrentDocument' | 'isRetiredDocument'>;
+  pageFacts: Pick<PageFacts, 'set' | 'onHello' | 'watchConfigFor' | 'isCurrentDocument' | 'isRetiredDocument' | 'buffer'>;
   safety: Pick<SafetyService, 'markFormEdited' | 'clearFormEdited'>;
   /** Reconciler.schedule. */
   schedule: (reason: string) => void;
@@ -877,6 +877,23 @@ export interface ContentDeps {
   onFacts?: (tabId: number) => void;
   /** The protected-close banner's answer for the sending tab (CloseExecutor.onCloseChoice, D22). */
   onCloseChoice?: (tabId: number, choice: CloseChoiceMessage['choice']) => void;
+}
+
+/** What an accepted report changes besides the stored facts: form state, then (with facts) a re-plan and onFacts. */
+function applyReport(d: Pick<ContentDeps, 'safety' | 'schedule' | 'onFacts'>, tabId: number, r: EarlyReport): void {
+  if (r.formEdited) d.safety.markFormEdited(tabId, r.url);
+  else if (r.facts) d.safety.clearFormEdited(tabId);
+  if (!r.facts) return;
+  d.schedule('pageFacts');
+  d.onFacts?.(tabId);
+}
+
+/**
+ * PageFactsDeps.onAdopt: a document's early report (its hello or page.facts arrived before its commit) adopted by
+ * that commit is applied as if it had been accepted then. PageFacts has already stored its facts.
+ */
+export function adoptReport(d: Pick<ContentDeps, 'safety' | 'schedule' | 'onFacts'>, tabId: number, r: EarlyReport): void {
+  applyReport(d, tabId, r);
 }
 
 /** A content script in a real tab's top frame: never an extension page (those use createHandler). */
@@ -893,6 +910,9 @@ export function isTabContentScript(sender: MessageSender, d: Pick<ContentDeps, '
  */
 export function createContentHandler(d: ContentDeps): (msg: unknown, sender: MessageSender) => Promise<unknown> | undefined {
   const forbidden = { ok: false, error: 'forbidden' };
+  /** The tab's current document (or none is known), and not one a commit retired. */
+  const isCurrent = (tabId: number, documentId: string | undefined): boolean =>
+    d.pageFacts.isCurrentDocument(tabId, documentId) && !d.pageFacts.isRetiredDocument(tabId, documentId);
   return (msg, sender) => {
     if (isCloseChoiceMessage(msg)) {
       if (!isTabContentScript(sender, d)) return Promise.resolve(forbidden);
@@ -913,24 +933,26 @@ export function createContentHandler(d: ContentDeps): (msg: unknown, sender: Mes
       // where none is known) starts a new page state (load, back/forward-cache restore, same-document navigation,
       // which fires no onCommitted): drop the previous facts and hold until the fresh report that follows the answer.
       // A hello from any other document (retired, or not committed yet) leaves the current page's facts alone.
-      const current = d.pageFacts.isCurrentDocument(tabId, sender.documentId) && !d.pageFacts.isRetiredDocument(tabId, sender.documentId);
-      if (current) {
+      // Its form state is kept for that document (PageFacts.buffer) and applied if it commits: Back to an edited page
+      // can deliver the pageshow hello before the restore's commit.
+      if (isCurrent(tabId, sender.documentId)) {
         d.pageFacts.onHello(tabId);
         if (m.formEdited) d.safety.markFormEdited(tabId, url);
+      } else {
+        d.pageFacts.buffer(tabId, sender.documentId!, { formEdited: m.formEdited, url });
       }
       return d.getProgram().then((p): WatchConfigMessage => ({ type: 'watch.config', ...d.pageFacts.watchConfigFor(url, p) }));
     }
     const m = pf!;
-    // Sent by a document that is not the tab's current one (the previous document after the navigation committed, or
-    // one a commit has retired): not this page's facts.
-    if (!d.pageFacts.isCurrentDocument(tabId, sender.documentId) || d.pageFacts.isRetiredDocument(tabId, sender.documentId)) {
+    const pageFacts = { texts: [...m.texts], extracts: { ...m.extracts }, formEdited: m.formEdited };
+    // Sent by a document that is not the tab's current one: not this page's facts. Kept for that document in case it
+    // commits after all (its report beat its commit); a previous document's report is never applied to this one.
+    if (!isCurrent(tabId, sender.documentId)) {
+      d.pageFacts.buffer(tabId, sender.documentId!, { facts: pageFacts, formEdited: m.formEdited, url });
       return Promise.resolve({ ok: false, error: 'stale document' });
     }
-    d.pageFacts.set(tabId, { texts: [...m.texts], extracts: { ...m.extracts }, formEdited: m.formEdited });
-    if (m.formEdited) d.safety.markFormEdited(tabId, url);
-    else d.safety.clearFormEdited(tabId);
-    d.schedule('pageFacts');
-    d.onFacts?.(tabId);
+    d.pageFacts.set(tabId, pageFacts);
+    applyReport(d, tabId, { facts: pageFacts, formEdited: m.formEdited, url });
     return Promise.resolve({ ok: true });
   };
 }

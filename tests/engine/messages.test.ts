@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  configRev, badgeCount, createContentHandler, createDebounce, createHandler, createOnMessage, isCloseChoiceMessage, isPageFactsMessage, isRequest, isWatchHello,
+  adoptReport, configRev, badgeCount, createContentHandler, createDebounce, createHandler, createOnMessage, isCloseChoiceMessage, isPageFactsMessage, isRequest, isWatchHello,
   type ContentDeps, type HandlerDeps,
 } from '../../src/engine/messages';
 import { PageFacts } from '../../src/engine/page-facts';
@@ -302,12 +302,14 @@ describe('createContentHandler', () => {
       rules: [{ id: 'm', name: 'm', enabled: true, match: { all: [{ url: 'meet.google.com/*' }, { pageText: 'Call ended' }] }, actions: [{ close: {} }] }],
       order: ['user/m'],
     });
-    const pageFacts = new PageFacts({ session: { get: async () => undefined, set: async () => {} } });
+    // eslint-disable-next-line prefer-const
+    let d: ContentDeps;
+    const pageFacts = new PageFacts({ session: { get: async () => undefined, set: async () => {} }, onAdopt: (id, r) => adoptReport(d, id, r) });
     const safety = { markFormEdited: vi.fn(), clearFormEdited: vi.fn() };
     const schedule = vi.fn();
     const onFacts = vi.fn();
     const onCloseChoice = vi.fn();
-    const d: ContentDeps = {
+    d = {
       runtimeId: 'ext', extensionOrigin: 'chrome-extension://ext', getProgram: async () => program, pageFacts, safety, schedule, onFacts, onCloseChoice,
     };
     return { h: createContentHandler(d), pageFacts, safety, schedule, onFacts, onCloseChoice };
@@ -413,6 +415,37 @@ describe('createContentHandler', () => {
     pageFacts.onCommitted(7, PAGE, 'doc-b'); // webNavigation.onCommitted for B lands after B's hello
     expect(await h(facts, { ...tabSender, documentId: 'doc-b' })).toEqual({ ok: true });
     expect(await h(facts, { ...tabSender, documentId: 'doc-a' })).toEqual({ ok: false, error: 'stale document' });
+  });
+
+  it('Back to an edited page (bfcache): its hello and report beat its commit, and are adopted when it commits', async () => {
+    const { h, pageFacts, safety, onFacts } = mk();
+    pageFacts.onCommitted(7, PAGE, 'doc-a');
+    pageFacts.onCommitted(7, 'https://meet.google.com/b', 'doc-b');
+    const a = { ...tabSender, documentId: 'doc-a' };
+    expect(await h({ type: 'watch.hello', formEdited: true }, a)).toEqual(CONFIG);
+    expect(await h(facts, a)).toEqual({ ok: false, error: 'stale document' });
+    expect(safety.markFormEdited).not.toHaveBeenCalled(); // not B's edits
+    pageFacts.onCommitted(7, PAGE, 'doc-a'); // A's commit lands
+    expect(safety.markFormEdited).toHaveBeenCalledWith(7, PAGE);
+    expect(pageFacts.get(7)).toEqual({ texts: ['Call ended'], extracts: { 'user/m.x': 'v' }, formEdited: true });
+    expect(pageFacts.awaiting(7)).toBe(false);
+    expect(onFacts).toHaveBeenCalledWith(7);
+  });
+
+  it('a late report from a document whose commit never comes is never applied to another document', async () => {
+    const { h, pageFacts, safety, onFacts } = mk();
+    pageFacts.onCommitted(7, PAGE, 'doc-a');
+    pageFacts.onCommitted(7, PAGE, 'doc-b');
+    const bFacts = { type: 'page.facts', texts: [], extracts: {}, formEdited: false };
+    expect(await h(bFacts, { ...tabSender, documentId: 'doc-b' })).toEqual({ ok: true });
+    safety.markFormEdited.mockClear();
+    onFacts.mockClear();
+    expect(await h(facts, { ...tabSender, documentId: 'doc-a' })).toEqual({ ok: false, error: 'stale document' });
+    expect(pageFacts.get(7)).toEqual({ texts: [], extracts: {}, formEdited: false });
+    pageFacts.onCommitted(7, PAGE, 'doc-c'); // the tab moves on; A never commits again
+    expect(pageFacts.get(7)).toBeUndefined();
+    expect(safety.markFormEdited).not.toHaveBeenCalled();
+    expect(onFacts).not.toHaveBeenCalled();
   });
 
   it('form edits are recorded for the frame URL the report came from, as the watch config is', async () => {

@@ -96,6 +96,41 @@ describe('PageFacts retired documents (a commit replaced them)', () => {
   });
 });
 
+describe('PageFacts early reports (from a document not current yet)', () => {
+  const report = (formEdited: boolean, texts: string[] = []) => ({ facts: facts({ texts, formEdited }), formEdited, url: 'https://a.test/' });
+
+  it('a commit adopts its document\'s buffered report (facts set, hold ended, onAdopt told); others stay buffered', () => {
+    const onAdopt = vi.fn();
+    const pf = new PageFacts({ session: memSession(), onAdopt });
+    pf.onCommitted(1, 'https://a.test/', 'doc-a');
+    pf.buffer(1, 'doc-b', report(true, ['x']));
+    expect(pf.get(1)).toBeUndefined();
+    pf.onCommitted(1, 'https://a.test/', 'doc-b');
+    expect(pf.get(1)).toEqual(facts({ texts: ['x'], formEdited: true }));
+    expect(pf.awaiting(1)).toBe(false);
+    expect(onAdopt).toHaveBeenCalledWith(1, report(true, ['x']));
+    pf.onCommitted(1, 'https://a.test/', 'doc-c');
+    expect(onAdopt).toHaveBeenCalledTimes(1); // adopted once, then gone
+  });
+
+  it('keeps the latest report of at most 2 documents per tab; tab removal drops them', () => {
+    const onAdopt = vi.fn();
+    const pf = new PageFacts({ session: memSession(), onAdopt });
+    pf.buffer(1, 'doc-x', report(true));
+    pf.buffer(1, 'doc-y', report(true));
+    pf.buffer(1, 'doc-y', report(false, ['later'])); // the latest report of a document replaces its earlier one
+    pf.buffer(1, 'doc-z', report(true));
+    pf.onCommitted(1, undefined, 'doc-x');
+    expect(onAdopt).not.toHaveBeenCalled(); // dropped by the cap
+    pf.onCommitted(1, undefined, 'doc-y');
+    expect(onAdopt).toHaveBeenLastCalledWith(1, report(false, ['later']));
+    pf.buffer(2, 'doc-q', report(true));
+    pf.clear(2);
+    pf.onCommitted(2, undefined, 'doc-q');
+    expect(onAdopt).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('usesPageFacts (R44)', () => {
   it('true for a pageText condition (nested too) or a selector extract; false otherwise', () => {
     expect(usesPageFacts(rule('a', { pageText: 'x' }))).toBe(true);
