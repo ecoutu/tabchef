@@ -2,6 +2,9 @@
   import { send } from '../../ui/send';
   import type { ImportPreview, ImportSource } from '../../engine/messages';
   import type { Rule } from '../../core/lang/types';
+  import type { PreviewResult } from '../../core/lang/preview';
+  import { previewThenApply } from '../../ui/preview-flow';
+  import PreviewDialog from './PreviewDialog.svelte';
 
   const MAX_IMPORT_BYTES = 5 * 1024 * 1024;
   const UNSAVED = 'You have unsaved changes on this page; they will be discarded.';
@@ -20,6 +23,12 @@
   let busy = $state(false);
   /** Collapse suggestions (M2 T19) by index: 'use' sends it with import.apply, 'keep' hides the card. Never automatic. */
   let choice = $state<Record<number, 'use' | 'keep'>>({});
+
+  /** The open preview dialog (M1/R68: an import with real effects is confirmed in it first, as Save is). */
+  let dialog = $state<{ result: PreviewResult; answer: (apply: boolean) => void } | null>(null);
+  const confirmPreview = (result: PreviewResult): Promise<boolean> => new Promise((resolve) => {
+    dialog = { result, answer: (ok) => { dialog = null; resolve(ok); } };
+  });
 
   function reset(): void { preview = null; data = undefined; error = ''; notice = ''; choice = {}; }
 
@@ -60,7 +69,15 @@
       ? `Add ${what}? Imported rules go after your existing rules. These duplicate settings change:\n- ${changes.join('\n- ')}\nYour current config is backed up first.`
       : `Add ${what}? Imported rules go after your existing rules; nothing is overwritten. Your current config is backed up first.`);
     if (!window.confirm(warn(body))) return;
-    const r = await send({ type: 'import.apply', source, data, baseRev: rev, ...(chosen.length > 0 && { collapse: chosen }) });
+    const collapse = chosen.length > 0 ? { collapse: chosen } : {};
+    // The config import.apply would store (server-derived, same collapse), previewed like a Save (M1/R68).
+    error = '';
+    const next = await send({ type: 'import.preview', source, data, ...collapse });
+    if (!next.ok) { error = `Could not preview: ${next.error}`; return; }
+    const out = await previewThenApply(next.data.config, confirmPreview, () => send({ type: 'import.apply', source, data, baseRev: rev, ...collapse }));
+    if (out.status === 'cancelled') return;
+    if (out.status === 'failed') { error = `Could not preview: ${out.error}`; return; }
+    const r = out.value;
     if (r.ok) { notice = `Imported ${r.data.rules} ${r.data.rules === 1 ? 'rule' : 'rules'}.`; preview = null; data = undefined; pasted = ''; error = ''; onApplied(); }
     else if (r.error === 'conflict') error = 'Settings changed elsewhere. Choose the file again to re-preview.';
     else error = r.errors?.length ? `${r.error}: ${r.errors.join('; ')}` : r.error;
@@ -68,6 +85,9 @@
 </script>
 
 <section>
+  {#if dialog}
+    <PreviewDialog result={dialog.result} onApply={() => dialog?.answer(true)} onCancel={() => dialog?.answer(false)} />
+  {/if}
   <h2>Import from another extension</h2>
   {#if error}<p class="err" role="alert">{error}</p>{/if}
   {#if notice}<p class="ok" role="status">{notice}</p>{/if}

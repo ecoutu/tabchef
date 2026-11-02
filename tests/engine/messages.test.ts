@@ -550,6 +550,21 @@ describe('import.*', () => {
       expect(saved.rules[1]!.actions[0]).toEqual({ group: { title: '{acme|lower}', color: '{acme|lower|map:acmeColors|default:blue}', strict: true, merge: false } });
     });
 
+    it('M1/R68: import.preview returns the config import.apply would store (for the chosen collapse), so the UI can preview it', async () => {
+      const s = setup();
+      const cfg = seed(s);
+      type WithConfig = { ok: boolean; data: { config: Config } };
+      const plain = (await s.handle({ type: 'import.preview', source: 'auto-group-tabs', data: repos }, ui)) as WithConfig;
+      const collapsed = (await s.handle({ type: 'import.preview', source: 'auto-group-tabs', data: repos, collapse: [0] }, ui)) as WithConfig;
+      expect(s.set).not.toHaveBeenCalled();
+      await s.handle({ type: 'import.apply', source: 'auto-group-tabs', data: repos, baseRev: configRev(cfg) }, ui);
+      expect(plain.data.config).toEqual(s.set.mock.calls[0]![0]);
+      await s.handle({ type: 'import.apply', source: 'auto-group-tabs', data: repos, baseRev: configRev(cfg), collapse: [0] }, ui);
+      expect(collapsed.data.config).toEqual(s.set.mock.calls[1]![0]);
+      expect(await s.handle({ type: 'import.preview', source: 'auto-group-tabs', data: repos, collapse: [1] }, ui)).toMatchObject({ ok: false, error: 'unknown collapse suggestion' });
+      expect(await s.handle({ type: 'import.preview', source: 'auto-group-tabs', data: repos, collapse: ['x'] }, ui)).toEqual({ ok: false, error: 'unknown request' });
+    });
+
     it('re-derives suggestions server-side: unknown indices fail, a client-sent rule is never used', async () => {
       const s = setup();
       const cfg = seed(s);

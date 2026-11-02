@@ -145,7 +145,8 @@ export type Request =
   | { type: 'tab.lock'; tabId: number }
   | { type: 'tab.unlock'; tabId: number }
   | { type: 'tab.focus'; tabId: number }
-  | { type: 'import.preview'; source: ImportSource; data: unknown }
+  /** `collapse`: as import.apply's; the preview's `config` is then the config import.apply would store with it (M1/R68). */
+  | { type: 'import.preview'; source: ImportSource; data: unknown; collapse?: number[] }
   /** `collapse`: indices into the preview's `collapse` suggestions to apply (re-derived here from the same input). */
   | { type: 'import.apply'; source: ImportSource; data: unknown; baseRev: string; collapse?: number[] }
   | { type: 'recipes.list' }
@@ -206,6 +207,8 @@ export interface ImportPreview {
   rules: GroupRule[]; dedupe: Partial<DedupeSettings>; warnings: string[]; changes: string[];
   /** M2 T19: optional "replace N similar rules with 1 templated rule" suggestions; import.apply applies chosen ones. */
   collapse: CollapseSuggestion[];
+  /** The config import.apply would store now (with the request's `collapse`): the UI previews it first (M1/R68). */
+  config: Config;
 }
 const MAX_IMPORT_BYTES = 5 * 1024 * 1024;
 
@@ -276,6 +279,7 @@ const optRev = (x: Record<string, unknown>) => x.baseRev === undefined || str(x.
 const isParams = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
 const isImportSource = (v: unknown): v is ImportSource => v === 'auto-group-tabs' || v === 'tab-deduper';
+const isCollapse = (v: unknown): boolean => v === undefined || (Array.isArray(v) && v.every((i) => Number.isInteger(i) && (i as number) >= 0));
 
 /**
  * Imported rules as v2 rules, with ids mapped to the v2 pattern and unique among `current`'s rules (as import.apply
@@ -294,7 +298,31 @@ function importedRules(rules: GroupRule[], current: Config, builtins: Record<str
   return { rules: out, collapse: suggestCollapse(out, { ids, tables }) };
 }
 
-async function runImport(source: ImportSource, data: unknown, current: Config, builtins?: Record<string, Recipe>): Promise<ImportPreview> {
+type ImportBase = Omit<ImportPreview, 'config'>;
+
+/**
+ * The config import.apply stores for `imp` on top of `cur` with the chosen collapse suggestions (re-derived here, never
+ * client-sent), with its validation errors; `unknownCollapse` when an index names no suggestion. Shared by
+ * import.preview (whose `config` the UI previews) and import.apply, so both describe the same change.
+ */
+function importNext(imp: ImportBase, cur: Config, collapse: number[] | undefined, builtins: Record<string, Recipe> | undefined):
+  { next: Config; added: number; invalid?: string[] } | { unknownCollapse: true } {
+  // Imported ids are mapped to the v2 id pattern, unique among the user rules; keys append to order.
+  // Chosen collapse suggestions (T19) are re-derived from the same input and replace their runs in place.
+  const derived = importedRules(imp.rules, cur, builtins);
+  const chosen = [...new Set(collapse ?? [])].sort((a, b) => a - b).map((i) => derived.collapse[i]);
+  if (chosen.some((c) => c === undefined)) return { unknownCollapse: true };
+  const { rules, tables } = applyCollapse(derived.rules, cur.tables ?? {}, chosen as CollapseSuggestion[]);
+  const next: Config = {
+    ...cur, rules: [...cur.rules, ...rules], order: [...new Set([...cur.order, ...rules.map((r) => userKey(r.id))])],
+    ...(chosen.length > 0 && { tables }),
+    dedupe: mergeDedupe(cur.dedupe, imp.dedupe).merged,
+  };
+  const v = validateConfig(next);
+  return { next, added: rules.length, ...(!v.ok && { invalid: v.errors }) };
+}
+
+async function runImport(source: ImportSource, data: unknown, current: Config, builtins?: Record<string, Recipe>): Promise<ImportBase> {
   if ((JSON.stringify(data) ?? '').length > MAX_IMPORT_BYTES) throw new Error('Import data too large (max 5 MB)');
   const raw = source === 'auto-group-tabs' ? { dedupe: {}, ...(await importAutoGroupTabs(data)) } : { rules: [] as GroupRule[], ...importTabDeduper(data) };
   const skipped: string[] = [];
@@ -322,9 +350,8 @@ export function isRequest(m: unknown): m is Request {
     case 'dupes.resolve': return num(x.newTabId) && num(x.existingTabId) && (x.choice === 'switch' || x.choice === 'keep');
     case 'recent.undo': return str(x.id);
     case 'why.forTab': case 'tab.lock': case 'tab.unlock': case 'tab.focus': return num(x.tabId);
-    case 'import.preview': return isImportSource(x.source);
-    case 'import.apply': return isImportSource(x.source) && 'data' in x && str(x.baseRev)
-      && (x.collapse === undefined || (Array.isArray(x.collapse) && x.collapse.every((i) => Number.isInteger(i) && (i as number) >= 0)));
+    case 'import.preview': return isImportSource(x.source) && isCollapse(x.collapse);
+    case 'import.apply': return isImportSource(x.source) && 'data' in x && str(x.baseRev) && isCollapse(x.collapse);
     case 'safety.pause': return x.d === '15m' || x.d === '1h' || x.d === 'restart';
     case 'recipes.enable': return str(x.id) && (x.params === undefined || isParams(x.params)) && optRev(x);
     case 'recipes.disable': return str(x.id) && optRev(x);
@@ -745,7 +772,13 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
         }
         return ok(null);
       }
-      case 'import.preview': return ok(await runImport(req.source, req.data, await deps.store.get(), importBuiltins()));
+      case 'import.preview': {
+        const current = await deps.store.get();
+        const imp = await runImport(req.source, req.data, current, importBuiltins());
+        const n = importNext(imp, current, req.collapse, importBuiltins());
+        if ('unknownCollapse' in n) return fail('unknown collapse suggestion');
+        return ok({ ...imp, config: n.next });
+      }
       case 'import.apply': {
         const current = await deps.store.get();
         const imp = await runImport(req.source, req.data, current, importBuiltins());
@@ -757,21 +790,11 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
         try {
           await deps.store.update((cur) => {
             if (configRev(cur) !== req.baseRev) throw new Conflict();
-            // Imported ids are mapped to the v2 id pattern, unique among the user rules; keys append to order.
-            // Chosen collapse suggestions (T19) are re-derived from the same input and replace their runs in place.
-            const derived = importedRules(imp.rules, cur, importBuiltins());
-            const chosen = [...new Set(req.collapse ?? [])].sort((a, b) => a - b).map((i) => derived.collapse[i]);
-            if (chosen.some((c) => c === undefined)) { unknownCollapse = true; throw new Conflict(); }
-            const { rules, tables } = applyCollapse(derived.rules, cur.tables ?? {}, chosen as CollapseSuggestion[]);
-            const next: Config = {
-              ...cur, rules: [...cur.rules, ...rules], order: [...new Set([...cur.order, ...rules.map((r) => userKey(r.id))])],
-              ...(chosen.length > 0 && { tables }),
-              dedupe: mergeDedupe(cur.dedupe, imp.dedupe).merged,
-            };
-            const v = validateConfig(next);
-            if (!v.ok) { invalid = v.errors; throw new Conflict(); }
-            added = rules.length;
-            return next;
+            const n = importNext(imp, cur, req.collapse, importBuiltins());
+            if ('unknownCollapse' in n) { unknownCollapse = true; throw new Conflict(); }
+            if (n.invalid) { invalid = n.invalid; throw new Conflict(); }
+            added = n.added;
+            return n.next;
           });
         } catch (e) {
           if (!(e instanceof Conflict)) throw e;
