@@ -128,7 +128,7 @@ export class AnchorService {
         this.log({ tabId, action: 'anchor-opened', detail: `Opened anchor ${url} in ${g.title}` }, g.ruleId);
       }
       used.add(tabId);
-      st.anchors.push({ tabId, windowId: g.windowId, title: g.title, url });
+      st.anchors.push({ tabId, windowId: g.windowId, title: g.title, url, groupId: g.groupId });
       // Recorded: isAnchor now keeps it from dedupe, so an unconsumed exemption would only exempt the user's own
       // duplicate of this URL opened in the next 15 s.
       disarm?.();
@@ -146,7 +146,11 @@ export class AnchorService {
     const i = st.anchors.findIndex((a) => a.tabId === tabId);
     if (i < 0) return;
     const a = st.anchors.splice(i, 1)[0]!;
-    if (!isWindowClosing) st.anchorsDismissed.add(groupKey(a.windowId, a.title));
+    if (!isWindowClosing) {
+      const gk = groupKey(a.windowId, a.title);
+      st.anchorsDismissed.add(gk);
+      if (a.groupId !== undefined) st.anchorsDismissedGroups.set(a.groupId, gk);
+    }
     await saveState(st);
   }
 
@@ -160,28 +164,54 @@ export class AnchorService {
   }
 
   /**
-   * tabGroups.onUpdated: a renamed group keeps its anchors. Their entries take the new title, so removing the group (by
-   * its new title) drops them and a user close dismisses the right group.
+   * tabGroups.onUpdated: a renamed group keeps its anchors. The entries recorded for that group id take the new title,
+   * so removing the group (by its new title) drops them and a user close dismisses the right group; a dismissal made in
+   * the group moves to the new title in the same step. A collapse or color change (same title) changes nothing, and an
+   * anchor the user dragged into this group keeps its own group's title. Entries stored before group ids were
+   * recorded fall back to membership: those of tabs now in the group take its title.
    */
   async onGroupUpdated(g: { id: number; windowId: number; title?: string }): Promise<void> {
     if (g.title === undefined) return;
+    const title = g.title;
     const st = await this.state();
-    const stale = st.anchors.filter((a) => a.windowId === g.windowId && a.title !== g.title);
-    if (stale.length === 0) return;
-    const members = new Set((await this.port.snapshot()).tabs.filter((t) => t.groupId === g.id).map((t) => t.id));
+    const gk = groupKey(g.windowId, title);
+    const renamed: string[] = [];
     let changed = false;
-    for (const a of stale) if (members.has(a.tabId)) { a.title = g.title; changed = true; }
+    for (const a of st.anchors) {
+      if (a.groupId !== g.id || a.windowId !== g.windowId || a.title === title) continue;
+      renamed.push(groupKey(a.windowId, a.title));
+      a.title = title;
+      changed = true;
+    }
+    const dismissedIn = st.anchorsDismissedGroups.get(g.id);
+    if (dismissedIn !== undefined && dismissedIn !== gk) renamed.push(dismissedIn);
+    for (const old of new Set(renamed)) {
+      if (st.anchorsDismissed.delete(old)) st.anchorsDismissed.add(gk);
+    }
+    if (dismissedIn !== undefined && dismissedIn !== gk) {
+      st.anchorsDismissedGroups.set(g.id, gk);
+      changed = true;
+    }
+    const legacy = st.anchors.filter((a) => a.groupId === undefined && a.windowId === g.windowId && a.title !== title);
+    if (legacy.length > 0) {
+      const members = new Set((await this.port.snapshot()).tabs.filter((t) => t.groupId === g.id).map((t) => t.id));
+      for (const a of legacy) if (members.has(a.tabId)) { a.title = title; changed = true; }
+    }
     if (changed) await saveState(st);
   }
 
   /** tabGroups.onRemoved: the group may be created again with its anchors; tabs that outlived it are anchors no more. */
-  async onGroupRemoved(g: { windowId: number; title?: string }): Promise<void> {
+  async onGroupRemoved(g: { id?: number; windowId: number; title?: string }): Promise<void> {
     if (g.title === undefined) return;
     const st = await this.state();
     const gk = groupKey(g.windowId, g.title);
     const before = st.anchors.length;
     st.anchors = st.anchors.filter((a) => groupKey(a.windowId, a.title) !== gk);
-    if (!st.anchorsDismissed.delete(gk) && st.anchors.length === before) return;
+    let dropped = false;
+    for (const [id, k] of st.anchorsDismissedGroups) {
+      if (k === gk || id === g.id) { st.anchorsDismissedGroups.delete(id); dropped = true; }
+    }
+    if (!st.anchorsDismissed.delete(gk) && st.anchors.length === before && !dropped) return;
     await saveState(st);
   }
 

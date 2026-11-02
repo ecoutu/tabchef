@@ -70,6 +70,32 @@ describe('PageFacts store', () => {
   });
 });
 
+describe('PageFacts retired documents (a commit replaced them)', () => {
+  it('a commit retires the previous document; a re-commit of it (bfcache) brings it back; clear() forgets the tab', () => {
+    const pf = new PageFacts({ session: memSession() });
+    pf.onCommitted(1, 'https://a.test/', 'doc-a');
+    expect(pf.isRetiredDocument(1, 'doc-a')).toBe(false);
+    pf.onCommitted(1, 'https://b.test/', 'doc-b');
+    expect(pf.isRetiredDocument(1, 'doc-a')).toBe(true);
+    expect(pf.isRetiredDocument(1, 'doc-b')).toBe(false);
+    expect(pf.isRetiredDocument(2, 'doc-a')).toBe(false);
+    expect(pf.isRetiredDocument(1, undefined)).toBe(false);
+    pf.onCommitted(1, 'https://a.test/', 'doc-a'); // back/forward-cache restore of A
+    expect(pf.isRetiredDocument(1, 'doc-a')).toBe(false);
+    expect(pf.isRetiredDocument(1, 'doc-b')).toBe(true);
+    pf.clear(1);
+    expect(pf.isRetiredDocument(1, 'doc-b')).toBe(false);
+  });
+
+  it('keeps only the last few retired documents per tab', () => {
+    const pf = new PageFacts({ session: memSession() });
+    for (let i = 0; i < 7; i++) pf.onCommitted(1, undefined, `doc-${i}`);
+    expect(pf.isRetiredDocument(1, 'doc-5')).toBe(true);
+    expect(pf.isRetiredDocument(1, 'doc-2')).toBe(true);
+    expect(pf.isRetiredDocument(1, 'doc-1')).toBe(false); // dropped from the cap of 4
+  });
+});
+
 describe('usesPageFacts (R44)', () => {
   it('true for a pageText condition (nested too) or a selector extract; false otherwise', () => {
     expect(usesPageFacts(rule('a', { pageText: 'x' }))).toBe(true);

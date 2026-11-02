@@ -11,6 +11,7 @@
 //     other isProtected or isActiveFocused -> protected-close banner if eligible, else a suggestion; never close
 //  6. form state unobservable (no watch at that URL) -> close only if the tab was not active since its commit
 // An entry is deleted (and the deletion stored) before the tab is closed or bannered, so it never fires twice.
+// The "fire-time protection order" tests pin this order: change both together.
 //
 // Dry run (M2 T12, rulings R10 / R48): the live close is decided as if dry-run rules did not exist, so the next live
 // close rule wins. A dry-run close rule that would have won (every rule under global dry run) is logged once per page
@@ -137,18 +138,28 @@ export class CloseExecutor {
     private readonly deps: CloseExecutorDeps,
   ) {
     this.now = deps.now ?? Date.now;
-    this.ready = this.load();
+    this.ready = this.load(false);
     this.chain = this.ready;
   }
 
-  private async load(): Promise<void> {
+  /**
+   * `armMerged`: a retried load (inside `run`) arms every entry it merges, as rearm() would have: the worker-start
+   * rearm() ran on the empty map of the failed first load. The constructor's load leaves arming to rearm().
+   */
+  private async load(armMerged: boolean): Promise<void> {
     try {
       const [p, s, x] = await Promise.all([
         this.deps.session.get(PENDING_CLOSES_KEY), this.deps.session.get(CLOSE_SUGGESTIONS_KEY), this.deps.session.get(CLOSE_EXEMPT_KEY),
       ]);
       // A retried load merges: what this worker decided since (the live state) wins over the stored state.
+      const merged: PendingClose[] = [];
       if (Array.isArray(p)) {
-        for (const e of p) if (isEntry(e) && !this.pending.has(e.tabId)) this.pending.set(e.tabId, { committedAt: 0, activated: true, ...e });
+        for (const e of p) {
+          if (!isEntry(e) || this.pending.has(e.tabId)) continue;
+          const entry = { committedAt: 0, activated: true, ...e };
+          this.pending.set(e.tabId, entry);
+          merged.push(entry);
+        }
       }
       if (Array.isArray(s)) for (const e of s) if (isSuggestion(e) && !this.suggested.has(e.tabId)) this.suggested.set(e.tabId, e);
       if (Array.isArray(x)) {
@@ -157,6 +168,7 @@ export class CloseExecutor {
         }
       }
       this.loaded = true;
+      if (armMerged) for (const e of merged) this.arm(e);
     } catch (e) {
       console.warn('[tabchef] close state load failed; retrying on the next step', e);
     }
@@ -165,7 +177,7 @@ export class CloseExecutor {
   /** Serializes every state change (one worker), after the stored state loaded. Never rejects. */
   private run(fn: () => Promise<void>): Promise<void> {
     const next = this.chain.then(async () => {
-      if (!this.loaded) await this.load();
+      if (!this.loaded) await this.load(true);
       await this.deps.beforeRun?.();
       await fn();
     }).catch((e: unknown) => { console.warn('[tabchef] close executor failed', e); });
@@ -291,8 +303,9 @@ export class CloseExecutor {
       const [snap, p] = await Promise.all([this.port.snapshot(), this.getProgram()]);
       const tab = snap.tabs.find((t) => t.id === tabId);
       if (!tab || normOf(tab.url, p) !== ask.url) return;
-      // R71: locked or pinned since the banner asked: the lock / pin wins over the earlier answer.
-      if (tab.pinned || this.deps.safety.isLocked(tabId)) return;
+      // R71: locked, pinned or made an anchor since the banner asked: never-close wins over the earlier answer.
+      const s = this.deps.safety;
+      if (neverCloseReason(tab, { isLocked: (id) => s.isLocked(id), ...(this.deps.isAnchor && { isAnchor: this.deps.isAnchor }) })) return;
       await this.close(snap, p, tab, ask.ruleKey, 'close-confirmed', 'Closed from the banner', false);
     });
   }

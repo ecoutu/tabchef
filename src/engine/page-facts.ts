@@ -12,6 +12,8 @@ export interface WatchConfig { needles: string[]; selectors: WatchSelector[] }
 export const PAGE_FACTS_KEY = 'pageFacts';
 /** How long after a navigation the planner holds a tab whose group outcome waits on its page facts. */
 export const PAGE_HOLD_MS = 5000;
+/** How many replaced documents per tab PageFacts remembers (isRetiredDocument). */
+export const RETIRED_DOCS_MAX = 4;
 
 export interface PageFactsDeps {
   session: { get(k: string): Promise<unknown>; set(k: string, v: unknown): Promise<void> };
@@ -97,6 +99,11 @@ export class PageFacts implements PageLookup {
   private readonly holdTimers = new Map<number, ReturnType<typeof setTimeout>>();
   /** The tab's current top-frame document (webNavigation / sender documentId), where known. */
   private readonly docs = new Map<number, string>();
+  /**
+   * Per tab, the last RETIRED_DOCS_MAX documents a commit replaced (oldest first). A message from one of them is stale
+   * for sure, unlike a document not seen yet: a new page's hello can reach the worker before its own commit.
+   */
+  private readonly retired = new Map<number, string[]>();
   private loaded = false;
   private chain: Promise<void> = Promise.resolve();
   private readonly now: () => number;
@@ -136,21 +143,45 @@ export class PageFacts implements PageLookup {
 
   /** Wire to tabs.onRemoved (and the replaced tab of tabs.onReplaced). */
   clear(tabId: number): void {
-    this.endHold(tabId);
+    this.retired.delete(tabId);
     this.docs.delete(tabId);
+    this.clearFacts(tabId);
+  }
+
+  private clearFacts(tabId: number): void {
+    this.endHold(tabId);
     if (this.facts.delete(tabId) || !this.loaded) this.save(tabId);
   }
 
   /**
    * Wire to webNavigation.onCommitted (frameId 0) with the committed URL: the new document's facts are not known until
-   * its watch reports, so the planner holds the tab, but only where the watch runs (`covers`). Without a URL (a
-   * watch.hello: the watch is evidently running) the hold is always armed. `documentId` is the new document's, so
-   * a late report from the previous one can be told apart (isCurrentDocument).
+   * its watch reports, so the planner holds the tab, but only where the watch runs (`covers`). `documentId` is the new
+   * document's, so a late report from the previous one can be told apart (isCurrentDocument), and the previous one is
+   * retired (isRetiredDocument). A re-commit of a retired document (back/forward-cache restore) makes it current
+   * again. Only commits change the current document or retire one: a hello never does (onHello).
    */
   onCommitted(tabId: number, url?: string, documentId?: string): void {
-    this.clear(tabId);
-    if (documentId !== undefined) this.docs.set(tabId, documentId);
+    const previous = this.docs.get(tabId);
+    this.clearFacts(tabId);
+    this.docs.delete(tabId);
+    if (documentId !== undefined) {
+      const retired = (this.retired.get(tabId) ?? []).filter((d) => d !== documentId);
+      if (previous !== undefined && previous !== documentId) retired.push(previous);
+      if (retired.length) this.retired.set(tabId, retired.slice(-RETIRED_DOCS_MAX));
+      else this.retired.delete(tabId);
+      this.docs.set(tabId, documentId);
+    }
     if (url !== undefined && this.deps.covers && !this.deps.covers(url)) return;
+    this.committedAt.set(tabId, this.now());
+  }
+
+  /**
+   * A watch.hello from the tab's current document (or one not known to differ): a new page state (load, same-document
+   * navigation, back/forward-cache restore). Drops the facts and holds the tab until the fresh report that follows the
+   * hello's answer (the watch is evidently running, so always). The current document and retired ones stay as they are.
+   */
+  onHello(tabId: number): void {
+    this.clearFacts(tabId);
     this.committedAt.set(tabId, this.now());
   }
 
@@ -158,6 +189,11 @@ export class PageFacts implements PageLookup {
   isCurrentDocument(tabId: number, documentId: string | undefined): boolean {
     const current = this.docs.get(tabId);
     return documentId === undefined || current === undefined || current === documentId;
+  }
+
+  /** A document a commit in the tab has replaced (and not restored since): its messages are stale. */
+  isRetiredDocument(tabId: number, documentId: string | undefined): boolean {
+    return documentId !== undefined && (this.retired.get(tabId)?.includes(documentId) ?? false);
   }
 
   /** No facts yet for the tab's current document, which committed less than PAGE_HOLD_MS ago (PageLookup). */

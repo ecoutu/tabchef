@@ -869,7 +869,7 @@ export interface ContentDeps {
   /** e.g. `chrome-extension://<id>` */
   extensionOrigin: string;
   getProgram: () => Promise<Program>;
-  pageFacts: Pick<PageFacts, 'set' | 'onCommitted' | 'watchConfigFor' | 'isCurrentDocument'>;
+  pageFacts: Pick<PageFacts, 'set' | 'onHello' | 'watchConfigFor' | 'isCurrentDocument' | 'isRetiredDocument'>;
   safety: Pick<SafetyService, 'markFormEdited' | 'clearFormEdited'>;
   /** Reconciler.schedule. */
   schedule: (reason: string) => void;
@@ -908,15 +908,24 @@ export function createContentHandler(d: ContentDeps): (msg: unknown, sender: Mes
     const url = sender.url ?? sender.tab?.url ?? '';
     if (hello) {
       const m = msg as WatchHelloMessage;
-      // A hello starts a new page state (load, back/forward-cache restore, same-document navigation, which fires no
-      // onCommitted): drop the facts of the previous one and hold until the fresh report that follows the answer.
-      d.pageFacts.onCommitted(tabId, undefined, sender.documentId);
-      if (m.formEdited) d.safety.markFormEdited(tabId, url);
+      // Always answered with the config: the watch keeps it for its document's life (a bfcache-restored page's hello can
+      // beat its own commit). Only commits change or retire the tab's document. A hello from the current document (or
+      // where none is known) starts a new page state (load, back/forward-cache restore, same-document navigation,
+      // which fires no onCommitted): drop the previous facts and hold until the fresh report that follows the answer.
+      // A hello from any other document (retired, or not committed yet) leaves the current page's facts alone.
+      const current = d.pageFacts.isCurrentDocument(tabId, sender.documentId) && !d.pageFacts.isRetiredDocument(tabId, sender.documentId);
+      if (current) {
+        d.pageFacts.onHello(tabId);
+        if (m.formEdited) d.safety.markFormEdited(tabId, url);
+      }
       return d.getProgram().then((p): WatchConfigMessage => ({ type: 'watch.config', ...d.pageFacts.watchConfigFor(url, p) }));
     }
     const m = pf!;
-    // Sent by the tab's previous document after the navigation committed: not this page's facts.
-    if (!d.pageFacts.isCurrentDocument(tabId, sender.documentId)) return Promise.resolve({ ok: false, error: 'stale document' });
+    // Sent by a document that is not the tab's current one (the previous document after the navigation committed, or
+    // one a commit has retired): not this page's facts.
+    if (!d.pageFacts.isCurrentDocument(tabId, sender.documentId) || d.pageFacts.isRetiredDocument(tabId, sender.documentId)) {
+      return Promise.resolve({ ok: false, error: 'stale document' });
+    }
     d.pageFacts.set(tabId, { texts: [...m.texts], extracts: { ...m.extracts }, formEdited: m.formEdited });
     if (m.formEdited) d.safety.markFormEdited(tabId, url);
     else d.safety.clearFormEdited(tabId);

@@ -146,6 +146,20 @@ describe('page watch content script', () => {
     w.stop();
   });
 
+  it('a submit also drops edited fields the page has removed: a multi-step form clears on the last step', async () => {
+    const { facts, w } = setup({ needles: [], selectors: [] },
+      '<div id="step1"><input id="name"></div><form id="step2"><input id="card"></form>');
+    await vi.advanceTimersByTimeAsync(0);
+    document.getElementById('name')!.dispatchEvent(new Event('input', { bubbles: true }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(facts().at(-1)).toMatchObject({ formEdited: true });
+    document.getElementById('step1')!.remove(); // the SPA unmounts step 1
+    document.getElementById('step2')!.dispatchEvent(new Event('submit', { bubbles: true }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(facts().at(-1)).toMatchObject({ formEdited: false });
+    w.stop();
+  });
+
   it('input on a non-editable element does not count', async () => {
     const { facts, w } = setup({ needles: [], selectors: [] }, '<div id="d"></div>');
     await vi.advanceTimersByTimeAsync(0);

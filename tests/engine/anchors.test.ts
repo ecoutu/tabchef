@@ -73,7 +73,7 @@ describe('AnchorService', () => {
     expect(w.armed).toEqual([[HOME, 1]]);
     // persisted in RuntimeState
     const rt = (await browser.storage.session.get(RT_KEY))[RT_KEY] as RuntimeState;
-    expect(rt.anchors).toEqual([{ tabId: id, windowId: 1, title: 'api', url: HOME }]);
+    expect(rt.anchors).toEqual([{ tabId: id, windowId: 1, title: 'api', url: HOME, groupId: w.port.state.groups.find((g) => g.title === 'api')!.id }]);
     // the anchor's URL does not match the rule: strict must not ungroup it on later flushes (R21)
     await w.r.flush();
     expect(w.groupOf(id!)).toBe('api');
@@ -283,6 +283,67 @@ describe('AnchorService: failures, renames and user decisions (M2 polish P1)', (
     await w.anchors.onGroupUpdated({ id: g.id, windowId: 1, title: 'API work' });
     await w.anchors.onGroupRemoved({ windowId: 1, title: 'API work' });
     expect(w.anchors.isAnchor(id!)).toBe(false);
+  });
+});
+
+describe('AnchorService: following a renamed group (by group id)', () => {
+  beforeEach(() => { fakeBrowser.reset(); });
+  const WEB_PR = 'https://github.com/acme/web/pull/2';
+  const WEB_HOME = 'https://github.com/acme/web';
+
+  it('an anchor dragged into another group is not retitled when that group is collapsed', async () => {
+    const w = setup();
+    w.port.addTab(tab(1, PR));
+    w.port.addTab(tab(2, WEB_PR));
+    await w.r.flush();
+    const [apiHome] = w.idOf(HOME);
+    const web = w.port.state.groups.find((x) => x.title === 'web')!;
+    w.port.state.tabs.find((t) => t.id === apiHome)!.groupId = web.id; // the user drags it into "web"
+    web.collapsed = true;
+    await w.anchors.onGroupUpdated({ id: web.id, windowId: 1, title: 'web' });
+    expect((await w.r.liveState()).anchors.find((a) => a.tabId === apiHome)?.title).toBe('api');
+    // Removing "api" drops its anchor, wherever the tab went.
+    await w.anchors.onGroupRemoved({ windowId: 1, title: 'api' });
+    expect(w.anchors.isAnchor(apiHome!)).toBe(false);
+    expect(w.anchors.isAnchor(w.idOf(WEB_HOME)[0]!)).toBe(true);
+  });
+
+  it('an anchor record stored without a group id still follows a rename of the group it is in (as before)', async () => {
+    await browser.storage.session.set({ [RT_KEY]: { anchors: [{ tabId: 5, windowId: 1, title: 'api', url: HOME }] } });
+    const w = setup();
+    w.port.addGroup({ id: 50, windowId: 1, title: 'API', color: 'blue', collapsed: false });
+    w.port.addTab(tab(5, HOME, { groupId: 50 }));
+    await w.anchors.onGroupUpdated({ id: 50, windowId: 1, title: 'API' });
+    expect((await w.r.liveState()).anchors).toEqual([{ tabId: 5, windowId: 1, title: 'API', url: HOME }]);
+  });
+
+  it('a rename moves the dismissal with the group: removing it by its new title clears it', async () => {
+    const w = setup();
+    w.port.addTab(tab(1, PR));
+    await w.r.flush();
+    const [id] = w.idOf(HOME);
+    await w.anchors.onTabRemoved(id!); // the user closes the anchor: "1|api" is dismissed
+    const g = w.port.state.groups.find((x) => x.title === 'api')!;
+    g.title = 'API work';
+    await w.anchors.onGroupUpdated({ id: g.id, windowId: 1, title: 'API work' });
+    expect([...(await w.r.liveState()).anchorsDismissed]).toEqual(['1|API work']);
+    await w.anchors.onGroupRemoved({ windowId: 1, title: 'API work' });
+    expect((await w.r.liveState()).anchorsDismissed.size).toBe(0);
+  });
+
+  it('a rename retitles the group\'s anchors and moves the dismissal of the group in one step', async () => {
+    const w = setup(cfgOf({ anchors: ['https://github.com/acme/{repo}', 'https://github.com/acme/{repo}/issues'] }));
+    w.port.addTab(tab(1, PR));
+    await w.r.flush();
+    const [home] = w.idOf(HOME);
+    const [issues] = w.idOf(`${HOME}/issues`);
+    await w.anchors.onTabRemoved(home!);
+    const g = w.port.state.groups.find((x) => x.title === 'api')!;
+    g.title = 'API';
+    await w.anchors.onGroupUpdated({ id: g.id, windowId: 1, title: 'API' });
+    const st = await w.r.liveState();
+    expect(st.anchors.find((a) => a.tabId === issues)?.title).toBe('API');
+    expect([...st.anchorsDismissed]).toEqual(['1|API']);
   });
 });
 

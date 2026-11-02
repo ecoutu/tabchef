@@ -153,9 +153,10 @@ export function startPageWatch(env: PageWatchEnv): { stop(): void } {
   const onSubmit = (e: Event) => {
     const form = e.target;
     if (!(form instanceof Element)) return;
-    // Only the submitted form's fields are sent; a draft elsewhere on the page still holds unsaved edits.
+    // Only the submitted form's fields are sent; a draft elsewhere on the page still holds unsaved edits. A field the
+    // page has removed (an earlier step of a multi-step form) took its unsaved value with it.
     for (const el of editedEls) {
-      if (form.contains(el) || (el as Partial<HTMLInputElement>).form === form) editedEls.delete(el);
+      if (!el.isConnected || form.contains(el) || (el as Partial<HTMLInputElement>).form === form) editedEls.delete(el);
     }
     formEdited = editedEls.size > 0;
     report();

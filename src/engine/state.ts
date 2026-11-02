@@ -22,9 +22,12 @@ export interface RuntimeState {
   anchors?: AnchorEntry[];
   /** `"<windowId>|<title>"` of groups whose anchor the user closed: not reopened until the group is removed (T11). */
   anchorsDismissed?: string[];
+  /** [groupId, "<windowId>|<title>"]: the group a dismissal was made in, so a rename moves the dismissal along. */
+  anchorsDismissedGroups?: [number, string][];
 }
 
-export interface AnchorEntry { tabId: number; windowId: number; title: string; url: string }
+/** `groupId`: the group it was recorded for (missing in records stored before it was tracked). */
+export interface AnchorEntry { tabId: number; windowId: number; title: string; url: string; groupId?: number }
 
 export interface PendingTitle { title: string; color: GroupColor; collapsed?: boolean }
 
@@ -44,6 +47,7 @@ export interface LiveState {
   creationAbsent: Map<string, number>;
   anchors: AnchorEntry[];
   anchorsDismissed: Set<string>;
+  anchorsDismissedGroups: Map<number, string>;
 }
 
 export const RT_KEY = 'rt';
@@ -61,6 +65,7 @@ export function toLive(rt: Partial<RuntimeState> | undefined): LiveState {
     creationAbsent: new Map(rt?.creationAbsent ?? []),
     anchors: (rt?.anchors ?? []).map((a) => ({ ...a })),
     anchorsDismissed: new Set(rt?.anchorsDismissed ?? []),
+    anchorsDismissedGroups: new Map(rt?.anchorsDismissedGroups ?? []),
   };
 }
 
@@ -77,6 +82,7 @@ export function toRuntime(s: LiveState): RuntimeState {
     creationAbsent: [...s.creationAbsent],
     anchors: s.anchors.map((a) => ({ ...a })),
     anchorsDismissed: [...s.anchorsDismissed],
+    anchorsDismissedGroups: [...s.anchorsDismissedGroups],
   };
 }
 

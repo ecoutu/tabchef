@@ -553,14 +553,19 @@ describe('CloseExecutor robustness (M2 polish P1)', () => {
     expect(alarms.size).toBe(0);
   });
 
-  it('a failed load never lets a save overwrite the stored state; the next step loads it again', async () => {
+  it('a failed load never lets a save overwrite the stored state; the next step loads it again and arms what it merged', async () => {
     const e = env();
     const other = 'https://example.com/cb?code=other';
-    e.store.set(PENDING_CLOSES_KEY, [{ tabId: 3, url: other, ruleKey: 'user/cb', fireAt: 9_000_000, committedAt: 0, activated: true }]);
+    // Tab 3's close was due while no worker ran (its setTimeout died with the old worker): no alarm exists for it.
+    e.store.set(PENDING_CLOSES_KEY, [
+      { tabId: 3, url: other, ruleKey: 'user/cb', fireAt: 999_000, committedAt: 0, activated: false },
+      { tabId: 5, url: other, ruleKey: 'user/cb', fireAt: 9_000_000, committedAt: 0, activated: true },
+    ]);
     e.store.set(CLOSE_SUGGESTIONS_KEY, [{ tabId: 4, url: other, ruleKey: 'user/cb', reason: 'Callback' }]);
     e.port.addTab(tab(2, CB));
     e.port.addTab(tab(3, other));
     e.port.addTab(tab(4, other));
+    e.port.addTab(tab(5, other));
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     let fail = 3; // the three gets of the first load
     const w = worker(e, {
@@ -572,9 +577,13 @@ describe('CloseExecutor robustness (M2 polish P1)', () => {
     await w.ex.onCommitted(2);
     await w.ex.evaluate(2);
     expect(e.store.get(PENDING_CLOSES_KEY)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ tabId: 3 }), expect.objectContaining({ tabId: 2 }),
+      expect.objectContaining({ tabId: 5 }), expect.objectContaining({ tabId: 2 }),
     ]));
     expect(w.ex.suggestions()).toEqual([expect.objectContaining({ tabId: 4 })]);
+    // The retried load armed the entries it merged, as rearm() would have: tab 3, already due, closes.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(w.closes()).toEqual([3]);
+    expect(w.alarms.get(`${CLOSE_ALARM_PREFIX}5`)).toBe(9_000_000);
   });
 
   it('a failed alarm create is reported, not swallowed', async () => {
@@ -633,6 +642,63 @@ describe('locked and pinned tabs are never offered for closing (ruling R71)', ()
     await w.ex.onCloseChoice(2, 'close');
     await w.ex.onCloseChoice(3, 'close');
     expect(w.closes()).toEqual([]);
+  });
+
+  it('a tab that became an anchor while its banner was up is kept when the banner answers Close', async () => {
+    const e = env();
+    e.port.addTab(tab(2, CB));
+    const anchor = { on: false };
+    const w = worker(e, { isAnchor: (id) => anchor.on && id === 2 });
+    await w.safety.ready;
+    await w.ex.onCommitted(2);
+    await w.ex.evaluate(2);
+    w.safety.markFormEdited(2, CB);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(w.banner).toHaveBeenCalledTimes(1);
+    anchor.on = true; // a group was created whose anchor URL adopted the tab
+    await w.ex.onCloseChoice(2, 'close');
+    expect(w.closes()).toEqual([]);
+  });
+});
+
+describe('fire-time protection order (R13 as amended by R71; the list atop close-executor.ts)', () => {
+  beforeEach(() => {
+    fakeBrowser.reset();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    vi.setSystemTime(1_000_000);
+  });
+  afterEach(() => { vi.useRealTimers(); });
+
+  type W = ReturnType<typeof worker>;
+  type E = ReturnType<typeof env>;
+  const t2 = (e: E) => e.port.state.tabs.find((t) => t.id === 2)!;
+  /** Each case makes two steps apply at once; the earlier step must decide. */
+  const cases: [string, 'pending' | 'nothing' | 'suggested' | 'banner' | 'closed', (w: W, e: E) => void, Partial<CloseExecutorDeps>?][] = [
+    ['1 paused beats 5 locked', 'pending', (w) => { w.safety.pause('15m'); w.safety.lock(2); }],
+    ['2 navigated beats 5 locked', 'nothing', (w, e) => { t2(e).url = 'https://example.com/elsewhere'; w.safety.lock(2); }],
+    ['4 anchor beats 5 locked', 'nothing', (w) => { w.safety.lock(2); }, { isAnchor: (id) => id === 2 }],
+    ['5 locked beats 5 form edited (no banner, R71)', 'suggested', (w) => { w.safety.lock(2); w.safety.markFormEdited(2, CB); }],
+    ['5 pinned beats 5 active in the focused window (no banner, R71)', 'suggested', (_w, e) => { t2(e).pinned = true; t2(e).active = true; }],
+    ['5 form edited: banner', 'banner', (w) => { w.safety.markFormEdited(2, CB); }],
+    ['6 used since load, form state unknown: banner', 'banner', (w) => { void w.ex.onActivated(2); }],
+    ['nothing applies: closed', 'closed', () => {}],
+  ];
+
+  it.each(cases)('%s', async (_name, outcome, prep, over = {}) => {
+    const e = env();
+    e.port.addTab(tab(2, CB));
+    const w = worker(e, over);
+    await w.safety.ready;
+    await w.ex.onCommitted(2);
+    await w.ex.evaluate(2);
+    prep(w, e);
+    await vi.advanceTimersByTimeAsync(3_000);
+    await w.ex.idle();
+    const got = w.closes().length ? 'closed'
+      : w.banner.mock.calls.length ? 'banner'
+        : w.ex.suggestions().length ? 'suggested'
+          : ((e.store.get(PENDING_CLOSES_KEY) as unknown[] | undefined) ?? []).length ? 'pending' : 'nothing';
+    expect(got).toBe(outcome);
   });
 });
 

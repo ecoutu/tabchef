@@ -368,6 +368,53 @@ describe('createContentHandler', () => {
     expect(pageFacts.get(7)).toMatchObject({ texts: ['Call ended'] });
   });
 
+  // Only webNavigation commits retire documents; a hello never retires one, never changes the current one, and is
+  // always answered with the watch config.
+  const CONFIG = { type: 'watch.config', needles: ['Call ended'], selectors: [] };
+
+  it('a bfcache-restored page whose hello beats its own commit still gets its config; its facts count after the commit', async () => {
+    const { h, pageFacts } = mk();
+    pageFacts.onCommitted(7, PAGE, 'doc-a');
+    pageFacts.onCommitted(7, PAGE, 'doc-b'); // A is retired
+    expect(await h({ type: 'watch.hello', formEdited: false }, { ...tabSender, documentId: 'doc-a' })).toEqual(CONFIG);
+    pageFacts.onCommitted(7, PAGE, 'doc-a'); // the restore's commit lands after the pageshow hello
+    expect(await h(facts, { ...tabSender, documentId: 'doc-a' })).toEqual({ ok: true });
+    expect(pageFacts.get(7)).toMatchObject({ texts: ['Call ended'] });
+  });
+
+  it('a late hello from a retired document gets the config but leaves the current document\'s facts alone', async () => {
+    const { h, pageFacts, safety } = mk();
+    pageFacts.onCommitted(7, PAGE, 'doc-a');
+    pageFacts.onCommitted(7, PAGE, 'doc-b');
+    expect(await h(facts, { ...tabSender, documentId: 'doc-b' })).toEqual({ ok: true });
+    safety.markFormEdited.mockClear();
+    expect(await h({ type: 'watch.hello', formEdited: true }, { ...tabSender, documentId: 'doc-a' })).toEqual(CONFIG);
+    expect(pageFacts.get(7)).toMatchObject({ texts: ['Call ended'] });
+    expect(pageFacts.awaiting(7)).toBe(false);
+    expect(safety.markFormEdited).not.toHaveBeenCalled();
+    expect(await h(facts, { ...tabSender, documentId: 'doc-a' })).toEqual({ ok: false, error: 'stale document' });
+  });
+
+  it('a hello from a document the worker never saw (it restarted) does not retire or replace the current one', async () => {
+    const { h, pageFacts } = mk();
+    pageFacts.onCommitted(7, PAGE, 'doc-b'); // the only commit this worker saw
+    expect(await h(facts, { ...tabSender, documentId: 'doc-b' })).toEqual({ ok: true });
+    expect(await h({ type: 'watch.hello', formEdited: false }, { ...tabSender, documentId: 'doc-x' })).toEqual(CONFIG);
+    expect(pageFacts.isRetiredDocument(7, 'doc-b')).toBe(false);
+    expect(pageFacts.isCurrentDocument(7, 'doc-b')).toBe(true);
+    expect(pageFacts.get(7)).toMatchObject({ texts: ['Call ended'] });
+    expect(await h(facts, { ...tabSender, documentId: 'doc-b' })).toEqual({ ok: true });
+  });
+
+  it('a new document\'s watch.hello that arrives before its own commit gets the config; its facts count after the commit', async () => {
+    const { h, pageFacts } = mk();
+    pageFacts.onCommitted(7, PAGE, 'doc-a');
+    expect(await h({ type: 'watch.hello', formEdited: false }, { ...tabSender, documentId: 'doc-b' })).toEqual(CONFIG);
+    pageFacts.onCommitted(7, PAGE, 'doc-b'); // webNavigation.onCommitted for B lands after B's hello
+    expect(await h(facts, { ...tabSender, documentId: 'doc-b' })).toEqual({ ok: true });
+    expect(await h(facts, { ...tabSender, documentId: 'doc-a' })).toEqual({ ok: false, error: 'stale document' });
+  });
+
   it('form edits are recorded for the frame URL the report came from, as the watch config is', async () => {
     const { h, safety } = mk();
     const moved = { ...tabSender, url: 'https://meet.google.com/other', tab: { id: 7, url: PAGE } }; // pushState race
