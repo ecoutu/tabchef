@@ -168,6 +168,56 @@
         {
           "type": "object",
           "required": [
+            "field"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "field": {
+              "$comment": "M3: source.<name> (a field of the rule's source), extract.<name> (an extract of the rule) or project.<name> (rejected by compileProgram until T15, M3-R11). `value` may be {ago: <duration>} with < or >. Missing data is unknown (M3-R8).",
+              "type": "object",
+              "required": [
+                "field",
+                "op",
+                "value"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "field": {
+                  "oneOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^(source|extract|project)\\.[A-Za-z_][A-Za-z0-9_]*$"
+                    },
+                    {
+                      "$ref": "recipe.json#/$defs/placeholder"
+                    }
+                  ]
+                },
+                "op": {
+                  "oneOf": [
+                    {
+                      "enum": [
+                        "==",
+                        "!=",
+                        "<",
+                        ">",
+                        "in",
+                        "matches"
+                      ]
+                    },
+                    {
+                      "$ref": "recipe.json#/$defs/placeholder"
+                    }
+                  ]
+                },
+                "value": {}
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
             "all"
           ],
           "additionalProperties": false,
@@ -414,8 +464,166 @@
               }
             }
           }
+        },
+        {
+          "type": "object",
+          "required": [
+            "assignProject"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "assignProject": {
+              "$comment": "M3, recipe rules only (M3-R15): the tab is a candidate for the recipe's project `key` (a template).",
+              "type": "object",
+              "required": [
+                "key"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "key": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 2048
+                },
+                "create": {
+                  "oneOf": [
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "$ref": "recipe.json#/$defs/placeholder"
+                    }
+                  ]
+                }
+              }
+            }
+          }
         }
       ]
+    },
+    "connectionId": {
+      "oneOf": [
+        {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+        },
+        {
+          "$ref": "recipe.json#/$defs/placeholder"
+        }
+      ]
+    },
+    "needs": {
+      "$comment": "Recipe-level and rule-level needs (one definition, M3-R13). connections and anyOf (alternatives, best first) are rejected by compileProgram as not supported yet until T12 (M3-R12).",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "hosts": {
+          "oneOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "maxLength": 2048,
+                "minLength": 1
+              }
+            },
+            {
+              "$ref": "recipe.json#/$defs/placeholder"
+            }
+          ]
+        },
+        "permissions": {
+          "oneOf": [
+            {
+              "type": "array",
+              "items": {
+                "$ref": "recipe.json#/$defs/permission"
+              }
+            },
+            {
+              "$ref": "recipe.json#/$defs/placeholder"
+            }
+          ]
+        },
+        "connections": {
+          "oneOf": [
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/connectionId"
+              }
+            },
+            {
+              "$ref": "recipe.json#/$defs/placeholder"
+            }
+          ]
+        },
+        "anyOf": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/needs"
+          }
+        }
+      }
+    },
+    "source": {
+      "$comment": "M3, recipe rules only (M3-R15): query (= T8's SOURCE_QUERIES keys, M3-R29) run on a connection; args are templates; fields map a name (read as source.<name>) to a dot path into the result. No page fallback adapter until T10 (M3-R18).",
+      "type": "object",
+      "required": [
+        "connection",
+        "query",
+        "args",
+        "fields"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "connection": {
+          "$ref": "#/$defs/connectionId"
+        },
+        "query": {
+          "oneOf": [
+            {
+              "enum": [
+                "github.pull_request",
+                "github.search_prs_by_key",
+                "jira.issue",
+                "jira.projects"
+              ]
+            },
+            {
+              "$ref": "recipe.json#/$defs/placeholder"
+            }
+          ]
+        },
+        "args": {
+          "type": "object",
+          "propertyNames": {
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "maxLength": 2048
+          }
+        },
+        "fields": {
+          "type": "object",
+          "propertyNames": {
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          },
+          "additionalProperties": {
+            "oneOf": [
+              {
+                "type": "string",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$"
+              },
+              {
+                "$ref": "recipe.json#/$defs/placeholder"
+              }
+            ]
+          }
+        }
+      }
     }
   },
   "type": "object",
@@ -457,38 +665,10 @@
     },
     "needs": {
       "$comment": "Rule-level needs (T10, R5): an unmet one pauses this rule key only. Recipe rules only; compileProgram rejects them on user rules (R44).",
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "hosts": {
-          "oneOf": [
-            {
-              "type": "array",
-              "items": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 2048
-              }
-            },
-            {
-              "$ref": "recipe.json#/$defs/placeholder"
-            }
-          ]
-        },
-        "permissions": {
-          "oneOf": [
-            {
-              "type": "array",
-              "items": {
-                "$ref": "recipe.json#/$defs/permission"
-              }
-            },
-            {
-              "$ref": "recipe.json#/$defs/placeholder"
-            }
-          ]
-        }
-      }
+      "$ref": "#/$defs/needs"
+    },
+    "source": {
+      "$ref": "#/$defs/source"
     },
     "trigger": {
       "type": "object",
@@ -510,7 +690,8 @@
                       "committed",
                       "pageText",
                       "schedule",
-                      "groupChanged"
+                      "groupChanged",
+                      "sourceUpdated"
                     ]
                   },
                   {
@@ -588,6 +769,69 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 2048
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "from",
+              "jiraKey"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "from": {
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^(url|title|source\\.[A-Za-z_][A-Za-z0-9_]*)$"
+                  },
+                  {
+                    "$ref": "recipe.json#/$defs/placeholder"
+                  }
+                ]
+              },
+              "jiraKey": {
+                "$comment": "M3: Jira issue keys (T2 computes the value, M3-R21).",
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "pattern": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500
+                  },
+                  "allow": {
+                    "oneOf": [
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2048
+                        }
+                      },
+                      {
+                        "$ref": "recipe.json#/$defs/placeholder"
+                      }
+                    ]
+                  },
+                  "ignore": {
+                    "oneOf": [
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2048
+                        }
+                      },
+                      {
+                        "$ref": "recipe.json#/$defs/placeholder"
+                      }
+                    ]
+                  }
+                }
               }
             }
           }

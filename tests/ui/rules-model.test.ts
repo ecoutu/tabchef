@@ -282,6 +282,19 @@ describe('rules-model: form and helpers (M2 T15)', () => {
     expect(ruleSummary(r)).toEqual(['Match: any of (url a.com/*; title *b*)', 'Close after 2s (suggest)', 'Show in view finished']);
   });
 
+  it('ruleSummary describes M3 sources, field conditions and assignProject (M3-R20)', async () => {
+    const { ruleSummary } = await import('../../src/ui/rules-model');
+    const r = { id: 'x', name: 'X', enabled: true,
+      source: { connection: 'github', query: 'github.pull_request', args: {}, fields: { mergedAt: 'mergedAt' } },
+      match: { all: [{ url: 'a.com/*' }, { field: { field: 'source.mergedAt', op: '<', value: { ago: '24h' } } }, { field: { field: 'source.state', op: '==', value: 'merged' } }] },
+      actions: [{ assignProject: { key: 'ABC-1', create: true } }] } as Rule;
+    expect(ruleSummary(r)).toEqual([
+      'Match: all of (url a.com/*; source.mergedAt < 24h ago; source.state == "merged")',
+      'Source: github.pull_request via the github connection',
+      'Assign to project ABC-1 (create it if missing)',
+    ]);
+  });
+
   it('patternHints: exact-path patterns and open-ended host globs', async () => {
     const { patternHints } = await import('../../src/ui/rules-model');
     const EXACT = 'matches only exactly this path; add * to include deeper pages';

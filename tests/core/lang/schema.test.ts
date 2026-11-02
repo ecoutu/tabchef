@@ -248,3 +248,98 @@ describe('exported JSON schemas', () => {
     expect(ruleJsonSchema.$id).toBe('https://schemas.tabchef.invalid/rule.json');
   });
 });
+
+describe('M3 T1: sources, fields, keys and projects', () => {
+  const src = (over: Record<string, unknown> = {}) => ({
+    connection: 'github', query: 'github.pull_request', args: { owner: 'acme', repo: 'api', number: '7' }, fields: { merged: 'merged', mergedAt: 'mergedAt' }, ...over,
+  });
+  it('a recipe rule may declare a source', () => {
+    expect(errorsOf(validateRecipe(recipe({ rules: [rule({ source: src() })] })))).toEqual([]);
+  });
+  it('the query enum lists exactly the four source queries (M3-R29)', () => {
+    const q = (ruleJsonSchema as unknown as { $defs: { source: { properties: { query: { enum: string[] } } } } }).$defs.source.properties.query.enum;
+    expect(q).toEqual(['github.pull_request', 'github.search_prs_by_key', 'jira.issue', 'jira.projects']);
+  });
+  it('rejects an unknown query and a field path that is not a dot path', () => {
+    expect(at(validateRecipe(recipe({ rules: [rule({ source: src({ query: 'github.anything' }) })] })), '/rules/0/source/query').length).toBeGreaterThan(0);
+    expect(at(validateRecipe(recipe({ rules: [rule({ source: src({ fields: { x: 'a[0]()' } }) })] })), '/rules/0/source/fields/x').length).toBeGreaterThan(0);
+    expect(validateRecipe(recipe({ rules: [rule({ source: src({ fields: { x: 'head.repo.name' } }) })] })).ok).toBe(true);
+  });
+  it('rejects a source fallback adapter (deferred, M3-R18)', () => {
+    expect(validateRecipe(recipe({ rules: [rule({ source: src({ fallback: { adapter: 'github.prPage' } }) })] })).ok).toBe(false);
+  });
+  it('a field path may come from a string param ({params.x} placeholder)', () => {
+    const r = recipe({ params: { p: { type: 'string', default: 'mergedAt', label: 'P' } }, rules: [rule({ source: src({ fields: { x: '{params.p}' } }) })] });
+    expect(errorsOf(validateRecipe(r))).toEqual([]);
+    const bad = recipe({ params: { p: { type: 'string', default: 'a[0]', label: 'P' } }, rules: [rule({ source: src({ fields: { x: '{params.p}' } }) })] });
+    expect(at(validateRecipe(bad), '/rules/0/source/fields/x').length).toBeGreaterThan(0);
+  });
+  it("trigger.on: ['sourceUpdated'] validates", () => {
+    expect(validateRule(rule({ trigger: { on: ['sourceUpdated'] } })).ok).toBe(true);
+  });
+  it('accepts field conditions on source and extract fields, with {ago}', () => {
+    const r = rule({ source: src(), extract: { k: { from: 'url', regex: 'pull/(\\d+)' } }, match: { all: [
+      { url: 'github.com/*' },
+      { field: { field: 'source.mergedAt', op: '<', value: { ago: '24h' } } },
+      { not: { field: { field: 'extract.k', op: '==', value: '7' } } },
+    ] } });
+    expect(errorsOf(validateRule(r))).toEqual([]);
+  });
+  it('rejects a field condition with a bad field name, op, {ago} duration or {ago} op', () => {
+    const f = (field: Record<string, unknown>, extra: Record<string, unknown> = {}) => validateRule(rule({ source: src(), match: { field }, ...extra }));
+    expect(f({ field: 'tab.url', op: '==', value: 'x' }).ok).toBe(false);
+    expect(f({ field: 'source.merged', op: '~', value: 'x' }).ok).toBe(false);
+    expect(at(f({ field: 'source.mergedAt', op: '<', value: { ago: 'soon' } }), '/match/field/value/ago').map((e) => e.message)).toEqual([expect.stringMatching(/must be a duration/)]);
+    expect(at(f({ field: 'source.mergedAt', op: '==', value: { ago: '1h' } }), '/match/field/value').length).toBe(1);
+    expect(at(f({ field: 'source.merged', op: 'in', value: 'x' }), '/match/field/value').length).toBe(1);
+    expect(at(f({ field: 'source.merged', op: 'matches', value: '((' }), '/match/field/value').length).toBe(1);
+  });
+  it('a source.<n> field must name a source field, an extract.<n> field an extract', () => {
+    expect(at(validateRule(rule({ match: { field: { field: 'source.merged', op: '==', value: true } } })), '/match/field/field').length).toBe(1);
+    expect(at(validateRule(rule({ source: src(), match: { field: { field: 'source.nope', op: '==', value: true } } })), '/match/field/field').length).toBe(1);
+    expect(at(validateRule(rule({ match: { field: { field: 'extract.k', op: '==', value: '1' } } })), '/match/field/field').length).toBe(1);
+  });
+  it('accepts a jiraKey extract from url, title or a source field; the source field must exist', () => {
+    const ok = rule({ source: src(), extract: { a: { from: 'url', jiraKey: {} }, b: { from: 'title', jiraKey: { allow: ['ABC'], ignore: ['UTF'] } }, c: { from: 'source.merged', jiraKey: { pattern: '[A-Z]+-\\d+' } } } });
+    expect(errorsOf(validateRule(ok))).toEqual([]);
+    expect(at(validateRule(rule({ extract: { a: { from: 'source.x', jiraKey: {} } } })), '/extract/a/from').length).toBe(1);
+    expect(validateRule(rule({ extract: { a: { from: 'page', jiraKey: {} } } })).ok).toBe(false);
+    expect(at(validateRule(rule({ extract: { a: { from: 'url', jiraKey: { pattern: '((' } } } })), '/extract/a/jiraKey/pattern').length).toBe(1);
+  });
+  it('rejects an {adapter, field} extract (deferred to T10, M3-R18)', () => {
+    expect(validateRule(rule({ extract: { a: { adapter: 'github.prPage', field: 'state' } } })).ok).toBe(false);
+  });
+  it('accepts an assignProject action; its key template vars must be provided', () => {
+    const ok = rule({ extract: { k: { from: 'url', jiraKey: {} } }, actions: [{ assignProject: { key: '{k}', create: true } }] });
+    expect(errorsOf(validateRule(ok))).toEqual([]);
+    expect(at(validateRule(rule({ actions: [{ assignProject: { key: '{nope}' } }] })), '/actions/0/assignProject/key').length).toBe(1);
+    expect(validateRule(rule({ actions: [{ assignProject: { key: '' } }] })).ok).toBe(false);
+  });
+  it('recipe needs gain connections and anyOf (one $defs/needs, M3-R13)', () => {
+    const needs = { anyOf: [{ connections: ['github'] }, { hosts: ['https://github.com/*'] }] };
+    expect(errorsOf(validateRecipe(recipe({ needs })))).toEqual([]);
+    expect(errorsOf(validateRecipe(recipe({ rules: [rule({ needs })] })))).toEqual([]);
+    expect(at(validateRecipe(recipe({ needs: { anyOf: [{ hosts: ['github.com/*'] }] } })), '/needs/anyOf/0/hosts/0').length).toBe(1);
+    expect(validateRecipe(recipe({ needs: { connections: ['Not An Id'] } })).ok).toBe(false);
+  });
+  it('a {params.x} placeholder cannot stand in for the needs.anyOf list (M3-R14)', () => {
+    const r = recipe({ params: { x: { type: 'string[]', default: [], label: 'X' } }, rules: [rule({ needs: { anyOf: '{params.x}' } })] });
+    expect(validateRecipe(r).ok).toBe(false);
+  });
+  it('a recipe may declare a project, conflicts and levels; level rules must exist', () => {
+    const project = { key: '{key}', title: '{key}', color: 'blue', container: 'group', join: ['rules', 'manual'] };
+    const ok = recipe({ project, conflicts: ['other'], levels: [{ id: 'full', label: 'Full', rules: ['r'] }] });
+    expect(errorsOf(validateRecipe(ok))).toEqual([]);
+    expect(at(validateRecipe(recipe({ levels: [{ id: 'full', label: 'Full', rules: ['nope'] }] })), '/levels/0/rules/0').length).toBe(1);
+    expect(at(validateRecipe(recipe({ conflicts: ['demo'] })), '/conflicts/0').length).toBe(1);
+    expect(validateRecipe(recipe({ project: { ...project, container: 'window' } })).ok).toBe(false);
+    expect(at(validateRecipe(recipe({ project: { ...project, color: 'mauve' } })), '/project/color').length).toBe(1);
+  });
+  it('a recipe rule with assignProject needs the recipe to declare a project', () => {
+    const r = recipe({ rules: [rule({ actions: [{ assignProject: { key: 'ABC-1' } }] })] });
+    expect(at(validateRecipe(r), '/rules/0/actions/0/assignProject').length).toBe(1);
+  });
+  it("rejects View.kind 'projects' (deferred to T17, M3-R18)", () => {
+    expect(validateRecipe(recipe({ views: [{ id: 'p', tab: 'P', kind: 'projects', actions: [] }] })).ok).toBe(false);
+  });
+});

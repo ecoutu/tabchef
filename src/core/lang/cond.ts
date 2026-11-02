@@ -19,6 +19,14 @@ export interface CondResult {
   unknown?: true;
 }
 
+/**
+ * What a `field` condition reads besides the tab facts (M3-R10): the rule key (its `f.source` entry) and the rule's
+ * extract values computed before the match (`vars`). `pageVars` names the selector extracts whose value comes from
+ * page facts: while `f.page` is undefined, an `extract.<name>` field on one of them needs the page.
+ */
+export interface CondScope { ruleKey: string; vars?: Record<string, string>; pageVars?: ReadonlySet<string> }
+
+const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x);
 const no = (needsPage = false, unknown = false): CondResult =>
   (unknown ? { ok: false, captures: {}, needsPage, unknown: true } : { ok: false, captures: {}, needsPage });
 const yes = (captures: Record<string, string> = {}): CondResult => ({ ok: true, captures, needsPage: false });
@@ -35,7 +43,7 @@ function run(compile: (p: string) => Matcher, p: unknown, input: string): Record
 }
 
 /** Evaluate one condition against a tab's facts at time `now` (ms). Never throws. */
-export function evalCond(c: Cond, f: TabFacts, now: number): CondResult {
+export function evalCond(c: Cond, f: TabFacts, now: number, scope?: CondScope): CondResult {
   if (typeof c !== 'object' || c === null) return no();
   const keys = Object.keys(c);
   if (keys.length !== 1) return no();
@@ -47,7 +55,7 @@ export function evalCond(c: Cond, f: TabFacts, now: number): CondResult {
       let needsPage = false;
       let unknown = false;
       for (const sub of v as Cond[]) {
-        const r = evalCond(sub, f, now);
+        const r = evalCond(sub, f, now, scope);
         if (r.ok) captures = { ...r.captures, ...captures };
         else if (r.needsPage || r.unknown) { needsPage ||= r.needsPage; unknown ||= r.unknown === true; }
         else return no(); // definitely false: the page can't change that
@@ -59,7 +67,7 @@ export function evalCond(c: Cond, f: TabFacts, now: number): CondResult {
       let needsPage = false;
       let unknown = false;
       for (const sub of v as Cond[]) {
-        const r = evalCond(sub, f, now);
+        const r = evalCond(sub, f, now, scope);
         if (r.ok) return yes(r.captures);
         needsPage ||= r.needsPage;
         unknown ||= r.unknown === true;
@@ -67,7 +75,7 @@ export function evalCond(c: Cond, f: TabFacts, now: number): CondResult {
       return no(needsPage, unknown);
     }
     case 'not': {
-      const r = evalCond(v as Cond, f, now);
+      const r = evalCond(v as Cond, f, now, scope);
       return r.needsPage || r.unknown ? no(r.needsPage, r.unknown === true) : bool(!r.ok);
     }
     case 'url': {
@@ -84,7 +92,8 @@ export function evalCond(c: Cond, f: TabFacts, now: number): CondResult {
     }
     case 'opener': {
       if (!f.opener) return no();
-      // Only the opener's tab is known; its page is never fetched, so pageText under opener is just false.
+      // Only the opener's tab is known; its page is never fetched, so pageText under opener is just false. Fields
+      // describe this tab, not the opener: no scope, so a field under opener is unknown.
       const r = evalCond(v as Cond, { tab: f.opener }, now);
       return r.ok ? yes(r.captures) : no(false, r.unknown === true); // an unknown opener age stays unknown (R66)
     }
@@ -123,9 +132,69 @@ export function evalCond(c: Cond, f: TabFacts, now: number): CondResult {
       const texts = f.page.texts.map(foldText);
       return bool(needles.some((n) => texts.some((t) => t.includes(foldText(n)))));
     }
+    case 'field':
+      return evalField(v, f, now, scope);
     default:
       return no();
   }
+}
+
+/**
+ * An ISO-8601 date-time with a zone (`2024-05-12T10:00Z`, `…:00.000Z`, `…+02:00`, and Jira's colonless `…+0000`):
+ * the only strings `{ago}` reads as dates.
+ */
+const ISO_DATE_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})$/;
+
+const isScalar = (x: unknown): x is string | number | boolean | null =>
+  x === null || typeof x === 'string' || typeof x === 'number' || typeof x === 'boolean';
+
+/** A field's value; undefined when missing (no scope, no source entry or data, no such field or extract). */
+function fieldValue(name: string, f: TabFacts, scope: CondScope): unknown {
+  const dot = name.indexOf('.');
+  const kind = name.slice(0, dot);
+  const n = name.slice(dot + 1);
+  const own = (o: object | undefined) => o !== undefined && Object.prototype.hasOwnProperty.call(o, n);
+  if (kind === 'source') {
+    const data = f.source && Object.prototype.hasOwnProperty.call(f.source, scope.ruleKey) ? f.source[scope.ruleKey]?.data : undefined;
+    return isObj(data) && own(data) ? data[n] : undefined;
+  }
+  if (kind === 'extract') return scope.vars && own(scope.vars) ? scope.vars[n] : undefined;
+  return undefined; // project.<name>: no producer until T15 (compile rejects them, M3-R11)
+}
+
+/**
+ * A `field` condition (M3): missing data is unknown, never false, so `not` and `!=` never match it (M3-R8). `{ago: d}`
+ * compares `Date.parse(value)` with `now - d` (M3-R9); a value that is not an ISO date-time is unknown, as is a `<`/`>` across
+ * types or a value that is not a scalar.
+ */
+function evalField(v: unknown, f: TabFacts, now: number, scope: CondScope | undefined): CondResult {
+  if (!isObj(v) || typeof v.field !== 'string' || !v.field.includes('.')) return no();
+  const c = v as unknown as Comparison;
+  if (!scope) return no(false, true);
+  const value = fieldValue(c.field, f, scope);
+  if (value === undefined) {
+    const n = c.field.slice(c.field.indexOf('.') + 1);
+    return c.field.startsWith('extract.') && !f.page && scope.pageVars?.has(n) ? no(true) : no(false, true);
+  }
+  if (!isScalar(value)) return no(false, true);
+  const want = c.value;
+  if (isObj(want) && 'ago' in want) {
+    if (c.op !== '<' && c.op !== '>') return no();
+    let threshold: number;
+    try {
+      threshold = now - parseDuration(want.ago as string);
+    } catch {
+      return no(); // unreachable for validated rules
+    }
+    // Date.parse is lenient ('1', 'May 12', 'Release 2' parse): only an ISO-8601 date-time counts as a date (M3-R9).
+    const t = typeof value === 'string' && ISO_DATE_TIME.test(value) ? Date.parse(value) : NaN;
+    if (Number.isNaN(t)) return no(false, true);
+    return bool(c.op === '<' ? t < threshold : t > threshold);
+  }
+  if ((c.op === '<' || c.op === '>') && !((typeof value === 'number' && typeof want === 'number') || (typeof value === 'string' && typeof want === 'string'))) {
+    return no(false, true);
+  }
+  return bool(compare(c, value));
 }
 
 function condUsesAge(c: Cond): boolean {
@@ -141,8 +210,6 @@ function condUsesAge(c: Cond): boolean {
 export function usesAge(r: Rule): boolean {
   return condUsesAge(r.match);
 }
-
-const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x);
 
 function compare(c: Comparison, v: unknown): boolean {
   const want = c.value;

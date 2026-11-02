@@ -1,7 +1,7 @@
 // Problems of rules, regexes, patterns, durations, titles and the dedupe lists, and ajv errors as Problems. Shared by
 // config validation (schema.ts), recipe validation (lang/schema.ts) and the compiler; a leaf of the import graph.
 import type { DedupeSettings, GroupColor } from '../types';
-import type { Cond, Rule } from '../lang/types';
+import type { Comparison, Cond, Rule } from '../lang/types';
 import { compilePattern, MAX_REGEX_LEN, PatternError, patternCaptures } from '../match/pattern';
 import { slowRegexProblem } from '../match/regex-safety';
 import { DURATION } from '../lang/duration';
@@ -48,7 +48,7 @@ export function regexProblem(source: string, flags?: string, capped = false, mea
 export type Tables = Record<string, Record<string, string>>;
 
 /** Template syntax problem (unknown filter, bad arguments) or a `map:` table that is not defined (when tables are known). */
-function templateProblem(t: string, tables?: Tables): string | undefined {
+export function templateProblem(t: string, tables?: Tables): string | undefined {
   try {
     parseTemplate(t);
   } catch (e) {
@@ -84,7 +84,35 @@ function titleRegexGroups(c: Cond): string[] {
   return [];
 }
 
-function condProblems(c: Cond, path: string, out: Problem[]): void {
+const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x);
+
+/**
+ * A `field` condition (M3): `source.<n>` must name one of the rule's source fields and `extract.<n>` one of its
+ * extracts; `{ago: d}` goes with `<` / `>` and a duration; `in` takes a list, `matches` a regex (capped, must compile).
+ */
+function fieldProblems(rule: Rule, c: Comparison, path: string, out: Problem[]): void {
+  const dot = c.field.indexOf('.');
+  const kind = c.field.slice(0, dot);
+  const name = c.field.slice(dot + 1);
+  const has = (o: object | undefined) => o !== undefined && Object.prototype.hasOwnProperty.call(o, name);
+  if (kind === 'source' && !has(rule.source?.fields)) out.push({ path: `${path}/field`, message: `rule has no source field "${name}"` });
+  if (kind === 'extract' && !has(rule.extract)) out.push({ path: `${path}/field`, message: `rule has no extract "${name}"` });
+  const v = c.value;
+  if (isObj(v) && 'ago' in v) {
+    if (Object.keys(v).length !== 1) out.push({ path: `${path}/value`, message: 'must be {ago: <duration>}' });
+    else if (c.op !== '<' && c.op !== '>') out.push({ path: `${path}/value`, message: '{ago} compares with < or > only' });
+    else if (typeof v.ago !== 'string' || !DURATION.test(v.ago)) out.push({ path: `${path}/value/ago`, message: DURATION_MSG });
+  } else if (c.op === 'matches') {
+    const m = typeof v === 'string' ? regexProblem(v, undefined, true) : 'must be a regex string';
+    if (m) out.push({ path: `${path}/value`, message: m });
+  } else if (c.op === 'in') {
+    if (!Array.isArray(v)) out.push({ path: `${path}/value`, message: 'must be a list' });
+  } else if (typeof v === 'object' && v !== null) {
+    out.push({ path: `${path}/value`, message: 'must be a string, number, boolean, null or {ago: <duration>}' });
+  }
+}
+
+function condProblems(c: Cond, path: string, out: Problem[], rule?: Rule): void {
   if ('url' in c) {
     if (Array.isArray(c.url)) c.url.forEach((p, i) => { const m = patternProblem(p); if (m) out.push({ path: `${path}/url/${i}`, message: m }); });
     else { const m = patternProblem(c.url); if (m) out.push({ path: `${path}/url`, message: m }); }
@@ -105,10 +133,12 @@ function condProblems(c: Cond, path: string, out: Problem[]): void {
     const long = (n: string) => n.length > MAX_PAGE_TEXT;
     if (Array.isArray(c.pageText)) c.pageText.forEach((n, i) => { if (long(n)) out.push({ path: `${path}/pageText/${i}`, message: PAGE_TEXT_MSG }); });
     else if (long(c.pageText)) out.push({ path: `${path}/pageText`, message: PAGE_TEXT_MSG });
-  } else if ('opener' in c) condProblems(c.opener, `${path}/opener`, out);
-  else if ('not' in c) condProblems(c.not, `${path}/not`, out);
-  else if ('all' in c) c.all.forEach((x, i) => condProblems(x, `${path}/all/${i}`, out));
-  else if ('any' in c) c.any.forEach((x, i) => condProblems(x, `${path}/any/${i}`, out));
+  } else if ('field' in c) {
+    if (rule) fieldProblems(rule, c.field, `${path}/field`, out);
+  } else if ('opener' in c) condProblems(c.opener, `${path}/opener`, out, rule);
+  else if ('not' in c) condProblems(c.not, `${path}/not`, out, rule);
+  else if ('all' in c) c.all.forEach((x, i) => condProblems(x, `${path}/all/${i}`, out, rule));
+  else if ('any' in c) c.any.forEach((x, i) => condProblems(x, `${path}/any/${i}`, out, rule));
 }
 
 /**
@@ -156,13 +186,23 @@ export function ruleTitleProblems(rule: Rule, tables?: Tables): string[] {
  */
 export function ruleProblems(rule: Rule, tables?: Tables): Problem[] {
   const out: Problem[] = [];
-  condProblems(rule.match, '/match', out);
+  condProblems(rule.match, '/match', out, rule);
   if (rule.trigger?.every !== undefined && !DURATION.test(rule.trigger.every)) out.push({ path: '/trigger/every', message: DURATION_MSG });
   // Uniqueness is checked here, not with JSON-schema uniqueItems: ajv's standalone code for it needs a runtime require().
   rule.trigger?.on.forEach((k, j, all) => { if (all.indexOf(k) !== j) out.push({ path: `/trigger/on/${j}`, message: `duplicate trigger: ${k}` }); });
   for (const [name, x] of Object.entries(rule.extract ?? {})) {
     if (name.length > MAX_EXTRACT_NAME) out.push({ path: `/extract/${name}`, message: `extract name too long (max ${MAX_EXTRACT_NAME} characters)` });
     if ('regex' in x) { const m = regexProblem(x.regex, undefined, true); if (m) out.push({ path: `/extract/${name}/regex`, message: m }); }
+    if ('jiraKey' in x) {
+      if (x.from.startsWith('source.') && !Object.prototype.hasOwnProperty.call(rule.source?.fields ?? {}, x.from.slice(7))) {
+        out.push({ path: `/extract/${name}/from`, message: `rule has no source field "${x.from.slice(7)}"` });
+      }
+      if (x.jiraKey.pattern !== undefined) { const m = regexProblem(x.jiraKey.pattern, undefined, true); if (m) out.push({ path: `/extract/${name}/jiraKey/pattern`, message: m }); }
+    }
+  }
+  for (const [arg, t] of Object.entries(rule.source?.args ?? {})) {
+    const m = templateProblem(t, tables) ?? varProblems(rule, t)[0];
+    if (m) out.push({ path: `/source/args/${arg}`, message: m });
   }
   rule.actions.forEach((a, j) => {
     if ('group' in a) {
@@ -174,6 +214,9 @@ export function ruleProblems(rule: Rule, tables?: Tables): Problem[] {
       } else for (const m of varProblems(rule, a.group.color)) out.push({ path: `/actions/${j}/group/color`, message: m });
     } else if ('close' in a && a.close.after !== undefined && !DURATION.test(a.close.after)) {
       out.push({ path: `/actions/${j}/close/after`, message: DURATION_MSG });
+    } else if ('assignProject' in a) {
+      const tp = templateProblem(a.assignProject.key, tables);
+      for (const m of tp ? [tp] : varProblems(rule, a.assignProject.key)) out.push({ path: `/actions/${j}/assignProject/key`, message: m });
     }
   });
   return out;

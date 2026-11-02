@@ -9,9 +9,10 @@
 import recipeSchema from './recipe.schema.json';
 import ruleSchema from './rule.schema.json';
 import { validateRecipe as recipeShape, validateRule as ruleShape } from '../config/validate-config.generated.js';
-import { regexProblem, ruleProblems, schemaProblem, type Problem } from '../config/rule-problems';
+import { COLORS, regexProblem, ruleProblems, schemaProblem, templateProblem, type Problem } from '../config/rule-problems';
+import { templateVars } from '../match/template';
 import { ParamError, paramProblem, placeholderNames, substitute } from './compile';
-import type { Comparison, ParamDef, Recipe, Rule, Show } from './types';
+import type { Comparison, ParamDef, Recipe, RecipeNeeds, Rule, Show } from './types';
 
 export const recipeJsonSchema = recipeSchema;
 export const ruleJsonSchema = ruleSchema;
@@ -159,7 +160,30 @@ export function validateRecipe(x: unknown): RecipeResult {
     if (!Array.isArray(list)) return; // a {params.x} placeholder: checked after substitution, below
     list.forEach((h, i) => { const m = typeof h === 'string' ? matchPatternProblem(h) : undefined; if (m) out.push({ path: `${base}/${i}`, message: m }); });
   };
-  hosts(r.needs?.hosts, '/needs/hosts');
+  const needsHosts = (n: RecipeNeeds | undefined, base: string): void => {
+    hosts(n?.hosts, `${base}/hosts`);
+    if (Array.isArray(n?.anyOf)) n.anyOf.forEach((a, i) => needsHosts(a, `${base}/anyOf/${i}`));
+  };
+  needsHosts(r.needs, '/needs');
+  // M3: project templates and color, conflicts, levels, and assignProject only with a project.
+  if (r.project) {
+    for (const k of ['key', 'title', 'color'] as const) {
+      const m = templateProblem(r.project[k]);
+      if (m) out.push({ path: `/project/${k}`, message: m });
+    }
+    if (!COLORS.has(r.project.color) && templateVars(r.project.color).length === 0) {
+      out.push({ path: '/project/color', message: `must be one of ${[...COLORS].join(', ')}, or a {template}` });
+    }
+  }
+  r.conflicts?.forEach((id, i) => { if (id === r.recipe) out.push({ path: `/conflicts/${i}`, message: 'a recipe cannot conflict with itself' }); });
+  const ruleIds = new Set(r.rules.map((x) => x.id));
+  r.levels?.forEach((l, i) => l.rules.forEach((id, j) => { if (!ruleIds.has(id)) out.push({ path: `/levels/${i}/rules/${j}`, message: `unknown rule id: ${id}` }); }));
+  duplicates(r.levels ?? [], (l) => l.id, (i) => `/levels/${i}/id`, 'level id', out);
+  if (!r.project) {
+    r.rules.forEach((x, i) => x.actions.forEach((a, j) => {
+      if ('assignProject' in a) out.push({ path: `/rules/${i}/actions/${j}/assignProject`, message: 'the recipe declares no project' });
+    }));
+  }
   r.dedupe?.urlTransforms?.forEach((t, i) => {
     const m = regexProblem(t.pattern, t.flags, true);
     if (m) out.push({ path: `/dedupe/urlTransforms/${i}/pattern`, message: m });
@@ -181,7 +205,7 @@ export function validateRecipe(x: unknown): RecipeResult {
       }
       const res = validateRule(sub);
       if (!res.ok) for (const p of res.errors) out.push({ path: `/rules/${i}${p.path === '/' ? '' : p.path}`, message: p.message });
-      else hosts(res.rule.needs?.hosts, `/rules/${i}/needs/hosts`);
+      else needsHosts(res.rule.needs, `/rules/${i}/needs`);
     });
   }
   return out.length ? { ok: false, errors: out } : { ok: true, recipe: r };

@@ -13,7 +13,7 @@
   let error = $state('');
 
   const nameOf = (key: string): string => view?.rules.find((r) => r.key === key)?.name ?? key;
-  const KIND: Record<string, string> = { group: 'group', dedupe: 'dedupe', close: 'close', showInView: 'view' };
+  const KIND: Record<string, string> = { group: 'group', dedupe: 'dedupe', close: 'close', showInView: 'view', assignProject: 'project' };
   const kinds = (ks: string[]): string => ks.map((k) => KIND[k] ?? k).join(', ');
   const lost = (e: ExplainEntry): [string, string][] => Object.entries(e.lostTo).filter((x): x is [string, string] => typeof x[1] === 'string');
 

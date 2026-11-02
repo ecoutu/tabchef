@@ -15,12 +15,15 @@
 // tabs that no sample stands for).
 import { evalCond } from './cond';
 import { liveProgram } from './dry-run';
-import { evaluateTab, type EvalResult } from './evaluate';
+import { condScope, evaluateTab, type EvalResult } from './evaluate';
 import type { Cond, Program, Rule, TabFacts } from './types';
 import type { TabSnap } from '../types';
 
-export type ActionKind = 'group' | 'dedupe' | 'close' | 'showInView';
-/** Kinds only one rule can win per tab. showInView is not one: every matching rule adds its view. */
+export type ActionKind = 'group' | 'dedupe' | 'close' | 'showInView' | 'assignProject';
+/**
+ * Kinds only one rule can win per tab. showInView is not one: every matching rule adds its view; nor is
+ * assignProject: every matching rule adds a project candidate (M3; T14 picks among them).
+ */
 type ExclusiveKind = 'group' | 'dedupe' | 'close';
 
 export interface ExplainEntry {
@@ -28,7 +31,7 @@ export interface ExplainEntry {
   name: string;
   /** The rule's action kinds, in its own order (no duplicates). */
   actions: ActionKind[];
-  /** Kinds this rule won (for a dry-run rule: would win). showInView counts as won whenever the rule matches. */
+  /** Kinds this rule won (for a dry-run rule: would win). showInView and assignProject count as won whenever the rule matches. */
   won: ActionKind[];
   /** Kind → key of the rule that won it, for kinds this rule matched for but did not win. */
   lostTo: Partial<Record<ActionKind, string>>;
@@ -51,7 +54,7 @@ export function shadowText(name: string): string {
 export function actionKinds(r: Rule): ActionKind[] {
   const out: ActionKind[] = [];
   for (const a of r.actions) {
-    const k = (['group', 'dedupe', 'close', 'showInView'] as const).find((x) => x in a);
+    const k = (['group', 'dedupe', 'close', 'showInView', 'assignProject'] as const).find((x) => x in a);
     if (k && !out.includes(k)) out.push(k);
   }
   return out;
@@ -73,9 +76,9 @@ export function explainTab(p: Program, f: TabFacts, now: number, paused: Record<
   delete noPage.page;
   const out: ExplainEntry[] = [];
   for (const r of p.rules) {
-    const rel = evalCond(r.rule.match, noPage, now);
+    const rel = evalCond(r.rule.match, noPage, now, condScope(r, noPage));
     if (!rel.ok && !rel.needsPage) continue;
-    const c = evalCond(r.rule.match, f, now);
+    const c = evalCond(r.rule.match, f, now, condScope(r, f));
     const actions = actionKinds(r.rule);
     const e: ExplainEntry = { key: r.key, name: r.rule.name, actions, won: [], lostTo: {}, matched: c.ok };
     const reason = reasonOf(r.key, r.recipeId);
@@ -86,7 +89,7 @@ export function explainTab(p: Program, f: TabFacts, now: number, paused: Record<
     if (c.ok && reason === undefined) {
       const outcome = r.dryRun ? full : live;
       for (const k of actions) {
-        if (k === 'showInView') { e.won.push(k); continue; }
+        if (k === 'showInView' || k === 'assignProject') { e.won.push(k); continue; }
         const w = winnerOf(outcome, k);
         if (w === r.key) e.won.push(k);
         else if (w !== undefined) e.lostTo[k] = w;
@@ -149,10 +152,10 @@ function samplesOf(c: Cond): string[] | null {
   return null;
 }
 
-/** True when `c` uses a `not`, `pageText` or `title` condition anywhere. */
+/** True when `c` uses a `not`, `pageText`, `title` or (M3) `field` condition anywhere. */
 function hasUnsure(c: Cond): boolean {
   if (typeof c !== 'object' || c === null) return true;
-  if ('not' in c || 'pageText' in c || 'title' in c) return true;
+  if ('not' in c || 'pageText' in c || 'title' in c || 'field' in c) return true;
   if ('all' in c && Array.isArray(c.all)) return c.all.some(hasUnsure);
   if ('any' in c && Array.isArray(c.any)) return c.any.some(hasUnsure);
   if ('opener' in c) return hasUnsure(c.opener);
@@ -168,8 +171,9 @@ export function findShadowed(p: Program): { key: string; shadowedBy: string }[] 
   const out: { key: string; shadowedBy: string }[] = [];
   for (let bi = 0; bi < p.rules.length; bi++) {
     const b = p.rules[bi]!;
-    const kinds = actionKinds(b.rule).filter((k): k is ExclusiveKind => k !== 'showInView');
-    if (!kinds.length || b.rule.actions.some((a) => 'showInView' in a)) continue; // its view would still apply
+    const kinds = actionKinds(b.rule).filter((k): k is ExclusiveKind => k !== 'showInView' && k !== 'assignProject');
+    // Its view (or project candidate) would still apply.
+    if (!kinds.length || b.rule.actions.some((a) => 'showInView' in a || 'assignProject' in a)) continue;
     const samples = samplesOf(b.rule.match);
     if (!samples) continue;
     for (let ai = 0; ai < bi; ai++) {

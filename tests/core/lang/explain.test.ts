@@ -169,3 +169,18 @@ describe('findShadowed', () => {
     expect(shadowText('Github Other')).toBe('Likely never matches: rule "Github Other" above catches these first.');
   });
 });
+
+describe('explainTab / findShadowed: M3 actions and fields (M3-R20)', () => {
+  it('assignProject is a kind every matching rule wins, like showInView', () => {
+    const r = rule('p', { url: 'github.com/*' }, [{ assignProject: { key: 'ABC-1' } }]);
+    const p: Program = { ...program(config([])), rules: [{ key: 'demo/p', rule: r, recipeId: 'demo', index: 0, dryRun: false }] };
+    expect(explainTab(p, facts('https://github.com/acme/web'), NOW)).toEqual([
+      expect.objectContaining({ key: 'demo/p', actions: ['assignProject'], won: ['assignProject'], lostTo: {}, matched: true }),
+    ]);
+  });
+  it('a rule with a field condition never shadows a later rule', () => {
+    const a = rule('a', { all: [{ url: 'github.com/*' }, { field: { field: 'extract.n', op: '==', value: '1' } }] }, [group('A')], { extract: { n: { from: 'url', regex: '(\\d+)' } } });
+    const b = rule('b', { url: 'github.com/acme/*' }, [group('B')]);
+    expect(findShadowed(program(config([a, b])))).toEqual([]);
+  });
+});

@@ -1,6 +1,7 @@
 // The M2 declarative rule language. Schema: rule.schema.json (precompiled, see scripts/gen-validator.mjs).
 // `discard` and `notify` actions are deliberately absent until the milestone that implements them (ruling R26).
 import type { DedupeMode, DedupeSettings, TabSnap } from '../types';
+import type { ProjectDef } from '../projects/types';
 
 export type Pattern = string;                         // glob | /regex/flags | :param, as M1 compilePattern
 export type Cond =
@@ -8,10 +9,18 @@ export type Cond =
   | { opener: Cond } | { group: string } | { pinned: boolean } | { audible: boolean }
   | { age: { gt?: string; lt?: string } }             // durations since tab creation
   | { pageText: string | string[] }                   // substring(s); needs host permission
+  | { field: Comparison }                             // source.<name> | extract.<name> | project.<name> (M3); missing = unknown
   | { all: Cond[] } | { any: Cond[] } | { not: Cond };
-export type ExtractSpec = { from: 'url' | 'title'; regex: string; group?: string } | { selector: string; attr?: string };
+/** Where a jiraKey extract reads its text: the tab's url or title, or one of the rule's source fields. */
+export type ExtractFrom = 'url' | 'title' | `source.${string}`;
+/** Jira issue key extraction (M3; the value is computed by T2, until then it is undefined, M3-R21). */
+export interface JiraKeySpec { pattern?: string; allow?: string[]; ignore?: string[] }
+export type ExtractSpec =
+  | { from: 'url' | 'title'; regex: string; group?: string }
+  | { selector: string; attr?: string }
+  | { from: ExtractFrom; jiraKey: JiraKeySpec };
 export type Extract = Record<string, ExtractSpec>;
-export type TriggerKind = 'created' | 'committed' | 'pageText' | 'schedule' | 'groupChanged';
+export type TriggerKind = 'created' | 'committed' | 'pageText' | 'schedule' | 'groupChanged' | 'sourceUpdated';
 export type CloseMode = 'auto' | 'suggest';
 export interface GroupAction {
   title: string; color: string /* GroupColor or template */; collapsed?: boolean;
@@ -22,16 +31,33 @@ export type Action =
   | { group: GroupAction }
   | { dedupe: DedupeAction }
   | { close: { after?: string; mode?: CloseMode } }
-  | { showInView: { view: string } };
-/** Host match patterns and optional permissions a recipe (or one recipe rule, T10) needs to run. */
-export interface RecipeNeeds { hosts?: string[]; permissions?: string[] }
+  | { showInView: { view: string } }
+  /** Recipe rules only (M3-R15): make this tab a candidate for the recipe's project `key` (a template). */
+  | { assignProject: { key: string; create?: boolean /* default false */ } };
+/**
+ * Host match patterns, optional permissions and connections a recipe (or one recipe rule, T10) needs to run.
+ * `anyOf` lists alternatives, best first; the first satisfied one is the rule's level (needsLevel, M3-R12).
+ * `connections` and `anyOf` are rejected by compileProgram as "not supported yet" until T12 wires them.
+ */
+export interface RecipeNeeds { hosts?: string[]; permissions?: string[]; connections?: string[]; anyOf?: RecipeNeeds[] }
+/** The source queries a rule's `source` may name (= T8's SOURCE_QUERIES keys, M3-R29). */
+export type SourceQueryKind = 'github.pull_request' | 'github.search_prs_by_key' | 'jira.issue' | 'jira.projects';
+/**
+ * A recipe rule's data source (M3, recipe rules only, M3-R15): `query` run on `connection` with `args` (templates
+ * rendered with the rule's vars); `fields` maps a field name (read as `source.<name>`) to a dot path into the result.
+ * The page `fallback` adapter is deferred to T10 (M3-R18).
+ */
+export interface SourceSpec { connection: string; query: SourceQueryKind; args: Record<string, string>; fields: Record<string, string> }
 export interface Rule {
   id: string; name: string; enabled: boolean; dryRun?: boolean;
   /** Recipe rules only (R44): an unmet rule-level need pauses this rule key alone; the recipe still enables (R5). */
   needs?: RecipeNeeds;
+  /** Recipe rules only (M3-R15). */
+  source?: SourceSpec;
   trigger?: { on: TriggerKind[]; every?: string };     // default on: ['created','committed']
   match: Cond; extract?: Extract; actions: Action[];
 }
+/** In a `field` condition, `value` may be `{ago: <duration>}`: the time now minus that, compared as a date (M3-R9). */
 export interface Comparison { field: string; op: '==' | '!=' | '<' | '>' | 'in' | 'matches'; value: unknown }
 export type Show = Comparison | { all: Show[] } | { any: Show[] } | { not: Show };
 export interface View {
@@ -51,6 +77,12 @@ export interface Recipe {
   tables?: Record<string, Record<string, string>>;
   dedupe?: { urlTransforms?: DedupeSettings['urlTransforms'] };
   rules: Rule[]; views?: View[];
+  /** M3: the project tabs of `assignProject` rules join (one per rendered key). */
+  project?: Omit<ProjectDef, 'recipeId'>;
+  /** M3: recipe ids that cannot be enabled together with this one (M3-R17). */
+  conflicts?: string[];
+  /** M3: named levels; each lists the rule ids whose status decides it. */
+  levels?: { id: string; label: string; rules: string[] }[];
 }
 export interface RecipeRef {
   id: string; enabled: boolean; params: Record<string, unknown>; source: 'builtin' | 'user'; body?: Recipe;
@@ -63,11 +95,22 @@ export interface RecipeRef {
 export interface TabFacts {
   tab: TabSnap; opener?: TabSnap; groupTitle?: string;
   page?: { texts: string[]; extracts: Record<string, string>; formEdited: boolean };
+  /**
+   * M3: source data per rule key (T8's SourceEntry is assignable). `data` holds the picked `fields`; a field that is
+   * absent (or no entry, or no data) is unknown to `field` conditions (M3-R8).
+   */
+  source?: Record<string /* ruleKey */, { data?: Record<string, unknown> }>;
+  /** M3: the project this tab belongs to (T14/T15). */
+  projectId?: string;
 }
+/** One Program.needs alternative: origins, permissions and (M3) connection ids. */
+export interface NeedsAlt { origins: string[]; permissions: string[]; connections?: string[] }
+/** A Program.needs entry: base needs, plus (M3, not produced until T12) ordered alternatives. */
+export interface NeedsEntry extends NeedsAlt { anyOf?: NeedsAlt[] }
 export interface CompiledRule { key: string /* 'user/<id>' | '<recipeId>/<id>' */; rule: Rule; recipeId?: string; index: number; dryRun: boolean }
 export interface Program {
   rules: CompiledRule[]; views: (View & { recipeId: string })[]; tables: Record<string, Record<string, string>>;
-  dedupe: DedupeSettings; needs: Record<string /* recipeId | ruleKey (rule-level, T10; listed while paused too) */, { origins: string[]; permissions: string[] }>;
+  dedupe: DedupeSettings; needs: Record<string /* recipeId | ruleKey (rule-level, T10; listed while paused too) */, NeedsEntry>;
   /**
    * Global dry run (`config.dryRun`, M2 T12): every rule is dry-run and engine-initiated actions only (R50) are blocked
    * and logged; user-initiated actions (popup close / close-all, banner choices, undo) still apply.

@@ -440,6 +440,10 @@ export function patchRuleForm(c: Config, id: string, patch: Partial<RuleForm>): 
 
 const list = (x: string | string[]): string => (Array.isArray(x) ? x.join(', ') : x);
 
+/** A `field` condition's value: `{ago: d}` reads "d ago". */
+const valueText = (v: unknown): string =>
+  (typeof v === 'object' && v !== null && !Array.isArray(v) && 'ago' in v ? `${String((v as { ago: unknown }).ago)} ago` : JSON.stringify(v));
+
 function condText(c: Cond): string {
   if ('url' in c) return `url ${list(c.url)}`;
   if ('title' in c) return `title ${c.title}`;
@@ -452,6 +456,7 @@ function condText(c: Cond): string {
   if ('audible' in c) return c.audible ? 'playing audio' : 'not playing audio';
   if ('age' in c) return `age${c.age.gt ? ` over ${c.age.gt}` : ''}${c.age.lt ? ` under ${c.age.lt}` : ''}`;
   if ('pageText' in c) return `page text ${(Array.isArray(c.pageText) ? c.pageText : [c.pageText]).map((t) => `"${t}"`).join(', ')}`;
+  if ('field' in c) return `${c.field.field} ${c.field.op} ${valueText(c.field.value)}`;
   return JSON.stringify(c);
 }
 
@@ -459,12 +464,15 @@ function condText(c: Cond): string {
 export function ruleSummary(r: Rule): string[] {
   const out = [`Match: ${condText(r.match)}`];
   if (r.trigger) out.push(`Runs on: ${r.trigger.on.join(', ')}${r.trigger.every ? ` every ${r.trigger.every}` : ''}`);
+  if (r.source) out.push(`Source: ${r.source.query} via the ${r.source.connection} connection`);
   if (r.extract) out.push(`Extracts: ${Object.keys(r.extract).join(', ')}`);
   for (const a of r.actions) {
     if ('group' in a) out.push(`Group into "${a.group.title}" (${a.group.color})${a.group.anchors?.length ? ` with ${a.group.anchors.length} anchor tabs` : ''}`);
     else if ('dedupe' in a) out.push(`De-duplicate${a.dedupe.mode ? `: ${a.dedupe.mode}` : ''}`);
     else if ('close' in a) out.push(`Close${a.close.after ? ` after ${a.close.after}` : ''}${a.close.mode ? ` (${a.close.mode})` : ''}`);
-    else out.push(`Show in view ${a.showInView.view}`);
+    else if ('showInView' in a) out.push(`Show in view ${a.showInView.view}`);
+    else if ('assignProject' in a) out.push(`Assign to project ${a.assignProject.key}${a.assignProject.create ? ' (create it if missing)' : ''}`);
+    else out.push(JSON.stringify(a));
   }
   if (r.dryRun) out.push('Dry run: logged only');
   return out;

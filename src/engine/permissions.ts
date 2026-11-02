@@ -13,6 +13,7 @@
 // `scripting` is granted: the WatchScripting adapter then reports false and nothing is registered (no throw).
 import type { BrowserPort } from '../platform/browser-port';
 import type { Program } from '../core/lang/types';
+import { accessText } from '../core/lang/needs';
 import { usesPageFacts } from './page-facts';
 import { watchOrigins, type WatchScripting } from './watch-registration';
 
@@ -35,13 +36,9 @@ export function effectiveNeeds(n: Needs): Needs {
   return { origins: [...new Set(n.origins)], permissions };
 }
 
-/** The host a match pattern names (`https://meet.google.com/*` → `meet.google.com`); the pattern itself otherwise. */
-const hostOf = (pattern: string): string => /^[^:]+:\/\/([^/:]+)/.exec(pattern)?.[1] ?? pattern;
-
-/** UI text for a paused recipe or rule: `"Paused: needs access to <origin>"` (spec §6.10). */
+/** UI text for a paused recipe or rule: `"Paused: needs access to <origin>"` (spec §6.10; wording in core/lang/needs.ts). */
 export function pausedReason(missing: Needs): string {
-  if (missing.origins.length > 0) return `Paused: needs access to ${missing.origins.map(hostOf).join(', ')}`;
-  return `Paused: needs the ${missing.permissions.join(', ')} permission`;
+  return `Paused: ${accessText(missing)}`;
 }
 
 const MATCH_PATTERN = /^(\*|https?):\/\/(\*|(?:\*\.)?[^/:*]+)(?::(\*|\d{1,5}))?(\/.*)$/;

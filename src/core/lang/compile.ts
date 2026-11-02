@@ -21,6 +21,13 @@
 // rules keep their entries (PermissionsManager reads needs from the program it pauses). User rules may not declare
 // needs (R44); one that does is reported and skipped.
 //
+// M3 (T1): `source` and `assignProject` are recipe-rule-only (M3-R15); a user rule with one is reported and skipped.
+// Not supported yet, reported for the rule or recipe that uses them: `project.<name>` fields (M3-R11, until T15) and
+// `needs.connections` / `needs.anyOf` (M3-R12, until T12 wires connection state and levels; compile itself stays free
+// of permission and connection state). A recipe rule with `assignProject` needs the recipe's `project`. Recipes that
+// `conflicts` with each other (either side may list the other) are not both compiled: the later one in
+// config.recipes is reported and skipped (M3-R17).
+//
 // Errors: a broken recipe (unknown body, bad param, unknown placeholder, invalid rule, bad urlTransform) is reported
 // in `errors` and skipped as a whole (rules, tables, views, needs); a broken user rule is reported and skipped alone.
 //
@@ -31,7 +38,7 @@ import { formatSchemaError, regexProblem, ruleProblems, type Tables } from '../c
 import { validateRule } from '../config/validate-config.generated.js';
 import { DURATION } from './duration';
 import type { Config, DedupeSettings } from '../types';
-import type { CompiledRule, ParamDef, Program, Recipe, RecipeRef, Rule } from './types';
+import type { CompiledRule, Cond, ParamDef, Program, Recipe, RecipeNeeds, RecipeRef, Rule } from './types';
 
 export interface CompileError { key: string; error: string }
 export interface CompileOptions {
@@ -148,6 +155,38 @@ export function substitute(x: unknown, values: Record<string, unknown>, path: st
 
 // ---- rules ----
 
+/** The first of `needs.connections` / `needs.anyOf` (anywhere in the needs) as "not supported yet" (M3-R12). */
+function unsupportedNeeds(n: unknown): string | undefined {
+  if (!isObj(n)) return undefined;
+  if (own(n, 'anyOf')) return 'needs.anyOf: not supported yet';
+  if (own(n, 'connections')) return 'needs.connections: not supported yet';
+  return undefined;
+}
+
+function usesProjectField(c: Cond): boolean {
+  if (!isObj(c)) return false;
+  if ('field' in c) return isObj(c.field) && typeof c.field.field === 'string' && c.field.field.startsWith('project.');
+  if ('all' in c) return Array.isArray(c.all) && c.all.some(usesProjectField);
+  if ('any' in c) return Array.isArray(c.any) && c.any.some(usesProjectField);
+  if ('not' in c) return usesProjectField(c.not);
+  if ('opener' in c) return usesProjectField(c.opener);
+  return false;
+}
+
+/** M3 features a valid rule may not use here (see the header). `project` is the recipe's (undefined for user rules). */
+function m3Problems(r: Rule, recipe: Pick<Recipe, 'project'> | undefined): string[] {
+  const out: string[] = [];
+  const assigns = Array.isArray(r.actions) && r.actions.some((a) => isObj(a) && own(a, 'assignProject'));
+  if (!recipe) {
+    if (own(r, 'source')) out.push('source: only recipe rules can read a source');
+    if (assigns) out.push('assignProject: only recipe rules can assign projects');
+  } else if (assigns && recipe.project === undefined) out.push('assignProject: the recipe declares no project');
+  if (usesProjectField(r.match)) out.push('project fields are not supported yet');
+  const n = unsupportedNeeds(r.needs);
+  if (n) out.push(n);
+  return out;
+}
+
 /** Schema + post-check problems of one rule, as "<path> <message>" strings (empty when valid). Reported joined, one entry per rule. */
 function ruleErrors(rule: unknown, tables: Tables): string[] {
   if (!validateRule(rule)) return (validateRule.errors ?? []).map(formatSchemaError);
@@ -201,6 +240,8 @@ function resolveRecipes(config: Config, builtins: Record<string, Recipe>, errors
       errors.push({ key: id, error: 'malformed needs' });
       continue;
     }
+    const unsupported = unsupportedNeeds(body.needs);
+    if (unsupported) { errors.push({ key: id, error: unsupported }); continue; }
     const list = (transforms ?? []) as unknown[];
     const badAt = list.findIndex((t) => !isObj(t) || typeof t.pattern !== 'string' || typeof t.replacement !== 'string' || (t.flags !== undefined && typeof t.flags !== 'string') || regexProblem(t.pattern, t.flags as string | undefined) !== undefined);
     if (badAt >= 0) {
@@ -211,7 +252,19 @@ function resolveRecipes(config: Config, builtins: Record<string, Recipe>, errors
     if (body.views !== undefined && !(Array.isArray(body.views) && body.views.every(isObj))) { errors.push({ key: id, error: 'malformed views' }); continue; }
     out.push({ id, source: ref.source, body, ref });
   }
-  return out;
+  return withoutConflicts(out, errors);
+}
+
+/** `recipes` minus each one that conflicts with an earlier kept one (either side lists the other, M3-R17). */
+function withoutConflicts(recipes: Candidate[], errors: CompileError[]): Candidate[] {
+  const lists = (c: Candidate): unknown[] => (Array.isArray(c.body.conflicts) ? c.body.conflicts : []);
+  const kept: Candidate[] = [];
+  for (const c of recipes) {
+    const other = kept.find((k) => lists(k).includes(c.id) || lists(c).includes(k.id));
+    if (other) errors.push({ key: c.id, error: `conflicts with recipe "${other.id}"; both are enabled` });
+    else kept.push(c);
+  }
+  return kept;
 }
 
 /** Tables merged builtin recipes → user recipes → config.tables; later wins per entry. */
@@ -261,6 +314,7 @@ export function compileProgram(
       const turnedOn = raw.enabled === false;
       const r: Rule = turnedOn ? { ...raw, enabled: true } : raw;
       const es = ruleErrors(r, checkTables);
+      if (!es.length) es.push(...m3Problems(r, c.body));
       if (ids.has(r.id)) es.push('duplicate rule id');
       ids.add(r.id);
       // An invalid body rule is the author's error and skips the recipe; a rule only the user turned on that does not
@@ -280,6 +334,7 @@ export function compileProgram(
     const key = `user/${String(r.id)}`;
     const es = ruleErrors(r, checkTables);
     if (own(r, 'needs')) es.push('needs: only recipe rules declare needs (R44)');
+    else if (!es.length) es.push(...m3Problems(r, undefined));
     if (userIds.has(r.id)) es.push('duplicate rule id');
     userIds.add(r.id);
     if (es.length) errors.push({ key, error: es.join('; ') });
@@ -310,7 +365,7 @@ export function compileProgram(
     urlTransforms: [...(config.dedupe?.urlTransforms ?? []), ...survivors.flatMap((c) => c.body.dedupe?.urlTransforms ?? [])],
   };
   const needs: Program['needs'] = {};
-  const needsOf = (n: Rule['needs']) => ({ origins: [...(n?.hosts ?? [])], permissions: [...(n?.permissions ?? [])] });
+  const needsOf = (n: RecipeNeeds | undefined) => ({ origins: [...(n?.hosts ?? [])], permissions: [...(n?.permissions ?? [])] });
   for (const { c, rules } of recipes) {
     needs[c.id] = needsOf(c.body.needs);
     for (const r of rules) if (r.needs) needs[`${c.id}/${r.id}`] = needsOf(r.needs); // paused rules too

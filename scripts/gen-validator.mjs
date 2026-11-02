@@ -32,8 +32,11 @@ const PLACEHOLDER = { $ref: 'recipe.json#/$defs/placeholder' };
 const isObj = (x) => typeof x === 'object' && x !== null && !Array.isArray(x);
 /** A schema for one typed scalar value: an enum/const, a boolean/number, or a string with a pattern. */
 const scalar = (s) => isObj(s) && ('enum' in s || 'const' in s || ['boolean', 'number', 'integer'].includes(s.type) || (s.type === 'string' && 'pattern' in s));
-/** An array of scalars or strings (a whole list can come from one `string[]` param); not lists of conds or actions. */
-const scalarList = (s) => isObj(s) && s.type === 'array' && isObj(s.items) && !('$ref' in s.items && /cond|action/.test(s.items.$ref)) && s.items.type !== 'object';
+/**
+ * An array of scalars or strings (a whole list can come from one `string[]` param); not lists of conds, actions or
+ * other object defs (`needs.anyOf`, M3-R14).
+ */
+const scalarList = (s) => isObj(s) && s.type === 'array' && isObj(s.items) && !('$ref' in s.items && /cond|action|needs/.test(s.items.$ref)) && s.items.type !== 'object';
 
 /**
  * `s` with each typed leaf wrapped as `oneOf: [leaf, placeholder]`. A list that is itself a `oneOf` branch (e.g.

@@ -12,9 +12,9 @@ import { MAX_MATCH_INPUT } from '../match/pattern';
 import { renderTemplate } from '../match/template';
 import { isExemptUrl } from '../url/normalize';
 import { parseDuration } from './duration';
-import { evalCond } from './cond';
+import { evalCond, type CondScope } from './cond';
 import type { DedupeMode, GroupColor } from '../types';
-import type { CloseMode, CompiledRule, ExtractSpec, Program, TabFacts } from './types';
+import type { CloseMode, CompiledRule, Cond, ExtractSpec, Program, TabFacts } from './types';
 
 export interface GroupResult {
   key: string; index: number; title: string; color: GroupColor; collapsed: boolean;
@@ -26,6 +26,8 @@ export interface GroupResult {
 }
 export interface DedupeResult { key: string; mode?: DedupeMode; followFragment?: boolean; keepFragment?: boolean; matchTitle?: boolean }
 export interface CloseResult { key: string; afterMs: number; mode: CloseMode; dryRun: boolean }
+/** One `assignProject` candidate (M3): the key rendered with the rule's vars; `index` is the rule's priority. */
+export interface ProjectCandidate { key: string; ruleKey: string; index: number; create: boolean }
 /** No `notify` / `discard`: those actions do not exist in M2 (R26). */
 export interface EvalResult {
   group?: GroupResult;
@@ -37,6 +39,8 @@ export interface EvalResult {
    * there. A view's `show`, `groupBy` and `sort` read them as `extract.<name>` (M2 T17). Absent when `views` is empty.
    */
   viewVars?: Record<string, Record<string, string>>;
+  /** M3: every matching `assignProject` (key rendered non-empty), in priority order; T14 picks among them. */
+  project?: ProjectCandidate[];
   /** Every matching rule key, in priority order (the conflict view). */
   matched: string[];
   /** Some rule's outcome depends on page facts (pageText or a selector extract) that `f.page` does not have yet. */
@@ -66,6 +70,7 @@ function regex(source: string): RegExp | null {
 /** One extract value, or undefined. A selector value comes from the page facts under `<ruleKey>.<name>`. */
 function extractValue(key: string, name: string, x: ExtractSpec, f: TabFacts): string | undefined {
   if ('selector' in x) return f.page?.extracts[`${key}.${name}`];
+  if ('jiraKey' in x) return undefined; // T2 implements key extraction (M3-R21)
   const re = regex(x.regex);
   if (!re) return undefined;
   const input = (x.from === 'url' ? (f.tab.pendingUrl ?? f.tab.url) : f.tab.title).slice(0, MAX_MATCH_INPUT);
@@ -75,15 +80,42 @@ function extractValue(key: string, name: string, x: ExtractSpec, f: TabFacts): s
   return m.groups?.[x.group] ?? (/^\d+$/.test(x.group) ? m[Number(x.group)] : undefined);
 }
 
-function varsOf(r: CompiledRule, captures: Record<string, string>, f: TabFacts): { vars: Record<string, string>; needsPage: boolean } {
-  const vars = { ...captures };
-  let needsPage = false;
+/** The rule's extract values (no captures). */
+function extractsOf(r: CompiledRule, f: TabFacts): Record<string, string> {
+  const vars: Record<string, string> = {};
   for (const [name, x] of Object.entries(r.rule.extract ?? {})) {
-    if ('selector' in x && !f.page) needsPage = true;
     const v = extractValue(r.key, name, x, f);
     if (v !== undefined) vars[name] = v;
   }
-  return { vars, needsPage };
+  return vars;
+}
+
+function varsOf(r: CompiledRule, captures: Record<string, string>, f: TabFacts): { vars: Record<string, string>; needsPage: boolean } {
+  const needsPage = !f.page && Object.values(r.rule.extract ?? {}).some((x) => 'selector' in x);
+  return { vars: { ...captures, ...extractsOf(r, f) }, needsPage };
+}
+
+function condReadsExtracts(c: Cond): boolean {
+  if (typeof c !== 'object' || c === null) return false;
+  if ('field' in c) return typeof c.field?.field === 'string' && c.field.field.startsWith('extract.');
+  if ('all' in c) return Array.isArray(c.all) && c.all.some(condReadsExtracts);
+  if ('any' in c) return Array.isArray(c.any) && c.any.some(condReadsExtracts);
+  if ('not' in c) return condReadsExtracts(c.not);
+  return false; // not under opener: fields there are unknown
+}
+
+const readsExtracts = new WeakMap<CompiledRule['rule'], boolean>();
+
+/**
+ * The evalCond scope of rule `r` for facts `f` (M3-R10): its key and, when its match reads `extract.<name>` fields,
+ * the extract values computed before the match (selector ones from page facts, named in `pageVars`).
+ */
+export function condScope(r: CompiledRule, f: TabFacts): CondScope {
+  let reads = readsExtracts.get(r.rule);
+  if (reads === undefined) readsExtracts.set(r.rule, (reads = condReadsExtracts(r.rule.match)));
+  if (!reads) return { ruleKey: r.key };
+  const pageVars = new Set(Object.entries(r.rule.extract ?? {}).filter(([, x]) => 'selector' in x).map(([n]) => n));
+  return { ruleKey: r.key, vars: extractsOf(r, f), pageVars };
 }
 
 function afterMs(after: string | undefined): number {
@@ -101,7 +133,7 @@ export function evaluateTab(p: Program, f: TabFacts, now: number): EvalResult {
   const url = f.tab.pendingUrl ? f.tab.pendingUrl : f.tab.url;
   const groupable = !f.tab.pinned && !isExemptUrl(url);
   for (const r of p.rules) {
-    const c = evalCond(r.rule.match, f, now);
+    const c = evalCond(r.rule.match, f, now, condScope(r, f));
     // Only a rule ahead of the group winner can still change the group outcome.
     const decidesGroup = groupable && !out.group && r.rule.actions.some((a) => 'group' in a);
     if (c.needsPage) {
@@ -138,6 +170,9 @@ export function evaluateTab(p: Program, f: TabFacts, now: number): EvalResult {
           out.views.push(a.showInView.view);
           (out.viewVars ??= {})[a.showInView.view] = vars;
         }
+      } else if ('assignProject' in a) {
+        const key = renderTemplate(a.assignProject.key, vars, p.tables);
+        if (key !== '') (out.project ??= []).push({ key, ruleKey: r.key, index: r.index, create: a.assignProject.create ?? false });
       }
     }
   }

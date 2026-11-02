@@ -422,3 +422,57 @@ describe('compileProgram: age conditions compile (M3-R6, was R66)', () => {
   });
 });
 
+
+describe('compileProgram: M3 T1 (sources, needs, conflicts, projects)', () => {
+  const src = { connection: 'github', query: 'github.pull_request' as const, args: {}, fields: { state: 'state' } };
+  const project = { key: '{key}', title: '{key}', color: 'blue', container: 'group' as const, join: ['rules' as const] };
+  it('source and assignProject are recipe-rule-only (M3-R15)', () => {
+    const { program, errors } = compileProgram(config({ rules: [
+      rule('s', { source: src }), rule('p', { actions: [{ assignProject: { key: 'ABC-1' } }] }), rule('ok'),
+    ] }), {});
+    expect(errors).toEqual([
+      { key: 'user/s', error: expect.stringMatching(/source: only recipe rules/) },
+      { key: 'user/p', error: expect.stringMatching(/assignProject: only recipe rules/) },
+    ]);
+    expect(program.rules.map((r) => r.key)).toEqual(['user/ok']);
+  });
+  it('a recipe rule may declare a source and assignProject', () => {
+    const b = { p: recipe('p', [rule('s', { source: src, actions: [{ assignProject: { key: 'ABC-1' } }] })], { project }) };
+    const { program, errors } = compileProgram(config({ recipes: [ref('p')] }), b);
+    expect(errors).toEqual([]);
+    expect(program.rules.map((r) => r.key)).toEqual(['p/s']);
+  });
+  it('assignProject in a recipe without a project is an error', () => {
+    const b = { p: recipe('p', [rule('s', { actions: [{ assignProject: { key: 'ABC-1' } }] })]) };
+    const { program, errors } = compileProgram(config({ recipes: [ref('p')] }), b);
+    expect(errors).toEqual([{ key: 'p/s', error: expect.stringMatching(/project/) }]);
+    expect(program.rules).toEqual([]);
+  });
+  it('project.<name> fields are not supported yet (M3-R11)', () => {
+    const b = { p: recipe('p', [rule('s', { match: { all: [{ url: '*' }, { field: { field: 'project.key', op: '==', value: 'x' } }] } })]) };
+    const { errors } = compileProgram(config({ recipes: [ref('p')] }), b);
+    expect(errors).toEqual([{ key: 'p/s', error: expect.stringMatching(/project fields are not supported yet/) }]);
+  });
+  it('needs.anyOf and needs.connections are not supported yet (M3-R12), recipe-level and rule-level', () => {
+    const anyOf = { anyOf: [{ connections: ['github'] }, { hosts: ['https://github.com/*'] }] };
+    const r1 = compileProgram(config({ recipes: [ref('p')] }), { p: recipe('p', [rule('a')], { needs: anyOf }) });
+    expect(r1.errors).toEqual([{ key: 'p', error: expect.stringMatching(/needs\.anyOf.*not supported yet/) }]);
+    expect(r1.program.rules).toEqual([]);
+    const r2 = compileProgram(config({ recipes: [ref('p')] }), { p: recipe('p', [rule('a', { needs: { connections: ['github'] } })]) });
+    expect(r2.errors).toEqual([{ key: 'p/a', error: expect.stringMatching(/needs\.connections.*not supported yet/) }]);
+  });
+  it('conflicting recipes both enabled: reported, and the later one in config.recipes is skipped (M3-R17)', () => {
+    const b = { a: recipe('a', [rule('x')], { conflicts: ['b'] }), b: recipe('b', [rule('y')]) };
+    const { program, errors } = compileProgram(config({ recipes: [ref('b'), ref('a')] }), b);
+    expect(errors).toEqual([{ key: 'a', error: expect.stringMatching(/conflicts with recipe "b"/) }]);
+    expect(program.rules.map((r) => r.key)).toEqual(['b/y']);
+    expect(Object.keys(program.needs)).toEqual(['b']);
+    // Declared on the earlier recipe instead: still the later one is skipped.
+    const b2 = { a: recipe('a', [rule('x')]), b: recipe('b', [rule('y')], { conflicts: ['a'] }) };
+    const r2 = compileProgram(config({ recipes: [ref('b'), ref('a')] }), b2);
+    expect(r2.errors).toEqual([{ key: 'a', error: expect.stringMatching(/conflicts with recipe "b"/) }]);
+    expect(r2.program.rules.map((r) => r.key)).toEqual(['b/y']);
+    // One of them disabled: no conflict.
+    expect(compileProgram(config({ recipes: [ref('b'), ref('a', { enabled: false })] }), b).errors).toEqual([]);
+  });
+});

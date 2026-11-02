@@ -241,24 +241,7 @@
       }
     },
     "needs": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "hosts": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "maxLength": 2048,
-            "minLength": 1
-          }
-        },
-        "permissions": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/permission"
-          }
-        }
-      }
+      "$ref": "rule.json#/$defs/needs"
     },
     "tables": {
       "type": "object",
@@ -312,6 +295,87 @@
       "type": "array",
       "items": {
         "$ref": "#/$defs/view"
+      }
+    },
+    "project": {
+      "$comment": "M3: the project assignProject rules feed (src/core/projects/types.ts ProjectDef without recipeId). key and title are templates; color a group color or a template.",
+      "type": "object",
+      "required": [
+        "key",
+        "title",
+        "color",
+        "container",
+        "join"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "type": "string",
+          "maxLength": 2048,
+          "minLength": 1
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 2048,
+          "minLength": 1
+        },
+        "color": {
+          "type": "string",
+          "maxLength": 2048,
+          "minLength": 1
+        },
+        "container": {
+          "enum": [
+            "group"
+          ]
+        },
+        "join": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "enum": [
+              "rules",
+              "manual"
+            ]
+          }
+        }
+      }
+    },
+    "conflicts": {
+      "$comment": "M3: recipe ids that cannot be enabled together with this one (compileProgram reports both enabled and skips the later recipe, M3-R17).",
+      "type": "array",
+      "items": {
+        "$ref": "rule.json#/$defs/id"
+      }
+    },
+    "levels": {
+      "$comment": "M3: named levels; each lists the rule ids whose status decides it.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "label",
+          "rules"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "$ref": "rule.json#/$defs/id"
+          },
+          "label": {
+            "type": "string",
+            "maxLength": 2048,
+            "minLength": 1
+          },
+          "rules": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "$ref": "rule.json#/$defs/id"
+            }
+          }
+        }
       }
     }
   }

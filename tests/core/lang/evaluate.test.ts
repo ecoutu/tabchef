@@ -223,3 +223,44 @@ describe('evaluateTab: needsPage', () => {
     expect(withPage).toMatchObject({ needsPage: false, matched: ['user/p'] });
   });
 });
+
+describe('evaluateTab: M3 T1 fields and projects', () => {
+  const project = { key: '{k}', title: '{key}', color: 'blue', container: 'group' as const, join: ['rules' as const] };
+  const assign = (key: string, create?: boolean): Action => ({ assignProject: { key, ...(create !== undefined && { create }) } });
+  it('assignProject with two matching rules lists both candidates in priority order', () => {
+    const b = { p: recipe('p', [
+      rule('a', { url: 'github.com/:o/:r/pull/:n' }, [assign('PR-{n}', true)]),
+      rule('b', { url: 'github.com/*' }, [assign('{t}')], { extract: { t: { from: 'title', regex: '^(\\d+)' } } }),
+      rule('c', { url: 'gitlab.com/*' }, [assign('NOPE')]),
+    ], { project }) };
+    const r = ev(config({ recipes: [ref('p')], order: ['p/b', 'p/a'] }), facts(), b);
+    expect(r.project).toEqual([
+      { key: '42', ruleKey: 'p/b', index: 0, create: false },
+      { key: 'PR-7', ruleKey: 'p/a', index: 1, create: true },
+    ]);
+  });
+  it('a key that renders empty is skipped; no candidates leaves project undefined', () => {
+    const b = { p: recipe('p', [rule('a', { url: 'github.com/*' }, [assign('{t}')], { extract: { t: { from: 'title', regex: '^(zzz)' } } })], { project }) };
+    expect(ev(config({ recipes: [ref('p')] }), facts(), b).project).toBeUndefined();
+  });
+  it('a field condition reads the rule\'s own source entry', () => {
+    const src = { connection: 'github', query: 'github.pull_request' as const, args: { n: '{n}' }, fields: { state: 'state' } };
+    const b = { p: recipe('p', [rule('m', { all: [{ url: 'github.com/:o/:r/pull/:n' }, { field: { field: 'source.state', op: '==', value: 'merged' } }] }, [{ close: {} }], { source: src })]) };
+    const c = config({ recipes: [ref('p')] });
+    expect(ev(c, facts({}, { source: { 'p/m': { data: { state: 'merged' } } } }), b).matched).toEqual(['p/m']);
+    expect(ev(c, facts({}, { source: { 'p/m': { data: { state: 'open' } } } }), b).matched).toEqual([]);
+    expect(ev(c, facts(), b).matched).toEqual([]);
+  });
+  it('a field condition on an extract sees url/title extracts before the match; a selector one needs the page', () => {
+    const c = config({ rules: [
+      rule('x', { all: [{ url: '*' }, { field: { field: 'extract.n', op: '==', value: '42' } }] }, [{ close: {} }], { extract: { n: { from: 'title', regex: '^(\\d+)' } } }),
+      rule('s', { all: [{ url: '*' }, { field: { field: 'extract.h', op: '==', value: 'Done' } }] }, [{ dedupe: {} }], { extract: { h: { selector: 'h1' } } }),
+    ] });
+    expect(ev(c)).toMatchObject({ matched: ['user/x'], needsPage: true });
+    expect(ev(c, facts({}, { page: { texts: [], extracts: { 'user/s.h': 'Done' }, formEdited: false } }))).toMatchObject({ matched: ['user/x', 'user/s'], needsPage: false });
+  });
+  it('a jiraKey extract yields no value yet (T2 implements it)', () => {
+    const b = { p: recipe('p', [rule('a', { url: 'github.com/*' }, [assign('{k}')], { extract: { k: { from: 'title', jiraKey: {} } } })], { project }) };
+    expect(ev(config({ recipes: [ref('p')] }), facts(), b).project).toBeUndefined();
+  });
+});
