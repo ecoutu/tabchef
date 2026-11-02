@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Config, DedupeMode, DedupeSettings } from '../../core/types';
   import { configPatternErrors, errorsForPath, patternError, patternHints } from '../../ui/rules-model';
+  import Help from './Help.svelte';
   import LinesField from './LinesField.svelte';
   import Permissions from './Permissions.svelte';
 
@@ -46,30 +47,43 @@
   </fieldset>
 {/snippet}
 
+{#snippet check(field: 'stripFragment' | 'ignoreTrailingSlash' | 'followFragment' | 'includeIncognito' | 'matchTitle', text: string, name: string, help: string)}
+  <span class="row">
+    <label class="inline"><input type="checkbox" checked={d[field]} onchange={(e) => patch({ [field]: e.currentTarget.checked })} /> {text}</label>
+    <Help label={name} text={help} />
+  </span>
+{/snippet}
+
 <section>
   <p class="help">Duplicates are detected by a normalized URL. The new tab is always the one that closes; the existing tab is kept and focused.</p>
 
   <div class="grid">
-    <label>Mode
-      <select value={d.mode} onchange={(e) => patch({ mode: e.currentTarget.value as DedupeMode })}>
-        <option value="always-switch">always-switch</option><option value="ask">ask</option><option value="off">off</option>
-      </select>
-    </label>
+    <div class="field">
+      <label>Mode
+        <select value={d.mode} onchange={(e) => patch({ mode: e.currentTarget.value as DedupeMode })}>
+          <option value="always-switch">always-switch</option><option value="ask">ask</option><option value="off">off</option>
+        </select>
+      </label>
+      <Help label="Mode" text="What happens when a new tab opens a page that is already open. always-switch: the new tab closes and you are taken to the existing one. ask: you choose, in a banner on the page or a notification. off: duplicates are left alone." />
+    </div>
     {#each sErr('mode') as m (m)}<p class="err" role="alert">mode {m}</p>{/each}
-    <label>Scope
-      <select value={d.scope} onchange={(e) => patch({ scope: e.currentTarget.value as DedupeSettings['scope'] })}>
-        <option value="all-windows">all windows</option><option value="same-window">same window</option>
-      </select>
-    </label>
+    <div class="field">
+      <label>Scope
+        <select value={d.scope} onchange={(e) => patch({ scope: e.currentTarget.value as DedupeSettings['scope'] })}>
+          <option value="all-windows">all windows</option><option value="same-window">same window</option>
+        </select>
+      </label>
+      <Help label="Scope" text="all windows: a tab is a duplicate of a matching tab in any window. same window: only tabs in the same window count, so each window can keep its own copy." />
+    </div>
     {#each sErr('scope') as m (m)}<p class="err" role="alert">scope {m}</p>{/each}
   </div>
 
   <div class="checks">
-    <label class="inline"><input type="checkbox" checked={d.stripFragment} onchange={(e) => patch({ stripFragment: e.currentTarget.checked })} /> Ignore #fragment</label>
-    <label class="inline"><input type="checkbox" checked={d.ignoreTrailingSlash} onchange={(e) => patch({ ignoreTrailingSlash: e.currentTarget.checked })} /> Ignore trailing slash</label>
-    <label class="inline"><input type="checkbox" checked={d.followFragment} onchange={(e) => patch({ followFragment: e.currentTarget.checked })} /> Kept tab follows the new #fragment</label>
-    <label class="inline"><input type="checkbox" checked={d.includeIncognito} onchange={(e) => patch({ includeIncognito: e.currentTarget.checked })} /> Include incognito windows</label>
-    <label class="inline"><input type="checkbox" checked={d.matchTitle} onchange={(e) => patch({ matchTitle: e.currentTarget.checked })} /> Duplicates must also have the same page title</label>
+    {@render check('stripFragment', 'Ignore #fragment', 'Ignore #fragment', 'Compare URLs without the part after #, so page#intro and page#setup count as the same page. Per-site overrides below can change this.')}
+    {@render check('ignoreTrailingSlash', 'Ignore trailing slash', 'Ignore trailing slash', 'Treat example.com/docs and example.com/docs/ as the same page.')}
+    {@render check('followFragment', 'Kept tab follows the new #fragment', 'Kept tab follows the new #fragment', 'When a duplicate is closed, the tab you are switched to scrolls to the #fragment of the link you opened, e.g. a heading in long docs.')}
+    {@render check('includeIncognito', 'Include incognito windows', 'Include incognito windows', 'Also de-duplicate tabs in incognito windows. Tabchef must be allowed in incognito (chrome://extensions) for this to have any effect.')}
+    {@render check('matchTitle', 'Duplicates must also have the same page title', 'Same page title', 'Only count tabs as duplicates when their titles match too. Useful for apps that show different content at the same URL.')}
   </div>
   {#each ['stripFragment', 'ignoreTrailingSlash', 'followFragment', 'includeIncognito', 'matchTitle'].flatMap(sErr) as m (m)}<p class="err" role="alert">{m}</p>{/each}
 
@@ -77,10 +91,13 @@
   {@render overrides('titleOverrides', 'Title override', 'Per-site title matching (first matching pattern wins over rules and the setting above)', 'compare', 'ignore')}
 
   <LinesField label="Strip query parameters (comma or newline separated; * wildcard)" value={d.stripParams} commas
+    helpLabel="Strip query parameters" help="These query parameters are removed before URLs are compared, so a link with tracking tags (e.g. utm_*) matches the clean URL. * matches any characters."
     onChange={(v) => patch({ stripParams: v })} extraErrors={sErr('stripParams')} />
   <LinesField label="Allow duplicates for these URL patterns (one per line)" value={d.allowDuplicates} check={patternError}
+    helpLabel="Allow duplicates" help="Tabs on URLs matching these patterns are never closed as duplicates, e.g. a dashboard you keep open in several windows."
     onChange={(v) => patch({ allowDuplicates: v })} extraErrors={sErr('allowDuplicates')} />
   <LinesField label="Always switch for these sites in ask mode (one pattern per line)" value={d.alwaysSwitchSites} check={patternError}
+    helpLabel="Always switch" help="In ask mode, duplicates on these sites switch to the existing tab without asking. Choosing &quot;Always switch for this site&quot; in the banner adds the site here."
     onChange={(v) => patch({ alwaysSwitchSites: v })} extraErrors={sErr('alwaysSwitchSites')} />
 
   <div class="readonly">
@@ -104,6 +121,8 @@
   .grid { display: flex; gap: 12px; flex-wrap: wrap; }
   .grid label { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--muted); }
   .checks { display: flex; flex-direction: column; gap: 4px; }
+  .row, .field { display: inline-flex; align-items: center; gap: 6px; }
+  .field { align-items: flex-end; }
   .inline { display: inline-flex; align-items: center; gap: 6px; }
   .readonly { border: 1px dashed var(--border); border-radius: 8px; padding: 8px 10px; }
   .readonly h3 { margin: 0 0 4px; font-size: 13px; }

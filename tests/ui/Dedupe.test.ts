@@ -60,4 +60,15 @@ describe('Dedupe options (T18 controls)', () => {
     render(Dedupe, props(defaultConfig(), { serverErrors: ['/dedupe/titleOverrides/0/pattern pattern too long'] }));
     expect(screen.getByText(/0\/pattern pattern too long/)).toBeTruthy();
   });
+
+  it('every setting has a help tip (outside its label, so it never toggles the control)', () => {
+    render(Dedupe, props(defaultConfig()));
+    for (const name of ['Mode', 'Scope', 'Ignore #fragment', 'Ignore trailing slash', 'Kept tab follows the new #fragment',
+      'Include incognito windows', 'Same page title', 'Strip query parameters', 'Allow duplicates', 'Always switch']) {
+      const btn = screen.getByRole('button', { name: `About ${name}` });
+      expect(btn.closest('label'), name).toBeNull();
+      expect(document.getElementById(btn.getAttribute('aria-describedby')!)?.textContent?.length, name).toBeGreaterThan(20);
+    }
+  });
 });
+
