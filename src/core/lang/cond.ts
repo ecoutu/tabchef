@@ -11,9 +11,15 @@ export interface CondResult {
   captures: Record<string, string>;
   /** True when the result depended on `pageText` and `f.page` was undefined. `ok` is then false. */
   needsPage: boolean;
+  /**
+   * Set (true) when the result depended on a fact that is unknown and that the page cannot supply (an `age` without
+   * `createdAt`, R66). `ok` is then false, and `not` keeps it false: an unknown is never negated into a match.
+   */
+  unknown?: true;
 }
 
-const no = (needsPage = false): CondResult => ({ ok: false, captures: {}, needsPage });
+const no = (needsPage = false, unknown = false): CondResult =>
+  (unknown ? { ok: false, captures: {}, needsPage, unknown: true } : { ok: false, captures: {}, needsPage });
 const yes = (captures: Record<string, string> = {}): CondResult => ({ ok: true, captures, needsPage: false });
 const bool = (b: boolean): CondResult => (b ? yes() : no());
 
@@ -38,27 +44,30 @@ export function evalCond(c: Cond, f: TabFacts, now: number): CondResult {
       if (!Array.isArray(v)) return no();
       let captures: Record<string, string> = {};
       let needsPage = false;
+      let unknown = false;
       for (const sub of v as Cond[]) {
         const r = evalCond(sub, f, now);
         if (r.ok) captures = { ...r.captures, ...captures };
-        else if (r.needsPage) needsPage = true;
+        else if (r.needsPage || r.unknown) { needsPage ||= r.needsPage; unknown ||= r.unknown === true; }
         else return no(); // definitely false: the page can't change that
       }
-      return needsPage ? no(true) : yes(captures);
+      return needsPage || unknown ? no(needsPage, unknown) : yes(captures);
     }
     case 'any': {
       if (!Array.isArray(v)) return no();
       let needsPage = false;
+      let unknown = false;
       for (const sub of v as Cond[]) {
         const r = evalCond(sub, f, now);
         if (r.ok) return yes(r.captures);
-        if (r.needsPage) needsPage = true;
+        needsPage ||= r.needsPage;
+        unknown ||= r.unknown === true;
       }
-      return no(needsPage);
+      return no(needsPage, unknown);
     }
     case 'not': {
       const r = evalCond(v as Cond, f, now);
-      return r.needsPage ? no(true) : bool(!r.ok);
+      return r.needsPage || r.unknown ? no(r.needsPage, r.unknown === true) : bool(!r.ok);
     }
     case 'url': {
       const url = f.tab.pendingUrl ?? f.tab.url; // matchers truncate to MAX_MATCH_INPUT
@@ -76,7 +85,7 @@ export function evalCond(c: Cond, f: TabFacts, now: number): CondResult {
       if (!f.opener) return no();
       // Only the opener's tab is known; its page is never fetched, so pageText under opener is just false.
       const r = evalCond(v as Cond, { tab: f.opener }, now);
-      return r.ok ? yes(r.captures) : no();
+      return r.ok ? yes(r.captures) : no(false, r.unknown === true); // an unknown opener age stays unknown (R66)
     }
     case 'group':
       return bool(f.groupTitle !== undefined && f.groupTitle === v);
@@ -85,7 +94,8 @@ export function evalCond(c: Cond, f: TabFacts, now: number): CondResult {
     case 'audible':
       return bool(f.tab.audible === v);
     case 'age': {
-      if (f.createdAt === undefined || typeof v !== 'object' || v === null) return no();
+      if (typeof v !== 'object' || v === null) return no();
+      if (f.createdAt === undefined) return no(false, true); // unknown, not false (R66)
       const { gt, lt } = v as { gt?: unknown; lt?: unknown };
       if (gt === undefined && lt === undefined) return no();
       const age = now - f.createdAt;

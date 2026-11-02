@@ -225,6 +225,10 @@ describe('validateRule', () => {
     const r = validateRule(rule({ actions: [{ eval: 'x' }] }));
     expect(at(r, '/actions/0').some((e) => /eval/.test(e.message))).toBe(true);
   });
+  it('rejects age conditions with "not supported yet" (R66), so the editor shows it', () => {
+    const r = validateRule(rule({ match: { all: [{ url: 'example.com/*' }, { not: { age: { lt: '1h' } } }] } }));
+    expect(at(r, '/match/all/1/not/age').map((e) => e.message)).toEqual(['age conditions are not supported yet']);
+  });
   it('runs the TS post-checks', () => {
     expect(at(validateRule(rule({ match: { url: 'a.com/(x)' } })), '/match/url').length).toBe(1);
   });

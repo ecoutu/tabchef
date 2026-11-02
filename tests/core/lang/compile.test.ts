@@ -400,3 +400,19 @@ describe('compileProgram: ruleEnabled overrides (R56)', () => {
     expect(explainTab(p, { tab }, 0).map((e) => e.key)).not.toContain('s/wide');
   });
 });
+
+describe('compileProgram: age conditions are not supported yet (R66)', () => {
+  const match = { all: [{ url: 'example.com/*' }, { not: { age: { lt: '1h' } } }] } as Rule['match'];
+  it('a user rule using age does not compile', () => {
+    const { program, errors } = compileProgram(config({ rules: [rule('old', { match, actions: [{ close: { after: '3s' } }] })] }), {});
+    expect(program.rules).toEqual([]);
+    expect(errors).toEqual([{ key: 'user/old', error: expect.stringContaining('age conditions are not supported yet') }]);
+  });
+  it('a recipe rule using age (nested under opener) skips its recipe', () => {
+    const b = { r: recipe('r', [rule('x', { match: { opener: { age: { gt: '1m' } } } })]) };
+    const { program, errors } = compileProgram(config({ recipes: [ref('r')] }), b);
+    expect(program.rules).toEqual([]);
+    expect(errors.map((e) => e.error).join()).toMatch(/age conditions are not supported yet/);
+  });
+});
+

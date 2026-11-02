@@ -47,7 +47,7 @@ describe('config schema', () => {
     const r = validateConfig(cfgRaw([v2({
       dryRun: true, trigger: { on: ['created', 'schedule'], every: '15m' },
       match: { all: [{ url: ['a.com/*'] }, { not: { pinned: true } }, { any: [{ title: '*x*' }, { opener: { group: 'G' } }, { audible: false }] },
-        { age: { gt: '1h', lt: '2d' } }, { pageText: ['done'] }] },
+        { pageText: ['done'] }] }, // age: rejected until M3 (R66), see below
       extract: { repo: { from: 'url', regex: '/(?<r>[^/]+)$', group: 'r' }, h: { selector: 'h1', attr: 'title' } },
       actions: [{ group: { title: '{repo}', color: 'blue', anchors: ['https://a.com/'] } }, { dedupe: { mode: 'ask', followFragment: false, keepFragment: true, matchTitle: true } },
         { close: { after: '30s', mode: 'suggest' } }, { showInView: { view: 'finished' } }],
@@ -75,7 +75,7 @@ describe('config schema', () => {
     const close = (after: string) => validateConfig(cfgRaw([v2({ actions: [{ close: { after } }] })]));
     for (const d of ['500ms', '30s', '15m', '2h', '1d']) expect(close(d).ok).toBe(true);
     for (const d of ['5', '1.5s', '10mss', '3w', 'ms', '-1s']) expect(close(d)).toEqual({ ok: false, errors: ['/rules/0/actions/0/close/after must be a duration like 500ms, 30s, 15m, 2h or 1d'] });
-    expect(validateConfig(cfgRaw([v2({ trigger: { on: ['schedule'], every: '250ms' }, match: { age: { gt: '100ms' } } })])).ok).toBe(true);
+    expect(validateConfig(cfgRaw([v2({ trigger: { on: ['schedule'], every: '250ms' } })])).ok).toBe(true);
   });
   it('caps title and extract regexes at the shared 500-character limit', () => {
     const body = 'a'.repeat(MAX_REGEX_LEN);
@@ -301,5 +301,25 @@ describe('RecipeRef.ruleEnabled (R56)', () => {
     expect(validateConfig({ ...c, recipes: c.recipes.map((r) => ({ ...r, ruleEnabled: { 'Bad Id!': true } })) }).ok).toBe(false);
     expect(validateConfig({ ...c, recipes: c.recipes.map((r) => ({ ...r, ruleEnabled: { ok: 'yes' } })) }).ok).toBe(false);
     expect(validateConfig({ ...c, recipes: c.recipes.map((r) => ({ ...r, disabledRules: ['x'] })) }).ok).toBe(false); // R55 field removed
+  });
+});
+
+describe('age conditions are not supported yet (R66)', () => {
+  const AGE_RULE = { all: [{ url: 'example.com/*' }, { not: { age: { lt: '1h' } } }] };
+  it('validateConfig rejects an enabled rule using age anywhere in the tree', () => {
+    const r = validateConfig(cfgRaw([v2({ match: AGE_RULE, actions: [{ close: { after: '3s' } }] })]));
+    expect(r).toEqual({ ok: false, errors: ['/rules/0/match/all/1/not/age age conditions are not supported yet'] });
+    expect(validateConfig(cfgRaw([v2({ match: { opener: { age: { gt: '1m' } } } })])).ok).toBe(false);
+    expect(validateConfig(cfgRaw([v2({ match: { any: [{ age: { gt: '1m' } }] } })])).ok).toBe(false);
+  });
+  it('a disabled stored rule using age still validates', () => {
+    expect(validateConfig(cfgRaw([v2({ enabled: false, match: AGE_RULE })])).ok).toBe(true);
+  });
+  it('repairConfig disables a stored enabled age rule instead of failing the config', () => {
+    const r = repairConfig(cfgRaw([v2({ match: AGE_RULE }), v2({ id: 'ok', name: 'OK' })]));
+    const rules = (r.config as { rules: { id: string; enabled: boolean }[] }).rules;
+    expect(rules.map((x) => [x.id, x.enabled])).toEqual([['r1', false], ['ok', true]]);
+    expect(r.warnings).toEqual([expect.stringContaining('1 rule(s) disabled: R')]);
+    expect(validateConfig(r.config).ok).toBe(true);
   });
 });

@@ -15,6 +15,7 @@ export type ValidationResult = { ok: true; config: Config } | { ok: false; error
 /** The 9 Chrome tab-group colors. */
 export const COLORS: ReadonlySet<string> = new Set<string>(['grey', 'blue', 'red', 'yellow', 'green', 'pink', 'purple', 'cyan', 'orange'] satisfies GroupColor[]);
 const DURATION_MSG = 'must be a duration like 500ms, 30s, 15m, 2h or 1d';
+export const AGE_MSG = 'age conditions are not supported yet';
 
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x);
 const list = <T>(x: T | T[]): T[] => (Array.isArray(x) ? x : [x]);
@@ -97,6 +98,8 @@ function condProblems(c: Cond, path: string, out: Problem[]): void {
       if (m) out.push({ path: `${path}/title`, message: m });
     }
   } else if ('age' in c) {
+    // R66: nothing feeds TabFacts.createdAt yet (M3), so an age condition would be dead, or inverted under `not`.
+    out.push({ path: `${path}/age`, message: AGE_MSG });
     for (const k of ['gt', 'lt'] as const) {
       const v = c.age[k];
       if (v !== undefined && !DURATION.test(v)) out.push({ path: `${path}/age/${k}`, message: DURATION_MSG });

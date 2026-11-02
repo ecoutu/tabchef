@@ -103,16 +103,26 @@ describe('evalCond: leaf conditions', () => {
     expect(ev({ audible: true }).ok).toBe(false);
     expect(ev({ audible: false }).ok).toBe(true);
   });
-  it('age: gt, lt, both; unknown createdAt is false', () => {
+  it('age: gt, lt, both; unknown createdAt does not match', () => {
     expect(ev({ age: { gt: '10m' } }, facts({ createdAt: NOW - 11 * MIN })).ok).toBe(true);
     expect(ev({ age: { gt: '10m' } }, facts({ createdAt: NOW - 9 * MIN })).ok).toBe(false);
     expect(ev({ age: { lt: '10m' } }, facts({ createdAt: NOW - 9 * MIN })).ok).toBe(true);
     expect(ev({ age: { gt: '5m', lt: '10m' } }, facts({ createdAt: NOW - 7 * MIN })).ok).toBe(true);
     expect(ev({ age: { gt: '5m', lt: '10m' } }, facts({ createdAt: NOW - 11 * MIN })).ok).toBe(false);
     expect(ev({ age: { gt: '5m', lt: '10m' } }, facts({ createdAt: NOW - 3 * MIN })).ok).toBe(false);
-    expect(ev({ age: { gt: '0s' } }, facts())).toEqual({ ok: false, captures: {}, needsPage: false });
-    expect(ev({ not: { age: { gt: '0s' } } }, facts()).ok).toBe(true);
+    expect(ev({ age: { gt: '0s' } }, facts())).toMatchObject({ ok: false, captures: {}, needsPage: false });
     expect(ev({ age: { gt: 'soon' } }, facts({ createdAt: 0 })).ok).toBe(false);
+  });
+  it('age: unknown createdAt is unknown, not false: under not / any / all it never matches (R66)', () => {
+    const A: Cond = { age: { lt: '1h' } };
+    expect(ev({ not: A }).ok).toBe(false);
+    expect(ev({ not: { not: A } }).ok).toBe(false);
+    expect(ev({ all: [{ url: 'github.com/*' }, { not: A }] }).ok).toBe(false);
+    expect(ev({ not: { any: [F, A] } }).ok).toBe(false);
+    expect(ev({ not: { all: [T, A] } }).ok).toBe(false);
+    expect(ev({ any: [T, A] }).ok).toBe(true); // a definite true still wins
+    expect(ev({ not: { all: [F, A] } }).ok).toBe(true); // a definite false still decides
+    expect(ev({ not: A }, facts({ createdAt: NOW - 2 * 60 * MIN })).ok).toBe(true); // known age: plain negation
   });
   it('pageText: needs the page when absent; case-insensitive substring; any needle, any text', () => {
     expect(ev({ pageText: 'you left the meeting' })).toEqual({ ok: false, captures: {}, needsPage: true });
