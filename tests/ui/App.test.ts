@@ -188,8 +188,8 @@ describe('App: preview before Save (M2 T13)', () => {
   });
 });
 
-describe('App: recipe rule toggle saves (R55)', () => {
-  it('turning a locked recipe row off saves disabledRules through Save → preview → config.set', async () => {
+describe('App: recipe rule toggle saves (R56)', () => {
+  it('turning a locked recipe row off saves a ruleEnabled override through Save → preview → config.set', async () => {
     stored = { ...withRule(), recipes: withRule().recipes.map((r) => (r.id === 'finished' ? { ...r, enabled: true } : r)) };
     render(App);
     const row = await screen.findByRole('group', { name: /Close OAuth callback tabs/ });
@@ -199,7 +199,7 @@ describe('App: recipe rule toggle saves (R55)', () => {
     const types = send.mock.calls.map((c) => c[0].type);
     expect(types.indexOf('preview.change')).toBeLessThan(types.indexOf('config.set'));
     const set = send.mock.calls.map((c) => c[0]).find((r) => r.type === 'config.set');
-    expect(set.config.recipes.find((r: { id: string }) => r.id === 'finished').disabledRules).toEqual(['oauth-callback']);
+    expect(set.config.recipes.find((r: { id: string }) => r.id === 'finished').ruleEnabled).toEqual({ 'oauth-callback': false });
   });
 });
 

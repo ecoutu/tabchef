@@ -52,8 +52,11 @@ export interface Recipe {
 }
 export interface RecipeRef {
   id: string; enabled: boolean; params: Record<string, unknown>; source: 'builtin' | 'user'; body?: Recipe;
-  /** R55: ids of this recipe's rules the user turned off; skipped like disabled rules (no needs). Absent = all on. */
-  disabledRules?: string[];
+  /**
+   * R56: per-rule overrides of the body's `enabled` (both directions), keyed by rule id. No entry = the body default.
+   * compileProgram uses the effective value: a rule turned off adds no needs and never wins or shadows.
+   */
+  ruleEnabled?: Record<string, boolean>;
 }
 export interface TabFacts {
   tab: TabSnap; opener?: TabSnap; groupTitle?: string; createdAt?: number;

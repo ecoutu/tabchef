@@ -16,8 +16,8 @@
 // every rule goes through the same checks as a user rule (validateRule + ruleProblems).
 //
 // Needs (R5, T10): `Program.needs` has an entry per enabled recipe, keyed by recipe id (recipe-level needs, empty
-// lists when none), plus one per enabled recipe rule that declares `needs`, keyed by rule key (a rule off in its body or
-// in RecipeRef.disabledRules, R55, has none). Paused recipes and
+// lists when none), plus one per enabled recipe rule that declares `needs`, keyed by rule key. "Enabled" is effective
+// (R56): RecipeRef.ruleEnabled[ruleId] overrides the body's `enabled` in both directions. Paused recipes and
 // rules keep their entries (PermissionsManager reads needs from the program it pauses). User rules may not declare
 // needs (R44); one that does is reported and skipped.
 //
@@ -154,7 +154,17 @@ function ruleErrors(rule: unknown, tables: Tables): string[] {
   return ruleProblems(rule as Rule, tables).map((p) => `${p.path} ${p.message}`);
 }
 
-interface Candidate { id: string; source: RecipeRef['source']; body: Recipe; disabled: Set<string> }
+interface Candidate { id: string; source: RecipeRef['source']; body: Recipe; ref: RecipeRef }
+
+/**
+ * Whether a recipe rule runs (R56/R57): the user's boolean override `ref.ruleEnabled[rule.id]`, else the body's
+ * `enabled`, which counts as on unless it is `false` (a body rule without `enabled` is "on" and then fails
+ * validation, as before R56). The one effective-state rule: compileProgram, the Rules page and the Recipes page use it.
+ */
+export function ruleOn(ref: Pick<RecipeRef, 'ruleEnabled'>, rule: Pick<Rule, 'id' | 'enabled'>): boolean {
+  const o: unknown = isObj(ref.ruleEnabled) && own(ref.ruleEnabled, rule.id) ? ref.ruleEnabled[rule.id] : undefined;
+  return typeof o === 'boolean' ? o : rule.enabled !== false;
+}
 
 /** Enabled recipes with their params substituted; failures go to `errors`. */
 function resolveRecipes(config: Config, builtins: Record<string, Recipe>, errors: CompileError[]): Candidate[] {
@@ -199,8 +209,7 @@ function resolveRecipes(config: Config, builtins: Record<string, Recipe>, errors
       continue;
     }
     if (body.views !== undefined && !(Array.isArray(body.views) && body.views.every(isObj))) { errors.push({ key: id, error: 'malformed views' }); continue; }
-    const disabled = new Set(Array.isArray(ref.disabledRules) ? ref.disabledRules.filter((x): x is string => typeof x === 'string') : []);
-    out.push({ id, source: ref.source, body, disabled });
+    out.push({ id, source: ref.source, body, ref });
   }
   return out;
 }
@@ -244,14 +253,20 @@ export function compileProgram(
     const errs: CompileError[] = [];
     const ids = new Set<string>();
     const rules: Rule[] = [];
-    c.body.rules.forEach((r, i) => {
-      const key = `${c.id}/${isObj(r) && typeof r.id === 'string' ? r.id : `#${i}`}`;
-      if (!isObj(r) || r.enabled === false || c.disabled.has(r.id)) return; // R55: user-disabled rules too (no needs)
+    c.body.rules.forEach((raw, i) => {
+      const key = `${c.id}/${isObj(raw) && typeof raw.id === 'string' ? raw.id : `#${i}`}`;
+      if (!isObj(raw) || !ruleOn(c.ref, raw)) return; // effectively off (R56): no needs, never compiled
+      // R57: the body is validated as written; only a rule the user turned on against its body (`enabled: false`) is
+      // compiled as a copy with `enabled: true`. Nothing is filled in (a body rule without `enabled` stays invalid).
+      const turnedOn = raw.enabled === false;
+      const r: Rule = turnedOn ? { ...raw, enabled: true } : raw;
       const es = ruleErrors(r, checkTables);
       if (ids.has(r.id)) es.push('duplicate rule id');
       ids.add(r.id);
-      if (es.length) errs.push({ key, error: es.join('; ') });
-      else if (r.enabled) rules.push(r);
+      // An invalid body rule is the author's error and skips the recipe; a rule only the user turned on that does not
+      // compile is reported for its key and skipped alone (R57), so the toggle cannot break the rest of the recipe.
+      if (es.length) (turnedOn ? errors : errs).push({ key, error: es.join('; ') });
+      else rules.push(r);
     });
     if (errs.length) errors.push(...errs);
     else recipes.push({ c, rules });

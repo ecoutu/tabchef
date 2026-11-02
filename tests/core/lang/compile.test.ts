@@ -328,29 +328,72 @@ describe('compileProgram: fix round 1 (R37, reserved user id)', () => {
   });
 });
 
-describe('compileProgram: disabledRules (R55)', () => {
+describe('compileProgram: ruleEnabled overrides (R56)', () => {
   const meet = recipe('m', [
     rule('a'),
     rule('b', { needs: { hosts: ['https://meet.google.com/*'] }, match: { url: 'meet.google.com/*' } }),
+    rule('c', { enabled: false, needs: { hosts: ['https://c.example/*'] }, match: { url: 'c.example/*' } }),
   ]);
 
-  it('skips a disabled recipe rule like a disabled user rule; absent field = all on', () => {
+  it('no entry: the body default applies; absent field = body defaults', () => {
     expect(keys(config({ recipes: [ref('m')] }), { m: meet })).toEqual(['m/a', 'm/b']);
-    expect(keys(config({ recipes: [ref('m', { disabledRules: ['a'] })] }), { m: meet })).toEqual(['m/b']);
   });
 
-  it('a disabled recipe rule contributes no needs; unknown ids are ignored', () => {
-    const on = compileProgram(config({ recipes: [ref('m')] }), { m: meet });
-    expect(Object.keys(on.program.needs)).toEqual(['m', 'm/b']);
-    const off = compileProgram(config({ recipes: [ref('m', { disabledRules: ['b', 'nope'] })] }), { m: meet });
-    expect(Object.keys(off.program.needs)).toEqual(['m']);
-    expect(off.errors).toEqual([]);
+  it('turning a default-on rule off compiles it as disabled', () => {
+    expect(keys(config({ recipes: [ref('m', { ruleEnabled: { a: false } })] }), { m: meet })).toEqual(['m/b']);
   });
 
-  it('a disabled recipe rule is neither a winner nor a shadower (explain / findShadowed)', async () => {
+  it('turning a default-off rule on compiles it as enabled (and the rule is enabled in the Program)', () => {
+    const p = compileProgram(config({ recipes: [ref('m', { ruleEnabled: { c: true } })] }), { m: meet }).program;
+    expect(p.rules.map((r) => r.key)).toEqual(['m/a', 'm/b', 'm/c']);
+    expect(p.rules[2]!.rule.enabled).toBe(true);
+  });
+
+  it('github-prs group-by-repo (off by default) turns on via the override', async () => {
+    const { builtinRecipes } = await import('../../../src/recipes/load');
+    const base = defaultConfig();
+    const on = { ...base, recipes: base.recipes.map((r) => (r.id === 'github-prs' ? { ...r, ruleEnabled: { 'group-by-repo': true } } : r)) };
+    expect(compileProgram(base, builtinRecipes()).program.rules.map((r) => r.key)).not.toContain('github-prs/group-by-repo');
+    const res = compileProgram(on, builtinRecipes());
+    expect(res.errors).toEqual([]);
+    expect(res.program.rules.map((r) => r.key)).toContain('github-prs/group-by-repo');
+  });
+
+  it('R57: no override fill-in: a body rule without `enabled` still fails validateRule (as before R56)', () => {
+    const noEnabled = { id: 'x', name: 'x', match: { url: 'a.com/*' }, actions: [{ group: { title: 'X', color: 'blue' } }] } as unknown as Rule;
+    const res = compileProgram(config({ recipes: [ref('n')] }), { n: recipe('n', [rule('a'), noEnabled]) });
+    expect(res.errors.map((e) => e.key)).toEqual(['n/x']);
+    expect(res.program.rules).toEqual([]); // an invalid body rule (author's error) still skips its recipe
+  });
+
+  it('R57: a body-off rule turned on that fails to compile is reported for its key; the rest of the recipe runs', () => {
+    const broken = recipe('u', [rule('ok'), rule('bad', { enabled: false, match: { url: '/(/' } })]);
+    const res = compileProgram(config({ recipes: [ref('u', { ruleEnabled: { bad: true } })] }), { u: broken });
+    expect(res.errors).toEqual([{ key: 'u/bad', error: expect.stringMatching(/invalid regex/) }]);
+    expect(res.program.rules.map((r) => r.key)).toEqual(['u/ok']);
+  });
+
+  it('R57: ruleOn is the one effective-state rule (override, else the body: on unless enabled === false)', async () => {
+    const { ruleOn } = await import('../../../src/core/lang/compile');
+    expect(ruleOn(ref('m'), rule('a'))).toBe(true);
+    expect(ruleOn(ref('m'), rule('a', { enabled: false }))).toBe(false);
+    expect(ruleOn(ref('m'), { id: 'a' } as Rule)).toBe(true);
+    expect(ruleOn(ref('m', { ruleEnabled: { a: true } }), rule('a', { enabled: false }))).toBe(true);
+    expect(ruleOn(ref('m', { ruleEnabled: { a: false } }), rule('a'))).toBe(false);
+    expect(ruleOn(ref('m', { ruleEnabled: { a: 'x' as unknown as boolean } }), rule('a'))).toBe(true);
+  });
+
+  it('needs follow the effective state; unknown ids are ignored', () => {
+    expect(Object.keys(compileProgram(config({ recipes: [ref('m')] }), { m: meet }).program.needs)).toEqual(['m', 'm/b']);
+    const flipped = compileProgram(config({ recipes: [ref('m', { ruleEnabled: { b: false, c: true, nope: true } })] }), { m: meet });
+    expect(Object.keys(flipped.program.needs)).toEqual(['m', 'm/c']);
+    expect(flipped.errors).toEqual([]);
+  });
+
+  it('a rule turned off is neither a winner nor a shadower (explain / findShadowed)', async () => {
     const { explainTab, findShadowed } = await import('../../../src/core/lang/explain');
     const shadower = recipe('s', [rule('wide', { match: { url: 'x.com/*' } })]);
-    const c = config({ recipes: [ref('s', { disabledRules: ['wide'] })], rules: [rule('narrow', { match: { url: 'x.com/a/*' } })] });
+    const c = config({ recipes: [ref('s', { ruleEnabled: { wide: false } })], rules: [rule('narrow', { match: { url: 'x.com/a/*' } })] });
     const p = compileProgram(c, { s: shadower }).program;
     expect(findShadowed(p)).toEqual([]);
     const tab = { id: 1, windowId: 1, index: 0, url: 'https://x.com/a/1', title: '', pinned: false, groupId: -1, incognito: false, discarded: false, active: false, audible: false };

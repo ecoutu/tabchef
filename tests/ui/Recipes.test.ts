@@ -6,12 +6,17 @@ import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/sv
 import { browser } from 'wxt/browser';
 import { defaultConfig } from '../../src/core/config/defaults';
 import type { Config } from '../../src/core/types';
-import type { Recipe } from '../../src/core/lang/types';
+import type { Recipe, RecipeRef } from '../../src/core/lang/types';
 import type { RecipeListItem } from '../../src/engine/messages';
 import type { PreviewResult } from '../../src/core/lang/preview';
 
 const send = vi.fn();
 vi.mock('../../src/ui/send', () => ({ send: (r: unknown) => send(r) }));
+const permListeners = vi.hoisted(() => ({ list: [] as (() => void)[] }));
+vi.mock('../../src/ui/permissions', async (orig) => ({
+  ...(await orig<typeof import('../../src/ui/permissions')>()),
+  onPermissionsChanged: (cb: () => void) => { permListeners.list.push(cb); return () => { permListeners.list = permListeners.list.filter((x) => x !== cb); }; },
+}));
 import Recipes from '../../src/entrypoints/options/Recipes.svelte';
 
 const MEET = 'https://meet.google.com/*';
@@ -100,12 +105,33 @@ describe('Recipes: cards', () => {
     ]);
   });
 
-  it('a rule turned off in #/rules (disabledRules, R55) shows Off', async () => {
+  it('a rule turned off in #/rules (ruleEnabled, R56) shows Off; one turned on shows Active', async () => {
     items = [finishedItem({ enabled: true }, true)];
-    const saved = { ...defaultConfig(), recipes: defaultConfig().recipes.map((r) => (r.id === 'finished' ? { ...r, enabled: true, disabledRules: ['redirect'] } : r)) };
+    const saved = { ...defaultConfig(), recipes: defaultConfig().recipes.map((r) => (r.id === 'finished' ? { ...r, enabled: true, ruleEnabled: { redirect: false } } : r)) };
     render(Recipes, props({ saved }));
     const c = await card('Finished');
     expect(c.querySelector('[data-rule="finished/redirect"]')!.textContent).toBe('Close redirect landing tabs: Off');
+    cleanup();
+    items = [{ ...finishedItem({ enabled: true }, true), id: 'github-prs', name: 'GitHub pull requests', paramDefs: {}, rules: {} }];
+    const gh = { ...defaultConfig(), recipes: defaultConfig().recipes.map((r) => (r.id === 'github-prs' ? { ...r, ruleEnabled: { 'group-by-repo': true } } : r)) };
+    render(Recipes, props({ saved: gh }));
+    const g = await card('GitHub pull requests');
+    expect(g.querySelector('[data-rule="github-prs/group-by-repo"]')!.textContent).toBe('Group GitHub tabs by repository: Active');
+  });
+
+  it('R57: rule status uses ruleOn, like the engine: a body rule without `enabled` counts as on', async () => {
+    const { ruleOn } = await import('../../src/core/lang/compile');
+    const { ruleRows } = await import('../../src/ui/rules-model');
+    const raw = { id: 'g', name: 'Group', match: { url: '*' }, actions: [{ group: { title: 'S', color: 'blue' } }] } as unknown as Recipe['rules'][number];
+    const body: Recipe = { recipe: 'mine', version: 1, name: 'Mine', description: 'd', rules: [raw] };
+    const ref: RecipeRef = { id: 'mine', enabled: true, params: {}, source: 'user', body };
+    const saved: Config = { ...defaultConfig(), recipes: [ref] };
+    items = [{ id: 'mine', source: 'user', enabled: true, params: {}, name: 'Mine', description: 'd', paramDefs: {}, needs: none, status: { ok: true, missing: none }, rules: {} }];
+    render(Recipes, props({ saved }));
+    const c = await card('Mine');
+    expect(ruleOn(ref, raw)).toBe(true);
+    expect((ruleRows(saved).find((r) => r.key === 'mine/g') as { on: boolean }).on).toBe(true);
+    expect(c.querySelector('[data-rule="mine/g"]')!.textContent).toBe('Group: Active');
   });
 
   it('shows a paused recipe\'s own reason', async () => {
@@ -233,5 +259,45 @@ describe('Recipes: params and disable', () => {
     await waitFor(() => expect(sent('recipes.disable')).toHaveLength(1));
     expect(sent('recipes.disable')[0]).toEqual({ type: 'recipes.disable', id: 'finished', baseRev: 'r1' });
     expect((sent('preview.change')[0].config as Config).recipes.find((r) => r.id === 'finished')!.enabled).toBe(false);
+  });
+});
+
+describe('Recipes: unsaved param edits survive reloads (fix round 1)', () => {
+  const gh = (enabled: boolean): RecipeListItem => ({ id: 'github-prs', source: 'builtin', enabled, params: {}, name: 'GitHub pull requests', description: 'PRs.',
+    paramDefs: {}, needs: none, status: { ok: true, missing: none }, rules: {} });
+  const delay = () => (screen.getByLabelText('Close after') as HTMLInputElement).value;
+
+  it('edits on card A survive enabling card B (B\'s Apply reloads the list)', async () => {
+    items = [finishedItem(), gh(false)];
+    render(Recipes, props());
+    await fireEvent.input(await screen.findByLabelText('Close after'), { target: { value: '7s' } });
+    send.mockImplementation(async (req: { type: string }) => {
+      if (req.type === 'recipes.list') return { ok: true, data: { recipes: items, rev: 'r2' } };
+      if (req.type === 'preview.change') return { ok: true, data: noEffects };
+      if (req.type === 'recipes.enable') { items = [finishedItem(), gh(true)]; return { ok: true, data: null }; }
+      return { ok: true, data: null };
+    });
+    const ghCard = await card('GitHub pull requests');
+    await fireEvent.click(ghCard.querySelector('button.primary')!);
+    await waitFor(() => expect(ghCard.querySelector('button.primary')).toBeNull()); // reloaded: B is enabled now
+    expect(delay()).toBe('7s');
+  });
+
+  it('edits survive a permissions change (onAdded / onRemoved reload)', async () => {
+    render(Recipes, props());
+    await fireEvent.input(await screen.findByLabelText('Close after'), { target: { value: '7s' } });
+    const before = send.mock.calls.length;
+    for (const cb of permListeners.list) cb();
+    await waitFor(() => expect(send.mock.calls.length).toBeGreaterThan(before));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(delay()).toBe('7s');
+  });
+
+  it('a recipe whose stored params changed takes the stored values', async () => {
+    render(Recipes, props());
+    await fireEvent.input(await screen.findByLabelText('Close after'), { target: { value: '7s' } });
+    items = [finishedItem({ params: { delay: '9s' } })];
+    for (const cb of permListeners.list) cb();
+    await waitFor(() => expect(delay()).toBe('9s'));
   });
 });
