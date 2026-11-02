@@ -7,11 +7,13 @@
 // `recipes.enable` refuses it); an unmet rule-level need pauses that rule key only. Any host need implies the
 // `scripting` permission (the watch is registered through chrome.scripting).
 //
-// The manager is the one owner of the `tabchef-watch` registration: it covers exactly the granted origins needed by
-// enabled, unpaused recipes, and is replaced as a whole on every sync. chrome.scripting is undefined until
+// The manager is the one owner of the `tabchef-watch` registration: it covers the granted origins needed by enabled,
+// unpaused recipes, plus every granted host origin while an enabled user rule uses page facts (ruling R44: user rules
+// declare no needs), and is replaced as a whole on every sync. chrome.scripting is undefined until
 // `scripting` is granted: the WatchScripting adapter then reports false and nothing is registered (no throw).
 import type { BrowserPort } from '../platform/browser-port';
 import type { Program } from '../core/lang/types';
+import { usesPageFacts } from './page-facts';
 import { watchOrigins, type WatchScripting } from './watch-registration';
 
 export type { WatchScripting } from './watch-registration';
@@ -112,14 +114,21 @@ export class PermissionsManager {
 
   /** Status per needs key of the current Program: recipe ids of enabled recipes, plus rule keys with their own needs. */
   async status(): Promise<Record<string, NeedStatus>> {
-    return Object.fromEntries((await this.evaluate()).map((e) => [e.key, e.status]));
+    return Object.fromEntries((await this.evaluateProgram()).all.map((e) => [e.key, e.status]));
   }
 
-  private async evaluate(): Promise<{ key: string; needs: Needs; status: NeedStatus }[]> {
-    const p = await this.getProgram();
-    const out: { key: string; needs: Needs; status: NeedStatus }[] = [];
-    for (const [key, needs] of Object.entries(p.needs)) out.push({ key, needs, status: await this.check(needs) });
-    return out;
+  private async evaluateProgram(): Promise<{ program: Program; all: { key: string; needs: Needs; status: NeedStatus }[] }> {
+    const program = await this.getProgram();
+    const all: { key: string; needs: Needs; status: NeedStatus }[] = [];
+    for (const [key, needs] of Object.entries(program.needs)) all.push({ key, needs, status: await this.check(needs) });
+    return { program, all };
+  }
+
+  /** R44: every granted host origin when an enabled user rule uses page facts (and `scripting` is held); else none. */
+  private async userRuleOrigins(p: Program): Promise<string[]> {
+    if (!p.rules.some((r) => r.key.startsWith('user/') && usesPageFacts(r.rule))) return [];
+    if (!(await this.port.hasPermission({ permissions: ['scripting'] }))) return [];
+    return watchOrigins(await this.port.grantedOrigins());
   }
 
   /**
@@ -147,8 +156,11 @@ export class PermissionsManager {
 
   private async sync(): Promise<void> {
     let all: { key: string; needs: Needs; status: NeedStatus }[];
+    let extra: string[];
     try {
-      all = await this.evaluate();
+      const r = await this.evaluateProgram();
+      all = r.all;
+      extra = await this.userRuleOrigins(r.program);
     } catch (e) {
       this.warn('[tabchef] permission status failed', e);
       return;
@@ -159,7 +171,10 @@ export class PermissionsManager {
       this.opts.onPausedChanged?.();
     }
     // Granted origins of the needs that run: not paused, and not a rule of a paused recipe.
-    const origins = watchOrigins(all.filter((e) => e.status.ok && !paused.has(recipeOf(e.key))).flatMap((e) => e.needs.origins)).sort();
+    const origins = watchOrigins([
+      ...all.filter((e) => e.status.ok && !paused.has(recipeOf(e.key))).flatMap((e) => e.needs.origins),
+      ...extra,
+    ]).sort();
     await this.register(origins);
   }
 

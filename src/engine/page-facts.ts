@@ -2,7 +2,7 @@
 // values and whether a form was edited. Held in memory, mirrored to storage.session (key `pageFacts`) so a restarted
 // worker keeps them; cleared on a top-frame navigation (onCommitted) and when the tab is removed.
 import { compilePattern } from '../core/match/pattern';
-import type { Cond, Program, TabFacts } from '../core/lang/types';
+import type { Cond, Program, Rule, TabFacts } from '../core/lang/types';
 import type { PageLookup } from '../core/group/plan';
 
 export type PageFactsData = NonNullable<TabFacts['page']>;
@@ -76,6 +76,16 @@ function needlesOf(c: Cond, out: string[]): void {
   } else if (k === 'not') {
     needlesOf(v as Cond, out);
   }
+}
+
+/**
+ * Whether a rule reads page facts the watch reports: a pageText condition (not under `opener`) or a selector extract,
+ * the same parts watchConfigFor collects. (formEdited is a safety fact, not a rule condition.) Ruling R44.
+ */
+export function usesPageFacts(r: Rule): boolean {
+  const needles: string[] = [];
+  needlesOf(r.match, needles);
+  return needles.length > 0 || Object.values(r.extract ?? {}).some((x) => 'selector' in x);
 }
 
 export class PageFacts implements PageLookup {

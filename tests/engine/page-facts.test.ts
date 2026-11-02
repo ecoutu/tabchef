@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { PAGE_FACTS_KEY, PAGE_HOLD_MS, PageFacts } from '../../src/engine/page-facts';
+import { PAGE_FACTS_KEY, PAGE_HOLD_MS, PageFacts, usesPageFacts } from '../../src/engine/page-facts';
 import { defaultConfig } from '../../src/core/config/defaults';
 import type { Rule } from '../../src/core/lang/types';
 import { programOf } from '../helpers/config';
@@ -67,6 +67,16 @@ describe('PageFacts store', () => {
     const pf = new PageFacts({ session: memSession({ [PAGE_FACTS_KEY]: [[1, { texts: 'nope' }], 'x'] }) });
     await pf.ready;
     expect(pf.get(1)).toBeUndefined();
+  });
+});
+
+describe('usesPageFacts (R44)', () => {
+  it('true for a pageText condition (nested too) or a selector extract; false otherwise', () => {
+    expect(usesPageFacts(rule('a', { pageText: 'x' }))).toBe(true);
+    expect(usesPageFacts(rule('b', { all: [{ url: 'a.com/*' }, { not: { pageText: ['x'] } }] }))).toBe(true);
+    expect(usesPageFacts(rule('c', { url: 'a.com/*' }, { extract: { v: { selector: 'h1' } } }))).toBe(true);
+    expect(usesPageFacts(rule('d', { url: 'a.com/*' }, { extract: { v: { from: 'url', regex: '(x)' } } }))).toBe(false);
+    expect(usesPageFacts(rule('e', { opener: { pageText: 'x' } }))).toBe(false); // an opener's page is never watched
   });
 });
 

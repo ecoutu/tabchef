@@ -4,11 +4,12 @@ import {
 } from '../../src/engine/permissions';
 import { createWatchScripting, WATCH_SCRIPT_ID, type WatchRegistrationApi } from '../../src/engine/watch-registration';
 import { ProgramCache } from '../../src/engine/program-cache';
+import { PageFacts } from '../../src/engine/page-facts';
 import { Reconciler } from '../../src/engine/reconciler';
 import { configRev, createHandler, type HandlerDeps } from '../../src/engine/messages';
 import { defaultConfig } from '../../src/core/config/defaults';
 import { FakeBrowserPort } from '../../src/platform/fake-port';
-import type { Program, Recipe, RecipeRef } from '../../src/core/lang/types';
+import type { Program, Recipe, RecipeRef, Rule } from '../../src/core/lang/types';
 import type { Config } from '../../src/core/types';
 
 const MEET = 'https://meet.google.com/*';
@@ -37,10 +38,10 @@ function scriptingFake() {
   return { s, registered: () => registered };
 }
 
-function setup(recipes: RecipeRef[] = [ref('meet', true), ref('gh', true)]) {
+function setup(recipes: RecipeRef[] = [ref('meet', true), ref('gh', true)], rules: Rule[] = []) {
   const port = new FakeBrowserPort();
   port.addWindow(1);
-  let cfg: Config = { ...defaultConfig(), recipes };
+  let cfg: Config = { ...defaultConfig(), recipes, rules, order: rules.map((r) => `user/${r.id}`) };
   const store = {
     get: async () => cfg,
     set: vi.fn(async (c: Config) => { cfg = c; }),
@@ -256,6 +257,61 @@ describe('PermissionsManager', () => {
       .toEqual({ ok: false, error: 'invalid params', errors: ['unknown param: bogus'] });
     expect(await t.handle({ type: 'recipes.setParams', id: 'meet', params: { delay: '5s' } }, ui)).toEqual({ ok: true, data: null });
     expect(t.getCfg().recipes.find((x) => x.id === 'meet')!.params).toEqual({ delay: '5s' });
+  });
+});
+
+describe('R44: user rules using page facts widen the watch to every granted host', () => {
+  const GH = 'https://github.com/*';
+  const userRule = (id: string, over: Partial<Rule>): Rule => ({
+    id, name: id, enabled: true, match: { url: 'github.com/*' }, actions: [{ group: { title: 'G', color: 'red' } }], ...over,
+  });
+  const pageTextRule = userRule('pt', { match: { all: [{ url: 'github.com/*' }, { pageText: 'Merged' }] } });
+  const selectorRule = userRule('sel', { extract: { branch: { selector: '.head-ref' } }, actions: [{ group: { title: '{branch}', color: 'red' } }] });
+
+  it('a user pageText rule plus a granted host: the registration includes that host, and covers() follows', async () => {
+    const t = setup([ref('meet', true)], [pageTextRule]);
+    t.grant(MEET, GH, 'scripting');
+    await t.pm.onChanged();
+    expect(t.scripting.registered()).toEqual([GH, MEET]);
+    expect(t.pm.covers('https://github.com/a/b/pull/1')).toBe(true);
+    // ... so the 5 s page-facts hold is armed there again (Task 7 behavior restored).
+    const pf = new PageFacts({ session: { get: async () => undefined, set: async () => {} }, now: () => 0, covers: (u) => t.pm.covers(u) });
+    pf.onCommitted(1, 'https://github.com/a/b/pull/1');
+    expect(pf.awaiting(1)).toBe(true);
+  });
+
+  it('without such a rule the granted host is excluded, and covers() is false there', async () => {
+    const t = setup([ref('meet', true)], [userRule('plain', {})]);
+    t.grant(MEET, GH, 'scripting');
+    await t.pm.onChanged();
+    expect(t.scripting.registered()).toEqual([MEET]);
+    expect(t.pm.covers('https://github.com/a/b/pull/1')).toBe(false);
+    const pf = new PageFacts({ session: { get: async () => undefined, set: async () => {} }, now: () => 0, covers: (u) => t.pm.covers(u) });
+    pf.onCommitted(1, 'https://github.com/a/b/pull/1');
+    expect(pf.awaiting(1)).toBe(false);
+  });
+
+  it('a selector-extract user rule also triggers the union', async () => {
+    const t = setup([ref('meet', false)], [selectorRule]);
+    t.grant(GH, 'scripting');
+    await t.pm.onChanged();
+    expect(t.scripting.registered()).toEqual([GH]);
+    expect(t.pm.covers('https://github.com/x')).toBe(true);
+  });
+
+  it('a disabled page-facts user rule does not widen the watch', async () => {
+    const t = setup([ref('meet', false)], [{ ...pageTextRule, enabled: false }]);
+    t.grant(GH, 'scripting');
+    await t.pm.onChanged();
+    expect(t.scripting.registered()).toEqual([]);
+  });
+
+  it('the union needs scripting: without it nothing is registered', async () => {
+    const t = setup([ref('meet', false)], [pageTextRule]);
+    t.grant(GH);
+    await t.pm.onChanged();
+    expect(t.scripting.registered()).toEqual([]);
+    expect(t.pm.covers('https://github.com/x')).toBe(false);
   });
 });
 
