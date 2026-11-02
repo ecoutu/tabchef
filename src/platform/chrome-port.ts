@@ -92,4 +92,8 @@ export class ChromePort implements BrowserPort {
   hasPermission(p: { permissions?: string[]; origins?: string[] }): Promise<boolean> {
     return this.api.permissions.contains(p as Parameters<ChromeApi['permissions']['contains']>[0]);
   }
+
+  async grantedOrigins(): Promise<string[]> {
+    return (await this.api.permissions.getAll()).origins ?? [];
+  }
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { PAGE_FACTS_KEY, PAGE_HOLD_MS, PageFacts } from '../../src/engine/page-facts';
+import { PAGE_FACTS_KEY, PAGE_HOLD_MS, PageFacts, usesPageFacts } from '../../src/engine/page-facts';
 import { defaultConfig } from '../../src/core/config/defaults';
 import type { Rule } from '../../src/core/lang/types';
 import { programOf } from '../helpers/config';
@@ -70,6 +70,16 @@ describe('PageFacts store', () => {
   });
 });
 
+describe('usesPageFacts (R44)', () => {
+  it('true for a pageText condition (nested too) or a selector extract; false otherwise', () => {
+    expect(usesPageFacts(rule('a', { pageText: 'x' }))).toBe(true);
+    expect(usesPageFacts(rule('b', { all: [{ url: 'a.com/*' }, { not: { pageText: ['x'] } }] }))).toBe(true);
+    expect(usesPageFacts(rule('c', { url: 'a.com/*' }, { extract: { v: { selector: 'h1' } } }))).toBe(true);
+    expect(usesPageFacts(rule('d', { url: 'a.com/*' }, { extract: { v: { from: 'url', regex: '(x)' } } }))).toBe(false);
+    expect(usesPageFacts(rule('e', { opener: { pageText: 'x' } }))).toBe(false); // an opener's page is never watched
+  });
+});
+
 describe('PageFacts.awaiting (hold while the page facts are on their way)', () => {
   it('true only after a commit, until the facts arrive or PAGE_HOLD_MS pass; expiry asks for a reconcile once', async () => {
     vi.useFakeTimers();
@@ -93,6 +103,27 @@ describe('PageFacts.awaiting (hold while the page facts are on their way)', () =
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('a commit arms the hold only where the watch is registered (covers); a hello always arms it', () => {
+    const covered = new Set(['https://meet.google.com/x']);
+    const pf = new PageFacts({ session: memSession(), now: () => 0, covers: (u) => covered.has(u) });
+    pf.onCommitted(1, 'https://meet.google.com/x');
+    expect(pf.awaiting(1)).toBe(true);
+    pf.onCommitted(2, 'https://ungranted.example/'); // no scripting, an ungranted host or a non-http page
+    expect(pf.awaiting(2)).toBe(false);
+    pf.onCommitted(3, 'chrome://newtab/');
+    expect(pf.awaiting(3)).toBe(false);
+    pf.onCommitted(4); // watch.hello: the watch is evidently running there
+    expect(pf.awaiting(4)).toBe(true);
+  });
+
+  it('a commit still clears the previous facts where no hold is armed', () => {
+    const pf = new PageFacts({ session: memSession(), now: () => 0, covers: () => false });
+    pf.set(5, facts({ texts: ['x'] }));
+    pf.onCommitted(5, 'https://a.example/');
+    expect(pf.get(5)).toBeUndefined();
+    expect(pf.awaiting(5)).toBe(false);
   });
 
   it('a removed tab is no longer awaited', () => {

@@ -198,4 +198,11 @@ describe('FakeBrowserPort', () => {
   it('createTab throws without windows', async () => {
     await expect(new FakeBrowserPort().createTab({ url: 'https://x' })).rejects.toThrow('No window');
   });
+
+  it('grantedOrigins returns the granted entries that are origins (D42)', async () => {
+    const f = new FakeBrowserPort();
+    f.granted.add('scripting');
+    f.granted.add('https://meet.google.com/*');
+    expect(await f.grantedOrigins()).toEqual(['https://meet.google.com/*']);
+  });
 });

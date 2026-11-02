@@ -54,5 +54,5 @@ export interface TabFacts {
 export interface CompiledRule { key: string /* 'user/<id>' | '<recipeId>/<id>' */; rule: Rule; recipeId?: string; index: number; dryRun: boolean }
 export interface Program {
   rules: CompiledRule[]; views: (View & { recipeId: string })[]; tables: Record<string, Record<string, string>>;
-  dedupe: DedupeSettings; needs: Record<string /* recipeId */, { origins: string[]; permissions: string[] }>;
+  dedupe: DedupeSettings; needs: Record<string /* recipeId | ruleKey (rule-level, T10) */, { origins: string[]; permissions: string[] }>;
 }

@@ -1,4 +1,5 @@
 import { browser } from 'wxt/browser';
+import { effectiveNeeds } from '../engine/permissions';
 
 /**
  * Optional-permission helpers for extension pages. `requestPermissions` must be called synchronously from a click
@@ -18,6 +19,16 @@ export async function readPermissions(): Promise<PermissionState> {
 
 export function requestPermissions(p: PermissionRequest): Promise<boolean> {
   return browser.permissions.request(p as Parameters<typeof browser.permissions.request>[0]);
+}
+
+/**
+ * Requests a recipe's needs (host needs add `scripting`, R5). Call it as the click handler's first statement, before
+ * any await (the user gesture is lost after one), then send `recipes.enable`. Nothing to request resolves true.
+ */
+export function requestNeeds(needs: { origins: string[]; permissions: string[] }): Promise<boolean> {
+  const n = effectiveNeeds(needs);
+  if (n.origins.length === 0 && n.permissions.length === 0) return Promise.resolve(true);
+  return requestPermissions({ origins: n.origins, permissions: n.permissions });
 }
 
 export function removePermissions(p: PermissionRequest): Promise<boolean> {

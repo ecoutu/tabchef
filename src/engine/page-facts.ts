@@ -2,7 +2,7 @@
 // values and whether a form was edited. Held in memory, mirrored to storage.session (key `pageFacts`) so a restarted
 // worker keeps them; cleared on a top-frame navigation (onCommitted) and when the tab is removed.
 import { compilePattern } from '../core/match/pattern';
-import type { Cond, Program, TabFacts } from '../core/lang/types';
+import type { Cond, Program, Rule, TabFacts } from '../core/lang/types';
 import type { PageLookup } from '../core/group/plan';
 
 export type PageFactsData = NonNullable<TabFacts['page']>;
@@ -18,6 +18,11 @@ export interface PageFactsDeps {
   now?: () => number;
   /** A hold expired without facts: re-plan so the held tab is grouped after all (background: reconciler.schedule). */
   onHoldExpired?: () => void;
+  /**
+   * Whether the watch script is registered for `url` (background: PermissionsManager.covers). A commit elsewhere
+   * arms no hold: no facts will come (no scripting, an ungranted host, a non-http page). Default: every URL.
+   */
+  covers?: (url: string) => boolean;
 }
 
 const isFacts = (v: unknown): v is PageFactsData => {
@@ -73,6 +78,16 @@ function needlesOf(c: Cond, out: string[]): void {
   }
 }
 
+/**
+ * Whether a rule reads page facts the watch reports: a pageText condition (not under `opener`) or a selector extract,
+ * the same parts watchConfigFor collects. (formEdited is a safety fact, not a rule condition.) Ruling R44.
+ */
+export function usesPageFacts(r: Rule): boolean {
+  const needles: string[] = [];
+  needlesOf(r.match, needles);
+  return needles.length > 0 || Object.values(r.extract ?? {}).some((x) => 'selector' in x);
+}
+
 export class PageFacts implements PageLookup {
   private readonly facts = new Map<number, PageFactsData>();
   /** Tabs set or cleared before the stored mirror loaded: their live value wins over the stored one. */
@@ -123,9 +138,14 @@ export class PageFacts implements PageLookup {
     if (this.facts.delete(tabId) || !this.loaded) this.save(tabId);
   }
 
-  /** Wire to webNavigation.onCommitted (frameId 0): the new document's facts are not known until its watch reports. */
-  onCommitted(tabId: number): void {
+  /**
+   * Wire to webNavigation.onCommitted (frameId 0) with the committed URL: the new document's facts are not known until
+   * its watch reports, so the planner holds the tab, but only where the watch runs (`covers`). Without a URL (a
+   * watch.hello: the watch is evidently running) the hold is always armed.
+   */
+  onCommitted(tabId: number, url?: string): void {
     this.clear(tabId);
+    if (url !== undefined && this.deps.covers && !this.deps.covers(url)) return;
     this.committedAt.set(tabId, this.now());
   }
 

@@ -55,4 +55,9 @@ describe('ChromePort', () => {
     expect(remove).toHaveBeenCalledTimes(2);
     vi.useRealTimers();
   });
+  it('grantedOrigins lists permissions.getAll().origins (D42)', async () => {
+    const mk = (all: { origins?: string[] }) => new ChromePort({ permissions: { getAll: async () => all } } as unknown as ConstructorParameters<typeof ChromePort>[0]);
+    expect(await mk({ origins: ['https://meet.google.com/*'] }).grantedOrigins()).toEqual(['https://meet.google.com/*']);
+    expect(await mk({}).grantedOrigins()).toEqual([]);
+  });
 });

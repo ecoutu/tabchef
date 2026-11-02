@@ -227,4 +227,9 @@ export class FakeBrowserPort implements BrowserPort {
     return this.rec('hasPermission', [p], () =>
       [...(p.permissions ?? []), ...(p.origins ?? [])].every((x) => this.granted.has(x)));
   }
+
+  /** `granted` holds permissions and origins alike: origins are the entries with a scheme. */
+  async grantedOrigins(): Promise<string[]> {
+    return this.rec('grantedOrigins', [], () => [...this.granted].filter((x) => x.includes('://')));
+  }
 }
