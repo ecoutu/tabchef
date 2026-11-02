@@ -9,7 +9,7 @@
 import recipeSchema from './recipe.schema.json';
 import ruleSchema from './rule.schema.json';
 import { validateRecipe as recipeShape, validateRule as ruleShape } from '../config/validate-config.generated.js';
-import { regexProblem, ruleProblems, schemaProblem, type Problem } from '../config/schema';
+import { regexProblem, ruleProblems, schemaProblem, type Problem } from '../config/rule-problems';
 import { ParamError, paramProblem, placeholderNames, substitute } from './compile';
 import type { Comparison, ParamDef, Recipe, Rule, Show } from './types';
 

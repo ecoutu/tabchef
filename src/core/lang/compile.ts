@@ -27,7 +27,7 @@
 // Pattern matchers are compiled once per pattern string and cached by compilePattern / compileTextPattern
 // (src/core/match/pattern.ts); validation here warms the URL pattern cache. Memoizing whole Programs is the
 // engine's job (ProgramCache, T6).
-import { formatSchemaError, regexProblem, ruleProblems, type Tables } from '../config/schema';
+import { formatSchemaError, regexProblem, ruleProblems, type Tables } from '../config/rule-problems';
 import { validateRule } from '../config/validate-config.generated.js';
 import { DURATION } from './duration';
 import type { Config, DedupeSettings } from '../types';
