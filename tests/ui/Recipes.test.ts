@@ -100,6 +100,14 @@ describe('Recipes: cards', () => {
     ]);
   });
 
+  it('a rule turned off in #/rules (disabledRules, R55) shows Off', async () => {
+    items = [finishedItem({ enabled: true }, true)];
+    const saved = { ...defaultConfig(), recipes: defaultConfig().recipes.map((r) => (r.id === 'finished' ? { ...r, enabled: true, disabledRules: ['redirect'] } : r)) };
+    render(Recipes, props({ saved }));
+    const c = await card('Finished');
+    expect(c.querySelector('[data-rule="finished/redirect"]')!.textContent).toBe('Close redirect landing tabs: Off');
+  });
+
   it('shows a paused recipe\'s own reason', async () => {
     items = [finishedItem({ enabled: true, needs: { origins: ['https://x.example/*'], permissions: ['scripting'] }, status: { ok: false, missing: none, reason: 'Paused: needs access to x.example' } })];
     render(Recipes, props());

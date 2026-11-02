@@ -16,7 +16,8 @@
 // every rule goes through the same checks as a user rule (validateRule + ruleProblems).
 //
 // Needs (R5, T10): `Program.needs` has an entry per enabled recipe, keyed by recipe id (recipe-level needs, empty
-// lists when none), plus one per enabled recipe rule that declares `needs`, keyed by rule key. Paused recipes and
+// lists when none), plus one per enabled recipe rule that declares `needs`, keyed by rule key (a rule off in its body or
+// in RecipeRef.disabledRules, R55, has none). Paused recipes and
 // rules keep their entries (PermissionsManager reads needs from the program it pauses). User rules may not declare
 // needs (R44); one that does is reported and skipped.
 //
@@ -153,7 +154,7 @@ function ruleErrors(rule: unknown, tables: Tables): string[] {
   return ruleProblems(rule as Rule, tables).map((p) => `${p.path} ${p.message}`);
 }
 
-interface Candidate { id: string; source: RecipeRef['source']; body: Recipe }
+interface Candidate { id: string; source: RecipeRef['source']; body: Recipe; disabled: Set<string> }
 
 /** Enabled recipes with their params substituted; failures go to `errors`. */
 function resolveRecipes(config: Config, builtins: Record<string, Recipe>, errors: CompileError[]): Candidate[] {
@@ -198,7 +199,8 @@ function resolveRecipes(config: Config, builtins: Record<string, Recipe>, errors
       continue;
     }
     if (body.views !== undefined && !(Array.isArray(body.views) && body.views.every(isObj))) { errors.push({ key: id, error: 'malformed views' }); continue; }
-    out.push({ id, source: ref.source, body });
+    const disabled = new Set(Array.isArray(ref.disabledRules) ? ref.disabledRules.filter((x): x is string => typeof x === 'string') : []);
+    out.push({ id, source: ref.source, body, disabled });
   }
   return out;
 }
@@ -244,7 +246,7 @@ export function compileProgram(
     const rules: Rule[] = [];
     c.body.rules.forEach((r, i) => {
       const key = `${c.id}/${isObj(r) && typeof r.id === 'string' ? r.id : `#${i}`}`;
-      if (!isObj(r) || r.enabled === false) return;
+      if (!isObj(r) || r.enabled === false || c.disabled.has(r.id)) return; // R55: user-disabled rules too (no needs)
       const es = ruleErrors(r, checkTables);
       if (ids.has(r.id)) es.push('duplicate rule id');
       ids.add(r.id);

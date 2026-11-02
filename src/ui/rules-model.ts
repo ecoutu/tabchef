@@ -147,7 +147,9 @@ export function unclaimedErrors(errors: string[]): string[] {
 /** A row of the Rules page: a user rule, or a rule of an enabled recipe (params substituted; `error` if that fails). */
 export type RuleRow =
   | { key: string; kind: 'user'; rule: Rule }
-  | { key: string; kind: 'recipe'; recipeId: string; recipeName: string; rule: Rule; error?: string };
+  | { key: string; kind: 'recipe'; recipeId: string; recipeName: string; rule: Rule; error?: string;
+      /** Runs: on in the recipe body and not in RecipeRef.disabledRules (R55). */
+      on: boolean };
 
 const own = (o: object, k: string): boolean => Object.prototype.hasOwnProperty.call(o, k);
 
@@ -171,7 +173,8 @@ export function ruleRows(c: Config, builtins: Record<string, Recipe> = builtinRe
     if (!body) continue;
     const values = paramValues(body, ref.params);
     for (const raw of body.rules) {
-      const row: RuleRow = { key: `${ref.id}/${raw.id}`, kind: 'recipe', recipeId: ref.id, recipeName: body.name, rule: raw };
+      const on = raw.enabled && !(ref.disabledRules ?? []).includes(raw.id);
+      const row: RuleRow = { key: `${ref.id}/${raw.id}`, kind: 'recipe', recipeId: ref.id, recipeName: body.name, rule: raw, on };
       try {
         row.rule = substitute(raw, values) as Rule;
       } catch (e) {
@@ -245,6 +248,28 @@ export function customizeRule(c: Config, key: string, builtins: Record<string, R
   const at = full.indexOf(key);
   const order = [...full.slice(0, at), userKey(id), ...full.slice(at)];
   return { ...c, rules: [...c.rules, rule], order };
+}
+
+/**
+ * Turns one recipe rule on or off (R55): edits that recipe's `disabledRules` (rule ids; an empty list is dropped, so
+ * an untouched ref keeps no field). Only a rule that is on in its body can be turned on. Unknown keys → `c`.
+ */
+export function setRecipeRuleOn(c: Config, key: string, on: boolean): Config {
+  const slash = key.indexOf('/');
+  const recipeId = key.slice(0, slash);
+  const ruleId = key.slice(slash + 1);
+  if (slash <= 0 || recipeId === 'user' || !c.recipes.some((r) => r.id === recipeId)) return c;
+  return {
+    ...c,
+    recipes: c.recipes.map((r) => {
+      if (r.id !== recipeId) return r;
+      const rest = (r.disabledRules ?? []).filter((x) => x !== ruleId);
+      const disabledRules = on ? rest : [...rest, ruleId];
+      const ref = { ...r };
+      delete ref.disabledRules;
+      return disabledRules.length ? { ...ref, disabledRules } : ref;
+    }),
+  };
 }
 
 /** Replaces user rule `id` with `rule` (from the YAML view); a new id renames its `order` key. */

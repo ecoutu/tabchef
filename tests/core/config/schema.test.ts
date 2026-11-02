@@ -248,3 +248,14 @@ describe('config schema: stored user recipe bodies (R41)', () => {
     if (!r.ok) expect(r.errors).toEqual([expect.stringMatching(/^\/recipes\/0\/body .*eval/)]);
   });
 });
+
+describe('RecipeRef.disabledRules (R55)', () => {
+  it('an old config without the field validates; the field takes a list of rule ids', () => {
+    expect(validateConfig(defaultConfig()).ok).toBe(true);
+    const c = defaultConfig();
+    c.recipes = c.recipes.map((r) => (r.id === 'finished' ? { ...r, disabledRules: ['meet-ended'] } : r));
+    expect(validateConfig(c).ok).toBe(true);
+    const bad = { ...c, recipes: c.recipes.map((r) => ({ ...r, disabledRules: ['Bad Id!'] })) };
+    expect(validateConfig(bad).ok).toBe(false);
+  });
+});

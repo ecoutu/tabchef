@@ -188,6 +188,21 @@ describe('App: preview before Save (M2 T13)', () => {
   });
 });
 
+describe('App: recipe rule toggle saves (R55)', () => {
+  it('turning a locked recipe row off saves disabledRules through Save → preview → config.set', async () => {
+    stored = { ...withRule(), recipes: withRule().recipes.map((r) => (r.id === 'finished' ? { ...r, enabled: true } : r)) };
+    render(App);
+    const row = await screen.findByRole('group', { name: /Close OAuth callback tabs/ });
+    await fireEvent.click(row.querySelector('input[type="checkbox"]')!);
+    await fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await screen.findByText('Saved.');
+    const types = send.mock.calls.map((c) => c[0].type);
+    expect(types.indexOf('preview.change')).toBeLessThan(types.indexOf('config.set'));
+    const set = send.mock.calls.map((c) => c[0]).find((r) => r.type === 'config.set');
+    expect(set.config.recipes.find((r: { id: string }) => r.id === 'finished').disabledRules).toEqual(['oauth-callback']);
+  });
+});
+
 describe('App routing (R28, M2 T14)', () => {
   it('#/explain/<tabId> opens the conflict view for that tab, and is not in the nav', async () => {
     window.location.hash = '#/explain/12';
