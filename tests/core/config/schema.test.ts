@@ -355,3 +355,22 @@ describe('nested-quantifier regexes in stored config (R67)', () => {
     expect(validateConfig(r.config).ok).toBe(true);
   });
 });
+
+describe('pageText needles and extract names are capped in TS (I2)', () => {
+  it('validateConfig rejects an enabled rule with a pageText needle over 500 chars or an extract name over 64', () => {
+    const r1 = validateConfig(cfgRaw([v2({ match: { all: [{ url: 'a.com/*' }, { pageText: ['ok', 'x'.repeat(501)] }] } })]));
+    expect(r1).toEqual({ ok: false, errors: ['/rules/0/match/all/1/pageText/1 must be at most 500 characters'] });
+    const r2 = validateConfig(cfgRaw([v2({ match: { not: { pageText: 'x'.repeat(501) } } })]));
+    expect(r2).toEqual({ ok: false, errors: ['/rules/0/match/not/pageText must be at most 500 characters'] });
+    const name = 'n'.repeat(65);
+    const r3 = validateConfig(cfgRaw([v2({ extract: { [name]: { selector: 'h1' } } })]));
+    expect(r3).toEqual({ ok: false, errors: [`/rules/0/extract/${name} extract name too long (max 64 characters)`] });
+    expect(validateConfig(cfgRaw([v2({ match: { pageText: 'x'.repeat(500) }, extract: { ['n'.repeat(64)]: { selector: 'h1' } } })])).ok).toBe(true);
+  });
+  it('repairConfig disables a stored rule over the caps instead of failing the config', () => {
+    const r = repairConfig(cfgRaw([v2({ match: { pageText: 'x'.repeat(501) } })]));
+    expect((r.config as Config).rules[0]!.enabled).toBe(false);
+    expect(validateConfig(r.config).ok).toBe(true);
+  });
+});
+

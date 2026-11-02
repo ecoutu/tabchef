@@ -306,6 +306,12 @@ describe('createContentHandler', () => {
     expect(isPageFactsMessage({ ...facts, texts: Array(201).fill('a') })).toBe(false);
   });
 
+  it('the TS rule cap on pageText needles equals the guard bound (I2)', async () => {
+    const { MAX_PAGE_TEXT } = await import('../../src/core/config/schema');
+    const { MAX_FACT_TEXT } = await import('../../src/engine/messages');
+    expect(MAX_PAGE_TEXT).toBe(MAX_FACT_TEXT);
+  });
+
   it('ignores other message types (returns undefined)', () => {
     expect(mk().h({ type: 'config.get' }, tabSender)).toBeUndefined();
   });
@@ -341,6 +347,21 @@ describe('createContentHandler', () => {
     expect(onFacts).toHaveBeenCalledWith(7);
     await h({ ...facts, formEdited: false }, tabSender);
     expect(safety.clearFormEdited).toHaveBeenCalledWith(7);
+  });
+
+  it('page.facts with an oversized field: that field is dropped, formEdited is kept (I2)', async () => {
+    const { h, pageFacts, safety, schedule } = mk();
+    expect(await h({ ...facts, texts: ['ok', 'x'.repeat(501)] }, tabSender)).toEqual({ ok: true });
+    expect(pageFacts.get(7)).toEqual({ texts: [], extracts: { 'user/m.x': 'v' }, formEdited: true });
+    expect(safety.markFormEdited).toHaveBeenCalledWith(7, PAGE);
+    await h({ ...facts, texts: Array(201).fill('a'), extracts: { ['k'.repeat(501)]: 'v' } }, tabSender);
+    expect(pageFacts.get(7)).toEqual({ texts: [], extracts: {}, formEdited: true });
+    await h({ ...facts, texts: 'nope', extracts: { a: 'x'.repeat(257) } }, tabSender);
+    expect(pageFacts.get(7)).toEqual({ texts: [], extracts: {}, formEdited: true });
+    expect(safety.markFormEdited).toHaveBeenCalledTimes(3);
+    expect(schedule).toHaveBeenCalledTimes(3);
+    // Still not ours without a boolean formEdited.
+    expect(h({ type: 'page.facts', texts: [], extracts: {} }, tabSender)).toBeUndefined();
   });
 
   it('accepts only a content script in a real tab, top frame (never an extension page or a sub-frame)', async () => {

@@ -1,7 +1,7 @@
 // The page side of the watch content script (M2 T7); src/entrypoints/watch.content.ts only wires it to the page.
 // Pulls its config with watch.hello (ruling R12), then reports page.facts whenever they change: which needles the
 // page text contains (never the text itself), selector extract values, and whether a form field was edited.
-import { MAX_EXTRACT_VALUE, type PageFactsMessage, type WatchConfigMessage, type WatchHelloMessage } from './messages';
+import { MAX_EXTRACT_VALUE, MAX_FACT_ITEMS, MAX_FACT_TEXT, type PageFactsMessage, type WatchConfigMessage, type WatchHelloMessage } from './messages';
 import type { WatchConfig } from './page-facts';
 import { foldText } from '../core/lang/fold-text';
 
@@ -57,9 +57,12 @@ export function startPageWatch(env: PageWatchEnv): { stop(): void } {
 
   const facts = (): PageFactsMessage => {
     const text = foldText(doc.body?.textContent ?? '');
-    const texts = config.needles.filter((n) => text.includes(foldText(n)));
+    // Within the worker's page.facts bounds (isPageFactsMessage), so a report is never rejected (I2).
+    const texts = config.needles.filter((n) => n.length <= MAX_FACT_TEXT && text.includes(foldText(n))).slice(0, MAX_FACT_ITEMS);
     const extracts: Record<string, string> = {};
+    let nExtracts = 0;
     for (const s of config.selectors) {
+      if (s.key.length > MAX_FACT_TEXT || nExtracts >= MAX_FACT_ITEMS) continue;
       let el: Element | null = null;
       try {
         el = doc.querySelector(s.selector);
@@ -68,7 +71,9 @@ export function startPageWatch(env: PageWatchEnv): { stop(): void } {
       }
       if (!el) continue;
       const v = s.attr !== undefined ? el.getAttribute(s.attr) : el.textContent;
-      if (v !== null) extracts[s.key] = v.trim().slice(0, MAX_EXTRACT_CHARS);
+      if (v === null) continue;
+      if (!Object.prototype.hasOwnProperty.call(extracts, s.key)) nExtracts++;
+      extracts[s.key] = v.trim().slice(0, MAX_EXTRACT_CHARS);
     }
     if (formEdited && editedHref !== win.location.href) formEdited = false;
     return { type: 'page.facts', texts, extracts, formEdited };
