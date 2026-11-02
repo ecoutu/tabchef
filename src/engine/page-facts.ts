@@ -18,6 +18,11 @@ export interface PageFactsDeps {
   now?: () => number;
   /** A hold expired without facts: re-plan so the held tab is grouped after all (background: reconciler.schedule). */
   onHoldExpired?: () => void;
+  /**
+   * Whether the watch script is registered for `url` (background: PermissionsManager.covers). A commit elsewhere
+   * arms no hold: no facts will come (no scripting, an ungranted host, a non-http page). Default: every URL.
+   */
+  covers?: (url: string) => boolean;
 }
 
 const isFacts = (v: unknown): v is PageFactsData => {
@@ -123,9 +128,14 @@ export class PageFacts implements PageLookup {
     if (this.facts.delete(tabId) || !this.loaded) this.save(tabId);
   }
 
-  /** Wire to webNavigation.onCommitted (frameId 0): the new document's facts are not known until its watch reports. */
-  onCommitted(tabId: number): void {
+  /**
+   * Wire to webNavigation.onCommitted (frameId 0) with the committed URL: the new document's facts are not known until
+   * its watch reports, so the planner holds the tab, but only where the watch runs (`covers`). Without a URL (a
+   * watch.hello: the watch is evidently running) the hold is always armed.
+   */
+  onCommitted(tabId: number, url?: string): void {
     this.clear(tabId);
+    if (url !== undefined && this.deps.covers && !this.deps.covers(url)) return;
     this.committedAt.set(tabId, this.now());
   }
 

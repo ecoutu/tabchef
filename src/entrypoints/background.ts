@@ -10,7 +10,9 @@ import {
 import { listPendingAsks } from '../engine/ask';
 import { DedupeHandler } from '../engine/dedupe-handler';
 import { PageFacts } from '../engine/page-facts';
-import { syncWatchRegistration, WATCH_SCRIPT_ID } from '../engine/watch-registration';
+import { createWatchScripting, WATCH_FILE, WATCH_SCRIPT_ID } from '../engine/watch-registration';
+import { PermissionsManager } from '../engine/permissions';
+import { builtinRecipes } from '../recipes/load';
 import { ProgramCache } from '../engine/program-cache';
 import { Reconciler } from '../engine/reconciler';
 import { SafetyService } from '../engine/safety';
@@ -19,9 +21,9 @@ import { ConfigStore } from '../storage/config-store';
 
 export default defineBackground(() => {
   const store = new ConfigStore();
-  // One compiled Program for every engine consumer (ruling R4); recompiled when the config revision changes.
-  // The paused set (rules waiting for a permission) arrives with the PermissionsManager (M2 T8).
-  const programs = new ProgramCache(() => store.get());
+  // One compiled Program for every engine consumer (ruling R4); recompiled when the config revision or the
+  // PermissionsManager's paused set (recipes / rules waiting for a permission) changes.
+  const programs = new ProgramCache(() => store.get(), { paused: () => permissions.paused() });
   const getProgram = () => programs.get();
   const updateConfig = async (fn: (c: Config) => Config) => {
     await store.update(fn);
@@ -30,6 +32,19 @@ export default defineBackground(() => {
   const whyLog = new WhyLog();
   const recentlyClosed = new RecentlyClosed();
   const warn = (what: string) => (e: unknown) => console.warn(`[tabchef] ${what} failed`, e);
+  // The one owner of the watch registration (R5, constraint 8): chrome.scripting is undefined until `scripting` is
+  // granted, so the API is looked up per call and every call is a no-op without it.
+  const permissions: PermissionsManager = new PermissionsManager(port, getProgram, createWatchScripting(() => {
+    const s = browser.scripting;
+    if (!s?.registerContentScripts) return undefined;
+    return {
+      getRegistered: () => s.getRegisteredContentScripts({ ids: [WATCH_SCRIPT_ID] }),
+      register: (x) => s.registerContentScripts(x),
+      update: (x) => s.updateContentScripts(x),
+      unregister: (ids) => s.unregisterContentScripts({ ids }),
+      inject: async (tabId) => { await s.executeScript({ target: { tabId }, files: [WATCH_FILE as never] }); },
+    };
+  }), { onPausedChanged: () => reconciler.schedule('permissions') });
   // Page facts from the watch content script (M2 T7), mirrored to storage.session.
   const pageFacts = new PageFacts({
     session: {
@@ -37,6 +52,8 @@ export default defineBackground(() => {
       set: (k, v) => browser.storage.session.set({ [k]: v }),
     },
     onHoldExpired: () => reconciler.schedule('pageFacts-hold'),
+    // Hold only where the watch is registered: elsewhere no facts will come.
+    covers: (url) => permissions.covers(url),
   });
   // `safety` is used lazily by the closures below (it needs the reconciler and dedupe handler, which need it).
   const reconciler = new Reconciler(port, getProgram, {
@@ -49,6 +66,7 @@ export default defineBackground(() => {
   const schedule = (reason: string) => () => reconciler.schedule(reason);
   store.onChange((c) => {
     reconciler.schedule('config');
+    void permissions.onChanged(); // enabled recipes changed: their needs, the paused set and the watch origins
     // Tell open extension pages (options) the config changed; "no receiver" rejections are expected.
     Promise.resolve(browser.runtime.sendMessage({ type: 'config.changed', rev: configRev(c) })).catch(() => {});
   });
@@ -150,7 +168,7 @@ export default defineBackground(() => {
   // onUpdated(url) arrives ~4 ms before onCommitted and both carry the final post-redirect URL: act on whichever is first.
   browser.webNavigation.onCommitted.addListener((d) => {
     if (d.frameId !== 0) return;
-    pageFacts.onCommitted(d.tabId);
+    pageFacts.onCommitted(d.tabId, d.url);
     candidate(d.tabId, d.url, 'committed');
   });
   browser.tabs.onUpdated.addListener((tabId, info, tab) => {
@@ -213,6 +231,7 @@ export default defineBackground(() => {
     safety,
     recentlyClosed,
     whyLog,
+    recipes: { builtins: builtinRecipes(), permissions },
   });
   // Watch content script (ruling R12): its own sender-checked channel, never createHandler.
   const handleContent = createContentHandler({
@@ -257,21 +276,11 @@ export default defineBackground(() => {
   };
   wireNotifications();
   browser.permissions.onAdded.addListener(wireNotifications);
-  // The watch content script runs on every granted host (R13). Seam for the PermissionsManager (M2 T8): until it
-  // lands, sync with the hosts the extension holds at worker start and on every permission change.
-  const syncWatch = async () => {
-    if (!browser.scripting?.registerContentScripts) return; // optional `scripting` not granted
-    const { origins = [] } = await browser.permissions.getAll();
-    await syncWatchRegistration({
-      getRegistered: () => browser.scripting.getRegisteredContentScripts({ ids: [WATCH_SCRIPT_ID] }),
-      register: (s) => browser.scripting.registerContentScripts(s),
-      update: (s) => browser.scripting.updateContentScripts(s),
-      unregister: (ids) => browser.scripting.unregisterContentScripts({ ids }),
-    }, origins);
-  };
-  const resyncWatch = () => { syncWatch().catch(warn('watch registration')); };
-  browser.permissions.onAdded.addListener(resyncWatch);
-  browser.permissions.onRemoved.addListener(resyncWatch);
-  resyncWatch();
+  // Permission grants / revocations (also from chrome://extensions) and worker start: re-check needs, pause or resume
+  // recipes and re-register the watch for the granted origins enabled recipes need.
+  const syncPermissions = () => { void permissions.onChanged(); };
+  browser.permissions.onAdded.addListener(syncPermissions);
+  browser.permissions.onRemoved.addListener(syncPermissions);
+  syncPermissions();
   browser.runtime.onInstalled.addListener(schedule('installed'));
 });

@@ -16,4 +16,6 @@ export interface BrowserPort {
   focusTab(tabId: number, windowId: number, url?: string): Promise<void>;
   setBadge(text: string): Promise<void>;
   hasPermission(p: { permissions?: string[]; origins?: string[] }): Promise<boolean>;
+  /** The host match patterns the extension holds (permissions.getAll().origins), D42. */
+  grantedOrigins(): Promise<string[]>;
 }

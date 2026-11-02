@@ -9,7 +9,9 @@ import type { RecentlyClosed, RecentlyClosedItem } from '../core/safety/recently
 import type { WhyEntry, WhyLog } from '../core/safety/why-log';
 import type { BrowserPort } from '../platform/browser-port';
 import type { ConfigStore, Backup } from '../storage/config-store';
-import type { Program } from '../core/lang/types';
+import { compileProgram, paramProblem } from '../core/lang/compile';
+import type { Program, Recipe, RecipeRef } from '../core/lang/types';
+import { effectiveNeeds, type Needs, type NeedStatus, type PermissionsManager } from './permissions';
 import type { PendingAsk } from './ask';
 import type { PageFacts, WatchSelector } from './page-facts';
 import type { PauseDuration, SafetyService } from './safety';
@@ -110,7 +112,18 @@ export type Request =
   | { type: 'tab.unlock'; tabId: number }
   | { type: 'tab.focus'; tabId: number }
   | { type: 'import.preview'; source: ImportSource; data: unknown }
-  | { type: 'import.apply'; source: ImportSource; data: unknown; baseRev: string };
+  | { type: 'import.apply'; source: ImportSource; data: unknown; baseRev: string }
+  | { type: 'recipes.list' }
+  // The UI calls requestNeeds (src/ui/permissions.ts) first, in the click's user gesture, then recipes.enable.
+  | { type: 'recipes.enable'; id: string; baseRev?: string }
+  | { type: 'recipes.disable'; id: string; baseRev?: string }
+  | { type: 'recipes.setParams'; id: string; params: Record<string, unknown>; baseRev?: string };
+
+/** One recipe as listed to the UI: its ref, header, effective needs (host needs add `scripting`) and their status. */
+export interface RecipeListItem {
+  id: string; source: RecipeRef['source']; enabled: boolean; params: Record<string, unknown>;
+  name: string; description: string; paramDefs: NonNullable<Recipe['params']>; needs: Needs; status: NeedStatus;
+}
 
 export type ImportSource = 'auto-group-tabs' | 'tab-deduper';
 export interface ImportPreview { rules: GroupRule[]; dedupe: Partial<DedupeSettings>; warnings: string[]; changes: string[] }
@@ -161,13 +174,18 @@ export interface ResponseData {
   'tab.focus': null;
   'import.preview': ImportPreview;
   'import.apply': { rules: number };
+  'recipes.list': { recipes: RecipeListItem[]; rev: string };
+  'recipes.enable': null;
+  'recipes.disable': null;
+  'recipes.setParams': null;
 }
 export type ResponseFor<R extends Request> = Response<ResponseData[R['type']]>;
 
 const num = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
 const str = (v: unknown): v is string => typeof v === 'string';
 const NO_ARGS = new Set(['config.get', 'config.backups', 'config.status', 'tabs.list', 'dupes.list', 'dupes.closeAll', 'recent.list', 'why.all',
-  'safety.resume', 'safety.status']);
+  'safety.resume', 'safety.status', 'recipes.list']);
+const optRev = (x: Record<string, unknown>) => x.baseRev === undefined || str(x.baseRev);
 
 const isImportSource = (v: unknown): v is ImportSource => v === 'auto-group-tabs' || v === 'tab-deduper';
 
@@ -202,6 +220,9 @@ export function isRequest(m: unknown): m is Request {
     case 'import.preview': return isImportSource(x.source);
     case 'import.apply': return isImportSource(x.source) && 'data' in x && str(x.baseRev);
     case 'safety.pause': return x.d === '15m' || x.d === '1h' || x.d === 'restart';
+    case 'recipes.enable': case 'recipes.disable': return str(x.id) && optRev(x);
+    case 'recipes.setParams':
+      return str(x.id) && typeof x.params === 'object' && x.params !== null && !Array.isArray(x.params) && optRev(x);
     default: return false;
   }
 }
@@ -218,6 +239,8 @@ export interface HandlerDeps {
   recentlyClosed: Pick<RecentlyClosed, 'list' | 'add' | 'ready'>;
   whyLog: Pick<WhyLog, 'all' | 'forTab' | 'add' | 'ready'>;
   ask: { listPending: () => Promise<PendingAsk[]>; resolvePending: (n: number, e: number, c: 'switch' | 'keep') => Promise<void> };
+  /** recipes.* requests: built-in recipe bodies and the PermissionsManager. Without it they fail. */
+  recipes?: { builtins: Record<string, Recipe>; permissions: Pick<PermissionsManager, 'check'> };
   now?: () => number;
 }
 
@@ -311,8 +334,77 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
     return findDuplicateSets(snap.tabs, settings);
   }
 
+  /** The recipe `id` compiled as if enabled with `over` applied: its needs and its own compile errors. */
+  function compileRecipe(cfg: Config, id: string, builtins: Record<string, Recipe>, over: Partial<RecipeRef> = {}) {
+    const recipes = cfg.recipes.map((r) => (r.id === id ? { ...r, enabled: true, ...over } : r));
+    const { program, errors } = compileProgram({ ...cfg, recipes }, builtins);
+    const own = errors.filter((e) => e.key === id || e.key.startsWith(`${id}/`)).map((e) => `${e.key}: ${e.error}`);
+    return { needs: program.needs[id] ?? { origins: [], permissions: [] }, errors: own };
+  }
+
+  /** Changes one recipe ref in a single store update (conflict when `baseRev` is stale or the ref is gone). */
+  async function updateRecipe(id: string, baseRev: string | undefined, fn: (r: RecipeRef) => RecipeRef): Promise<Response> {
+    try {
+      await deps.store.update((cur) => {
+        if (baseRev !== undefined && configRev(cur) !== baseRev) throw new Conflict();
+        if (!cur.recipes.some((r) => r.id === id)) throw new Conflict();
+        return { ...cur, recipes: cur.recipes.map((r) => (r.id === id ? fn(r) : r)) };
+      });
+    } catch (e) {
+      if (e instanceof Conflict) return fail('conflict');
+      throw e;
+    }
+    return ok(null);
+  }
+
+  async function runRecipes(req: Extract<Request, { type: `recipes.${string}` }>, d: NonNullable<HandlerDeps['recipes']>): Promise<Response> {
+    const cfg = await deps.store.get();
+    const bodyOf = (r: RecipeRef): Recipe | undefined => (r.source === 'builtin' ? (Object.hasOwn(d.builtins, r.id) ? d.builtins[r.id] : undefined) : r.body);
+    if (req.type === 'recipes.list') {
+      const recipes: RecipeListItem[] = [];
+      for (const r of cfg.recipes) {
+        const body = bodyOf(r);
+        const { needs } = compileRecipe(cfg, r.id, d.builtins);
+        recipes.push({
+          id: r.id, source: r.source, enabled: r.enabled, params: r.params, name: body?.name ?? r.id, description: body?.description ?? '',
+          paramDefs: body?.params ?? {}, needs: effectiveNeeds(needs), status: await d.permissions.check(needs),
+        });
+      }
+      return ok({ recipes, rev: configRev(cfg) });
+    }
+    const ref = cfg.recipes.find((r) => r.id === req.id);
+    if (!ref) return fail('unknown recipe');
+    switch (req.type) {
+      case 'recipes.enable': {
+        const { needs, errors } = compileRecipe(cfg, req.id, d.builtins);
+        if (errors.length) return fail('invalid recipe', errors);
+        // R5: only recipe-level needs gate the enable; an unmet rule-level need pauses that rule after enabling.
+        if (!(await d.permissions.check(needs)).ok) return fail('missing permissions');
+        return updateRecipe(req.id, req.baseRev, (r) => ({ ...r, enabled: true }));
+      }
+      case 'recipes.disable': return updateRecipe(req.id, req.baseRev, (r) => ({ ...r, enabled: false }));
+      case 'recipes.setParams': {
+        const defs = bodyOf(ref)?.params ?? {};
+        const errors: string[] = [];
+        for (const [name, v] of Object.entries(req.params)) {
+          const def = Object.hasOwn(defs, name) ? defs[name] : undefined;
+          const m = def ? paramProblem(def, v) : undefined;
+          if (!def) errors.push(`unknown param: ${name}`);
+          else if (m) errors.push(`param ${name}: ${m}`);
+        }
+        if (errors.length) return fail('invalid params', errors);
+        // Values valid alone may still fail where they land (e.g. braces in a template, R37).
+        const compiled = compileRecipe(cfg, req.id, d.builtins, { params: req.params });
+        if (compiled.errors.length) return fail('invalid params', compiled.errors);
+        return updateRecipe(req.id, req.baseRev, (r) => ({ ...r, params: { ...req.params } }));
+      }
+    }
+  }
+
   async function run(req: Request): Promise<Response> {
     switch (req.type) {
+      case 'recipes.list': case 'recipes.enable': case 'recipes.disable': case 'recipes.setParams':
+        return deps.recipes ? runRecipes(req, deps.recipes) : fail('recipes unavailable');
       case 'config.get': { const config = await deps.store.get(); return ok({ config, rev: configRev(config) }); }
       case 'config.set': {
         const r = validateConfig(req.config);
