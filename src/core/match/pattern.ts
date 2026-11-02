@@ -21,7 +21,6 @@ function compileRegex(p: string): Matcher {
   const end = p.lastIndexOf('/');
   const body = p.slice(1, end);
   const flags = p.slice(end + 1).replace(/[gy]/g, '');
-  if (p.length > MAX_REGEX_LEN) throw new PatternError('pattern too long');
   let re: RegExp;
   try {
     re = new RegExp(body, flags);
@@ -100,6 +99,7 @@ function compileGlob(p: string): Matcher {
 export function compilePattern(p: string): Matcher {
   const hit = cache.get(p);
   if (hit) return hit;
+  if (p.length > MAX_REGEX_LEN) throw new PatternError('pattern too long');
   const isRegex = p.length >= 2 && p.startsWith('/') && p.lastIndexOf('/') > 0;
   const fn = isRegex ? compileRegex(p) : compileGlob(p);
   cache.set(p, fn);

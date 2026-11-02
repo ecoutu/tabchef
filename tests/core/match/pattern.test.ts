@@ -87,3 +87,11 @@ describe('patternCaptures', () => {
     expect(patternCaptures('/(/')).toBeNull();
   });
 });
+
+describe('pattern length cap', () => {
+  it('rejects a 501-character glob and regex', () => {
+    expect(() => compilePattern('a'.repeat(501))).toThrow('pattern too long');
+    expect(() => compilePattern('/' + 'a'.repeat(499) + '/')).toThrow('pattern too long');
+    expect(() => compilePattern('a'.repeat(500))).not.toThrow();
+  });
+});

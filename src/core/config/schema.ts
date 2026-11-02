@@ -1,7 +1,8 @@
 import type { Config, GroupColor } from '../types';
 import type { Cond, Rule } from '../lang/types';
 import { compilePattern, MAX_REGEX_LEN, PatternError, patternCaptures } from '../match/pattern';
-import { templateVars } from '../match/template';
+import { DURATION } from '../lang/duration';
+import { parseTemplate, TemplateError, templateTables, templateVars } from '../match/template';
 import schema from './config.schema.json';
 import { validate, validateRule, type ValidateError } from './validate-config.generated.js';
 
@@ -10,8 +11,6 @@ export const configJsonSchema = schema;
 export type ValidationResult = { ok: true; config: Config } | { ok: false; errors: string[] };
 
 const COLORS = new Set<string>(['grey', 'blue', 'red', 'yellow', 'green', 'pink', 'purple', 'cyan', 'orange'] satisfies GroupColor[]);
-/** Durations (plan Global Constraint): an integer and a unit (ms, s, m, h, d), e.g. '500ms', '30s', '15m', '2d'. */
-export const DURATION = /^\d+(ms|s|m|h|d)$/;
 const DURATION_MSG = 'must be a duration like 500ms, 30s, 15m, 2h or 1d';
 
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x);
@@ -42,6 +41,23 @@ function regexProblem(source: string, flags?: string, capped = false, measured =
   } catch (e) {
     return `invalid regex: ${(e as Error).message}`;
   }
+}
+
+type Tables = Record<string, Record<string, string>>;
+
+/** Template syntax problem (unknown filter, bad arguments) or a `map:` table that is not defined (when tables are known). */
+function templateProblem(t: string, tables?: Tables): string | undefined {
+  try {
+    parseTemplate(t);
+  } catch (e) {
+    if (e instanceof TemplateError) return e.message;
+    throw e;
+  }
+  if (tables) {
+    const missing = templateTables(t).find((n) => !Object.prototype.hasOwnProperty.call(tables, n));
+    if (missing !== undefined) return `unknown table: ${missing}`;
+  }
+  return undefined;
 }
 
 /** Url patterns anywhere in a condition tree. */
@@ -81,8 +97,10 @@ function condProblems(c: Cond, path: string, out: Problem[]): void {
  * the one that matched); for other conditions any url pattern capturing it is enough. Patterns that do not compile
  * are reported elsewhere and skipped here.
  */
-function titleProblems(rule: Rule, title: string): string[] {
+function titleProblems(rule: Rule, title: string, tables?: Tables): string[] {
   if (title === '') return ['must not be empty'];
+  const tp = templateProblem(title, tables);
+  if (tp) return [tp];
   const extracted = new Set(Object.keys(rule.extract ?? {}));
   const out: string[] = [];
   const vars = templateVars(title).filter((v) => !extracted.has(v));
@@ -101,12 +119,12 @@ function titleProblems(rule: Rule, title: string): string[] {
 }
 
 /** Title problems of every group action of a rule (messages only; see titleProblems). */
-export function ruleTitleProblems(rule: Rule): string[] {
-  return rule.actions.flatMap((a) => ('group' in a ? titleProblems(rule, a.group.title) : []));
+export function ruleTitleProblems(rule: Rule, tables?: Tables): string[] {
+  return rule.actions.flatMap((a) => ('group' in a ? titleProblems(rule, a.group.title, tables) : []));
 }
 
 /** Post-schema problems of a structurally valid rule: patterns, regexes, durations, colors and titles. */
-function ruleProblems(rule: Rule): Problem[] {
+function ruleProblems(rule: Rule, tables?: Tables): Problem[] {
   const out: Problem[] = [];
   condProblems(rule.match, '/match', out);
   if (rule.trigger?.every !== undefined && !DURATION.test(rule.trigger.every)) out.push({ path: '/trigger/every', message: DURATION_MSG });
@@ -117,8 +135,10 @@ function ruleProblems(rule: Rule): Problem[] {
   }
   rule.actions.forEach((a, j) => {
     if ('group' in a) {
-      for (const m of titleProblems(rule, a.group.title)) out.push({ path: `/actions/${j}/group/title`, message: m });
-      if (!COLORS.has(a.group.color) && templateVars(a.group.color).length === 0) {
+      for (const m of titleProblems(rule, a.group.title, tables)) out.push({ path: `/actions/${j}/group/title`, message: m });
+      const cp = templateProblem(a.group.color, tables);
+      if (cp) out.push({ path: `/actions/${j}/group/color`, message: cp });
+      else if (!COLORS.has(a.group.color) && templateVars(a.group.color).length === 0) {
         out.push({ path: `/actions/${j}/group/color`, message: `must be one of ${[...COLORS].join(', ')}, or a {template}` });
       }
     } else if ('close' in a && a.close.after !== undefined && !DURATION.test(a.close.after)) {
@@ -127,6 +147,8 @@ function ruleProblems(rule: Rule): Problem[] {
   });
   return out;
 }
+
+const tablesOf = (input: Record<string, unknown>): Tables | undefined => (isObj(input.tables) ? (input.tables as Tables) : undefined);
 
 /**
  * Load-path repair for stored data (sync, lastGood, backups), run after migrateConfig: an enabled rule with
@@ -139,7 +161,7 @@ export function repairConfig(input: unknown): { config: unknown; warnings: strin
   if (!isObj(input) || !Array.isArray(input.rules)) return { config: input, warnings: [] };
   const names: string[] = [];
   const rules = input.rules.map((r: unknown) => {
-    if (!isObj(r) || r.enabled !== true || !validateRule(r) || ruleProblems(r as unknown as Rule).length === 0) return r;
+    if (!isObj(r) || r.enabled !== true || !validateRule(r) || ruleProblems(r as unknown as Rule, tablesOf(input)).length === 0) return r;
     names.push(typeof r.name === 'string' && r.name !== '' ? r.name : String(r.id));
     return { ...r, enabled: false };
   });
@@ -172,7 +194,7 @@ export function validateConfig(input: unknown): ValidationResult {
   config.rules.forEach((r, i) => {
     if (seen.has(r.id)) errors.push(`/rules/${i}/id duplicate rule id: ${r.id}`);
     seen.add(r.id);
-    if (r.enabled) for (const p of ruleProblems(r)) errors.push(`/rules/${i}${p.path} ${p.message}`);
+    if (r.enabled) for (const p of ruleProblems(r, config.tables)) errors.push(`/rules/${i}${p.path} ${p.message}`);
   });
   config.order.forEach((k, i) => { if (config.order.indexOf(k) !== i) errors.push(`/order/${i} duplicate key: ${k}`); });
   for (const t of config.dedupe.urlTransforms) {
