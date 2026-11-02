@@ -34,15 +34,18 @@ export interface CompileOptions {
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x);
 const own = (o: object, k: string): boolean => Object.prototype.hasOwnProperty.call(o, k);
 
-class ParamError extends Error {}
+/** A param problem found while substituting placeholders. Exported for validateRecipe (src/core/lang/schema.ts). */
+export class ParamError extends Error {}
 
 // ---- params ----
 
 const EXACT = /^\{params\.([A-Za-z_]\w*)\}$/;
 const INNER = /\{params\.([A-Za-z_]\w*)\}/g;
+/** Param names of the `{params.<name>}` placeholders in a string. */
+export const placeholderNames = (s: string): string[] => [...s.matchAll(INNER)].map((m) => m[1] as string);
 
 /** Why `v` is not a valid value for `def`, or undefined. */
-function paramProblem(def: ParamDef, v: unknown): string | undefined {
+export function paramProblem(def: ParamDef, v: unknown): string | undefined {
   switch (def.type) {
     case 'string':
     case 'pattern':
@@ -98,7 +101,7 @@ const isTemplateField = (path: string[]) => path.length >= 2 && path[path.length
  * R37: a string value landing in a template field must not contain `{` or `}` (it would become template structure,
  * and the template language has no escape), so it is a param error.
  */
-function substitute(x: unknown, values: Record<string, unknown>, path: string[] = []): unknown {
+export function substitute(x: unknown, values: Record<string, unknown>, path: string[] = []): unknown {
   const lookup = (name: string): unknown => {
     if (!own(values, name)) throw new ParamError(`unknown param: {params.${name}}`);
     const v = values[name];

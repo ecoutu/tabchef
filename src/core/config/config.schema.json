@@ -50,7 +50,7 @@
           },
           "body": {
             "type": "object",
-            "$comment": "Recipe body; schema lands with recipe.schema.json (M2 T5)."
+            "$comment": "Loose on purpose (R41): stored bodies are checked in TS with validateRecipe (src/core/lang/schema.ts); an invalid one disables its recipe (repairConfig) instead of failing the whole config."
           }
         }
       }

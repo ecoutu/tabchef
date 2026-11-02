@@ -15,7 +15,8 @@
     "postinstall": "wxt prepare",
     "prepare": "husky",
     "gen:validator": "node scripts/gen-validator.mjs",
-    "check:csp": "node scripts/check-no-eval.mjs"
+    "check:csp": "node scripts/check-no-eval.mjs",
+    "validate:recipes": "node scripts/run-ts.mjs scripts/validate-recipes.ts"
   },
   "devDependencies": {
     "@commitlint/cli": "21.2.4",

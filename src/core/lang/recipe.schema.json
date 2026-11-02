@@ -1,0 +1,314 @@
+{
+  "$id": "https://schemas.tabchef.invalid/recipe.json",
+  "$comment": "M2 recipe (src/core/lang/types.ts Recipe). Rules use recipe-rule.schema.generated.json: rule.schema.json with every typed leaf also accepting an exact {params.<name>} placeholder (R14). Regex/pattern/match-pattern/param checks are TS post-validation (src/core/lang/schema.ts). Strings <= 2048 characters; regexes <= 500.",
+  "$defs": {
+    "placeholder": {
+      "type": "string",
+      "pattern": "^\\{params\\.[A-Za-z_][A-Za-z0-9_]*\\}$"
+    },
+    "permission": {
+      "$comment": "= manifestConfig.optional_permissions in wxt.config.ts (pinned by a test)",
+      "enum": [
+        "notifications",
+        "identity",
+        "scripting",
+        "sidePanel",
+        "bookmarks"
+      ]
+    },
+    "paramDef": {
+      "type": "object",
+      "required": [
+        "type",
+        "default",
+        "label"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "enum": [
+            "string",
+            "pattern",
+            "regex",
+            "number",
+            "boolean",
+            "duration",
+            "string[]"
+          ]
+        },
+        "default": {},
+        "label": {
+          "type": "string",
+          "maxLength": 2048
+        },
+        "enum": {
+          "type": "array",
+          "minItems": 1
+        }
+      }
+    },
+    "show": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 3,
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "field",
+            "op",
+            "value"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "field": {
+              "type": "string",
+              "maxLength": 2048,
+              "minLength": 1
+            },
+            "op": {
+              "enum": [
+                "==",
+                "!=",
+                "<",
+                ">",
+                "in",
+                "matches"
+              ]
+            },
+            "value": {}
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "all"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "all": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "$ref": "#/$defs/show"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "any"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "any": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "$ref": "#/$defs/show"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "not"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "not": {
+              "$ref": "#/$defs/show"
+            }
+          }
+        }
+      ]
+    },
+    "view": {
+      "type": "object",
+      "required": [
+        "id",
+        "tab",
+        "kind",
+        "actions"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "rule.json#/$defs/id"
+        },
+        "tab": {
+          "type": "string",
+          "maxLength": 2048,
+          "minLength": 1
+        },
+        "kind": {
+          "enum": [
+            "list",
+            "duplicates"
+          ]
+        },
+        "rules": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 2048,
+            "minLength": 1
+          }
+        },
+        "show": {
+          "$ref": "#/$defs/show"
+        },
+        "groupBy": {
+          "type": "string",
+          "maxLength": 2048,
+          "minLength": 1
+        },
+        "sort": {
+          "type": "object",
+          "required": [
+            "field",
+            "dir"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "field": {
+              "type": "string",
+              "maxLength": 2048,
+              "minLength": 1
+            },
+            "dir": {
+              "enum": [
+                "asc",
+                "desc"
+              ]
+            }
+          }
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "focus",
+              "close",
+              "close-all",
+              "keep"
+            ]
+          }
+        }
+      }
+    }
+  },
+  "type": "object",
+  "required": [
+    "recipe",
+    "version",
+    "name",
+    "description",
+    "rules"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "recipe": {
+      "$ref": "rule.json#/$defs/id"
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "name": {
+      "type": "string",
+      "maxLength": 2048,
+      "minLength": 1
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 2048
+    },
+    "params": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+        "maxLength": 64
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/paramDef"
+      }
+    },
+    "needs": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "hosts": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 2048,
+            "minLength": 1
+          }
+        },
+        "permissions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/permission"
+          }
+        }
+      }
+    },
+    "tables": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "string",
+          "maxLength": 2048
+        }
+      }
+    },
+    "dedupe": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "urlTransforms": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "pattern",
+              "replacement"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "pattern": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              },
+              "replacement": {
+                "type": "string",
+                "maxLength": 2048
+              },
+              "flags": {
+                "type": "string",
+                "maxLength": 16
+              }
+            }
+          }
+        }
+      }
+    },
+    "rules": {
+      "type": "array",
+      "items": {
+        "$ref": "recipe-rule.json"
+      }
+    },
+    "views": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/view"
+      }
+    }
+  }
+}
