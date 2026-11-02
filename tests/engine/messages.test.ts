@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  configRev, badgeCount, createContentHandler, createDebounce, createHandler, createOnMessage, isCloseChoiceMessage, isPageFactsMessage, isWatchHello,
+  configRev, badgeCount, createContentHandler, createDebounce, createHandler, createOnMessage, isCloseChoiceMessage, isPageFactsMessage, isRequest, isWatchHello,
   type ContentDeps, type HandlerDeps,
 } from '../../src/engine/messages';
 import { PageFacts } from '../../src/engine/page-facts';
@@ -492,6 +492,69 @@ describe('import.*', () => {
     ]));
     const r = await s.handle({ type: 'import.apply', source: 'auto-group-tabs', data, baseRev: configRev(s.getCfg()) }, ui);
     expect(r).toEqual({ ok: true, data: { rules: 1 } });
+  });
+
+  describe('collapse suggestions (M2 T19)', () => {
+    const repos = { groups: [
+      ...['web', 'api', 'cli'].map((x, i) => ({ id: x, title: x, color: i === 2 ? 'red' : 'blue', matchers: [`https://h.example/acme/${x}*`], options: { strict: true } })),
+      { id: 'rest', title: 'Rest', color: 'grey', matchers: ['https://h.example/*'] },
+    ] };
+    type Prev = { ok: boolean; data: { collapse: { replaces: string[]; rule: { id: string }; table: { name: string }; notes: string[] }[] } };
+
+    it('preview lists suggestions on the migrated rules (ids as apply would assign them)', async () => {
+      const s = setup();
+      seed(s);
+      const p = (await s.handle({ type: 'import.preview', source: 'auto-group-tabs', data: repos }, ui)) as Prev;
+      expect(p.ok).toBe(true);
+      expect(p.data.collapse).toHaveLength(1);
+      expect(p.data.collapse[0]).toMatchObject({ replaces: ['web', 'api', 'cli'], rule: { id: 'collapsed-acme' }, table: { name: 'acmeColors' } });
+      const none = (await s.handle({ type: 'import.preview', source: 'auto-group-tabs', data: agt }, ui)) as Prev;
+      expect(none.data.collapse).toEqual([]);
+      const td = (await s.handle({ type: 'import.preview', source: 'tab-deduper', data: { local: {} } }, ui)) as Prev;
+      expect(td.data.collapse).toEqual([]);
+      expect(s.set).not.toHaveBeenCalled();
+    });
+
+    it('apply without collapse keeps every rule; with collapse [0] replaces the run in place and adds the table', async () => {
+      const s = setup();
+      const cfg = seed(s);
+      expect((await s.handle({ type: 'import.apply', source: 'auto-group-tabs', data: repos, baseRev: configRev(cfg) }, ui)).ok).toBe(true);
+      expect((s.set.mock.calls[0]![0] as Config).rules.map((x) => x.id)).toEqual(['old', 'web', 'api', 'cli', 'rest']);
+      const r = await s.handle({ type: 'import.apply', source: 'auto-group-tabs', data: repos, baseRev: configRev(cfg), collapse: [0] }, ui);
+      expect(r).toEqual({ ok: true, data: { rules: 2 } });
+      const saved = s.set.mock.calls[1]![0] as Config;
+      expect(saved.rules.map((x) => x.id)).toEqual(['old', 'collapsed-acme', 'rest']);
+      expect(saved.order).toEqual(['user/old', 'user/collapsed-acme', 'user/rest']);
+      expect(saved.tables).toEqual({ acmeColors: { web: 'blue', api: 'blue', cli: 'red' } });
+      expect(saved.rules[1]!.actions[0]).toEqual({ group: { title: '{acme|lower}', color: '{acme|lower|map:acmeColors|default:blue}', strict: true, merge: false } });
+    });
+
+    it('re-derives suggestions server-side: unknown indices fail, a client-sent rule is never used', async () => {
+      const s = setup();
+      const cfg = seed(s);
+      expect(await s.handle({ type: 'import.apply', source: 'auto-group-tabs', data: repos, baseRev: configRev(cfg), collapse: [1] }, ui))
+        .toMatchObject({ ok: false, error: 'unknown collapse suggestion' });
+      const forged = { type: 'import.apply', source: 'auto-group-tabs', data: repos, baseRev: configRev(cfg), collapse: [0], rule: { id: 'evil' } };
+      expect((await s.handle(forged, ui)).ok).toBe(true);
+      expect((s.set.mock.calls[0]![0] as Config).rules.map((x) => x.id)).not.toContain('evil');
+    });
+
+    it('avoids existing table names', async () => {
+      const s = setup();
+      const cfg = { ...seed(s), tables: { acmeColors: { x: 'red' } } };
+      s.deps.store.get = async () => cfg;
+      const p = (await s.handle({ type: 'import.preview', source: 'auto-group-tabs', data: repos }, ui)) as Prev;
+      expect(p.data.collapse[0]!.table.name).toBe('acmeColors2');
+      expect((await s.handle({ type: 'import.apply', source: 'auto-group-tabs', data: repos, baseRev: configRev(cfg), collapse: [0] }, ui)).ok).toBe(true);
+      expect((s.set.mock.calls[0]![0] as Config).tables).toEqual({ acmeColors: { x: 'red' }, acmeColors2: { web: 'blue', api: 'blue', cli: 'red' } });
+    });
+
+    it('the guard accepts only a list of non-negative integer indices', () => {
+      const base = { type: 'import.apply', source: 'auto-group-tabs', data: {}, baseRev: 'r' };
+      expect(isRequest({ ...base, collapse: [0, 2] })).toBe(true);
+      expect(isRequest(base)).toBe(true);
+      for (const bad of ['0', [-1], [1.5], [null], { 0: 0 }]) expect(isRequest({ ...base, collapse: bad })).toBe(false);
+    });
   });
 
   it('rejects import data over 5 MB', async () => {

@@ -64,4 +64,53 @@ describe('Import page', () => {
     await fireEvent.change(document.querySelector('input[type=file]')!, { target: { files: [big] } });
     expect((await screen.findByRole('alert')).textContent).toBe('File too large (max 5 MB).');
   });
+
+  describe('collapse suggestions (M2 T19)', () => {
+    const SUGGESTION = {
+      replaces: ['r1', 'r2', 'r3'], notes: ['repo-10 tabs currently go to repo-1'],
+      rule: { id: 'collapsed-repo', name: 'github.com/acme/:repo*', enabled: true, match: { url: ['/^https:\\/\\/github\\.com\\/acme\\/(?<repo>repo-1|repo-2|repo-10).*$/i'] },
+        actions: [{ group: { title: '{repo|lower}', color: '{repo|lower|map:repoColors|default:cyan}' } }] },
+      table: { name: 'repoColors', entries: { 'repo-1': 'green', 'repo-2': 'cyan', 'repo-10': 'cyan' } },
+    };
+    beforeEach(() => {
+      send.mockImplementation(async (req: { type: string }) => {
+        if (req.type === 'import.preview') return { ok: true, data: { ...PREVIEW, collapse: [SUGGESTION] } };
+        if (req.type === 'config.get') return { ok: true, data: { config: {}, rev: 'r1' } };
+        return { ok: true, data: { rules: 1 } };
+      });
+    });
+
+    it('shows the card with the shadow note; never applied unless chosen', async () => {
+      vi.spyOn(window, 'confirm').mockReturnValue(true);
+      render(Import, props());
+      await paste('{}');
+      expect(await screen.findByText('Replace 3 similar rules with 1 templated rule?')).toBeTruthy();
+      expect(screen.getByText('repo-10 tabs currently go to repo-1')).toBeTruthy();
+      expect(screen.getByText('Table repoColors')).toBeTruthy();
+      expect(screen.getByText('repo-1: green, repo-2: cyan, repo-10: cyan')).toBeTruthy();
+      await fireEvent.click(screen.getByRole('button', { name: 'Apply import' }));
+      await waitFor(() => expect(send.mock.calls.some((c) => c[0].type === 'import.apply')).toBe(true));
+      expect(send.mock.calls.find((c) => c[0].type === 'import.apply')![0]).not.toHaveProperty('collapse');
+    });
+
+    it('[Use templated rule] sends the chosen index; [Keep as is] drops the card', async () => {
+      const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+      render(Import, props());
+      await paste('{}');
+      await fireEvent.click(await screen.findByRole('button', { name: 'Use templated rule' }));
+      expect(screen.getByText(/Will replace 3 rules with 1 templated rule/)).toBeTruthy();
+      await fireEvent.click(screen.getByRole('button', { name: 'Apply import' }));
+      expect(confirm.mock.calls[0]![0]).toContain('1 templated rule replaces 3 similar rules');
+      await waitFor(() => expect(send).toHaveBeenCalledWith({ type: 'import.apply', source: 'auto-group-tabs', data: {}, baseRev: 'r1', collapse: [0] }));
+      cleanup();
+      send.mockClear();
+      render(Import, props());
+      await paste('{}');
+      await fireEvent.click(await screen.findByRole('button', { name: 'Use templated rule' }));
+      await fireEvent.click(screen.getByRole('button', { name: 'Keep as is' }));
+      expect(screen.queryByText('Replace 3 similar rules with 1 templated rule?')).toBeNull();
+      await fireEvent.click(screen.getByRole('button', { name: 'Apply import' }));
+      await waitFor(() => expect(send).toHaveBeenCalledWith({ type: 'import.apply', source: 'auto-group-tabs', data: {}, baseRev: 'r1' }));
+    });
+  });
 });

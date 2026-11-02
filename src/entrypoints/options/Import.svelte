@@ -1,6 +1,7 @@
 <script lang="ts">
   import { send } from '../../ui/send';
   import type { ImportPreview, ImportSource } from '../../engine/messages';
+  import type { Rule } from '../../core/lang/types';
 
   const MAX_IMPORT_BYTES = 5 * 1024 * 1024;
   const UNSAVED = 'You have unsaved changes on this page; they will be discarded.';
@@ -17,8 +18,10 @@
   let error = $state('');
   let notice = $state('');
   let busy = $state(false);
+  /** Collapse suggestions (M2 T19) by index: 'use' sends it with import.apply, 'keep' hides the card. Never automatic. */
+  let choice = $state<Record<number, 'use' | 'keep'>>({});
 
-  function reset(): void { preview = null; data = undefined; error = ''; notice = ''; }
+  function reset(): void { preview = null; data = undefined; error = ''; notice = ''; choice = {}; }
 
   async function load(text: string): Promise<void> {
     reset();
@@ -42,16 +45,22 @@
 
   const dedupeKeys = $derived(preview ? Object.keys(preview.dedupe) : []);
   const nothing = $derived(preview !== null && preview.rules.length === 0 && dedupeKeys.length === 0);
+  const suggestions = $derived(preview?.collapse ?? []);
+  const chosen = $derived(suggestions.flatMap((_, i) => (choice[i] === 'use' ? [i] : [])));
+  const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+  const groupOf = (r: Rule) => r.actions.flatMap((a) => ('group' in a ? [a.group] : []))[0];
 
   async function apply(): Promise<void> {
     if (!preview) return;
-    const what = `${preview.rules.length} ${preview.rules.length === 1 ? 'rule' : 'rules'}${dedupeKeys.length ? ` and ${dedupeKeys.length} duplicate ${dedupeKeys.length === 1 ? 'setting' : 'settings'}` : ''}`;
+    const count = preview.rules.length - chosen.reduce((n, i) => n + (suggestions[i]?.replaces.length ?? 0) - 1, 0);
+    const what = `${plural(count, 'rule', 'rules')}${dedupeKeys.length ? ` and ${dedupeKeys.length} duplicate ${dedupeKeys.length === 1 ? 'setting' : 'settings'}` : ''}`;
     const changes = preview.changes;
-    const body = changes.length
+    const collapsed = chosen.map((i) => `1 templated rule replaces ${suggestions[i]?.replaces.length ?? 0} similar rules.`).join(' ');
+    const body = (collapsed ? `${collapsed}\n` : '') + (changes.length
       ? `Add ${what}? Imported rules go after your existing rules. These duplicate settings change:\n- ${changes.join('\n- ')}\nYour current config is backed up first.`
-      : `Add ${what}? Imported rules go after your existing rules; nothing is overwritten. Your current config is backed up first.`;
+      : `Add ${what}? Imported rules go after your existing rules; nothing is overwritten. Your current config is backed up first.`);
     if (!window.confirm(warn(body))) return;
-    const r = await send({ type: 'import.apply', source, data, baseRev: rev });
+    const r = await send({ type: 'import.apply', source, data, baseRev: rev, ...(chosen.length > 0 && { collapse: chosen }) });
     if (r.ok) { notice = `Imported ${r.data.rules} ${r.data.rules === 1 ? 'rule' : 'rules'}.`; preview = null; data = undefined; pasted = ''; error = ''; onApplied(); }
     else if (r.error === 'conflict') error = 'Settings changed elsewhere. Choose the file again to re-preview.';
     else error = r.errors?.length ? `${r.error}: ${r.errors.join('; ')}` : r.error;
@@ -108,6 +117,33 @@
         </tbody>
       </table>
     {/if}
+    {#each suggestions as s, i (s.rule.id)}
+      {#if choice[i] !== 'keep'}
+        {@const g = groupOf(s.rule)}
+        <div class="card" role="group" aria-label="Collapse suggestion">
+          {#if choice[i] === 'use'}
+            <p><strong>Will replace {plural(s.replaces.length, 'rule', 'rules')} with 1 templated rule.</strong></p>
+          {:else}
+            <p><strong>Replace {s.replaces.length} similar rules with 1 templated rule?</strong></p>
+          {/if}
+          <dl>
+            <dt>Pattern</dt><dd class="pat">{[s.rule.match && 'url' in s.rule.match ? s.rule.match.url : []].flat().join(', ')}</dd>
+            <dt>Title</dt><dd class="pat">{g?.title}</dd>
+            <dt>Color</dt><dd class="pat">{g?.color}</dd>
+            <dt>Table {s.table.name}</dt>
+            <dd class="pat">{Object.entries(s.table.entries).map(([k, v]) => `${k}: ${v}`).join(', ')}</dd>
+          </dl>
+          {#if s.notes.length}
+            <p class="hint">Unchanged by this rule (it keeps the original order):</p>
+            <ul>{#each s.notes as n, j (j)}<li>{n}</li>{/each}</ul>
+          {/if}
+          <div class="row">
+            {#if choice[i] !== 'use'}<button type="button" onclick={() => (choice = { ...choice, [i]: 'use' })}>Use templated rule</button>{/if}
+            <button type="button" onclick={() => (choice = { ...choice, [i]: 'keep' })}>Keep as is</button>
+          </div>
+        </div>
+      {/if}
+    {/each}
     {#if preview.changes.length}
       <p>Duplicate settings that will change:</p>
       <ul>{#each preview.changes as c, i (i)}<li>{c}</li>{/each}</ul>
@@ -129,6 +165,9 @@
   th, td { text-align: left; border-bottom: 1px solid var(--border); padding: 4px 6px; vertical-align: top; }
   .pat { word-break: break-all; font-family: monospace; font-size: 12px; }
   .warn { border: 1px solid var(--border); background: var(--surface); border-radius: 8px; padding: 6px 10px; margin: 8px 0; }
+  .card { border: 1px solid var(--border); background: var(--surface); border-radius: 8px; padding: 6px 10px; margin: 8px 0; }
+  .card dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px 10px; margin: 4px 0; }
+  .card dd { margin: 0; }
   .err { color: var(--danger); }
   .ok { color: var(--accent); }
 </style>
