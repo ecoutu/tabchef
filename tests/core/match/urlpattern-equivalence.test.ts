@@ -117,6 +117,7 @@ describe('R31 equivalence: Auto-Group Tabs fixture', () => {
   it('routes the URL corpus identically under the old translator and the URLPattern matcher', async () => {
     const r = await importAutoGroupTabs(JSON.parse(raw));
     expect(r.rules.length).toBe(13);
+    expect(r.warnings).toEqual([]);
     const patterns = r.rules.flatMap((x) => [x.match.url].flat());
     const corpus = corpusFor(patterns);
     expect(corpus.length).toBeGreaterThan(1000);

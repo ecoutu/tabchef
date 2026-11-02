@@ -9,7 +9,10 @@ export type Matcher = (url: string) => Record<string, string> | null;
 
 /** Regex-safety cap: every user or recipe regex is at most this many characters. */
 export const MAX_REGEX_LEN = 500;
+/** Regex-safety cap on matched input: titles and URLs are truncated to this many characters before matching. */
+export const MAX_MATCH_INPUT = 2048;
 const cache = new Map<string, Matcher>();
+const textCache = new Map<string, Matcher>();
 
 function collect(groups: Record<string, string | undefined> | undefined): Record<string, string> {
   const out: Record<string, string> = {};
@@ -299,14 +302,55 @@ function globParams(p: string): Set<string> {
   return names;
 }
 
-/** Compile a glob, `/regex/flags`, or `:param` pattern. Cached per pattern string. */
+/** Compile a glob, `/regex/flags`, or `:param` pattern. Cached per pattern string. Input is truncated to MAX_MATCH_INPUT. */
 export function compilePattern(p: string): Matcher {
   const hit = cache.get(p);
   if (hit) return hit;
   if (p.length > MAX_REGEX_LEN) throw new PatternError('pattern too long');
   const isRegex = p.length >= 2 && p.startsWith('/') && p.lastIndexOf('/') > 0;
-  const fn = isRegex ? compileRegex(p) : compileGlob(p);
+  const inner = isRegex ? compileRegex(p) : compileGlob(p);
+  const fn: Matcher = (url) => inner(url.slice(0, MAX_MATCH_INPUT));
   cache.set(p, fn);
+  return fn;
+}
+
+/**
+ * Linear-time anchored wildcard match (`*` = any run of characters), case-insensitive, no captures. Literal segments
+ * are matched leftmost-first with indexOf, which is exact for globs and never backtracks (ReDoS-safe).
+ */
+function compileWildcard(p: string): Matcher {
+  const segs = p.toLowerCase().split('*');
+  const first = segs[0] as string;
+  if (segs.length === 1) return (s) => (s.toLowerCase() === first ? {} : null);
+  const last = segs[segs.length - 1] as string;
+  const mid = segs.slice(1, -1).filter((x) => x !== '');
+  return (input) => {
+    const s = input.toLowerCase();
+    if (s.length < first.length + last.length || !s.startsWith(first) || !s.endsWith(last)) return null;
+    let at = first.length;
+    const end = s.length - last.length;
+    for (const m of mid) {
+      const i = s.indexOf(m, at);
+      if (i < 0 || i + m.length > end) return null;
+      at = i + m.length;
+    }
+    return {};
+  };
+}
+
+/**
+ * Compile a title pattern (R6): a glob where `*` is `.*`, anchored and case-insensitive, with no scheme or host
+ * handling and no `:param`s (use a regex named group), or `/regex/flags` as in compilePattern. Cached per pattern.
+ * Input longer than MAX_MATCH_INPUT is truncated before matching.
+ */
+export function compileTextPattern(p: string): Matcher {
+  const hit = textCache.get(p);
+  if (hit) return hit;
+  if (p.length > MAX_REGEX_LEN) throw new PatternError('pattern too long');
+  const isRegex = p.length >= 2 && p.startsWith('/') && p.lastIndexOf('/') > 0;
+  const inner = isRegex ? compileRegex(p) : compileWildcard(p);
+  const fn: Matcher = (s) => inner(s.slice(0, MAX_MATCH_INPUT));
+  textCache.set(p, fn);
   return fn;
 }
 

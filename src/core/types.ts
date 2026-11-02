@@ -41,6 +41,8 @@ export type Config = ConfigV2;
 export interface TabSnap { id: number; windowId: number; index: number; url: string; pendingUrl?: string;
   title: string; pinned: boolean; groupId: number; incognito: boolean; discarded: boolean; frozen?: boolean;
   active: boolean; audible: boolean; lastAccessed?: number;
+  /** The tab that opened this one (chrome.tabs.Tab.openerTabId), when Chrome reports it. */
+  openerTabId?: number;
   /** http(s)/data: favicon only; never a chrome:// URL. */
   favIconUrl?: string; }
 export interface GroupSnap { id: number; windowId: number; title: string; color: GroupColor; collapsed: boolean; }

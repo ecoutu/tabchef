@@ -23,6 +23,12 @@ describe('FakeBrowserPort', () => {
     expect(f.state.tabs.map((t) => [t.id, t.index, t.groupId])).toEqual([[10, 0, -1], [11, 1, -1], [12, 2, -1]]);
   });
 
+  it('snapshot keeps openerTabId (D5)', async () => {
+    const f = mk([1]);
+    f.addTab(tab(2, 1, { openerTabId: 1 }));
+    expect((await f.snapshot()).tabs.map((t) => t.openerTabId)).toEqual([undefined, 1]);
+  });
+
   it('group assigns new groupId, sets groupId and makes tabs contiguous', async () => {
     const f = mk([1, 2, 3, 4]);
     const gid = await f.group([1, 3], { windowId: 1 });

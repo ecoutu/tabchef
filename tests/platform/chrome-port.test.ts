@@ -32,6 +32,17 @@ describe('ChromePort', () => {
     expect(s.tabs.map((t) => t.favIconUrl)).toEqual(['https://a/f.ico', undefined, 'data:image/png;base64,AA', undefined]);
   });
 
+  it('snapshot maps openerTabId (D5)', async () => {
+    const api = {
+      windows: { getAll: async () => [{ id: 1, type: 'normal', focused: true }] },
+      tabs: { query: async () => [{ ...base, id: 1, windowId: 1, url: 'https://a' }, { ...base, id: 2, windowId: 1, url: 'https://b', openerTabId: 1 }] },
+      tabGroups: { query: async () => [] },
+    } as unknown as ConstructorParameters<typeof ChromePort>[0];
+    const s = await new ChromePort(api).snapshot();
+    expect(s.tabs.map((t) => t.openerTabId)).toEqual([undefined, 1]);
+    expect('openerTabId' in s.tabs[0]!).toBe(false);
+  });
+
   it('mutating calls go through drag retry', async () => {
     vi.useFakeTimers();
     const remove = vi.fn()
