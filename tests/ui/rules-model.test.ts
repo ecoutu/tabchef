@@ -217,7 +217,7 @@ describe('rules-model: order across user and recipe rules (M2 T15)', () => {
     const { customizeRule, customizedCopy } = await import('../../src/ui/rules-model');
     const { builtinRecipes } = await import('../../src/recipes/load');
     const c = { ...defaultConfig(), recipes: defaultConfig().recipes.map((r) => ({ ...r, enabled: true })) };
-    expect(customizedCopy(c, 'finished/meet-ended')).toBeUndefined();
+    expect(customizedCopy(c, 'finished/meet-ended', builtinRecipes())).toBeUndefined();
     const once = customizeRule(c, 'finished/meet-ended', builtinRecipes());
     expect(customizeRule(once, 'finished/meet-ended', builtinRecipes())).toBe(once);
     expect(customizedCopy(once, 'finished/meet-ended')?.id).toBe('finished-meet-ended');
@@ -225,6 +225,17 @@ describe('rules-model: order across user and recipe rules (M2 T15)', () => {
     expect(customizedCopy(older, 'finished/meet-ended')?.id).toBe('finished-meet-ended-2');
     expect(customizedCopy(once, 'finished/oauth-callback')).toBeUndefined();
     expect(customizedCopy(once, 'user/finished-meet-ended')).toBeUndefined();
+  });
+
+  it('a user rule that only shares the copy id (another name) is not a copy: Customize still makes one', async () => {
+    const { customizeRule, customizedCopy } = await import('../../src/ui/rules-model');
+    const { builtinRecipes } = await import('../../src/recipes/load');
+    const mine: Rule = { id: 'github-prs-group-by-repo', name: 'My thing', enabled: true, match: { url: 'x.com/*' }, actions: [] };
+    const c = { ...defaultConfig(), rules: [mine], order: ['user/github-prs-group-by-repo'] };
+    expect(customizedCopy(c, 'github-prs/group-by-repo', builtinRecipes())).toBeUndefined();
+    const next = customizeRule(c, 'github-prs/group-by-repo', builtinRecipes());
+    expect(next.rules.map((r) => r.id)).toEqual(['github-prs-group-by-repo', 'github-prs-group-by-repo-2']);
+    expect(customizedCopy(next, 'github-prs/group-by-repo', builtinRecipes())?.id).toBe('github-prs-group-by-repo-2');
   });
 });
 
@@ -322,4 +333,39 @@ describe('rules-model: pre-filled rules (M2 T16)', () => {
     const c = { ...cfg('a'), rules: [...cfg('a').rules, odd, closer] };
     expect(groupRuleChoices(c)).toEqual([{ id: 'a', name: 'a', title: 'a' }]);
   });
+
+  it('inactiveReason: a rule whose URL condition has no patterns can never match', async () => {
+    const { inactiveReason } = await import('../../src/ui/rules-model');
+    const r = (match: Rule['match']): Rule => ({ id: 'x', name: 'x', enabled: true, match, actions: [{ close: {} }] });
+    expect(inactiveReason(r({ url: [] }))).toBe('no URL patterns');
+    expect(inactiveReason(r({ url: '' }))).toBe('no URL patterns');
+    expect(inactiveReason(r({ all: [{ url: 'meet.google.com/*' }, { url: [] }] }))).toBe('no URL patterns');
+    expect(inactiveReason(r({ any: [{ url: [] }, { url: [] }] }))).toBe('no URL patterns');
+    expect(inactiveReason(r({ any: [] }))).toBe('no conditions');
+    expect(inactiveReason(r({ all: [{ url: 'meet.google.com/*' }, { pageText: [] }] }))).toBe('no patterns');
+    expect(inactiveReason(r({ pageText: ['', ''] }))).toBe('no patterns');
+    expect(inactiveReason(r({ pageText: '' }))).toBe('no patterns');
+    expect(inactiveReason(r({ pageText: ['Call ended'] }))).toBeUndefined();
+    expect(inactiveReason(r({ opener: { url: [] } }))).toBe('no URL patterns');
+    expect(inactiveReason(r({ opener: { url: 'a.com/*' } }))).toBeUndefined();
+    expect(inactiveReason(r({ any: [{ url: [] }, { pageText: [] }] }))).toBe('no patterns');
+    expect(inactiveReason(r({ any: [{ url: [] }, { url: 'a.com/*' }] }))).toBeUndefined();
+    expect(inactiveReason(r({ not: { url: [] } }))).toBeUndefined();
+    expect(inactiveReason(r({ url: ['a.com/*'] }))).toBeUndefined();
+  });
+
+  it('recipeRuns: consecutive rows of one recipe form a run, split by any other row', async () => {
+    const { recipeRuns } = await import('../../src/ui/rules-model');
+    const u = (k: string) => ({ key: `user/${k}`, kind: 'user' as const });
+    const f = (k: string) => ({ key: `finished/${k}`, kind: 'recipe' as const, recipeId: 'finished' });
+    const g = (k: string) => ({ key: `github-prs/${k}`, kind: 'recipe' as const, recipeId: 'github-prs' });
+    const runs = recipeRuns([u('a'), f('o'), f('m'), g('r'), f('x'), u('b')] as never);
+    expect([...runs.entries()]).toEqual([
+      [1, { recipeId: 'finished', start: 1, keys: ['finished/o', 'finished/m'] }],
+      [2, { recipeId: 'finished', start: 1, keys: ['finished/o', 'finished/m'] }],
+      [3, { recipeId: 'github-prs', start: 3, keys: ['github-prs/r'] }],
+      [4, { recipeId: 'finished', start: 4, keys: ['finished/x'] }],
+    ]);
+  });
 });
+

@@ -17,7 +17,7 @@
   import { onPermissionsChanged, requestNeeds } from '../../ui/permissions';
   import { previewThenApply } from '../../ui/preview-flow';
   import { completeParams, hostParams, paramErrors, requestedNeeds, withRecipe } from '../../ui/recipes-model';
-  import { recipeBody } from '../../ui/rules-model';
+  import { inactiveReason, recipeBody, ruleRows } from '../../ui/rules-model';
   import { builtinRecipes } from '../../recipes/load';
   import Field from './Field.svelte';
   import LinesField from './LinesField.svelte';
@@ -83,7 +83,11 @@
     if (!i.enabled || !ruleOn(saved.recipes.find((r) => r.id === i.id) ?? {}, rule)) return 'Off';
     if (!i.status.ok) return i.status.reason ?? 'Paused';
     const st = i.rules[`${i.id}/${ruleId}`]?.status;
-    return st && !st.ok ? (st.reason ?? 'Paused') : 'Active';
+    if (st && !st.ok) return st.reason ?? 'Paused';
+    // With the stored params substituted, a rule may never match (e.g. an empty URL list param).
+    const shown = ruleRows(saved, builtins).find((r) => r.key === `${i.id}/${ruleId}`);
+    const why = shown ? inactiveReason(shown.rule) : undefined;
+    return why ? `Inactive: ${why}` : 'Active';
   }
   const deniedText = (s: NeedStatus): string => `Not enabled: ${(s.reason ?? 'missing permissions').replace(/^Paused: /, '')} (permission denied).`;
   const errorsOf = (i: RecipeListItem): Record<string, string> => paramErrors(i.paramDefs, values[i.id] ?? {}, hostParams(bodyOf(i.id)));

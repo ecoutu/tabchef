@@ -165,4 +165,20 @@ test.describe('extension in Chromium', () => {
     for (const id of ['tc-group', 'tc-close', 'tc-allowdup', 'tc-lock', 'tc-why']) await expect.poll(() => exists(id), { timeout: 5000 }).toBe(true);
     expect(await exists('tc-nope')).toBe(false);
   });
+
+  test('(i) a help tip shown on hover stays open while the pointer moves onto it (WCAG 1.4.13)', async () => {
+    const page = await h.context.newPage();
+    await page.goto(`chrome-extension://${h.extensionId}/options.html#/dedupe`);
+    const btn = page.getByRole('button', { name: /^About / }).first();
+    await btn.hover();
+    const tip = page.locator(`[id="${await btn.getAttribute('aria-describedby')}"]`);
+    await expect(tip).toBeVisible();
+    // Move in small steps from the button's center straight down into the tip's text, crossing any gap between them.
+    const b = (await btn.boundingBox())!;
+    const t = (await tip.boundingBox())!;
+    await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
+    await page.mouse.move(b.x + b.width / 2, t.y + t.height - 4, { steps: 20 });
+    await expect(tip).toBeVisible();
+    await page.close();
+  });
 });

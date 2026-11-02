@@ -192,6 +192,7 @@ describe('App: recipe rule toggle saves (R56)', () => {
   it('turning a locked recipe row off saves a ruleEnabled override through Save → preview → config.set', async () => {
     stored = { ...withRule(), recipes: withRule().recipes.map((r) => (r.id === 'finished' ? { ...r, enabled: true } : r)) };
     render(App);
+    await fireEvent.click(await screen.findByRole('button', { name: /Finished · 3 rules/ }));
     const row = await screen.findByRole('group', { name: /Close OAuth callback tabs/ });
     await fireEvent.click(row.querySelector('input[type="checkbox"]')!);
     await fireEvent.click(screen.getByRole('button', { name: 'Save' }));

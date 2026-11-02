@@ -199,6 +199,55 @@ export function ruleRows(c: Config, builtins: Record<string, Recipe> = builtinRe
   return [...out, ...byKey.values()];
 }
 
+/** Non-empty pageText needles of a `pageText` value (what the evaluator searches for; core/lang/cond.ts). */
+const needlesOf = (v: unknown): string[] => (Array.isArray(v) ? v : [v]).filter((n): n is string => typeof n === 'string' && n !== '');
+
+/**
+ * Why `c` can never match any tab, or undefined: a URL condition with no patterns, a pageText condition with no
+ * (non-empty) needles, an `opener` whose condition can never match, or a combination that needs one of these.
+ */
+function neverReason(c: Cond): string | undefined {
+  if (typeof c !== 'object' || c === null) return undefined;
+  if ('url' in c) return (Array.isArray(c.url) ? c.url.length === 0 : c.url === '') ? 'no URL patterns' : undefined;
+  if ('pageText' in c) return needlesOf(c.pageText).length === 0 ? 'no patterns' : undefined;
+  if ('opener' in c) return neverReason(c.opener); // the opener tab is evaluated against the same condition
+  if ('all' in c) {
+    for (const x of c.all) {
+      const why = neverReason(x);
+      if (why) return why;
+    }
+    return undefined;
+  }
+  if ('any' in c) {
+    if (c.any.length === 0) return 'no conditions';
+    const whys = c.any.map(neverReason);
+    if (whys.some((w) => w === undefined)) return undefined;
+    return new Set(whys).size === 1 ? whys[0] : 'no patterns';
+  }
+  return undefined; // `not` of a never-matching condition always matches; other conditions depend on the tab
+}
+
+/** Why `r` can never match a tab, or undefined: e.g. a recipe rule whose URL or page text list param was left empty. */
+export function inactiveReason(r: Rule): string | undefined {
+  return neverReason(r.match);
+}
+
+/** A run of consecutive rows from one recipe on the Rules page (shown under one collapsible header). */
+export interface RecipeRun { recipeId: string; start: number; keys: string[] }
+
+/** Each recipe row's run, by row index: consecutive rows of the same recipe share one; any other row ends it. */
+export function recipeRuns(rows: readonly RuleRow[]): Map<number, RecipeRun> {
+  const out = new Map<number, RecipeRun>();
+  let run: RecipeRun | undefined;
+  rows.forEach((r, i) => {
+    if (r.kind !== 'recipe') { run = undefined; return; }
+    if (!run || run.recipeId !== r.recipeId) run = { recipeId: r.recipeId, start: i, keys: [] };
+    run.keys.push(r.key);
+    out.set(i, run);
+  });
+  return out;
+}
+
 /** `order` with every shown key in it: the existing entries, then the shown keys it lacks (in display order). */
 function fullOrder(c: Config, shown: string[]): string[] {
   const have = new Set(c.order);
@@ -239,15 +288,22 @@ function trimDefaultTail(c: Config, shown: string[], order: string[]): string[] 
 }
 
 /**
- * The user rule "Customize" made from recipe rule `key`: id `<recipeId>-<ruleId>` (sanitized), or that id with a `-N`
- * suffix (copies made before Customize became idempotent). Undefined for user keys or when there is none.
+ * The user rule "Customize" made from recipe rule `key`, or undefined (also for user keys). A heuristic, since copies
+ * carry no marker: the id is `<recipeId>-<ruleId>` (sanitized) or that id with a `-N` suffix (copies made before
+ * Customize became idempotent), AND the name starts with the recipe rule's name (params substituted) followed by
+ * " (custom)", which is what customizeRule writes. An unrelated user rule that happens to have that id is not a copy,
+ * and neither is a copy the user renamed (Customize then makes another).
  */
-export function customizedCopy(c: Config, key: string): Rule | undefined {
+export function customizedCopy(c: Config, key: string, builtins: Record<string, Recipe> = builtinRecipes()): Rule | undefined {
   const slash = key.indexOf('/');
   if (slash <= 0 || key.startsWith('user/')) return undefined;
+  const row = ruleRows(c, builtins).find((r) => r.key === key);
+  if (!row) return undefined;
+  const prefix = `${row.rule.name} (custom)`;
   const base = sanitizeRuleId(`${key.slice(0, slash)}-${key.slice(slash + 1)}`, new Set());
   const suffixed = new RegExp(`^${base.replace(/[-_]/g, '\\$&')}-\\d+$`);
-  return c.rules.find((r) => r.id === base) ?? c.rules.find((r) => suffixed.test(r.id));
+  const isCopy = (r: Rule): boolean => r.name.startsWith(prefix);
+  return c.rules.find((r) => r.id === base && isCopy(r)) ?? c.rules.find((r) => suffixed.test(r.id) && isCopy(r));
 }
 
 /**
@@ -257,7 +313,7 @@ export function customizedCopy(c: Config, key: string): Rule | undefined {
  * rows whose params fail → `c`.
  */
 export function customizeRule(c: Config, key: string, builtins: Record<string, Recipe> = builtinRecipes()): Config {
-  if (customizedCopy(c, key)) return c;
+  if (customizedCopy(c, key, builtins)) return c;
   const rows = ruleRows(c, builtins);
   const row = rows.find((r) => r.key === key);
   if (!row || row.kind !== 'recipe' || row.error) return c;

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, fireEvent, cleanup } from '@testing-library/svelte';
+import { tick } from 'svelte';
 const send = vi.fn();
 vi.mock('../../src/ui/send', () => ({ send: (r: unknown) => send(r) }));
 import Rules from '../../src/entrypoints/options/Rules.svelte';
@@ -172,9 +173,12 @@ describe('Rules: shadowed-rule warnings (M2 T14)', () => {
 
 describe('Rules: recipe rules as locked rows (M2 T15)', () => {
   const withFinished = (c: Config): Config => ({ ...c, recipes: c.recipes.map((r) => (r.id === 'finished' ? { ...r, enabled: true } : r)) });
+  /** Finished's three rules start collapsed under their recipe header. */
+  const expand = () => fireEvent.click(screen.getByRole('button', { name: /Finished · 3 rules/ }));
 
-  it('lists recipe rules after user rules, locked: summary, no editor, no Delete', () => {
+  it('lists recipe rules after user rules, locked: summary, no editor, no Delete', async () => {
     render(Rules, props(withFinished(cfg(rule('a', 'a.com/*')))));
+    await expand();
     const rows = screen.getAllByRole('group').map((g) => g.getAttribute('aria-label'));
     expect(rows).toEqual(['Rule 1: Rule a', 'Rule 2: Group GitHub tabs by repository', 'Rule 3: Close OAuth callback tabs', 'Rule 4: Close Meet tabs after the call ends', 'Rule 5: Close redirect landing tabs']);
     const oauth = screen.getByRole('group', { name: 'Rule 3: Close OAuth callback tabs' });
@@ -188,6 +192,7 @@ describe('Rules: recipe rules as locked rows (M2 T15)', () => {
   it('a recipe row can be moved above a user rule (order)', async () => {
     const p = props(withFinished(cfg(rule('a', 'a.com/*'))));
     render(Rules, p);
+    await expand();
     const row = screen.getByRole('group', { name: 'Rule 2: Group GitHub tabs by repository' });
     await fireEvent.click(row.querySelector('button[aria-label="Move up"]')!);
     const order = p.onChange.mock.calls.at(-1)![0].order as string[];
@@ -197,6 +202,7 @@ describe('Rules: recipe rules as locked rows (M2 T15)', () => {
   it('Customize copies the rule into a user rule just above it', async () => {
     const p = props(withFinished(cfg(rule('a', 'a.com/*'))));
     render(Rules, p);
+    await expand();
     const row = screen.getByRole('group', { name: 'Rule 3: Close OAuth callback tabs' });
     await fireEvent.click(row.querySelector('button.customize')!);
     const c = p.onChange.mock.calls.at(-1)![0] as Config;
@@ -210,6 +216,7 @@ describe('Rules: recipe rules as locked rows (M2 T15)', () => {
     const once = customizeRule(withFinished(cfg(rule('a', 'a.com/*'))), 'finished/oauth-callback', builtinRecipes());
     const p = props(once);
     render(Rules, p);
+    await expand();
     const row = screen.getByRole('group', { name: /Close OAuth callback tabs$/ });
     const btn = row.querySelector('button.customize') as HTMLButtonElement;
     expect(btn.textContent).toBe('Edit copy');
@@ -224,6 +231,7 @@ describe('Rules: recipe rules as locked rows (M2 T15)', () => {
     send.mockResolvedValue({ ok: true, data: { moves: [], closes: [{ tabId: 1, title: 'cb', ruleKey: 'finished/oauth-callback', afterMs: 3000 }], groupsCreated: [], unchanged: 0, anchorsOpened: 0, dryRun: false } });
     const config = withFinished(cfg(rule('a', 'a.com/*')));
     render(Rules, props(config));
+    await expand();
     const row = screen.getByRole('group', { name: 'Rule 3: Close OAuth callback tabs' });
     await fireEvent.click(row.querySelector('button.test')!);
     expect(await screen.findByText('0 tabs would move · 1 would close')).toBeTruthy();
@@ -235,6 +243,7 @@ describe('Rules: recipe rules as locked rows (M2 T15)', () => {
   it('R56: the On toggle of a locked row writes a ruleEnabled override; back to the default deletes it', async () => {
     const p = props(withFinished(cfg(rule('a', 'a.com/*'))));
     const r = render(Rules, p);
+    await expand();
     const toggle = () => screen.getByRole('group', { name: 'Rule 3: Close OAuth callback tabs' }).querySelector('input[type="checkbox"]') as HTMLInputElement;
     expect(toggle().checked).toBe(true);
     await fireEvent.click(toggle());
@@ -268,12 +277,135 @@ describe('Rules: recipe rules as locked rows (M2 T15)', () => {
     expect(req.config.recipes.find((x: { id: string }) => x.id === 'github-prs').ruleEnabled).toEqual({ 'group-by-repo': true });
   });
 
+  it('a recipe with several rules sits under one collapsed header with counts; expanding shows its rows', async () => {
+    render(Rules, props(withFinished(cfg(rule('a', 'a.com/*')))));
+    const header = screen.getByRole('button', { name: /Finished · 3 rules · 3 on · 1 inactive/ });
+    expect(header.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByRole('group', { name: /Close OAuth callback tabs/ })).toBeNull();
+    expect(screen.getByRole('group', { name: 'Rule 2: Group GitHub tabs by repository' })).toBeTruthy(); // a 1-rule recipe: no header
+    await fireEvent.click(header);
+    expect(header.getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getAllByRole('group').map((g) => g.getAttribute('aria-label'))).toEqual([
+      'Rule 1: Rule a', 'Rule 2: Group GitHub tabs by repository', 'Rule 3: Close OAuth callback tabs',
+      'Rule 4: Close Meet tabs after the call ends', 'Rule 5: Close redirect landing tabs',
+    ]);
+  });
+
+  /** Renders Rules with onChange feeding the new config back in, as the options page does. */
+  function live(c: Config) {
+    const p = props(c);
+    const r = render(Rules, p);
+    p.onChange.mockImplementation((next: Config) => { void r.rerender({ config: next }); });
+    return p;
+  }
+  const header = () => screen.getByRole('button', { name: /Finished · \d rules/ });
+
+  it('a Move down on the first row of an open run keeps the run open', async () => {
+    live(withFinished(cfg(rule('a', 'a.com/*'))));
+    expect((header() as HTMLButtonElement).disabled).toBe(false);
+    expect(header().title).toBe('');
+    await expand();
+    const oauth = screen.getByRole('group', { name: /Close OAuth callback tabs$/ });
+    await fireEvent.click(oauth.querySelector('button[aria-label="Move down"]')!);
+    await tick();
+    expect(header().getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getAllByRole('group').map((g) => g.getAttribute('aria-label')).slice(2)).toEqual([
+      'Rule 3: Close Meet tabs after the call ends', 'Rule 4: Close OAuth callback tabs', 'Rule 5: Close redirect landing tabs',
+    ]);
+  });
+
+  it('Customize inside an open run keeps the rest of the run open', async () => {
+    live(withFinished(cfg(rule('a', 'a.com/*'))));
+    await expand();
+    const meet = screen.getByRole('group', { name: /Close Meet tabs after the call ends$/ });
+    await fireEvent.click(meet.querySelector('button.customize')!);
+    await tick();
+    // [oauth] [copy] [meet, redirect]: the fragment after the copy stays open.
+    expect(screen.getByRole('group', { name: /Close Meet tabs after the call ends$/ })).toBeTruthy();
+    expect(screen.getByRole('group', { name: /Close redirect landing tabs$/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Finished · 2 rules/ }).getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('a collapsed run with a rule whose params fail is shown open, its header counts the errors', async () => {
+    const body = {
+      recipe: 'two', version: 1, name: 'Two', description: 'two rules',
+      rules: [
+        { id: 'ok', name: 'Fine rule', enabled: true, match: { url: 'a.com/*' }, actions: [{ close: {} }] },
+        { id: 'bad', name: 'Broken rule', enabled: true, match: { url: '{params.nope}' }, actions: [{ close: {} }] },
+      ],
+    };
+    const c = cfg(rule('a', 'a.com/*'));
+    render(Rules, props({ ...c, recipes: [...c.recipes, { id: 'two', enabled: true, params: {}, source: 'user', body }] } as Config));
+    const h = screen.getByRole('button', { name: /Two · 2 rules · 2 on · 1 with errors/ }) as HTMLButtonElement;
+    expect(h.getAttribute('aria-expanded')).toBe('true');
+    expect(h.disabled).toBe(true); // forced open: collapsing would hide the error
+    expect(h.title).toMatch(/error or warning/);
+    expect(screen.getByRole('group', { name: /Broken rule$/ }).querySelector('[role="alert"]')).toBeTruthy();
+  });
+
+  it('a collapsed run with a shadowed ("Likely") rule is shown open', async () => {
+    send.mockReset();
+    send.mockImplementation(async (req: { type: string }) =>
+      (req.type === 'rules.shadowed' ? { ok: true, data: [{ key: 'finished/meet-ended', shadowedBy: 'user/a', name: 'Rule a' }] } : { ok: false, error: 'x' }));
+    render(Rules, props(withFinished(cfg(rule('a', 'a.com/*')))));
+    const note = await screen.findByRole('note');
+    expect(note.closest('.rule')!.getAttribute('data-key')).toBe('finished/meet-ended');
+    expect(header().getAttribute('aria-expanded')).toBe('true');
+    expect((header() as HTMLButtonElement).disabled).toBe(true);
+    send.mockReset();
+  });
+
+  it('row numbers count only the rows shown: a collapsed run leaves no gap', async () => {
+    const c = withFinished(cfg(rule('a', 'a.com/*'), rule('b', 'b.com/*')));
+    render(Rules, props({ ...c, order: ['user/a', 'finished/oauth-callback', 'finished/meet-ended', 'finished/redirect', 'user/b'] }));
+    expect(screen.getAllByRole('group').map((g) => g.getAttribute('aria-label'))).toEqual([
+      'Rule 1: Rule a', 'Rule 2: Rule b', 'Rule 3: Group GitHub tabs by repository',
+    ]);
+  });
+
+  it('a Meet rule whose page texts were cleared is marked inactive ("no patterns")', async () => {
+    const c = withFinished(cfg(rule('a', 'a.com/*')));
+    render(Rules, props({ ...c, recipes: c.recipes.map((r) => (r.id === 'finished' ? { ...r, params: { meetEndedTexts: [] } } : r)) }));
+    expect(screen.getByRole('button', { name: /Finished · 3 rules · 3 on · 2 inactive/ })).toBeTruthy();
+    await expand();
+    expect(screen.getByRole('group', { name: /Close Meet tabs after the call ends$/ }).textContent).toContain('Inactive · no patterns');
+  });
+
+  it('a user rule that only shares the copy id is not taken for a copy: the recipe row still offers Customize', async () => {
+    const mine = { ...rule('github-prs-group-by-repo', 'x.com/*'), name: 'My thing' };
+    render(Rules, props(cfg(mine)));
+    const row = screen.getByRole('group', { name: /Group GitHub tabs by repository$/ });
+    expect(row.querySelector('button.customize')!.textContent).toBe('Customize');
+  });
+
+  it('a recipe rule that can never match (redirect patterns left empty) is marked inactive, with a link to Recipes', async () => {
+    render(Rules, props(withFinished(cfg(rule('a', 'a.com/*')))));
+    await expand();
+    const redirect = screen.getByRole('group', { name: 'Rule 5: Close redirect landing tabs' });
+    expect(redirect.textContent).toContain('Inactive · no URL patterns');
+    expect(redirect.querySelector('a[href="#/recipes"]')).toBeTruthy();
+    expect(screen.getByRole('group', { name: 'Rule 3: Close OAuth callback tabs' }).textContent).not.toContain('Inactive');
+  });
+
+  it('a customized copy is a user row: it splits the recipe run and stays visible above its original', async () => {
+    const { customizeRule } = await import('../../src/ui/rules-model');
+    const { builtinRecipes } = await import('../../src/recipes/load');
+    const base = withFinished(cfg(rule('a', 'a.com/*')));
+    const once = customizeRule(base, 'finished/meet-ended', builtinRecipes());
+    render(Rules, props(once));
+    // OAuth alone (no header), then the copy, then Meet + redirect under a collapsed 2-rule header.
+    expect(screen.getByRole('group', { name: 'Rule 3: Close OAuth callback tabs' })).toBeTruthy();
+    expect(screen.getByRole('group', { name: 'Rule 4: Close Meet tabs after the call ends (custom)' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Finished · 2 rules/ }).getAttribute('aria-expanded')).toBe('false');
+  });
+
   it('R56: Test on a user-disabled recipe rule re-enables it in the config it sends', async () => {
     send.mockReset();
     send.mockResolvedValue({ ok: true, data: { moves: [], closes: [], groupsCreated: [], unchanged: 0, anchorsOpened: 0, dryRun: false } });
     const c = withFinished(cfg(rule('a', 'a.com/*')));
     const config = { ...c, recipes: c.recipes.map((x) => (x.id === 'finished' ? { ...x, ruleEnabled: { 'oauth-callback': false } } : x)) };
     render(Rules, props(config));
+    await expand();
     await fireEvent.click(screen.getByRole('group', { name: 'Rule 3: Close OAuth callback tabs' }).querySelector('button.test')!);
     await screen.findByText('0 tabs would move · 0 would close');
     const req = send.mock.calls.map((x) => x[0]).find((x) => x.type === 'preview.change');

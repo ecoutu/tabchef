@@ -3,13 +3,14 @@
   // (`order`), reordered by drag or Move up / Move down across both. A user rule is edited in the form (RuleFields)
   // or as YAML (RuleYaml), toggled per rule; one the form cannot show is a read-only summary with "Edit in YAML".
   // Recipe rules are locked rows: reorder, turn on/off (RecipeRef.ruleEnabled overrides, R56; saved through Save),
-  // test and Customize (copy into a user rule), never edit.
+  // test and Customize (copy into a user rule), never edit. Consecutive rules of one recipe sit under one collapsible
+  // header (collapsed while it holds 2+ rules); a rule that can never match (an empty URL list param) says so.
   import { tick } from 'svelte';
   import type { Config, TabSnap } from '../../core/types';
   import type { Rule } from '../../core/lang/types';
   import {
-    addRule, configPatternErrors, customizeRule, customizedCopy, errorsForPath, patchRuleForm, removeRule, reorder, replaceRule, ruleForm, ruleIndex,
-    ruleRows, ruleSummary, setRecipeRuleOn, type RuleForm, type RuleRow,
+    addRule, configPatternErrors, customizeRule, customizedCopy, errorsForPath, inactiveReason, patchRuleForm, recipeRuns, removeRule, reorder,
+    replaceRule, ruleForm, ruleIndex, ruleRows, ruleSummary, setRecipeRuleOn, type RecipeRun, type RuleForm, type RuleRow,
   } from '../../ui/rules-model';
   import { withRecipe } from '../../ui/recipes-model';
   import { builtinRecipes } from '../../recipes/load';
@@ -19,6 +20,7 @@
   import type { ShadowedRule } from '../../engine/messages';
   import RuleFields from './RuleFields.svelte';
   import RuleYaml from './RuleYaml.svelte';
+  import Field from './Field.svelte';
 
   let { config, tabs, dirty, saving, serverErrors, onChange, onSave }: {
     config: Config; tabs: TabSnap[]; dirty: boolean; saving: boolean; serverErrors: string[];
@@ -27,6 +29,31 @@
 
   const builtins = builtinRecipes();
   const rows = $derived(ruleRows(config, builtins));
+  const runs = $derived(recipeRuns(rows));
+  /**
+   * Recipes whose runs the user expanded, by recipe id: every run (fragment) of a recipe shares one state, so a
+   * reorder or Customize that splits or re-heads a run keeps it open. A run of one rule is always shown.
+   */
+  let openRuns = $state<Record<string, boolean>>({});
+  const membersOf = (run: RecipeRun): RuleRow[] => rows.slice(run.start, run.start + run.keys.length);
+  /** A member has a param error or a shadowed ("Likely") warning: the run is shown open, so it is not hidden. */
+  const runNeedsAttention = (run: RecipeRun): boolean => membersOf(run).some((r) => (r.kind === 'recipe' && r.error !== undefined) || shadowOf(r.key) !== undefined);
+  const runOpen = (run: RecipeRun): boolean => run.keys.length < 2 || openRuns[run.recipeId] === true || runNeedsAttention(run);
+  /** The header text of a run: its recipe, how many rules, how many on, how many can never match or have errors. */
+  function runSummary(run: RecipeRun): string {
+    const members = membersOf(run).filter((r) => r.kind === 'recipe');
+    const on = members.filter((r) => r.on).length;
+    const inactive = members.filter((r) => r.on && inactiveReason(r.rule)).length;
+    const errors = members.filter((r) => r.error !== undefined).length;
+    return `🔒 ${members[0]?.recipeName ?? run.recipeId} · ${members.length} rules · ${on} on${inactive ? ` · ${inactive} inactive` : ''}${errors ? ` · ${errors} with errors` : ''}`;
+  }
+  /** "Rule N" labels count only the rows shown, so a collapsed run leaves no gap in the numbering. */
+  const shownNumber = $derived.by(() => {
+    const out: Record<string, number> = {};
+    let n = 0;
+    rows.forEach((r, i) => { const run = runs.get(i); if (!run || runOpen(run)) out[r.key] = ++n; });
+    return out;
+  });
   const hasErrors = $derived(configPatternErrors(config).length > 0);
   let dragFrom = $state<string | null>(null);
   /** Rules shown as YAML (by id); every other user rule shows its form, or its summary when the form cannot. */
@@ -60,7 +87,7 @@
   async function customize(key: string): Promise<void> {
     onChange(customizeRule(config, key, builtins));
     await tick();
-    const copy = customizedCopy(config, key);
+    const copy = customizedCopy(config, key, builtins);
     if (copy) focusRule(`user/${copy.id}`);
   }
   function remove(id: string): void { delete yaml[id]; delete yamlInvalid[id]; onChange(removeRule(config, id)); }
@@ -105,7 +132,19 @@
   {#each rows as row, i (row.key)}
     {@const form = row.kind === 'user' ? ruleForm(row.rule) : null}
     {@const asYaml = row.kind === 'user' && (yaml[row.rule.id] ?? false)}
-    <div class="rule" data-key={row.key} tabindex="-1" class:dragging={dragFrom === row.key} class:locked={row.kind === 'recipe'} role="group" aria-label={`Rule ${i + 1}: ${row.rule.name}`}
+    {@const run = runs.get(i)}
+    {#if run && run.start === i && run.keys.length > 1}
+      <div class="run">
+        <button type="button" class="run-toggle" aria-expanded={runOpen(run)} disabled={runNeedsAttention(run)}
+          title={runNeedsAttention(run) ? 'Kept open while a rule here has an error or warning' : undefined}
+          onclick={() => (openRuns[run.recipeId] = !runOpen(run))}>
+          <span aria-hidden="true">{runOpen(run) ? '▾' : '▸'}</span> {runSummary(run)}
+        </button>
+        <a href="#/recipes">Recipe settings</a>
+      </div>
+    {/if}
+    {#if !run || runOpen(run)}
+    <div class="rule" data-key={row.key} tabindex="-1" class:dragging={dragFrom === row.key} class:locked={row.kind === 'recipe'} role="group" aria-label={`Rule ${shownNumber[row.key]}: ${row.rule.name}`}
       ondragover={(e) => { if (dragFrom !== null) e.preventDefault(); }}
       ondrop={(e) => { e.preventDefault(); if (dragFrom !== null) move(dragFrom, i); dragFrom = null; }}>
       <div class="bar">
@@ -113,7 +152,9 @@
           ondragstart={(e) => { dragFrom = row.key; if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', row.key); } }}
           ondragend={() => (dragFrom = null)}>⠿</span>
         {#if row.kind === 'user'}
-          <label class="inline"><input type="checkbox" checked={row.rule.enabled} onchange={(e) => setEnabled(row.rule, e.currentTarget.checked)} /> Enabled</label>
+          <Field label="Enabled" inline help="Off: the rule is kept but does nothing until you turn it back on. Saved with Save.">
+            <input type="checkbox" checked={row.rule.enabled} onchange={(e) => setEnabled(row.rule, e.currentTarget.checked)} />
+          </Field>
           {#if form && !asYaml}
             <input class="name" aria-label="Rule name" value={form.name} oninput={(e) => patch(row.rule.id, { name: e.currentTarget.value })} />
           {:else}
@@ -121,10 +162,14 @@
           {/if}
         {:else}
           <span class="chip" title="Recipe rules can be moved, turned on or off, tested and customized, not edited">🔒 Locked · {row.recipeName}</span>
-          <label class="inline" title="Turn this recipe rule on or off">
-            <input type="checkbox" checked={row.on} onchange={(e) => onChange(setRecipeRuleOn(config, row.key, e.currentTarget.checked, builtins))} /> On
-          </label>
+          <Field label="On" helpLabel="On (this recipe rule)" inline help="Turn this recipe rule on or off without turning off its recipe. Saved with Save.">
+            <input type="checkbox" checked={row.on} onchange={(e) => onChange(setRecipeRuleOn(config, row.key, e.currentTarget.checked, builtins))} />
+          </Field>
           <span class="name">{row.rule.name}</span>
+          {#if inactiveReason(row.rule)}
+            <span class="chip inactive" title="This rule can never match until its recipe settings give it patterns">Inactive · {inactiveReason(row.rule)}</span>
+            <a href="#/recipes">Add them in Recipes</a>
+          {/if}
         {/if}
         <button type="button" class="test" onclick={() => test(row)}>Test against my open tabs</button>
         {#if testText(row)}<span class="count" role="status">{testText(row)}</span>{/if}
@@ -135,7 +180,7 @@
             <button type="button" onclick={() => (yaml[row.rule.id] = true)}>{form ? 'YAML' : 'Edit in YAML'}</button>
           {/if}
         {:else}
-          {@const copy = customizedCopy(config, row.key)}
+          {@const copy = customizedCopy(config, row.key, builtins)}
           {#if copy}
             <button type="button" class="customize" title="This rule already has a customized copy: go to it" onclick={() => focusRule(`user/${copy.id}`)}>Edit copy</button>
           {:else}
@@ -165,6 +210,7 @@
         {#each errorsForPath(serverErrors, `/rules/${ruleIndex(config, row.rule.id)}`) as m (m)}<p class="err" role="alert">{m}</p>{/each}
       {/if}
     </div>
+    {/if}
   {:else}
     <p class="empty">No rules yet.</p>
   {/each}
@@ -186,11 +232,16 @@
   .handle { cursor: grab; user-select: none; font-size: 18px; color: var(--muted); }
   .name { flex: 1; min-width: 140px; }
   .count { color: var(--muted); font-size: 12px; }
-  .inline { display: inline-flex; align-items: center; gap: 4px; }
   .actions { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
   .err { color: var(--danger); font-size: 12px; margin: 2px 0 0; }
   .warn { color: var(--muted); font-size: 12px; margin: 0; }
   .chip { display: inline-block; border: 1px solid var(--border); background: var(--hover); border-radius: 8px; padding: 0 6px; font-size: 11px; }
   .empty { color: var(--muted); }
+  .run { display: flex; align-items: center; gap: 10px; margin: 0 0 10px; font-size: 13px; }
+  .run-toggle { background: none; border: 1px dashed var(--border); border-radius: 8px; padding: 6px 10px; color: var(--text); cursor: pointer; text-align: left; flex: 1; }
+  .run-toggle:hover:not(:disabled) { background: var(--hover); }
+  .run-toggle:disabled { cursor: default; }
+  .run a, .bar a { font-size: 12px; }
+  .chip.inactive { color: var(--muted); border-style: dashed; }
   .summary { margin: 0; padding-left: 18px; font-size: 12px; color: var(--muted); }
 </style>

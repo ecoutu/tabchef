@@ -81,6 +81,23 @@ const card = async (name: string) => (await screen.findByRole('region', { name }
 const sent = (type: string) => send.mock.calls.map((c) => c[0]).filter((r) => r.type === type);
 
 describe('Recipes: cards', () => {
+  it('a rule that can never match (redirect patterns left empty) reads Inactive, not Active', async () => {
+    items = [finishedItem({ enabled: true }, true)];
+    const saved = { ...defaultConfig(), recipes: defaultConfig().recipes.map((r) => (r.id === 'finished' ? { ...r, enabled: true } : r)) };
+    render(Recipes, props({ saved }));
+    const c = await card('Finished');
+    expect(c.querySelector('[data-rule="finished/redirect"]')!.textContent).toContain('Inactive: no URL patterns');
+    expect(c.querySelector('[data-rule="finished/oauth-callback"]')!.textContent).toContain('Active');
+  });
+
+  it('a Meet rule whose page texts were cleared reads Inactive ("no patterns"), not Active', async () => {
+    items = [finishedItem({ enabled: true }, true)];
+    const saved = { ...defaultConfig(), recipes: defaultConfig().recipes.map((r) => (r.id === 'finished' ? { ...r, enabled: true, params: { meetEndedTexts: [] } } : r)) };
+    render(Recipes, props({ saved }));
+    const c = await card('Finished');
+    expect(c.querySelector('[data-rule="finished/meet-ended"]')!.textContent).toContain('Inactive: no patterns');
+  });
+
   it('every param of the built-in Finished recipe has a help tip from its ParamDef', async () => {
     const { builtinRecipes } = await import('../../src/recipes/load');
     const defs = builtinRecipes().finished!.params!;
@@ -114,7 +131,7 @@ describe('Recipes: cards', () => {
     expect(rows).toEqual([
       'Close OAuth callback tabs: Active',
       `Close Meet tabs after the call ends: ${PAUSED}`,
-      'Close redirect landing tabs: Active',
+      'Close redirect landing tabs: Inactive: no URL patterns',
     ]);
   });
 
