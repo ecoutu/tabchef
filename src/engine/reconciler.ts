@@ -170,7 +170,7 @@ export class Reconciler {
         // Locked tabs and anchors still at their anchor URL (R21: strict would ungroup an anchor outside the rule).
         // R49 (per-rule dry run only): a dry-run rule's existing group is left alone, by both passes.
         const extra = [...(this.opts.extraLeaveAlone?.() ?? []), ...anchorLeaveAlone(st.anchors, snap, program),
-          ...(program.dryRun ? [] : dryRunGroupTabs(snap, program))];
+          ...(program.dryRun ? [] : dryRunGroupTabs(snap, program, this.now(), this.opts.pageFacts))];
         return extra.length ? { ...st, leaveAlone: new Set([...st.leaveAlone, ...extra]) } : st;
       };
       // Global dry run (R50): engine-initiated changes are only logged. User-initiated actions (popup close / close-all,

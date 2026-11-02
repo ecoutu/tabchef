@@ -145,23 +145,35 @@ export function managedGroupIds(snap: Snapshot, p: Program, ctx: ManagedCtx, pre
 }
 
 /**
- * Ruling R49: tabs sitting in a titled group (normal windows) whose title some dry-run rule's group template produces
- * and no live rule's does. The engine merges them into leaveAlone for per-rule dry run, so switching a rule to dry-run
- * never ungroups, moves or would-ungroups its existing group's tabs; new or ungrouped tabs still fall through (R48).
- * A title a live rule also produces stays that rule's (a dry-run rule never makes a live strict group non-strict).
+ * Ruling R49: tabs the engine merges into leaveAlone for per-rule dry run, so switching a rule to dry-run never
+ * ungroups, moves or would-ungroups its existing group's tabs; new or ungrouped tabs still fall through (R48).
+ * - Every tab of a titled group (normal windows) whose title some dry-run rule's group template produces and no live
+ *   rule's does.
+ * - In a group whose title a live rule also produces, the tabs whose winner over the FULL Program is a dry-run rule
+ *   targeting that title. Other tabs there stay the live rule's: a dry-run rule never makes a live strict group
+ *   non-strict, so a tab matching neither rule is still strict-ungrouped.
  */
-export function dryRunGroupTabs(snap: Snapshot, p: Program): number[] {
+export function dryRunGroupTabs(snap: Snapshot, p: Program, now: number = Date.now(), page?: PageLookup): number[] {
   const templates = (dry: boolean) => p.rules.filter((r) => r.dryRun === dry)
     .flatMap((r) => r.rule.actions.flatMap((a) => ('group' in a ? [a.group.title] : [])));
   const dry = templates(true);
   if (dry.length === 0) return [];
   const live = templates(false);
   const normal = new Set(snap.windows.filter((w) => w.type === 'normal').map((w) => w.id));
-  const held = new Set(snap.groups
-    .filter((g) => normal.has(g.windowId) && g.title !== ''
-      && dry.some((t) => templateProduces(t, g.title)) && !live.some((t) => templateProduces(t, g.title)))
-    .map((g) => g.id));
-  return held.size ? snap.tabs.filter((t) => held.has(t.groupId)).map((t) => t.id) : [];
+  const byId = new Map(snap.tabs.map((t) => [t.id, t]));
+  const out: number[] = [];
+  for (const g of snap.groups) {
+    if (!normal.has(g.windowId) || g.title === '' || !dry.some((t) => templateProduces(t, g.title))) continue;
+    const members = snap.tabs.filter((t) => t.groupId === g.id);
+    if (!live.some((t) => templateProduces(t, g.title))) { out.push(...members.map((t) => t.id)); continue; }
+    for (const t of members) {
+      const opener = t.openerTabId !== undefined ? byId.get(t.openerTabId) : undefined;
+      const pf = page?.get(t.id);
+      const { target } = evaluateGroup(t, p, { ...(opener && { opener }), groupTitle: g.title, ...(pf && { page: pf }) }, now);
+      if (target?.dryRun && target.title === g.title) out.push(t.id);
+    }
+  }
+  return out;
 }
 
 /** Options for syncCreationOrder's deletion of numbers whose group is not live. */

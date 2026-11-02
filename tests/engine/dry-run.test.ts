@@ -164,11 +164,32 @@ describe('dry run: grouping', () => {
     ]);
   });
 
-  it('a dry-run group rule opens no anchors', async () => {
-    const w = reconciler(cfgOf([rule('a', 'a.com/*', [group('A', { anchors: ['https://a.com/home'] })], { dryRun: true })]));
+  it('a dry-run group rule with anchors outranking a live rule: the live group is made, the dry-run anchors are not opened', async () => {
+    const w = reconciler(cfgOf([
+      rule('a', 'a.com/*', [group('A', { anchors: ['https://a.com/home'] })], { dryRun: true }),
+      rule('b', 'a.com/*', [group('B')]),
+    ]));
     w.port.addTab(tab(1, 'https://a.com/1'));
     await w.r.flush();
-    expect(mutations(w.port)).toEqual([]);
+    expect(groupOf(w.port, 1)).toBe('B');
+    expect(w.port.calls.filter((c) => c.method === 'createTab')).toEqual([]);
+  });
+
+  it('R49 shared title: a tab in X whose full-program winner is dry-run A (targeting X) stays, though live B also makes X', async () => {
+    const port = new FakeBrowserPort();
+    port.addWindow(1);
+    const cfg = { c: cfgOf([rule('a', 'a.com/*', [group('X')]), rule('b', 'b.com/*', [group('X')])]) };
+    const r = new Reconciler(port, async () => programOf(cfg.c));
+    port.addTab(tab(1, 'https://a.com/1'));
+    port.addTab(tab(2, 'https://b.com/1'));
+    await r.flush();
+    expect([groupOf(port, 1), groupOf(port, 2)]).toEqual(['X', 'X']);
+    cfg.c = cfgOf([rule('a', 'a.com/*', [group('X')], { dryRun: true }), rule('b', 'b.com/*', [group('X')])]);
+    const before = port.calls.length;
+    await r.flush();
+    await r.flush();
+    expect(port.calls.slice(before).filter((c) => MUTATING.has(c.method))).toEqual([]);
+    expect([groupOf(port, 1), groupOf(port, 2)]).toEqual(['X', 'X']);
   });
 });
 
