@@ -34,6 +34,12 @@ export interface EvalResult {
   matched: string[];
   /** Some rule's outcome depends on page facts (pageText or a selector extract) that `f.page` does not have yet. */
   needsPage: boolean;
+  /**
+   * The group outcome itself may change once page facts arrive: the winning group rule rendered without a selector
+   * extract, or a higher-priority rule with a group action could not be decided without the page. The planner holds
+   * such a tab while its facts are on their way (M2 T7).
+   */
+  groupNeedsPage: boolean;
 }
 
 const regexCache = new Map<string, RegExp | null>();
@@ -84,16 +90,24 @@ function afterMs(after: string | undefined): number {
 
 /** Evaluate tab facts `f` at time `now` (ms) against program `p`. */
 export function evaluateTab(p: Program, f: TabFacts, now: number): EvalResult {
-  const out: EvalResult = { views: [], matched: [], needsPage: false };
+  const out: EvalResult = { views: [], matched: [], needsPage: false, groupNeedsPage: false };
   const url = f.tab.pendingUrl ? f.tab.pendingUrl : f.tab.url;
   const groupable = !f.tab.pinned && !isExemptUrl(url);
   for (const r of p.rules) {
     const c = evalCond(r.rule.match, f, now);
-    if (c.needsPage) out.needsPage = true;
+    // Only a rule ahead of the group winner can still change the group outcome.
+    const decidesGroup = groupable && !out.group && r.rule.actions.some((a) => 'group' in a);
+    if (c.needsPage) {
+      out.needsPage = true;
+      if (decidesGroup) out.groupNeedsPage = true;
+    }
     if (!c.ok) continue;
     out.matched.push(r.key);
     const { vars, needsPage } = varsOf(r, c.captures, f);
-    if (needsPage) out.needsPage = true;
+    if (needsPage) {
+      out.needsPage = true;
+      if (decidesGroup) out.groupNeedsPage = true;
+    }
     for (const a of r.rule.actions) {
       if ('group' in a) {
         if (out.group || !groupable) continue;

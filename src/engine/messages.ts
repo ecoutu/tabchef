@@ -9,7 +9,9 @@ import type { RecentlyClosed, RecentlyClosedItem } from '../core/safety/recently
 import type { WhyEntry, WhyLog } from '../core/safety/why-log';
 import type { BrowserPort } from '../platform/browser-port';
 import type { ConfigStore, Backup } from '../storage/config-store';
+import type { Program } from '../core/lang/types';
 import type { PendingAsk } from './ask';
+import type { PageFacts, WatchSelector } from './page-facts';
 import type { PauseDuration, SafetyService } from './safety';
 
 /** Messages between the background worker and the dedupe banner content script. */
@@ -46,10 +48,35 @@ export function isUndoChoiceMessage(m: unknown): m is UndoChoiceMessage {
   return x.type === 'banner.choice' && x.choice === 'undo' && typeof x.entryId === 'string';
 }
 
-/** Content script -> worker: the user typed into a form field on this page (best effort, once per page). */
-export type FormEditedMessage = { type: 'tab.formEdited' };
-export function isFormEditedMessage(m: unknown): m is FormEditedMessage {
-  return typeof m === 'object' && m !== null && (m as Record<string, unknown>).type === 'tab.formEdited';
+// ---- watch content script <-> worker (M2 T7, ruling R12: a content-script channel, never createHandler) ----
+
+/** Watch -> worker on load (and on a back/forward-cache restore): asks for its config, re-reports formEdited (D34). */
+export type WatchHelloMessage = { type: 'watch.hello'; formEdited: boolean };
+/** The worker's answer to watch.hello: what to look for on this page (PageFacts.watchConfigFor). */
+export type WatchConfigMessage = { type: 'watch.config'; needles: string[]; selectors: WatchSelector[] };
+/** Watch -> worker when the facts change. `texts` holds only the matched needles, never the page text (privacy). */
+export type PageFactsMessage = { type: 'page.facts'; texts: string[]; extracts: Record<string, string>; formEdited: boolean };
+
+/** Bounds on what a page.facts message may carry (the watch never sends more; anything larger is not ours). */
+export const MAX_FACT_ITEMS = 200;
+export const MAX_FACT_TEXT = 500;
+export const MAX_EXTRACT_VALUE = 256;
+
+export function isWatchHello(m: unknown): m is WatchHelloMessage {
+  if (typeof m !== 'object' || m === null) return false;
+  const x = m as Record<string, unknown>;
+  return x.type === 'watch.hello' && typeof x.formEdited === 'boolean';
+}
+
+export function isPageFactsMessage(m: unknown): m is PageFactsMessage {
+  if (typeof m !== 'object' || m === null) return false;
+  const x = m as Record<string, unknown>;
+  if (x.type !== 'page.facts' || typeof x.formEdited !== 'boolean' || !Array.isArray(x.texts)) return false;
+  if (x.texts.length > MAX_FACT_ITEMS || !x.texts.every((t) => typeof t === 'string' && t.length <= MAX_FACT_TEXT)) return false;
+  if (typeof x.extracts !== 'object' || x.extracts === null || Array.isArray(x.extracts)) return false;
+  const vals = Object.entries(x.extracts as Record<string, unknown>);
+  return vals.length <= MAX_FACT_ITEMS
+    && vals.every(([k, v]) => k.length <= MAX_FACT_TEXT && typeof v === 'string' && v.length <= MAX_EXTRACT_VALUE);
 }
 
 /** Undo toast copy. */
@@ -194,7 +221,7 @@ export interface HandlerDeps {
   now?: () => number;
 }
 
-export interface MessageSender { id?: string; url?: string; tab?: { id?: number; url?: string } }
+export interface MessageSender { id?: string; url?: string; tab?: { id?: number; url?: string }; frameId?: number }
 
 /** True for the extension's own pages (popup, options, side panel); false for content scripts and other extensions. */
 export function isExtensionPage(sender: MessageSender, d: Pick<HandlerDeps, 'runtimeId' | 'extensionOrigin'>): boolean {
@@ -238,15 +265,25 @@ export function createDebounce(fn: () => void, waitMs: number, maxWaitMs: number
 export interface OnMessageDeps {
   runtimeId: string;
   handleRequest: (req: unknown, sender: MessageSender) => Promise<Response>;
-  /** Handles banner / form-edit messages from content scripts; returns true when the message was one of them. */
+  /** Handles banner messages from content scripts; returns true when the message was one of them. */
   handleBanner: (msg: unknown, sender: MessageSender) => boolean;
+  /** Content-script requests that need an answer (createContentHandler); undefined when the message is not one. */
+  handleContent?: (msg: unknown, sender: MessageSender) => Promise<unknown> | undefined;
 }
 
-/** runtime.onMessage listener: banner messages stay fire-and-forget, everything else is answered via sendResponse. */
+/**
+ * runtime.onMessage listener: banner messages stay fire-and-forget, content-script requests (watch) are answered by
+ * handleContent, everything else by handleRequest (extension pages only), all via sendResponse.
+ */
 export function createOnMessage(d: OnMessageDeps) {
-  return (msg: unknown, sender: MessageSender, sendResponse: (r: Response) => void): boolean | undefined => {
+  return (msg: unknown, sender: MessageSender, sendResponse: (r: unknown) => void): boolean | undefined => {
     if (sender.id !== d.runtimeId) return undefined;
     if (d.handleBanner(msg, sender)) return undefined;
+    const content = d.handleContent?.(msg, sender);
+    if (content) {
+      content.then(sendResponse, (e: unknown) => sendResponse({ ok: false, error: String(e) }));
+      return true;
+    }
     d.handleRequest(msg, sender).then(sendResponse, (e: unknown) => sendResponse({ ok: false, error: String(e) }));
     return true;
   };
@@ -378,5 +415,52 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
     } catch (e) {
       return fail(e instanceof Error ? e.message : String(e));
     }
+  };
+}
+
+export interface ContentDeps {
+  runtimeId: string;
+  /** e.g. `chrome-extension://<id>` */
+  extensionOrigin: string;
+  getProgram: () => Promise<Program>;
+  pageFacts: Pick<PageFacts, 'set' | 'watchConfigFor'>;
+  safety: Pick<SafetyService, 'markFormEdited' | 'clearFormEdited'>;
+  /** Reconciler.schedule. */
+  schedule: (reason: string) => void;
+  /** New facts for a tab (CloseExecutor.onFacts, M2 T9); a no-op until then. */
+  onFacts?: (tabId: number) => void;
+}
+
+/** A content script in a real tab's top frame: never an extension page (those use createHandler). */
+export function isTabContentScript(sender: MessageSender, d: Pick<ContentDeps, 'runtimeId' | 'extensionOrigin'>): boolean {
+  if (sender.id !== d.runtimeId || typeof sender.tab?.id !== 'number') return false;
+  if (sender.frameId !== undefined && sender.frameId !== 0) return false;
+  return !isExtensionPage(sender, d);
+}
+
+/**
+ * The worker side of the watch content script (ruling R12): `watch.hello` is answered with the pulled watch config,
+ * `page.facts` stores the facts and re-plans. Returns undefined for any other message.
+ */
+export function createContentHandler(d: ContentDeps): (msg: unknown, sender: MessageSender) => Promise<unknown> | undefined {
+  const forbidden = { ok: false, error: 'forbidden' };
+  return (msg, sender) => {
+    const hello = isWatchHello(msg);
+    if (!hello && !isPageFactsMessage(msg)) return undefined;
+    if (!isTabContentScript(sender, d)) return Promise.resolve(forbidden);
+    const tabId = sender.tab!.id!;
+    const url = sender.tab?.url ?? sender.url ?? '';
+    if (hello) {
+      const m = msg as WatchHelloMessage;
+      if (m.formEdited) d.safety.markFormEdited(tabId, sender.tab?.url);
+      return d.getProgram().then((p): WatchConfigMessage => ({ type: 'watch.config', ...d.pageFacts.watchConfigFor(url, p) }));
+    }
+    const m = msg as PageFactsMessage;
+    d.pageFacts.set(tabId, { texts: [...m.texts], extracts: { ...m.extracts }, formEdited: m.formEdited });
+    if (m.formEdited) d.safety.markFormEdited(tabId, sender.tab?.url);
+    else d.safety.clearFormEdited(tabId);
+    d.schedule('pageFacts');
+    d.onFacts?.(tabId);
+    return Promise.resolve({ ok: true });
   };
 }

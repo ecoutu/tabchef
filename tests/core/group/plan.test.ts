@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { managedGroupIds, planGroups, syncCreationOrder, type PlanContext } from '../../../src/core/group/plan';
+import { managedGroupIds, planGroups, planTargets, syncCreationOrder, type PlanContext } from '../../../src/core/group/plan';
 import { FakeBrowserPort } from '../../../src/platform/fake-port';
 import type { Config, GroupColor, GroupRule, Op, Snapshot, TabSnap } from '../../../src/core/types';
 import type { GroupAction, Program, Rule } from '../../../src/core/lang/types';
@@ -614,6 +614,39 @@ describe('planGroups: compiled-program inputs (M2 T6)', () => {
     const p = v2([gr('a', 'a.com/*', 'A', { dryRun: true }), gr('b', 'b.com/*', 'B', { dryRun: true })]);
     expect(planGroups(snap(f), p, ctx({ managedTitles: new Set(['A']) }))).toEqual([]);
     expect(planGroups(snap(f), v2([gr('a', 'a.com/*', 'A')], { dryRun: true }), ctx({ managedTitles: new Set(['A']) }))).toEqual([]);
+  });
+
+  it('holds a tab whose group outcome waits on page facts that are on their way (T6 carry, M2 T7)', () => {
+    const f = world();
+    f.addTab(tab(2, B, { groupId: 10 }));
+    f.addTab(tab(1, A));
+    f.addGroup({ id: 10, windowId: 1, title: 'PR feat/x', color: 'blue', collapsed: false });
+    const p = v2([
+      gr('pr', '*', 'PR {branch}', { extract: { branch: { selector: '.head-ref' } } }),
+    ]);
+    const awaiting = new Set([1, 2]);
+    const page = { get: (id: number) => (id === 2 ? { texts: [], extracts: { 'user/pr.branch': 'feat/x' }, formEdited: false } : undefined), awaiting: (id: number) => awaiting.has(id) };
+    const c = ctx({ managedTitles: new Set(['PR feat/x']) });
+    // Tab 1 has no facts yet and they are expected: held (no partial "PR " group). Tab 2 has facts: already right.
+    expect(planGroups(snap(f), p, c, planTargets(snap(f), p, c, 0, page))).toEqual([]);
+    // Once the hold expires (no facts coming), the partial title is used, as before.
+    awaiting.clear();
+    expect(planGroups(snap(f), p, c, planTargets(snap(f), p, c, 0, page))).toEqual([
+      { kind: 'group', tabIds: [1], windowId: 1, title: 'PR ', color: 'blue', collapsed: false, ruleId: 'user/pr' },
+    ]);
+  });
+
+  it('holds a grouped tab whose higher-priority pageText rule is unresolved, instead of strict-ungrouping it', () => {
+    const f = world();
+    f.addTab(tab(1, A, { groupId: 10 }));
+    f.addGroup({ id: 10, windowId: 1, title: 'Done', color: 'blue', collapsed: false });
+    const p = v2([
+      { id: 'done', name: 'done', enabled: true, match: { all: [{ url: 'a.com/*' }, { pageText: 'finished' }] }, actions: [{ group: { title: 'Done', color: 'blue' } }] },
+    ]);
+    const c = ctx({ managedTitles: new Set(['Done']) });
+    const page = { get: () => undefined, awaiting: () => true };
+    expect(planGroups(snap(f), p, c, planTargets(snap(f), p, c, 0, page))).toEqual([]);
+    expect(planGroups(snap(f), p, c, planTargets(snap(f), p, c, 0))).toEqual([{ kind: 'ungroup', tabIds: [1], ruleId: 'user/done' }]);
   });
 
   it('strictness of a group no tab targets comes from the program rule whose title template produces it', () => {

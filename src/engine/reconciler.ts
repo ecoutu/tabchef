@@ -1,4 +1,4 @@
-import { planGroups, planTargets, syncCreationOrder, type PlanContext, type Targets } from '../core/group/plan';
+import { planGroups, planTargets, syncCreationOrder, type PageLookup, type PlanContext, type Targets } from '../core/group/plan';
 import type { Op, Snapshot } from '../core/types';
 import type { Program } from '../core/lang/types';
 import type { BrowserPort } from '../platform/browser-port';
@@ -18,6 +18,8 @@ export interface ReconcilerOptions {
   beforeRun?: () => Promise<void>;
   /** Tab ids (e.g. locked tabs) merged into the planner's leaveAlone at plan time; never persisted. */
   extraLeaveAlone?: () => Iterable<number>;
+  /** Page facts per tab (background PageFacts, M2 T7): page conditions and selector extracts, and the page hold. */
+  pageFacts?: PageLookup;
   now?: () => number;
   /** Console-level warnings (a rule whose color renders outside Chrome's 9 colors). Default: console.warn. */
   warn?: (message: string) => void;
@@ -155,7 +157,7 @@ export class Reconciler {
         const snap = await this.port.snapshot();
         const extra = this.opts.extraLeaveAlone?.();
         const ctx: PlanContext = extra ? { ...st, leaveAlone: new Set([...st.leaveAlone, ...extra]) } : st;
-        const pre = planTargets(snap, program, ctx, this.now()); // once per pass, shared by tracking and planning
+        const pre = planTargets(snap, program, ctx, this.now(), this.opts.pageFacts); // once per pass, shared by tracking and planning
         this.warnInvalidColors(pre);
         this.track(snap, st, pre, pass === 0);
         const ops = planGroups(snap, program, ctx, pre);

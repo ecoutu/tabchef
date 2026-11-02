@@ -309,6 +309,20 @@ describe('SafetyService', () => {
       w.svc.onTabSeen({ id: 1, url: 'https://x.com/', windowId: 1 });
       expect(w.svc.isFormEdited(1)).toBe(false);
     });
+    it('clearFormEdited drops the flag (a form submit)', () => {
+      const w = setup();
+      w.svc.markFormEdited(1, PR);
+      w.svc.clearFormEdited(1);
+      expect(w.svc.isFormEdited(1)).toBe(false);
+    });
+    it('falls back to the durable page facts (survives a worker restart, D34)', () => {
+      const edited = new Set([3]);
+      const w = setup({ pageFormEdited: (id) => edited.has(id) });
+      const t = w.port.addTab(tab(3, PR));
+      expect(w.svc.isFormEdited(3)).toBe(true);
+      expect(w.svc.isProtected(t)).toBe(true);
+      expect(w.svc.isFormEdited(4)).toBe(false);
+    });
   });
 
   describe('undo', () => {

@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { configRev, badgeCount, createDebounce, createHandler, createOnMessage, type HandlerDeps } from '../../src/engine/messages';
+import {
+  configRev, badgeCount, createContentHandler, createDebounce, createHandler, createOnMessage, isPageFactsMessage, isWatchHello,
+  type ContentDeps, type HandlerDeps,
+} from '../../src/engine/messages';
+import { PageFacts } from '../../src/engine/page-facts';
 import { defaultConfig } from '../../src/core/config/defaults';
 import { FakeBrowserPort } from '../../src/platform/fake-port';
 import type { Config } from '../../src/core/types';
@@ -242,6 +246,87 @@ describe('createOnMessage', () => {
     const { l, handleRequest } = mk(false);
     expect(l({}, { id: 'other' }, vi.fn())).toBeUndefined();
     expect(handleRequest).not.toHaveBeenCalled();
+  });
+});
+
+describe('createOnMessage: content channel (R12)', () => {
+  it('answers a content message through handleContent and never reaches handleRequest', async () => {
+    const handleRequest = vi.fn(async () => ({ ok: true as const, data: 1 }));
+    const handleContent = vi.fn((m: unknown) => ((m as { type?: string }).type === 'watch.hello' ? Promise.resolve({ type: 'watch.config' }) : undefined));
+    const l = createOnMessage({ runtimeId: 'ext', handleRequest, handleBanner: () => false, handleContent });
+    const send = vi.fn();
+    expect(l({ type: 'watch.hello', formEdited: false }, content, send)).toBe(true);
+    await vi.waitFor(() => expect(send).toHaveBeenCalledWith({ type: 'watch.config' }));
+    expect(handleRequest).not.toHaveBeenCalled();
+    expect(l({ type: 'x' }, ui, vi.fn())).toBe(true);
+    expect(handleRequest).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('createContentHandler', () => {
+  const PAGE = 'https://meet.google.com/abc';
+  const tabSender = { id: 'ext', url: PAGE, tab: { id: 7, url: PAGE }, frameId: 0 };
+  function mk() {
+    const program = programOf({
+      ...defaultConfig(),
+      rules: [{ id: 'm', name: 'm', enabled: true, match: { all: [{ url: 'meet.google.com/*' }, { pageText: 'Call ended' }] }, actions: [{ close: {} }] }],
+      order: ['user/m'],
+    });
+    const pageFacts = new PageFacts({ session: { get: async () => undefined, set: async () => {} } });
+    const safety = { markFormEdited: vi.fn(), clearFormEdited: vi.fn() };
+    const schedule = vi.fn();
+    const onFacts = vi.fn();
+    const d: ContentDeps = { runtimeId: 'ext', extensionOrigin: 'chrome-extension://ext', getProgram: async () => program, pageFacts, safety, schedule, onFacts };
+    return { h: createContentHandler(d), pageFacts, safety, schedule, onFacts };
+  }
+  const facts = { type: 'page.facts', texts: ['Call ended'], extracts: { 'user/m.x': 'v' }, formEdited: true };
+
+  it('type guards', () => {
+    expect(isWatchHello({ type: 'watch.hello', formEdited: false })).toBe(true);
+    expect(isWatchHello({ type: 'watch.hello' })).toBe(false);
+    expect(isPageFactsMessage(facts)).toBe(true);
+    expect(isPageFactsMessage({ ...facts, texts: [1] })).toBe(false);
+    expect(isPageFactsMessage({ ...facts, extracts: { a: 1 } })).toBe(false);
+    expect(isPageFactsMessage({ ...facts, extracts: { a: 'x'.repeat(257) } })).toBe(false);
+    expect(isPageFactsMessage({ ...facts, texts: Array(201).fill('a') })).toBe(false);
+  });
+
+  it('ignores other message types (returns undefined)', () => {
+    expect(mk().h({ type: 'config.get' }, tabSender)).toBeUndefined();
+  });
+
+  it('watch.hello: answers the pulled watch config for the sender tab URL and re-reports formEdited (D34)', async () => {
+    const { h, safety } = mk();
+    expect(await h({ type: 'watch.hello', formEdited: true }, tabSender)).toEqual({ type: 'watch.config', needles: ['Call ended'], selectors: [] });
+    expect(safety.markFormEdited).toHaveBeenCalledWith(7, PAGE);
+    expect(await h({ type: 'watch.hello', formEdited: false }, tabSender)).toMatchObject({ type: 'watch.config' });
+    expect(safety.markFormEdited).toHaveBeenCalledTimes(1);
+  });
+
+  it('page.facts: stores the facts, feeds SafetyService, schedules a reconcile and calls the onFacts hook', async () => {
+    const { h, pageFacts, safety, schedule, onFacts } = mk();
+    await h(facts, tabSender);
+    expect(pageFacts.get(7)).toEqual({ texts: ['Call ended'], extracts: { 'user/m.x': 'v' }, formEdited: true });
+    expect(safety.markFormEdited).toHaveBeenCalledWith(7, PAGE);
+    expect(schedule).toHaveBeenCalledWith('pageFacts');
+    expect(onFacts).toHaveBeenCalledWith(7);
+    await h({ ...facts, formEdited: false }, tabSender);
+    expect(safety.clearFormEdited).toHaveBeenCalledWith(7);
+  });
+
+  it('accepts only a content script in a real tab, top frame (never an extension page or a sub-frame)', async () => {
+    const { h, pageFacts, schedule } = mk();
+    for (const s of [ui, { id: 'ext', url: 'chrome-extension://ext/options.html', tab: { id: 7 } }, { ...tabSender, frameId: 3 }, { id: 'ext', url: PAGE }]) {
+      expect(await h(facts, s)).toEqual({ ok: false, error: 'forbidden' });
+      expect(await h({ type: 'watch.hello', formEdited: false }, s)).toEqual({ ok: false, error: 'forbidden' });
+    }
+    expect(pageFacts.get(7)).toBeUndefined();
+    expect(schedule).not.toHaveBeenCalled();
+  });
+
+  it('page.facts and watch.hello never go through createHandler (extension pages only)', async () => {
+    const s = setup();
+    expect(await s.handle({ type: 'watch.hello', formEdited: false }, ui)).toEqual({ ok: false, error: 'unknown request' });
   });
 });
 

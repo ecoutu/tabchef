@@ -4,10 +4,13 @@ import { createAskController } from '../engine/ask';
 import { RecentlyClosed } from '../core/safety/recently-closed';
 import { WhyLog } from '../core/safety/why-log';
 import {
-  configRev, createDebounce, createHandler, createOnMessage, isBannerChoiceMessage, isFormEditedMessage, isUndoChoiceMessage, refreshBadge, UNDO_NOTIFICATION_PREFIX,
+  configRev, createContentHandler, createDebounce, createHandler, createOnMessage, isBannerChoiceMessage, isUndoChoiceMessage, refreshBadge,
+  UNDO_NOTIFICATION_PREFIX,
 } from '../engine/messages';
 import { listPendingAsks } from '../engine/ask';
 import { DedupeHandler } from '../engine/dedupe-handler';
+import { PageFacts } from '../engine/page-facts';
+import { syncWatchRegistration, WATCH_SCRIPT_ID } from '../engine/watch-registration';
 import { ProgramCache } from '../engine/program-cache';
 import { Reconciler } from '../engine/reconciler';
 import { SafetyService } from '../engine/safety';
@@ -27,12 +30,21 @@ export default defineBackground(() => {
   const whyLog = new WhyLog();
   const recentlyClosed = new RecentlyClosed();
   const warn = (what: string) => (e: unknown) => console.warn(`[tabchef] ${what} failed`, e);
+  // Page facts from the watch content script (M2 T7), mirrored to storage.session.
+  const pageFacts = new PageFacts({
+    session: {
+      get: async (k) => (await browser.storage.session.get(k))[k],
+      set: (k, v) => browser.storage.session.set({ [k]: v }),
+    },
+    onHoldExpired: () => reconciler.schedule('pageFacts-hold'),
+  });
   // `safety` is used lazily by the closures below (it needs the reconciler and dedupe handler, which need it).
   const reconciler = new Reconciler(port, getProgram, {
     log: whyLog,
     isPaused: () => safety.isPaused(),
-    beforeRun: () => safety.ready,
+    beforeRun: async () => { await Promise.all([safety.ready, pageFacts.ready]); },
     extraLeaveAlone: () => safety.lockedTabIds(),
+    pageFacts,
   });
   const schedule = (reason: string) => () => reconciler.schedule(reason);
   store.onChange((c) => {
@@ -117,6 +129,7 @@ export default defineBackground(() => {
       },
     },
     bannerFile: 'content-scripts/banner.js',
+    pageFormEdited: (id) => pageFacts.get(id)?.formEdited === true,
   });
   const candidate = (...a: Parameters<DedupeHandler['onCandidate']>) => {
     dedupe.onCandidate(...a).catch((e: unknown) => console.warn('[tabchef] dedupe failed', e));
@@ -136,7 +149,9 @@ export default defineBackground(() => {
   });
   // onUpdated(url) arrives ~4 ms before onCommitted and both carry the final post-redirect URL: act on whichever is first.
   browser.webNavigation.onCommitted.addListener((d) => {
-    if (d.frameId === 0) candidate(d.tabId, d.url, 'committed');
+    if (d.frameId !== 0) return;
+    pageFacts.onCommitted(d.tabId);
+    candidate(d.tabId, d.url, 'committed');
   });
   browser.tabs.onUpdated.addListener((tabId, info, tab) => {
     const dedupeUrl = info.url ?? (info.status === 'loading' ? tab.pendingUrl : undefined);
@@ -158,11 +173,15 @@ export default defineBackground(() => {
   browser.tabs.onAttached.addListener(movedOrAttached('tab-attached'));
   browser.tabs.onRemoved.addListener((tabId, info) => {
     safety.onTabRemoved(tabId, info.isWindowClosing);
+    pageFacts.clear(tabId);
     dedupe.onRemoved(tabId);
     askController.onTabRemoved(tabId).catch((e: unknown) => console.warn('[tabchef] pending ask cleanup failed', e));
     reconciler.schedule('tab-removed');
   });
-  browser.tabs.onReplaced.addListener((added, removed) => dedupe.onReplaced(added, removed));
+  browser.tabs.onReplaced.addListener((added, removed) => {
+    pageFacts.clear(removed);
+    dedupe.onReplaced(added, removed);
+  });
   browser.tabGroups.onUpdated.addListener(schedule('group-updated'));
   browser.tabGroups.onRemoved.addListener(schedule('group-removed'));
   browser.windows.onCreated.addListener(schedule('window-created'));
@@ -195,20 +214,29 @@ export default defineBackground(() => {
     recentlyClosed,
     whyLog,
   });
-  // UI requests (popup / options) and banner choices (content script in the duplicate tab).
+  // Watch content script (ruling R12): its own sender-checked channel, never createHandler.
+  const handleContent = createContentHandler({
+    runtimeId: browser.runtime.id,
+    extensionOrigin: new URL(browser.runtime.getURL('/')).origin,
+    getProgram,
+    pageFacts,
+    safety,
+    schedule: (r) => reconciler.schedule(r),
+    // onFacts: closeExecutor.onFacts arrives with M2 T9.
+  });
+  // UI requests (popup / options), banner choices (content script in the duplicate tab) and the watch script.
   browser.runtime.onMessage.addListener(createOnMessage({
     runtimeId: browser.runtime.id,
     handleRequest,
+    handleContent,
     handleBanner: (msg, sender) => {
-      if (!isBannerChoiceMessage(msg) && !isUndoChoiceMessage(msg) && !isFormEditedMessage(msg)) return false;
+      if (!isBannerChoiceMessage(msg) && !isUndoChoiceMessage(msg)) return false;
       const tabId = sender.tab?.id;
       if (tabId === undefined) return true;
       if (isBannerChoiceMessage(msg)) {
         askController.handleChoice(tabId, msg.existingTabId, msg.choice).catch(warn('banner choice'));
-      } else if (isUndoChoiceMessage(msg)) {
+      } else {
         safety.undo(msg.entryId).catch(warn('undo'));
-      } else if (isFormEditedMessage(msg)) {
-        safety.markFormEdited(tabId, sender.tab?.url);
       }
       return true;
     },
@@ -229,5 +257,21 @@ export default defineBackground(() => {
   };
   wireNotifications();
   browser.permissions.onAdded.addListener(wireNotifications);
+  // The watch content script runs on every granted host (R13). Seam for the PermissionsManager (M2 T8): until it
+  // lands, sync with the hosts the extension holds at worker start and on every permission change.
+  const syncWatch = async () => {
+    if (!browser.scripting?.registerContentScripts) return; // optional `scripting` not granted
+    const { origins = [] } = await browser.permissions.getAll();
+    await syncWatchRegistration({
+      getRegistered: () => browser.scripting.getRegisteredContentScripts({ ids: [WATCH_SCRIPT_ID] }),
+      register: (s) => browser.scripting.registerContentScripts(s),
+      update: (s) => browser.scripting.updateContentScripts(s),
+      unregister: (ids) => browser.scripting.unregisterContentScripts({ ids }),
+    }, origins);
+  };
+  const resyncWatch = () => { syncWatch().catch(warn('watch registration')); };
+  browser.permissions.onAdded.addListener(resyncWatch);
+  browser.permissions.onRemoved.addListener(resyncWatch);
+  resyncWatch();
   browser.runtime.onInstalled.addListener(schedule('installed'));
 });

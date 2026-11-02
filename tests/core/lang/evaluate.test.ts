@@ -186,6 +186,22 @@ describe('evaluateTab: group invariants (R7)', () => {
   });
 });
 
+describe('evaluateTab: groupNeedsPage', () => {
+  it('set when the winning group rule lacks a selector extract, or a higher group rule waits on pageText', () => {
+    const sel = rule('s', { url: '*' }, [group('G {h}')], { extract: { h: { selector: 'h1' } } });
+    expect(ev(config({ rules: [sel] })).groupNeedsPage).toBe(true);
+    expect(ev(config({ rules: [sel] }), facts({}, { page: { texts: [], extracts: { 'user/s.h': 'x' }, formEdited: false } })).groupNeedsPage).toBe(false);
+    const pt = rule('p', { pageText: 'done' }, [group('Done')]);
+    const plain = rule('q', { url: '*' }, [group('Plain')]);
+    expect(ev(config({ rules: [pt, plain], order: ['user/p', 'user/q'] })).groupNeedsPage).toBe(true);
+    // A pageText rule below the winner, or one without a group action, cannot change the group.
+    expect(ev(config({ rules: [plain, pt], order: ['user/q', 'user/p'] })).groupNeedsPage).toBe(false);
+    const ptClose = rule('pc', { pageText: 'done' }, [{ close: {} }]);
+    const r = ev(config({ rules: [ptClose, plain], order: ['user/pc', 'user/q'] }));
+    expect(r).toMatchObject({ needsPage: true, groupNeedsPage: false });
+  });
+});
+
 describe('evaluateTab: needsPage', () => {
   it('a pageText condition without page facts sets needsPage and does not match', () => {
     const c = config({ rules: [rule('p', { all: [{ url: '*' }, { pageText: 'done' }] }, [{ close: {} }])] });
