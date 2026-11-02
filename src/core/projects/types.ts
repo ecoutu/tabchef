@@ -30,6 +30,19 @@ export interface Project {
   excluded: string[];
   linked: { url: string; title: string; state: PrState }[];
   linkedFetchedAt?: number;
+  /** Browser running time (ms) without an open tab, counted by T15's passes; pruned on startup once 7 days. */
+  closedFor?: number;
+}
+
+/** One project as listed to the UI (`projects.list`, T15); T17's buildProjectCards shapes it into a card. */
+export interface ProjectCardData {
+  id: string; key: string; title: string; summary?: string;
+  /** Best first: the Jira API (or its page read), the ticket tab's own source entry, the last stored status. */
+  status?: NonNullable<Project['status']>;
+  done: boolean;
+  tabs: { tabId: number; windowId: number; title: string; url: string; favIconUrl?: string; lastAccessed?: number; pill?: PrState; stale?: boolean }[];
+  /** Linked PRs not open in the project. */
+  linked: Project['linked'];
 }
 
 /** Why a tab is in a project. `index` is the assigning rule's priority (-1 for manual: it wins over every rule). */

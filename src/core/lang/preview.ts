@@ -45,6 +45,11 @@ export interface PreviewResult {
 /** The planner context (Reconciler.planContext) plus the dismissed anchor groups (`"<windowId>|<title>"`). */
 export interface PreviewContext extends PlanContext {
   anchorsDismissed?: Set<string>;
+  /**
+   * M3 T15: the project overrides of the "after" Program (`overrides` are the "before" one's), since a draft may
+   * enable, disable or reorder a project recipe. Absent: "after" plans with `overrides` too.
+   */
+  afterOverrides?: PlanContext['overrides'];
 }
 
 /** Stops a simulation that does not converge (the Reconciler stops after 3 re-plans too). */
@@ -93,7 +98,11 @@ interface Sim {
 /** Simulates the Reconciler's grouping passes on a clone of `snap`. */
 function simulate(snap: Snapshot, p: Program, base: PlanContext, now: number, page: PageLookup): Sim {
   const s = structuredClone(snap);
-  const ctx: PlanContext = { leaveAlone: base.leaveAlone, managedTitles: new Set(base.managedTitles), creationOrder: new Map(base.creationOrder) };
+  // Project overrides (M3 T15) are per tab, so they hold across the simulated passes as in the engine.
+  const ctx: PlanContext = {
+    leaveAlone: base.leaveAlone, managedTitles: new Set(base.managedTitles), creationOrder: new Map(base.creationOrder),
+    ...(base.overrides && { overrides: base.overrides }),
+  };
   const sim: Sim = { snap: s, by: new Map(), created: [], ctx };
   let nextId = Math.min(-2, ...s.groups.map((g) => g.id - 1));
   for (let pass = 0; pass < MAX_PASSES; pass++) {
@@ -187,7 +196,8 @@ export function previewChange(
   // `base` carries the titles and creation numbers an earlier simulation adopted.
   const ctxFor = (p: Program, s: Snapshot, base: PlanContext = ctx): PlanContext => {
     const extra = p.dryRun ? [] : dryRunGroupTabs(s, p, now, page);
-    return { ...base, leaveAlone: extra.length ? new Set([...ctx.leaveAlone, ...extra]) : ctx.leaveAlone };
+    const overrides = p === after && p !== before && 'afterOverrides' in ctx ? ctx.afterOverrides : ctx.overrides;
+    return { ...base, leaveAlone: extra.length ? new Set([...ctx.leaveAlone, ...extra]) : ctx.leaveAlone, overrides };
   };
   const identity: Sim = { snap, by: new Map(), created: [], ctx };
   const live = (p: Program): Sim => (p.dryRun ? identity : simulate(snap, liveProgram(p), ctxFor(p, snap), now, page));

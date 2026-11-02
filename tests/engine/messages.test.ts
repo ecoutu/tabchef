@@ -11,6 +11,11 @@ import { programOf, withGroupRules } from '../helpers/config';
 import { builtinRecipes } from '../../src/recipes/load';
 import { builtinConnectionDefs } from '../../src/core/connections/builtin';
 import { fakeBrowser } from 'wxt/testing/fake-browser';
+import { compileProgram } from '../../src/core/lang/compile';
+import { liveProgram } from '../../src/core/lang/dry-run';
+import type { Recipe } from '../../src/core/lang/types';
+import { ProjectService, ProjectStore } from '../../src/engine/projects';
+import { toLive } from '../../src/engine/state';
 import { browser } from 'wxt/browser';
 
 type Loose = { ok: boolean; data: { sets: { key: string }[]; pending: unknown[] }; errors: string[] };
@@ -1067,5 +1072,116 @@ describe('connections.* (M3 T7)', () => {
     expect(await s.handle({ type: 'connections.list' }, ui)).toMatchObject({
       ok: true, data: { defs: [{ id: 'github' }], status: [{ id: 'github', state: 'not-configured' }] },
     });
+  });
+});
+
+describe('projects.* (M3 T15)', () => {
+  const projects = () => ({
+    cards: vi.fn(async () => [{ id: 'r:ABC-1', key: 'ABC-1', title: 'ABC-1', done: false, tabs: [], linked: [] }]),
+    addTab: vi.fn(async () => {}),
+    removeTab: vi.fn(async () => {}),
+    openLinked: vi.fn(async () => 77),
+    closeGroup: vi.fn(async () => ({ closed: 2, skipped: 1 })),
+  });
+
+  it('validates the requests', () => {
+    expect(isRequest({ type: 'projects.list' })).toBe(true);
+    expect(isRequest({ type: 'projects.addTab', tabId: 1, projectId: 'r:ABC-1' })).toBe(true);
+    expect(isRequest({ type: 'projects.addTab', tabId: '1', projectId: 'r:ABC-1' })).toBe(false);
+    expect(isRequest({ type: 'projects.addTab', tabId: 1 })).toBe(false);
+    expect(isRequest({ type: 'projects.removeTab', tabId: 1 })).toBe(true);
+    expect(isRequest({ type: 'projects.removeTab' })).toBe(false);
+    expect(isRequest({ type: 'projects.openLinked', projectId: 'r:ABC-1', url: 'https://github.com/a/b/pull/1' })).toBe(true);
+    expect(isRequest({ type: 'projects.openLinked', projectId: 'r:ABC-1' })).toBe(false);
+    expect(isRequest({ type: 'projects.closeGroup', projectId: 'r:ABC-1' })).toBe(true);
+    expect(isRequest({ type: 'projects.closeGroup', projectId: 3 })).toBe(false);
+  });
+
+  it('reach the ProjectService; its errors are error responses', async () => {
+    const p = projects();
+    const s = setup({ projects: p });
+    expect(await s.handle({ type: 'projects.list' }, ui)).toEqual({ ok: true, data: await p.cards() });
+    expect(await s.handle({ type: 'projects.addTab', tabId: 3, projectId: 'r:ABC-1' }, ui)).toEqual({ ok: true, data: null });
+    expect(p.addTab).toHaveBeenCalledWith(3, 'r:ABC-1');
+    expect(await s.handle({ type: 'projects.removeTab', tabId: 3 }, ui)).toEqual({ ok: true, data: null });
+    expect(p.removeTab).toHaveBeenCalledWith(3);
+    expect(await s.handle({ type: 'projects.openLinked', projectId: 'r:ABC-1', url: 'https://x/' }, ui)).toEqual({ ok: true, data: { tabId: 77 } });
+    expect(p.openLinked).toHaveBeenCalledWith('r:ABC-1', 'https://x/');
+    expect(await s.handle({ type: 'projects.closeGroup', projectId: 'r:ABC-1' }, ui)).toEqual({ ok: true, data: { closed: 2, skipped: 1 } });
+    p.openLinked.mockRejectedValue(new Error('not a linked PR of this project'));
+    expect(await s.handle({ type: 'projects.openLinked', projectId: 'r:ABC-1', url: 'https://evil/' }, ui)).toEqual({ ok: false, error: 'not a linked PR of this project' });
+  });
+
+  it('fail without the ProjectService, and from content scripts', async () => {
+    expect(await setup().handle({ type: 'projects.list' }, ui)).toEqual({ ok: false, error: 'projects unavailable' });
+    expect(await setup({ projects: projects() }).handle({ type: 'projects.list' }, content)).toEqual({ ok: false, error: 'forbidden' });
+  });
+});
+
+describe('preview.change with project recipes (T15 fix N1)', () => {
+  const RID = 'jira-ticket-title';
+  const recipe: Recipe = {
+    recipe: RID, version: 1, name: 'Jira ticket (title)', description: 'x',
+    project: { key: '{key}', title: '{key}', color: 'blue', container: 'group', join: ['rules', 'manual'] },
+    rules: [
+      { id: 'ticket', name: 'ticket', enabled: true, match: { url: '*.atlassian.net/browse/*' }, extract: { key: { from: 'url', jiraKey: {} } }, actions: [{ assignProject: { key: '{key}', create: true } }] },
+      { id: 'pr', name: 'pr', enabled: true, match: { url: 'github.com/:owner/:repo/pull/*' }, extract: { key: { from: 'title', jiraKey: {} } }, actions: [{ assignProject: { key: '{key}' } }] },
+    ],
+  };
+  const builtins = { [RID]: recipe };
+  const cfgWith = (enabled: boolean): Config => ({ ...defaultConfig(), recipes: [{ id: RID, enabled, params: {}, source: 'builtin' }] });
+  type Prev = { ok: boolean; data: { moves: { tabId: number; from?: string; to?: string }[] } };
+
+  function rig(current: Config) {
+    const local = new Map<string, unknown>();
+    const svc = new ProjectService({
+      store: new ProjectStore({ get: async (k) => (local.has(k as string) ? { [k as string]: local.get(k as string) } : {}), set: async (o) => { for (const [k, v] of Object.entries(o)) local.set(k, v); } }),
+      port: new FakeBrowserPort(), getProgram: async () => compileProgram(current, builtins).program,
+      sources: { factsFor: () => undefined, issues: async () => new Map(), linkedFor: async () => new Map() },
+      facts: { get: () => undefined }, log: { add: () => {} }, recentlyClosed: { add: () => 'x' }, safety: { isProtected: () => false },
+      state: async () => toLive(undefined),
+    });
+    const s = setup({
+      preview: {
+        builtins,
+        getProgram: async () => compileProgram(current, builtins).program,
+        // As Reconciler.planContext: the current Program's project overrides included.
+        planContext: async (snap, p) => ({
+          leaveAlone: new Set(), managedTitles: new Set(['ABC-1']), creationOrder: new Map(), anchorsDismissed: new Set(),
+          overrides: await svc.previewTargets(snap, liveProgram(p)),
+        }),
+        projectOverrides: (snap, p) => svc.previewTargets(snap, liveProgram(p)),
+      },
+    });
+    return s;
+  }
+
+  it('a draft disabling the project recipe reports the project tabs leaving their group', async () => {
+    const s = rig(cfgWith(true));
+    s.port.addGroup({ id: 50, windowId: 1, title: 'ABC-1', color: 'blue', collapsed: false });
+    s.mk(1, 'https://acme.atlassian.net/browse/ABC-1', { title: '[ABC-1] x - Jira', groupId: 50 });
+    s.mk(2, 'https://github.com/acme/api/pull/5', { title: 'ABC-1 fix', groupId: 50 });
+    const same = (await s.handle({ type: 'preview.change', config: cfgWith(true) }, ui)) as Prev;
+    expect(same.data.moves).toEqual([]);
+    const r = (await s.handle({ type: 'preview.change', config: cfgWith(false) }, ui)) as Prev;
+    expect(r.data.moves.map((m) => [m.tabId, m.from, m.to])).toEqual([[1, 'ABC-1', undefined], [2, 'ABC-1', undefined]]);
+  });
+
+  it('a draft enabling the project recipe reports the tabs joining the project group', async () => {
+    const s = rig(cfgWith(false));
+    s.mk(1, 'https://acme.atlassian.net/browse/ABC-1', { title: '[ABC-1] x - Jira' });
+    s.mk(2, 'https://github.com/acme/api/pull/5', { title: 'ABC-1 fix' });
+    const r = (await s.handle({ type: 'preview.change', config: cfgWith(true) }, ui)) as Prev;
+    expect(r.data.moves.map((m) => [m.tabId, m.to])).toEqual([[1, 'ABC-1'], [2, 'ABC-1']]);
+  });
+
+  it('`only` (test one rule) plans each side with its own overrides: the rule alone, not the current project targets', async () => {
+    const s = rig(cfgWith(true));
+    s.mk(1, 'https://acme.atlassian.net/browse/ABC-1', { title: '[ABC-1] x - Jira' });
+    const jiraRule = { id: 'jr', name: 'JR', enabled: true, match: { url: '*.atlassian.net/*' }, actions: [{ group: { title: 'Jira', color: 'blue' } }] };
+    // The rule ranks after the project rules: the current project target would win if it were used for "after".
+    const cfg: Config = { ...cfgWith(true), rules: [jiraRule] as Config['rules'], order: [`${RID}/ticket`, `${RID}/pr`, 'user/jr'] };
+    const r = (await s.handle({ type: 'preview.change', config: cfg, only: 'user/jr' }, ui)) as Prev;
+    expect(r.data.moves.map((m) => [m.tabId, m.to])).toEqual([[1, 'Jira']]);
   });
 });

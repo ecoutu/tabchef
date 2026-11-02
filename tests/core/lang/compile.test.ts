@@ -442,6 +442,18 @@ describe('compileProgram: M3 T1 (sources, needs, conflicts, projects)', () => {
     expect(errors).toEqual([]);
     expect(program.rules.map((r) => r.key)).toEqual(['p/s']);
   });
+  it('a recipe\'s project (params substituted) and its params are carried into Program.projects / Program.params (T15)', () => {
+    const params = { color: { type: 'string' as const, default: 'blue', label: 'c' }, githubOrgs: { type: 'string[]' as const, default: [], label: 'o' } };
+    const b = {
+      p: recipe('p', [rule('s', { actions: [{ assignProject: { key: 'ABC-1' } }] })], { project: { ...project, color: '{params.color}' }, params }),
+      q: recipe('q', [rule('t')]),
+    };
+    const { program, errors } = compileProgram(config({ recipes: [ref('p', { params: { color: 'red', githubOrgs: ['acme'] } }), ref('q')] }), b);
+    expect(errors).toEqual([]);
+    expect(program.projects).toEqual([{ ...project, color: 'red', recipeId: 'p' }]);
+    expect(program.params).toEqual({ p: { color: 'red', githubOrgs: ['acme'] } });
+    expect(compileProgram(config({ recipes: [ref('q')] }), b).program).not.toHaveProperty('projects');
+  });
   it('assignProject in a recipe without a project is an error', () => {
     const b = { p: recipe('p', [rule('s', { actions: [{ assignProject: { key: 'ABC-1' } }] })]) };
     const { program, errors } = compileProgram(config({ recipes: [ref('p')] }), b);

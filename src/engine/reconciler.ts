@@ -1,4 +1,5 @@
 import { dryRunGroupTabs, planGroups, planTargets, syncCreationOrder, type PageLookup, type PlanContext, type Targets } from '../core/group/plan';
+import type { GroupTarget } from '../core/group/evaluate';
 import type { Op, Snapshot } from '../core/types';
 import type { Program, TabFacts } from '../core/lang/types';
 import type { PreviewContext } from '../core/lang/preview';
@@ -28,6 +29,15 @@ export interface ReconcilerOptions {
   now?: () => number;
   /** Anchor tabs (M2 T11): told about every group this reconciler creates (never adopted ones, ruling R9). */
   anchors?: Pick<AnchorService, 'onGroupCreated'>;
+  /**
+   * Project targets (M3 T15, ProjectService): per-tab group targets from outside the rule language, planned as
+   * PlanContext.overrides (M3-R39/R66). `targets` (live, dry-run rules fall through) once per live pass with that
+   * pass's snapshot; `previewTargets` (no side effects) for the dry-run pass (full Program) and previews.
+   */
+  projects?: {
+    targets(snap: Snapshot): Promise<Map<number, GroupTarget | null>>;
+    previewTargets(snap: Snapshot, program: Program): Promise<Map<number, GroupTarget | null>>;
+  };
   /** Console-level warnings (a rule whose color renders outside Chrome's 9 colors). Default: console.warn. */
   warn?: (message: string) => void;
 }
@@ -162,12 +172,28 @@ export class Reconciler {
    */
   async planContext(snap: Snapshot, program: Program): Promise<PreviewContext> {
     const st = await this.load();
+    // Project tabs keep their project group in the preview as in the engine (M3-R39); computed without side effects.
+    const overrides = await this.previewOverrides(snap, program);
     return {
       leaveAlone: new Set([...st.leaveAlone, ...this.extraLeaveAlone(st, snap, program)]),
       managedTitles: new Set(st.managedTitles),
       creationOrder: new Map(st.creationOrder),
       anchorsDismissed: new Set(st.anchorsDismissed),
+      ...(overrides?.size && { overrides }),
     };
+  }
+
+  /**
+   * The project overrides a preview plans `program` with (M3-R39): side-effect free, over its live rules. A failure
+   * (e.g. the project store cannot be read) previews without them rather than failing the preview.
+   */
+  async previewOverrides(snap: Snapshot, program: Program): Promise<Map<number, GroupTarget | null> | undefined> {
+    try {
+      return await this.opts.projects?.previewTargets(snap, liveProgram(program));
+    } catch (e) {
+      (this.opts.warn ?? console.warn)(`[tabchef] project targets for the preview failed: ${e instanceof Error ? e.message : String(e)}`);
+      return undefined;
+    }
   }
 
   /** Locked tabs and anchors still at their anchor URL (R21: strict would ungroup an anchor outside the rule). */
@@ -203,11 +229,19 @@ export class Reconciler {
           ...(program.dryRun ? [] : dryRunGroupTabs(snap, program, this.now(), this.facts))];
         return extra.length ? { ...st, leaveAlone: new Set([...st.leaveAlone, ...extra]) } : st;
       };
+      const withOverrides = (ctx: PlanContext, overrides: Map<number, GroupTarget | null> | undefined): PlanContext =>
+        (overrides?.size ? { ...ctx, overrides } : ctx);
+      // The dry-run pass plans project targets of the full Program (dry-run assignProject rules included, R10), with
+      // no side effects: under global dry run (R50) no project is stored and no join is logged.
+      const dryRun = async (snap: Snapshot, ctx: PlanContext): Promise<void> => {
+        if (!hasDryRun(program)) { this.dryRunPass(snap, program, ctx); return; }
+        this.dryRunPass(snap, program, withOverrides(ctx, await this.opts.projects?.previewTargets(snap, program)));
+      };
       // Global dry run (R50): engine-initiated changes are only logged. User-initiated actions (popup close / close-all,
       // banner choices, undo) still apply: they go through their own handlers, not this loop.
       if (program.dryRun) {
         const snap = await this.port.snapshot();
-        this.dryRunPass(snap, program, ctxOf(snap));
+        await dryRun(snap, ctxOf(snap));
         return;
       }
       // Dry-run rules fall through (R48): the live pass plans as if they did not exist.
@@ -215,14 +249,15 @@ export class Reconciler {
       await this.retitlePending(st);
       for (let pass = 0; ; pass++) {
         const snap = await this.port.snapshot();
-        const ctx = ctxOf(snap);
+        const base = ctxOf(snap);
+        const ctx = withOverrides(base, await this.opts.projects?.targets(snap));
         const pre = planTargets(snap, live, ctx, this.now(), this.facts); // once per pass, shared by tracking and planning
         this.warnInvalidColors(pre);
         this.track(snap, st, pre, pass === 0);
         const ops = planGroups(snap, live, ctx, pre);
         if (ops.length === 0 || pass === MAX_PASSES) {
           if (ops.length) this.log({ action: 'reconcile-not-converged', detail: `${ops.length} op(s) still planned after ${MAX_PASSES} passes` });
-          this.dryRunPass(snap, program, ctx);
+          await dryRun(snap, base);
           break;
         }
         for (const op of ops) await this.apply(op, snap, st, live, pre);

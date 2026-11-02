@@ -14,11 +14,14 @@ import { compileProgram, paramProblem } from '../core/lang/compile';
 import { applyCollapse, suggestCollapse, type CollapseSuggestion } from '../core/lang/collapse';
 import type { Program, Recipe, RecipeRef, Rule, TabFacts } from '../core/lang/types';
 import { emptyProgram, previewChange, type PreviewContext, type PreviewResult } from '../core/lang/preview';
+import type { PlanContext } from '../core/group/plan';
 import { explainTab, findShadowed, type ExplainEntry } from '../core/lang/explain';
 import { effectiveNeeds, type LevelStatus, type Needs, type NeedStatus, type PermissionsManager } from './permissions';
 import type { PendingAsk } from './ask';
 import type { EarlyReport, PageFacts, WatchSelector } from './page-facts';
 import type { PauseDuration, SafetyService } from './safety';
+import type { ProjectService } from './projects';
+import type { ProjectCardData } from '../core/projects/types';
 import { dedupeDecision, openerOf } from './dedupe-handler';
 import { readViews, samePage, type ViewData, type ViewsDeps, type ViewSummary } from './views';
 import { builtinConnectionDefs } from '../core/connections/builtin';
@@ -200,7 +203,16 @@ export type Request =
   /** A test call through the ConnectionManager (GitHub: GET /user). */
   | { type: 'connections.test'; id: string }
   /** Clears the secrets and runtime status; the def stays, not-configured. */
-  | { type: 'connections.disconnect'; id: string };
+  | { type: 'connections.disconnect'; id: string }
+  // ---- Projects (M3 T15) ----
+  /** ProjectCardData[] of the open projects. */
+  | { type: 'projects.list' }
+  | { type: 'projects.addTab'; tabId: number; projectId: string }
+  | { type: 'projects.removeTab'; tabId: number }
+  /** `url` must be one of the project's linked PRs; answers `{ tabId }`. */
+  | { type: 'projects.openLinked'; projectId: string; url: string }
+  /** Answers `{ closed, skipped }`. */
+  | { type: 'projects.closeGroup'; projectId: string };
 
 /** explain.tab's answer: the tab and its relevant rules in priority order (src/core/lang/explain.ts). */
 export interface ExplainView {
@@ -303,13 +315,19 @@ export interface ResponseData {
   'connections.setToken': ConnectionStatus;
   'connections.test': { login?: string };
   'connections.disconnect': null;
+  'projects.list': ProjectCardData[];
+  'projects.addTab': null;
+  'projects.removeTab': null;
+  'projects.openLinked': { tabId: number };
+  'projects.closeGroup': { closed: number; skipped: number };
 }
 export type ResponseFor<R extends Request> = Response<ResponseData[R['type']]>;
 
 const num = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
 const str = (v: unknown): v is string => typeof v === 'string';
 const NO_ARGS = new Set(['config.get', 'config.backups', 'config.status', 'tabs.list', 'dupes.list', 'dupes.closeAll', 'recent.list', 'why.all',
-  'safety.resume', 'safety.status', 'recipes.list', 'views.list', 'connections.list', 'connections.github.start', 'connections.github.poll']);
+  'safety.resume', 'safety.status', 'recipes.list', 'views.list', 'connections.list', 'connections.github.start', 'connections.github.poll',
+  'projects.list']);
 const optRev = (x: Record<string, unknown>) => x.baseRev === undefined || str(x.baseRev);
 const isParams = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
@@ -400,6 +418,10 @@ export function isRequest(m: unknown): m is Request {
     case 'view.close': case 'view.keep': return str(x.viewId) && num(x.tabId) && (x.url === undefined || str(x.url));
     case 'connections.setToken': return (x.id === 'github' || x.id === 'jira') && str(x.token);
     case 'connections.test': case 'connections.disconnect': return CONNECTION_IDS.has(x.id as string);
+    case 'projects.addTab': return num(x.tabId) && str(x.projectId);
+    case 'projects.removeTab': return num(x.tabId);
+    case 'projects.openLinked': return str(x.projectId) && str(x.url);
+    case 'projects.closeGroup': return str(x.projectId);
     default: return false;
   }
 }
@@ -439,6 +461,11 @@ export interface HandlerDeps {
     getProgram: () => Promise<Program>;
     /** Reconciler.planContext: copies of the planner's leave-alone tabs, managed titles, group order and dismissed anchors. */
     planContext: (snap: Snapshot, p: Program) => Promise<PreviewContext>;
+    /**
+     * Reconciler.previewOverrides: the project overrides one side of a preview plans with (M3 T15), so a draft that
+     * enables, disables or reorders a project recipe is previewed with its own. Default: the current ones for both.
+     */
+    projectOverrides?: (snap: Snapshot, p: Program) => Promise<PlanContext['overrides']>;
     /** Per-tab facts the snapshot lacks (page facts). Default: none. */
     facts?: (tabId: number) => Partial<TabFacts>;
     /** Needs that are not granted pause their recipe / rule in the draft, as ProgramCache does. Default: all granted. */
@@ -454,6 +481,8 @@ export interface HandlerDeps {
   };
   /** connections.* (M3 T7, the Connections page). Without it they fail. */
   connections?: ConnectionsDeps;
+  /** projects.* (M3 T15). Without it they fail. */
+  projects?: Pick<ProjectService, 'cards' | 'addTab' | 'removeTab' | 'openLinked' | 'closeGroup'>;
   now?: () => number;
 }
 
@@ -779,7 +808,16 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
     const [snap, current] = await Promise.all([deps.port.snapshot(), d.getProgram()]);
     const ctx = await d.planContext(snap, current);
     const facts = d.facts ?? (() => ({}));
-    if (req.only === undefined) return ok(previewChange(snap, current, await compileDraft(v.config, d), facts, ctx, now()));
+    /** The context with each side's own project overrides. */
+    const sides = async (before: Program, after: Program, base: PreviewContext): Promise<PreviewContext> => {
+      if (!d.projectOverrides) return base;
+      const [b, a] = await Promise.all([d.projectOverrides(snap, before), d.projectOverrides(snap, after)]);
+      return { ...base, overrides: b, afterOverrides: a };
+    };
+    if (req.only === undefined) {
+      const draft = await compileDraft(v.config, d);
+      return ok(previewChange(snap, current, draft, facts, await sides(current, draft, ctx), now()));
+    }
     // Test one rule: enabled and live (R30 labels belong to Save previews), alone against no rules. No managed titles:
     // only the rule's own groups count as managed, so other rules' groups are not torn down in "before".
     const only = req.only;
@@ -788,7 +826,8 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
     const rules = p.rules.filter((r) => r.key === only).map((r) => ({ ...r, dryRun: false }));
     if (rules.length === 0) return fail('unknown rule');
     const after: Program = { ...p, rules };
-    return ok(previewChange(snap, emptyProgram(after), after, facts, { ...ctx, managedTitles: new Set() }, now()));
+    const before = emptyProgram(after);
+    return ok(previewChange(snap, before, after, facts, await sides(before, after, { ...ctx, managedTitles: new Set() }), now()));
   }
 
   /**
@@ -873,6 +912,16 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
     }
   }
 
+  async function runProjects(req: Extract<Request, { type: `projects.${string}` }>, p: NonNullable<HandlerDeps['projects']>): Promise<Response> {
+    switch (req.type) {
+      case 'projects.list': return ok(await p.cards());
+      case 'projects.addTab': await p.addTab(req.tabId, req.projectId); return ok(null);
+      case 'projects.removeTab': await p.removeTab(req.tabId); return ok(null);
+      case 'projects.openLinked': return ok({ tabId: await p.openLinked(req.projectId, req.url) });
+      case 'projects.closeGroup': return ok(await p.closeGroup(req.projectId));
+    }
+  }
+
   async function run(req: Request): Promise<Response> {
     switch (req.type) {
       case 'connections.list': case 'connections.github.start': case 'connections.github.poll': case 'connections.setToken':
@@ -890,6 +939,8 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
         const candidate = req.type === 'connections.setToken' ? req.token.trim() : '';
         return scrub(r, [...(candidate.length >= MIN_NEEDLE ? [candidate] : []), ...(await c.knownSecrets())]);
       }
+      case 'projects.list': case 'projects.addTab': case 'projects.removeTab': case 'projects.openLinked': case 'projects.closeGroup':
+        return deps.projects ? runProjects(req, deps.projects) : fail('projects unavailable');
       case 'explain.tab': return deps.explain ? runExplain(req.tabId, deps.explain) : fail('explain unavailable');
       case 'rules.shadowed': return deps.explain ? runShadowed(req.config, deps.explain) : fail('explain unavailable');
       case 'preview.change': return deps.preview ? runPreview(req, deps.preview) : fail('preview unavailable');

@@ -126,6 +126,10 @@ export interface Program {
   dedupe: DedupeSettings; needs: Record<string /* recipeId | ruleKey (rule-level, T10; listed while paused too) */, NeedsEntry>;
   /** M3 T12: the declared capability levels per enabled recipe id (only recipes that declare them). */
   levels?: Record<string, RecipeLevel[]>;
+  /** M3 T15: the project definitions of enabled recipes (params substituted), one per recipe that declares one. */
+  projects?: ProjectDef[];
+  /** M3 T15: the resolved param values of those recipes, by recipe id (e.g. `githubOrgs`, `projectPrefixes`). */
+  params?: Record<string, Record<string, unknown>>;
   /**
    * Global dry run (`config.dryRun`, M2 T12): every rule is dry-run and engine-initiated actions only (R50) are blocked
    * and logged; user-initiated actions (popup close / close-all, banner choices, undo) still apply.

@@ -22,7 +22,8 @@ import { Reconciler } from '../engine/reconciler';
 import { SafetyService } from '../engine/safety';
 import { ChromePort } from '../platform/chrome-port';
 import { ConfigStore } from '../storage/config-store';
-import { installMenus, onMenuClick, refreshMenus, type MenuApi, type MenuTab } from '../engine/context-menu';
+import { createProjectMenu, onMenuClick, refreshMenus, type MenuApi, type MenuTab } from '../engine/context-menu';
+import { ProjectService, ProjectStore } from '../engine/projects';
 import { ConnectionManager } from '../engine/connections/manager';
 import { SecretStore, type KeyValueArea } from '../engine/connections/secret-store';
 import { RateLimiter } from '../engine/connections/rate-limiter';
@@ -94,6 +95,8 @@ export default defineBackground(() => {
     // `sources` is declared below (it needs the connection manager); only called once a run starts.
     sources: { factsFor: (id, url) => sources.factsFor(id, url) },
     anchors: { onGroupCreated: (...a) => anchors.onGroupCreated(...a) },
+    // Project groups (M3 T15): `projects` is declared below (it needs the SourceService).
+    projects: { targets: (snap) => projects.targets(snap), previewTargets: (snap, p) => projects.previewTargets(snap, p) },
   });
   // Anchor tabs (M2 T11): opened when Tabchef creates a group; their state is the reconciler's RuntimeState.
   const anchors: AnchorService = new AnchorService(port, {
@@ -234,6 +237,7 @@ export default defineBackground(() => {
     removeAll: () => browser.contextMenus.removeAll(),
     create: (p) => { browser.contextMenus.create(p, () => void browser.runtime.lastError); },
     update: async (id, p) => { await browser.contextMenus.update(id, p); },
+    remove: async (id) => { await browser.contextMenus.remove(id); },
   };
   const refreshMenu = (tab: MenuTab | undefined) => {
     safety.ready.then(() => refreshMenus(menuApi, tab, (id) => safety.isLocked(id))).catch(warn('menu refresh'));
@@ -279,6 +283,15 @@ export default defineBackground(() => {
       for (const id of tabIds) void closeExecutor.evaluate(id);
       scheduleBadge();
     },
+  });
+  // Projects (M3 T15): stored in storage.local `projects` (not synced); sticky membership in the reconciler's state.
+  // Each pass reports the open projects, which the "Add to project" submenu follows.
+  const projectMenu = createProjectMenu(menuApi);
+  const projects: ProjectService = new ProjectService({
+    store: new ProjectStore(localArea), port, getProgram, sources, facts: pageFacts, log: whyLog, recentlyClosed, safety, session,
+    state: () => reconciler.liveState(),
+    schedule: (r) => reconciler.schedule(r),
+    onProjectsChanged: (ps) => { projectMenu.sync(ps).catch(warn('project menu')); },
   });
   // Tabs and page facts changed: look up what new or navigated tabs need (cache first; at most every few seconds).
   const scheduleSources = createDebounce(() => { sources.refresh('tabs').catch(warn('source refresh')); }, 1000, 5000);
@@ -360,6 +373,7 @@ export default defineBackground(() => {
     dedupe.onReplaced(added, removed);
     tabAges.onReplaced(added, removed);
     anchors.onTabReplaced(added, removed).catch(warn('anchor replace'));
+    projects.onReplaced(added, removed).catch(warn('project replace')); // a discarded tab keeps its project (Review Focus #4)
   });
   browser.tabGroups.onUpdated.addListener((g) => {
     anchors.onGroupUpdated(g).catch(warn('anchor group rename')); // a renamed group keeps its anchors
@@ -437,6 +451,7 @@ export default defineBackground(() => {
       builtins: builtinRecipes(),
       getProgram,
       planContext: (snap, p) => reconciler.planContext(snap, p),
+      projectOverrides: (snap, p) => reconciler.previewOverrides(snap, p),
       facts: tabFacts,
       permissions,
     },
@@ -447,6 +462,7 @@ export default defineBackground(() => {
       setGitHubToken: (token) => setGitHubToken({ manager: connections, secrets, port, fetch: connFetch, allowLocalhost }, token),
       knownSecrets: () => secrets.knownSecrets(),
     },
+    projects,
     // explain.tab / rules.shadowed (M2 T14): read-only, like preview.
     explain: {
       builtins: builtinRecipes(),
@@ -524,12 +540,12 @@ export default defineBackground(() => {
   syncPermissions();
   browser.runtime.onInstalled.addListener(() => {
     reconciler.schedule('installed');
-    installMenus(menuApi).then(refreshActiveMenu, warn('context menu install'));
+    projectMenu.install().then(refreshActiveMenu, warn('context menu install')); // installMenus, then the open projects
     startSourcesAlarm();
   });
   browser.contextMenus.onClicked.addListener((info, tab) => {
     safety.ready
-      .then(() => onMenuClick(info, tab, { openPage: openOptions, safety, refresh: () => refreshMenu(tab) }))
+      .then(() => onMenuClick(info, tab, { openPage: openOptions, safety, refresh: () => refreshMenu(tab), projects }))
       .catch(warn('context menu click'));
   });
 });

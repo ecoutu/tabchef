@@ -1,12 +1,18 @@
 import { isExemptUrl } from '../core/url/normalize';
 import { explainHash, newRuleHash, type NewRuleKind } from '../core/links';
+import type { ProjectService } from './projects';
 import type { SafetyService } from './safety';
 
 // The page / link / toolbar-icon context menu (M2 T16). Items are created on runtime.onInstalled (they persist across
 // worker restarts); background.ts registers contextMenus.onClicked at the top level and refreshes the items' title and
 // enabled state on tab activation, URL changes of the active tab and lock changes.
+// M3 T15: "Add to project" (`tc-project`) has one child per open project (`tc-project:<projectId>`), rebuilt by
+// createProjectMenu when the open projects change; "Remove from project" (`tc-project-remove`) follows it.
 
 export const MENU_IDS = { group: 'tc-group', close: 'tc-close', allowDup: 'tc-allowdup', lock: 'tc-lock', why: 'tc-why' } as const;
+export const PROJECT_MENU_ID = 'tc-project';
+export const PROJECT_REMOVE_MENU_ID = 'tc-project-remove';
+const PROJECT_CHILD_PREFIX = `${PROJECT_MENU_ID}:`;
 export const MENU_CONTEXTS = ['page', 'link', 'action'] as const;
 type MenuContext = (typeof MENU_CONTEXTS)[number];
 
@@ -24,8 +30,51 @@ const KIND: Record<string, NewRuleKind> = { [MENU_IDS.group]: 'group', [MENU_IDS
 /** The chrome.contextMenus calls used (a subset, so tests can fake it). */
 export interface MenuApi {
   removeAll(): Promise<void>;
-  create(p: { id: string; title: string; contexts: [MenuContext, ...MenuContext[]] }): void;
+  create(p: { id: string; title: string; contexts: [MenuContext, ...MenuContext[]]; parentId?: string; enabled?: boolean }): void;
   update(id: string, p: { title?: string; enabled?: boolean }): Promise<void>;
+  remove(id: string): Promise<void>;
+}
+const CONTEXTS: [MenuContext, ...MenuContext[]] = [MENU_CONTEXTS[0], ...MENU_CONTEXTS.slice(1)];
+
+/** The project items: the parent (disabled while no project is open) with one child per project, then Remove. */
+function createProjectItems(api: MenuApi, projects: { id: string; title: string }[]): void {
+  api.create({ id: PROJECT_MENU_ID, title: 'Add to project', contexts: CONTEXTS, enabled: projects.length > 0 });
+  for (const p of projects) api.create({ id: `${PROJECT_CHILD_PREFIX}${p.id}`, parentId: PROJECT_MENU_ID, title: p.title, contexts: CONTEXTS });
+  api.create({ id: PROJECT_REMOVE_MENU_ID, title: 'Remove from project', contexts: CONTEXTS });
+}
+
+/** The project submenu, kept in step with the open projects; every change to the menu goes through one queue. */
+export interface ProjectMenu {
+  /** ProjectService onProjectsChanged: a changed list removes and re-creates the project items; the same list does nothing. */
+  sync(projects: { id: string; title: string }[]): Promise<void>;
+  /** runtime.onInstalled: installMenus (removeAll + every item), then the last known projects again. */
+  install(): Promise<void>;
+}
+
+export function createProjectMenu(api: MenuApi): ProjectMenu {
+  let shown: string | undefined;
+  let last: { id: string; title: string }[] | undefined;
+  let chain: Promise<unknown> = Promise.resolve();
+  const queue = (fn: () => Promise<void>): Promise<void> => {
+    const next = chain.then(fn);
+    chain = next.catch(() => {});
+    return next;
+  };
+  const apply = async (projects: { id: string; title: string }[]): Promise<void> => {
+    const sig = JSON.stringify(projects.map((p) => [p.id, p.title]));
+    if (sig === shown) return;
+    shown = sig;
+    await Promise.all([PROJECT_MENU_ID, PROJECT_REMOVE_MENU_ID].map((id) => api.remove(id).catch(() => {}))); // absent before onInstalled
+    createProjectItems(api, projects);
+  };
+  return {
+    sync: (projects) => queue(async () => { last = projects; await apply(projects); }),
+    install: () => queue(async () => {
+      await installMenus(api);
+      shown = JSON.stringify([]); // installMenus created the project items without children
+      if (last) await apply(last);
+    }),
+  };
 }
 
 export interface MenuTab { id?: number; url?: string }
@@ -33,7 +82,8 @@ export interface MenuTab { id?: number; url?: string }
 /** runtime.onInstalled: drop items from the previous version (duplicate ids would throw), then create every item. */
 export async function installMenus(api: MenuApi): Promise<void> {
   await api.removeAll();
-  for (const it of ITEMS) api.create({ id: it.id, title: it.title, contexts: [MENU_CONTEXTS[0], ...MENU_CONTEXTS.slice(1)] });
+  for (const it of ITEMS) api.create({ id: it.id, title: it.title, contexts: CONTEXTS });
+  createProjectItems(api, []);
 }
 
 /** Title and enabled state for the active tab: every item is disabled on exempt URLs (chrome://, file:, ...). */
@@ -51,11 +101,14 @@ export interface MenuClickDeps {
   safety: Pick<SafetyService, 'isLocked' | 'lock' | 'unlock'>;
   /** Re-read the menu state after a lock change. */
   refresh: () => void | Promise<void>;
+  /** tc-project:<id> / tc-project-remove (M3 T15). */
+  projects?: Pick<ProjectService, 'addTab' | 'removeTab'>;
 }
 
 /**
  * contextMenus.onClicked: the rule items open NewRule with the link URL (on a link) or the page URL; tc-lock toggles
- * the tab's lock directly; tc-why opens the tab's explain view (R54). Exempt pages and unknown items do nothing.
+ * the tab's lock directly; tc-why opens the tab's explain view (R54); the project items add the tab to a project or
+ * remove it (M3 T15). Exempt pages and unknown items do nothing.
  */
 export async function onMenuClick(
   info: { menuItemId: string | number; linkUrl?: string; pageUrl?: string }, tab: MenuTab | undefined, deps: MenuClickDeps,
@@ -74,5 +127,9 @@ export async function onMenuClick(
     await deps.refresh();
   } else if (id === MENU_IDS.why) {
     await deps.openPage(explainHash(tab.id));
+  } else if (id.startsWith(PROJECT_CHILD_PREFIX)) {
+    await deps.projects?.addTab(tab.id, id.slice(PROJECT_CHILD_PREFIX.length));
+  } else if (id === PROJECT_REMOVE_MENU_ID) {
+    await deps.projects?.removeTab(tab.id);
   }
 }

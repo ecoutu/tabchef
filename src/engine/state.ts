@@ -1,4 +1,5 @@
 import { browser } from 'wxt/browser';
+import type { StickyMap } from '../core/projects/resolve';
 import type { GroupColor } from '../core/types';
 
 /** Persisted (JSON) form, stored in chrome.storage.session under `rt` so it survives service-worker restarts. */
@@ -24,7 +25,14 @@ export interface RuntimeState {
   anchorsDismissed?: string[];
   /** [groupId, "<windowId>|<title>"]: the group a dismissal was made in, so a rename moves the dismissal along. */
   anchorsDismissedGroups?: [number, string][];
+  /**
+   * Sticky project membership (M3 T15, M3-R42/R66): tabs that joined a project by rules, at the normalized URL they
+   * had then, with the assigning rule, so a loading tab keeps its project and its rule's priority.
+   */
+  projectTabs?: ProjectTab[];
 }
+
+export interface ProjectTab { tabId: number; projectId: string; url: string; ruleKey?: string; index?: number }
 
 /** `groupId`: the group it was recorded for (missing in records stored before it was tracked). */
 export interface AnchorEntry { tabId: number; windowId: number; title: string; url: string; groupId?: number }
@@ -48,6 +56,7 @@ export interface LiveState {
   anchors: AnchorEntry[];
   anchorsDismissed: Set<string>;
   anchorsDismissedGroups: Map<number, string>;
+  projectTabs: StickyMap;
 }
 
 export const RT_KEY = 'rt';
@@ -66,6 +75,7 @@ export function toLive(rt: Partial<RuntimeState> | undefined): LiveState {
     anchors: (rt?.anchors ?? []).map((a) => ({ ...a })),
     anchorsDismissed: new Set(rt?.anchorsDismissed ?? []),
     anchorsDismissedGroups: new Map(rt?.anchorsDismissedGroups ?? []),
+    projectTabs: new Map((rt?.projectTabs ?? []).map(({ tabId, ...e }) => [tabId, { ...e }])),
   };
 }
 
@@ -83,6 +93,7 @@ export function toRuntime(s: LiveState): RuntimeState {
     anchors: s.anchors.map((a) => ({ ...a })),
     anchorsDismissed: [...s.anchorsDismissed],
     anchorsDismissedGroups: [...s.anchorsDismissedGroups],
+    projectTabs: [...s.projectTabs].map(([tabId, e]) => ({ tabId, ...e })),
   };
 }
 

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
-  installMenus, MENU_CONTEXTS, MENU_IDS, onMenuClick, refreshMenus, type MenuApi,
+  createProjectMenu, installMenus, MENU_CONTEXTS, MENU_IDS, onMenuClick, refreshMenus, type MenuApi,
 } from '../../src/engine/context-menu';
 import { explainHash, matchRoute, newRuleHash } from '../../src/ui/routes';
 
@@ -11,11 +11,12 @@ const api = (): MenuApi & { calls: string[] } => {
     removeAll: vi.fn(async () => { calls.push('removeAll'); }),
     create: vi.fn((p: { id: string }) => { calls.push(`create:${p.id}`); }),
     update: vi.fn(async () => {}),
+    remove: vi.fn(async (id: string) => { calls.push(`remove:${id}`); }),
   };
 };
 
 describe('context menu (M2 T16)', () => {
-  it('installMenus removes stale items first, then creates the five items with their exact titles and contexts', async () => {
+  it('installMenus removes stale items first, then creates the items with their exact titles and contexts', async () => {
     const a = api();
     await installMenus(a);
     expect(a.calls[0]).toBe('removeAll');
@@ -26,8 +27,11 @@ describe('context menu (M2 T16)', () => {
       ['tc-allowdup', 'Never dedupe this site'],
       ['tc-lock', 'Lock this tab'],
       ['tc-why', 'Why is this tab here?'],
+      ['tc-project', 'Add to project'],
+      ['tc-project-remove', 'Remove from project'],
     ]);
     for (const c of created) expect(c.contexts).toEqual([...MENU_CONTEXTS]);
+    expect(created.find((c) => c.id === 'tc-project').enabled).toBe(false); // no open project yet
     expect(MENU_CONTEXTS).toEqual(['page', 'link', 'action']);
   });
 
@@ -35,7 +39,7 @@ describe('context menu (M2 T16)', () => {
     const a = api();
     await refreshMenus(a, { id: 3, url: 'chrome://settings' }, () => false);
     const up = (a.update as ReturnType<typeof vi.fn>).mock.calls;
-    expect(up.map((c) => c[0]).sort()).toEqual([...Object.values(MENU_IDS)].sort());
+    expect(up.map((c) => c[0]).sort()).toEqual([...Object.values(MENU_IDS)].sort()); // not the project items
     for (const c of up) expect(c[1].enabled).toBe(false);
   });
 
@@ -106,5 +110,58 @@ describe('context menu (M2 T16)', () => {
     await onMenuClick({ menuItemId: 'other' }, tab, d);
     expect(d.safety.lock).not.toHaveBeenCalled();
     expect(d.openPage).not.toHaveBeenCalled();
+  });
+
+  it('createProjectMenu: one child of tc-project per open project; rebuilt only when the projects change', async () => {
+    const a = api();
+    const { sync } = createProjectMenu(a);
+    await sync([{ id: 'r:ABC-1', title: 'ABC-1' }, { id: 'r:ABC-2', title: 'ABC-2 · Login' }]);
+    expect(a.calls).toEqual(['remove:tc-project', 'remove:tc-project-remove', 'create:tc-project', 'create:tc-project:r:ABC-1', 'create:tc-project:r:ABC-2', 'create:tc-project-remove']);
+    const created = (a.create as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]);
+    expect(created[0]).toMatchObject({ id: 'tc-project', title: 'Add to project', enabled: true });
+    expect(created[1]).toMatchObject({ id: 'tc-project:r:ABC-1', parentId: 'tc-project', title: 'ABC-1' });
+    a.calls.length = 0;
+    await sync([{ id: 'r:ABC-1', title: 'ABC-1' }, { id: 'r:ABC-2', title: 'ABC-2 · Login' }]);
+    expect(a.calls).toEqual([]);
+    await sync([]);
+    expect(a.calls).toEqual(['remove:tc-project', 'remove:tc-project-remove', 'create:tc-project', 'create:tc-project-remove']);
+    expect((a.create as ReturnType<typeof vi.fn>).mock.calls.at(-2)![0]).toMatchObject({ id: 'tc-project', enabled: false });
+  });
+
+  it('a project child adds the tab to that project; Remove from project removes it', async () => {
+    const d = { ...deps(), projects: { addTab: vi.fn(async () => {}), removeTab: vi.fn(async () => {}) } };
+    await onMenuClick({ menuItemId: 'tc-project:jira-ticket-title:ABC-1' }, tab, d);
+    expect(d.projects.addTab).toHaveBeenCalledWith(9, 'jira-ticket-title:ABC-1');
+    await onMenuClick({ menuItemId: 'tc-project-remove' }, tab, d);
+    expect(d.projects.removeTab).toHaveBeenCalledWith(9);
+    await onMenuClick({ menuItemId: 'tc-project:x' }, { id: 1, url: 'chrome://settings' }, d);
+    expect(d.projects.addTab).toHaveBeenCalledTimes(1);
+  });
+
+  it('M3-R71: overlapping syncs and an install run one at a time; install re-adds the last projects', async () => {
+    const a = api();
+    let release!: () => void;
+    let first = true;
+    a.remove = vi.fn(async (id: string) => {
+      a.calls.push(`remove:${id}`);
+      if (first && id === 'tc-project') { first = false; await new Promise<void>((r) => { release = r; }); }
+    });
+    const m = createProjectMenu(a);
+    const one = m.sync([{ id: 'r:A-1', title: 'A-1' }]);
+    const two = m.sync([{ id: 'r:B-1', title: 'B-1' }]);
+    const inst = m.install();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(a.calls).toEqual(['remove:tc-project', 'remove:tc-project-remove']); // the second sync waits
+    release();
+    await Promise.all([one, two, inst]);
+    expect(a.calls.slice(2)).toEqual([
+      'create:tc-project', 'create:tc-project:r:A-1', 'create:tc-project-remove',
+      'remove:tc-project', 'remove:tc-project-remove', 'create:tc-project', 'create:tc-project:r:B-1', 'create:tc-project-remove',
+      'removeAll', 'create:tc-group', 'create:tc-close', 'create:tc-allowdup', 'create:tc-lock', 'create:tc-why', 'create:tc-project', 'create:tc-project-remove',
+      'remove:tc-project', 'remove:tc-project-remove', 'create:tc-project', 'create:tc-project:r:B-1', 'create:tc-project-remove',
+    ]);
+    a.calls.length = 0;
+    await m.sync([{ id: 'r:B-1', title: 'B-1' }]);
+    expect(a.calls).toEqual([]);
   });
 });

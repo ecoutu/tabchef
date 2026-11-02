@@ -178,16 +178,30 @@ describe('resolveProjects: sticky membership', () => {
   it('the title loses the key while loading (same URL) → still assigned; the URL changes → re-evaluated', () => {
     const ticket = tab(1, TICKET, '[ABC-1] Login fails - Jira');
     const first = resolve(snapOf(ticket, tab(2, PR, 'ABC-1: fix login · Pull Request #5 · acme/api')));
-    expect(first.sticky.get(2)).toEqual({ projectId: `${RID}:ABC-1`, url: PR });
+    expect(first.sticky.get(2)).toEqual({ projectId: `${RID}:ABC-1`, url: PR, ruleKey: `${RID}/pr`, index: 1 });
     const projects = first.created;
 
     const loading = resolve(snapOf(ticket, tab(2, PR, 'github.com/acme/api/pull/5')), { projects, sticky: first.sticky });
     expect(loading.assignments.get(2)).toMatchObject({ projectId: `${RID}:ABC-1`, via: 'rule' });
-    expect(loading.sticky.get(2)).toEqual({ projectId: `${RID}:ABC-1`, url: PR });
+    expect(loading.sticky.get(2)).toEqual({ projectId: `${RID}:ABC-1`, url: PR, ruleKey: `${RID}/pr`, index: 1 });
 
     const moved = resolve(snapOf(ticket, tab(2, 'https://github.com/acme/api/pull/6', 'github.com/acme/api/pull/6')), { projects, sticky: loading.sticky });
     expect(moved.assignments.has(2)).toBe(false);
     expect(moved.sticky.has(2)).toBe(false);
+  });
+  it('while loading, a sticky tab keeps the rule that assigned it (T14 carry), at that rule\'s current index', () => {
+    const extra: Recipe = {
+      ...recipe,
+      rules: [...recipe.rules, { id: 'late', name: 'late', enabled: true, match: { url: 'nowhere.test/*' }, actions: [{ assignProject: { key: 'ZZZ-1' } }] }],
+    };
+    const c: Config = { ...defaultConfig(), recipes: [{ id: RID, enabled: true, params: {}, source: 'builtin' }] };
+    const { program: p, errors } = compileProgram(c, { [RID]: extra });
+    expect(errors).toEqual([]);
+    const projects = [project('ABC-1')];
+    const sticky: StickyMap = new Map([[2, { projectId: `${RID}:ABC-1`, url: PR, ruleKey: `${RID}/pr`, index: 7 }]]);
+    const r = resolve(snapOf(tab(2, PR, 'github.com/acme/api/pull/5')), { program: p, projects, sticky });
+    expect(r.assignments.get(2)).toMatchObject({ ruleKey: `${RID}/pr`, index: 1 }); // not the recipe's last rule (late, 2)
+    expect(r.sticky.get(2)).toEqual({ projectId: `${RID}:ABC-1`, url: PR, ruleKey: `${RID}/pr`, index: 1 });
   });
   it('a sticky entry for a project that no longer exists is dropped', () => {
     const sticky: StickyMap = new Map([[2, { projectId: `${RID}:ABC-1`, url: PR }]]);

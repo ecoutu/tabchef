@@ -48,7 +48,9 @@ const h = vi.hoisted(() => {
   });
   /** What ProgramCache.get resolves to (the age.tick gate reads it). */
   const state: { program: unknown } = { program: { rules: [] } };
-  return { instances, listeners, flags, fake, returns, calls, state, browser: node([]) };
+  /** createProjectMenu's result (the project submenu). */
+  const projectMenu = { sync: vi.fn<(ps: unknown) => Promise<void>>(async () => {}), install: vi.fn(async () => {}) };
+  return { instances, listeners, flags, fake, returns, calls, state, projectMenu, browser: node([]) };
 });
 
 vi.mock('wxt/browser', () => ({ browser: h.browser }));
@@ -93,10 +95,16 @@ vi.mock('../../src/engine/context-menu', async (orig) => ({
   installMenus: vi.fn(async () => {}),
   refreshMenus: vi.fn(async () => {}),
   onMenuClick: vi.fn(async () => {}),
+  createProjectMenu: vi.fn(() => h.projectMenu),
 }));
 vi.mock('../../src/engine/sources', async (orig) => ({
   ...(await orig<typeof import('../../src/engine/sources')>()),
   SourceService: h.fake('sources', () => ({ ready: Promise.resolve(), factsFor: vi.fn(() => undefined) })),
+}));
+vi.mock('../../src/engine/projects', async (orig) => ({
+  ...(await orig<typeof import('../../src/engine/projects')>()),
+  ProjectStore: h.fake('projectStore'),
+  ProjectService: h.fake('projects'),
 }));
 vi.mock('../../src/engine/connections/manager', async (orig) => ({
   ...(await orig<typeof import('../../src/engine/connections/manager')>()),
@@ -491,6 +499,35 @@ describe('background wiring', () => {
     expect(I('dedupe').onReplaced).toHaveBeenCalledWith(10, 9);
     expect(I('tabAges').onReplaced).toHaveBeenCalledWith(10, 9);
     expect(I('anchors').onTabReplaced).toHaveBeenCalledWith(10, 9);
+    expect(I('projects').onReplaced).toHaveBeenCalledWith(10, 9);
+  });
+
+  it('M3 T15: the ProjectService feeds the planner, handles projects.* and the project menu items', async () => {
+    const d = I('projects').args[0] as Record<string, unknown> & { state: () => unknown; schedule: (r: string) => void; onProjectsChanged: (ps: unknown) => void };
+    expect(d.store).toBe(I('projectStore'));
+    expect(I('projectStore').args[0]).toBeDefined(); // storage.local
+    expect(d.sources).toBe(I('sources'));
+    expect(d.facts).toBe(I('pageFacts'));
+    expect(d.safety).toBe(I('safety'));
+    d.state();
+    expect(I('reconciler').liveState).toHaveBeenCalled();
+    d.schedule('project');
+    expect(I('reconciler').schedule).toHaveBeenCalledWith('project');
+    d.onProjectsChanged([{ id: 'r:ABC-1', title: 'ABC-1' }]);
+    expect(h.projectMenu.sync).toHaveBeenCalledWith([{ id: 'r:ABC-1', title: 'ABC-1' }]);
+    const r = I('reconciler').args[2] as { projects: { targets: (s: unknown) => Promise<unknown>; previewTargets: (s: unknown, p: unknown) => Promise<unknown> } };
+    const snap = { tabs: [], groups: [], windows: [] };
+    await r.projects.targets(snap);
+    expect(I('projects').targets).toHaveBeenCalledWith(snap);
+    await r.projects.previewTargets(snap, h.state.program);
+    expect(I('projects').previewTargets).toHaveBeenCalledWith(snap, h.state.program);
+    const hd = vi.mocked(createHandler).mock.calls[0]![0] as unknown as { projects: unknown; preview: { projectOverrides: (s: unknown, p: unknown) => Promise<unknown> } };
+    expect(hd.projects).toBe(I('projects'));
+    await hd.preview.projectOverrides(snap, h.state.program); // previews plan each side with its own overrides (N1)
+    expect(I('reconciler').previewOverrides).toHaveBeenCalledWith(snap, h.state.program);
+    expect(d.session).toEqual({ get: expect.any(Function), set: expect.any(Function) }); // the closed-time clock (N2)
+    await fire('contextMenus.onClicked', { menuItemId: 'tc-project:r:ABC-1' }, { id: 8 });
+    expect(onMenuClick).toHaveBeenCalledWith({ menuItemId: 'tc-project:r:ABC-1' }, { id: 8 }, expect.objectContaining({ projects: I('projects') }));
   });
 
   it('group and window events re-plan; a removed group drops its anchors', async () => {
@@ -521,10 +558,11 @@ describe('background wiring', () => {
     expect(I('store').flush).toHaveBeenCalled();
   });
 
-  it('install re-plans and installs the context menu', async () => {
+  it('install re-plans and installs the context menu (through the project menu queue, M3-R71)', async () => {
     await fire('runtime.onInstalled', { reason: 'install' });
     expect(I('reconciler').schedule).toHaveBeenCalledWith('installed');
-    expect(installMenus).toHaveBeenCalled();
+    expect(h.projectMenu.install).toHaveBeenCalled();
+    expect(installMenus).not.toHaveBeenCalled(); // never outside the queue
   });
 
   it('a stored change to close suggestions recounts the badge; other areas do not', async () => {

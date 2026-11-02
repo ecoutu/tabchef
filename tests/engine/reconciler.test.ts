@@ -7,11 +7,8 @@ import { FakeBrowserPort } from '../../src/platform/fake-port';
 import type { Config, GroupColor, GroupRule, TabSnap } from '../../src/core/types';
 import { withGroupRules, programOf } from '../helpers/config';
 import { builtinRecipes } from '../../src/recipes/load';
-import { planTargets, type PlanContext, type Targets } from '../../src/core/group/plan';
 import type { GroupTarget } from '../../src/core/group/evaluate';
-import type { LiveState } from '../../src/engine/state';
 import type { Program } from '../../src/core/lang/types';
-import type { Op, Snapshot } from '../../src/core/types';
 
 type NewTab = Omit<TabSnap, 'index' | 'groupId'> & Partial<Pick<TabSnap, 'index' | 'groupId'>>;
 
@@ -636,13 +633,13 @@ describe('Reconciler.planContext (M2 T13 preview)', () => {
   });
 });
 
-describe('Reconciler: updateGroup {title} (M3-R41)', () => {
+describe('Reconciler: updateGroup {title} (M3-R41), through project overrides (T15)', () => {
   beforeEach(() => { fakeBrowser.reset(); });
-  type Internals = {
-    apply(op: Op, snap: Snapshot, st: LiveState, p: Program, pre: Targets): Promise<void>;
-    dryRunPass(snap: Snapshot, p: Program, ctx: PlanContext): void;
-  };
-  const internals = (r: Reconciler) => r as unknown as Internals;
+  const target = (title: string, key = 'ABC-1'): GroupTarget => ({
+    key: 'p/r', ruleId: 'p/r', index: 0, ruleIndex: 0, title, color: 'blue', collapsed: false, sortGroups: 'creation',
+    strict: true, merge: false, dryRun: false, anchors: [], titleMatches: (t) => t === key || t.startsWith(`${key} · `),
+  });
+  const projectsOf = (m: Map<number, GroupTarget | null>) => ({ targets: vi.fn(async () => m), previewTargets: vi.fn(async () => m) });
 
   it('passes the title to the port, adopts the new title and re-keys its creation number', async () => {
     const f = world();
@@ -650,60 +647,106 @@ describe('Reconciler: updateGroup {title} (M3-R41)', () => {
     f.addTab(tab(2, A, { groupId: 8 }));
     f.addGroup({ id: 7, windowId: 1, title: 'ABC-1', color: 'blue', collapsed: false });
     f.addGroup({ id: 8, windowId: 1, title: 'A', color: 'red', collapsed: false });
-    const program = programOf(config);
-    const r = new Reconciler(f, async () => program);
+    const projects = projectsOf(new Map([[1, target('ABC-1 · Login fails')]]));
+    const r = new Reconciler(f, async () => programOf(config), { projects });
     const st = await r.liveState();
     st.managedTitles.add('ABC-1');
     st.creationOrder.set('1|ABC-1', 1);
     st.creationOrder.set('1|A', 2);
-    const snap = structuredClone(f.state);
-    const pre = planTargets(snap, program, st);
-    await internals(r).apply({ kind: 'updateGroup', groupId: 7, title: 'ABC-1 · Login fails' }, snap, st, program, pre);
+    await r.flush();
+    expect(projects.targets).toHaveBeenCalledWith(expect.objectContaining({ tabs: expect.any(Array) }));
     expect(f.calls.filter((c) => c.method === 'updateGroup').map((c) => c.args)).toEqual([[7, { title: 'ABC-1 · Login fails' }]]);
     expect(f.state.groups.find((g) => g.id === 7)?.title).toBe('ABC-1 · Login fails');
     expect(st.managedTitles.has('ABC-1 · Login fails')).toBe(true);
+    expect(st.managedTitles.has('ABC-1')).toBe(false);
     expect([...st.creationOrder].sort()).toEqual([['1|A', 2], ['1|ABC-1 · Login fails', 1]]);
   });
 
-  it('drops the old title from managedTitles once no group has it; later ops of the pass see the new title', async () => {
+  it('renames the group in every window, drops the old managed title, and a joining tab logs the new title', async () => {
     const f = world([1, 2]);
     f.addTab(tab(1, OTHER, { groupId: 7 }));
     f.addTab(tab(2, OTHER, { windowId: 2, groupId: 9 }));
     f.addTab(tab(3, OTHER, { windowId: 2 }));
     f.addGroup({ id: 7, windowId: 1, title: 'ABC-1', color: 'blue', collapsed: false });
     f.addGroup({ id: 9, windowId: 2, title: 'ABC-1', color: 'blue', collapsed: false });
-    const program = programOf(config);
     const logs: { action: string; detail: string; tabId?: number }[] = [];
-    const r = new Reconciler(f, async () => program, { log: { add: (e) => logs.push(e) } });
+    const projects = projectsOf(new Map([1, 2, 3].map((id) => [id, target('ABC-1 · X')])));
+    const r = new Reconciler(f, async () => programOf(config), { projects, log: { add: (e) => logs.push(e) } });
     const st = await r.liveState();
     st.managedTitles.add('ABC-1');
-    const snap = structuredClone(f.state);
-    const pre = planTargets(snap, program, st);
-    const rename = (groupId: number) => internals(r).apply({ kind: 'updateGroup', groupId, title: 'ABC-1 · X' }, snap, st, program, pre);
-    await rename(7);
-    expect(st.managedTitles.has('ABC-1')).toBe(true); // window 2's group still has it
-    await rename(9);
+    await r.flush();
+    expect(f.state.groups.map((g) => [g.id, g.title]).sort()).toEqual([[7, 'ABC-1 · X'], [9, 'ABC-1 · X']]);
+    expect(groupOf(f, 3)).toBe('ABC-1 · X');
     expect(st.managedTitles.has('ABC-1')).toBe(false);
     expect(st.managedTitles.has('ABC-1 · X')).toBe(true);
-    await internals(r).apply({ kind: 'moveTabs', tabIds: [3], windowId: 2, groupId: 9 }, snap, st, program, pre);
-    expect(logs.find((l) => l.tabId === 3)?.detail).toBe('Moved to ABC-1 · X');
+    expect(logs.find((l) => l.tabId === 3)?.detail).toBe('Moved to ABC-1 · X by rule p/r');
   });
 
   it('global dry run logs would-rename and calls nothing', async () => {
     const f = world();
     f.addTab(tab(1, OTHER, { groupId: 7 }));
     f.addGroup({ id: 7, windowId: 1, title: 'ABC-1', color: 'blue', collapsed: false });
-    const program = programOf({ ...config, dryRun: true });
     const logs: { action: string; detail: string; dryRun?: true }[] = [];
-    const r = new Reconciler(f, async () => program, { log: { add: (e) => logs.push(e) } });
-    const target: GroupTarget = {
-      key: 'p/r', ruleId: 'p/r', index: 0, ruleIndex: 0, title: 'ABC-1 · X', color: 'blue', collapsed: false,
-      sortGroups: 'creation', strict: true, merge: false, dryRun: false, anchors: [], titleMatches: (t) => t === 'ABC-1',
-    };
-    const ctx: PlanContext = { leaveAlone: new Set(), managedTitles: new Set(['ABC-1']), creationOrder: new Map(), overrides: new Map([[1, target]]) };
-    internals(r).dryRunPass(structuredClone(f.state), program, ctx);
+    const projects = projectsOf(new Map([[1, target('ABC-1 · X')]]));
+    const r = new Reconciler(f, async () => programOf({ ...config, dryRun: true }), { projects, log: { add: (e) => logs.push(e) } });
+    (await r.liveState()).managedTitles.add('ABC-1');
+    await r.flush();
     expect(mutations(f)).toEqual([]);
     expect(logs).toEqual([expect.objectContaining({ action: 'would-group', detail: 'Would rename group ABC-1 to ABC-1 · X (dry run)', dryRun: true })]);
+    // R50: the side-effecting live targets() is never called under global dry run.
+    expect(projects.targets).not.toHaveBeenCalled();
+    expect(projects.previewTargets).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ dryRun: true }));
+  });
+
+  it('a failing projects.targets is logged as a reconcile error, not thrown', async () => {
+    const f = world();
+    f.addTab(tab(1, A));
+    const logs: { action: string; detail: string }[] = [];
+    const projects = { targets: vi.fn(async () => { throw new Error('store down'); }), previewTargets: vi.fn(async () => new Map()) };
+    const r = new Reconciler(f, async () => programOf(config), { projects, log: { add: (e) => logs.push(e) } });
+    await r.flush();
+    expect(logs).toContainEqual(expect.objectContaining({ action: 'reconcile-error', detail: 'store down' }));
+  });
+});
+
+describe('Reconciler.planContext: project overrides (T15 fix)', () => {
+  beforeEach(() => { fakeBrowser.reset(); });
+  it('carries the side-effect free project targets of the live Program, so a preview keeps project tabs in their group', async () => {
+    const f = world();
+    f.addTab(tab(1, OTHER, { groupId: 7 }));
+    f.addGroup({ id: 7, windowId: 1, title: 'ABC-1', color: 'blue', collapsed: false });
+    const target: GroupTarget = {
+      key: 'p/r', ruleId: 'p/r', index: 0, ruleIndex: 0, title: 'ABC-1', color: 'blue', collapsed: false, sortGroups: 'creation',
+      strict: true, merge: false, dryRun: false, anchors: [],
+    };
+    const projects = { targets: vi.fn(async () => new Map()), previewTargets: vi.fn(async () => new Map([[1, target]])) };
+    const program = programOf(config);
+    const r = new Reconciler(f, async () => program, { projects });
+    (await r.liveState()).managedTitles.add('ABC-1');
+    const snap = await f.snapshot();
+    const ctx = await r.planContext(snap, program);
+    expect(ctx.overrides?.get(1)).toBe(target);
+    expect(projects.targets).not.toHaveBeenCalled();
+    // A draft adding a later rule for the project tab's site: the project (rule index 0) still wins, so no move.
+    const { previewChange } = await import('../../src/core/lang/preview');
+    const after = programOf(withGroupRules([rule('x', 'https://other.com/**', 'X', 'red')], config));
+    expect(previewChange(snap, program, after, () => ({}), ctx).moves).toEqual([]);
+    // Without the overrides the preview would claim the project tab moves to X.
+    expect(previewChange(snap, program, after, () => ({}), { ...ctx, overrides: undefined }).moves.map((m) => [m.tabId, m.to])).toEqual([[1, 'X']]);
+  });
+});
+
+describe('Reconciler.previewOverrides (T15 fix, M3-R73)', () => {
+  beforeEach(() => { fakeBrowser.reset(); });
+  it('a failing previewTargets previews without project overrides and warns, rather than failing the preview', async () => {
+    const f = world();
+    f.addTab(tab(1, A));
+    const warn = vi.fn();
+    const projects = { targets: vi.fn(async () => new Map()), previewTargets: vi.fn(async () => { throw new Error('store down'); }) };
+    const r = new Reconciler(f, async () => programOf(config), { projects, warn });
+    const ctx = await r.planContext(await f.snapshot(), programOf(config));
+    expect(ctx.overrides).toBeUndefined();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('store down'));
   });
 });
 

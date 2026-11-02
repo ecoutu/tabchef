@@ -14,8 +14,11 @@ import type { Program, TabFacts } from '../lang/types';
 import type { GroupColor, Snapshot, TabSnap } from '../types';
 import type { Project, ProjectAssignment, ProjectDef } from './types';
 
-/** tabId → the project a tab joined by rules and the normalized URL it had then (T15 persists it, M3-R42). */
-export type StickyMap = Map<number, { projectId: string; url: string }>;
+/**
+ * tabId → the project a tab joined by rules, the normalized URL it had then, and the assigning rule (key and index;
+ * T15 persists it in RuntimeState.projectTabs, M3-R42/R66). Entries without the rule are from before it was stored.
+ */
+export type StickyMap = Map<number, { projectId: string; url: string; ruleKey?: string; index?: number }>;
 
 export interface ResolveInput {
   snap: Snapshot;
@@ -91,7 +94,7 @@ export function resolveProjects(input: ResolveInput): ResolveResult {
   };
   const join = (tabId: number, url: string, p: Project, c: Pick<ProjectCandidate, 'ruleKey' | 'index'>): void => {
     assignments.set(tabId, { projectId: p.id, key: p.key, via: 'rule', ruleKey: c.ruleKey, index: c.index });
-    sticky.set(tabId, { projectId: p.id, url });
+    sticky.set(tabId, { projectId: p.id, url, ruleKey: c.ruleKey, index: c.index });
   };
 
   // Rule candidates, and sticky membership for tabs whose URL is unchanged.
@@ -103,10 +106,12 @@ export function resolveProjects(input: ResolveInput): ResolveResult {
     const s = input.sticky.get(t.id);
     const sp = s && s.url === url ? byId.get(s.projectId) : undefined;
     if (sp && !excluded(sp, url)) {
-      // The rule that assigned it is not stored: use the tab's own candidate for that key, else the lowest-priority
-      // assignProject rule of the recipe (a sticky tab never outranks a group rule it might not have outranked).
+      // The tab's own candidate for that key, else the rule that assigned it (at its current index), else the
+      // lowest-priority assignProject rule of the recipe (a sticky tab never outranks a group rule it might not have
+      // outranked).
       const own = cands.find((c) => recipeOf.get(c.ruleKey) === sp.recipeId && c.key === sp.key);
-      const fallback = program.rules.filter((r) => r.recipeId === sp.recipeId && r.rule.actions.some((a) => 'assignProject' in a)).at(-1);
+      const assigned = s?.ruleKey !== undefined ? program.rules.find((r) => r.key === s.ruleKey && r.recipeId === sp.recipeId) : undefined;
+      const fallback = assigned ?? program.rules.filter((r) => r.recipeId === sp.recipeId && r.rule.actions.some((a) => 'assignProject' in a)).at(-1);
       const c = own ?? (fallback && { ruleKey: fallback.key, index: fallback.index });
       if (c) { join(t.id, url, sp, c); continue; }
     }

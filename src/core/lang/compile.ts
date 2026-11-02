@@ -40,6 +40,7 @@ import { validateRule } from '../config/validate-config.generated.js';
 import { DURATION } from './duration';
 import type { Config, DedupeSettings } from '../types';
 import type { CompiledRule, Cond, NeedsAlt, NeedsEntry, ParamDef, Program, Recipe, RecipeLevel, RecipeNeeds, RecipeRef, Rule } from './types';
+import type { ProjectDef } from '../projects/types';
 
 export interface CompileError { key: string; error: string }
 export interface CompileOptions {
@@ -192,7 +193,7 @@ function ruleErrors(rule: unknown, tables: Tables): string[] {
   return ruleProblems(rule as Rule, tables).map((p) => `${p.path} ${p.message}`);
 }
 
-interface Candidate { id: string; source: RecipeRef['source']; body: Recipe; ref: RecipeRef }
+interface Candidate { id: string; source: RecipeRef['source']; body: Recipe; ref: RecipeRef; values: Record<string, unknown> }
 
 /**
  * Whether a recipe rule runs (R56/R57): the user's boolean override `ref.ruleEnabled[rule.id]`, else the body's
@@ -250,7 +251,7 @@ function resolveRecipes(config: Config, builtins: Record<string, Recipe>, errors
       continue;
     }
     if (body.views !== undefined && !(Array.isArray(body.views) && body.views.every(isObj))) { errors.push({ key: id, error: 'malformed views' }); continue; }
-    out.push({ id, source: ref.source, body, ref });
+    out.push({ id, source: ref.source, body, ref, values });
   }
   return withoutConflicts(out, errors);
 }
@@ -375,6 +376,10 @@ export function compileProgram(
     for (const r of rules) if (r.needs) needs[`${c.id}/${r.id}`] = needsOf(r.needs); // paused rules too
     if (c.body.levels) levels[c.id] = c.body.levels;
   }
+  // M3 T15: what the ProjectService needs of a project recipe (its def and params; Program carries no params otherwise).
+  const withProject = survivors.filter((c) => c.body.project !== undefined);
+  const projects = withProject.map((c): ProjectDef => ({ ...c.body.project!, recipeId: c.id }));
+  const params = Object.fromEntries(withProject.map((c) => [c.id, c.values]));
 
   return {
     program: {
@@ -384,6 +389,7 @@ export function compileProgram(
       dedupe,
       needs,
       ...(Object.keys(levels).length && { levels }),
+      ...(projects.length && { projects, params }),
       dryRun: config.dryRun === true,
     },
     errors,
