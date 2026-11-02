@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import Field from './Field.svelte';
   import { onPermissionsChanged, parseSites, readPermissions, removePermissions, requestPermissions, type PermissionState } from '../../ui/permissions';
 
   let granted = $state<PermissionState | null>(null);
@@ -41,9 +42,9 @@
   <p class="help">In ask mode Tabchef asks on the duplicate tab itself where it may, else with a notification, else in the popup.</p>
 
   <p class="state" role="status">{promptsOn ? `In-page prompts: on for ${granted!.origins.join(', ')}` : 'In-page prompts: off'}</p>
-  <label class="col">Sites for in-page prompts (one per line)
+  <Field label="Sites for in-page prompts (one per line)" helpLabel="Sites for in-page prompts" help="On these sites, ask mode can show its question as a banner in the duplicate tab itself. Enable asks Chrome for access to them. Elsewhere Tabchef asks with a notification (if enabled) or in the popup.">
     <textarea rows="2" placeholder="https://github.com/*" bind:value={sites}></textarea>
-  </label>
+  </Field>
   {#each siteErrors as m (m)}<p class="err" role="alert">{m}</p>{/each}
   <div class="row">
     <button type="button" onclick={enablePrompts}>Enable in-page prompts</button>
@@ -68,7 +69,6 @@
   h3 { margin: 0; font-size: 13px; }
   .help { color: var(--muted); margin: 0; }
   .state { margin: 0; }
-  .col { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--muted); }
   textarea { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 3px 6px; }
   .row { display: flex; gap: 8px; }
   .err { color: var(--danger); font-size: 12px; margin: 2px 0 0; }

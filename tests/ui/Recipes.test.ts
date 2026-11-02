@@ -81,6 +81,19 @@ const card = async (name: string) => (await screen.findByRole('region', { name }
 const sent = (type: string) => send.mock.calls.map((c) => c[0]).filter((r) => r.type === type);
 
 describe('Recipes: cards', () => {
+  it('every param of the built-in Finished recipe has a help tip from its ParamDef', async () => {
+    const { builtinRecipes } = await import('../../src/recipes/load');
+    const defs = builtinRecipes().finished!.params!;
+    items = [finishedItem({ paramDefs: defs })];
+    render(Recipes, props());
+    await card('Finished');
+    for (const def of Object.values(defs)) {
+      expect(def.help, def.label).toBeTruthy();
+      const btn = screen.getByRole('button', { name: `About ${def.label}` });
+      expect(document.getElementById(btn.getAttribute('aria-describedby')!)?.textContent).toBe(def.help);
+    }
+  });
+
   it('shows name, description, needs, status and a params form generated from ParamDef', async () => {
     render(Recipes, props());
     const c = await card('Finished');

@@ -41,6 +41,10 @@
           "type": "string",
           "maxLength": 2048
         },
+        "help": {
+          "type": "string",
+          "maxLength": 2048
+        },
         "enum": {
           "type": "array",
           "minItems": 1

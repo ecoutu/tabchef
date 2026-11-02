@@ -40,6 +40,8 @@ export interface View {
 }
 export interface ParamDef {
   type: 'string' | 'pattern' | 'regex' | 'number' | 'boolean' | 'duration' | 'string[]'; default: unknown; label: string;
+  /** A longer explanation, shown as the field's help tip on the Recipes page. */
+  help?: string;
   /** Allowed values (compared by JSON equality); the schema keyword lands with the recipe schema (T5). */
   enum?: unknown[];
 }

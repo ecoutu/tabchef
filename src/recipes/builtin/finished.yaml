@@ -12,11 +12,13 @@ params:
     type: duration
     default: 3s
     label: Close after
+    help: How long after a matching page loads before its tab is closed or suggested, e.g. 3s or 1m. The Meet rule always waits 2s.
   mode:
     type: string
     default: auto
     enum: [auto, suggest]
     label: Close automatically or suggest in the Finished list
+    help: auto closes the tab after the delay, and you can undo it. suggest only lists the tab in the popup's Finished tab for you to close. Tabs you are using, pinned or locked tabs, and tabs with unsaved form edits are never closed automatically.
   callbackPatterns:
     type: string[]
     default:
@@ -25,6 +27,7 @@ params:
       - '*/oauth/*/success*'
       - '*/oauth2/*/callback*'
     label: OAuth callback URL patterns
+    help: "One pattern per line. A tab on a matching URL is a finished sign-in page and gets closed. * matches anything, and localhost:* matches any port."
   meetEndedTexts:
     type: string[]
     default:
@@ -32,10 +35,12 @@ params:
       - You've left the call
       - The call has ended
     label: Page text that means a Meet call has ended
+    help: One per line. When a Google Meet tab shows any of these texts, its call is over and the tab closes. Matching ignores case. Needs access to meet.google.com.
   redirectPatterns:
     type: string[]
     default: []
     label: Redirect landing URL patterns (none by default)
+    help: "One pattern per line, for pages you only open to be sent on elsewhere. A tab that lands on a matching URL closes. Empty: this rule does nothing."
 rules:
   - id: oauth-callback
     name: Close OAuth callback tabs

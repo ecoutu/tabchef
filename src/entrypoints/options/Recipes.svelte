@@ -19,6 +19,7 @@
   import { completeParams, hostParams, paramErrors, requestedNeeds, withRecipe } from '../../ui/recipes-model';
   import { recipeBody } from '../../ui/rules-model';
   import { builtinRecipes } from '../../recipes/load';
+  import Field from './Field.svelte';
   import LinesField from './LinesField.svelte';
   import PreviewDialog from './PreviewDialog.svelte';
 
@@ -181,19 +182,25 @@
           {#each Object.entries(item.paramDefs) as [name, def] (name)}
             {@const v = values[item.id]?.[name]}
             {#if kind(def) === 'list'}
-              <LinesField label={def.label} value={strList(v)} rows={3} onChange={(l) => set(item.id, name, l)} />
+              <LinesField label={def.label} value={strList(v)} rows={3} help={def.help} onChange={(l) => set(item.id, name, l)} />
             {:else if kind(def) === 'enum'}
-              <label>{def.label}
+              <Field label={def.label} help={def.help}>
                 <select value={String(v)} onchange={(e) => { const s = e.currentTarget.value; set(item.id, name, def.enum?.find((o) => String(o) === s)); }}>
                   {#each def.enum ?? [] as opt (String(opt))}<option value={String(opt)}>{String(opt)}</option>{/each}
                 </select>
-              </label>
+              </Field>
             {:else if kind(def) === 'boolean'}
-              <label class="inline"><input type="checkbox" checked={v === true} onchange={(e) => set(item.id, name, e.currentTarget.checked)} /> {def.label}</label>
+              <Field label={def.label} help={def.help} inline>
+                <input type="checkbox" checked={v === true} onchange={(e) => set(item.id, name, e.currentTarget.checked)} />
+              </Field>
             {:else if kind(def) === 'number'}
-              <label>{def.label}<input type="number" value={typeof v === 'number' ? v : ''} oninput={(e) => set(item.id, name, e.currentTarget.valueAsNumber)} /></label>
+              <Field label={def.label} help={def.help}>
+                <input type="number" value={typeof v === 'number' ? v : ''} oninput={(e) => set(item.id, name, e.currentTarget.valueAsNumber)} />
+              </Field>
             {:else}
-              <label>{def.label}<input value={typeof v === 'string' ? v : ''} oninput={(e) => set(item.id, name, e.currentTarget.value)} /></label>
+              <Field label={def.label} help={def.help}>
+                <input value={typeof v === 'string' ? v : ''} oninput={(e) => set(item.id, name, e.currentTarget.value)} />
+              </Field>
             {/if}
             {#if errs[name]}<p class="err" role="alert">{def.label}: {errs[name]}</p>{/if}
           {/each}
@@ -228,8 +235,6 @@
   .needs { color: var(--muted); font-size: 12px; }
   .rules { margin: 0; padding-left: 18px; font-size: 13px; }
   .params { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 8px; }
-  .params label { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--muted); }
-  .params label.inline { flex-direction: row; align-items: center; gap: 4px; }
   .actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .err { color: var(--danger); font-size: 12px; }
   .ok { color: var(--accent); font-size: 12px; }
