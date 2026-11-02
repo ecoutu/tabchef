@@ -1,4 +1,4 @@
-// Projects (M3 T15): the ProjectStore (storage.local `projects`, not synced) and the ProjectService, which resolves
+// Projects (M3 T15): the ProjectService (store: project-store.ts, closed-time clock: project-clock.ts), which resolves
 // project membership each reconcile pass (T14's pure resolveProjects + projectTargets, planned as PlanContext.overrides,
 // M3-R66), persists sticky membership with its rule in RuntimeState.projectTabs, and runs the user's project actions:
 // add / remove a tab, open a linked PR, close the project's tabs. Ticket status and linked PRs come from the
@@ -13,76 +13,24 @@ import type { PrInfo, PrState, SourceEntry } from '../core/sources/types';
 import type { Snapshot, TabSnap } from '../core/types';
 import { normalizeUrl } from '../core/url/normalize';
 import type { BrowserPort } from '../platform/browser-port';
-import type { KeyValueArea } from './connections/secret-store';
 import type { PageFacts } from './page-facts';
 import type { WhyLog } from './reconciler';
 import type { SafetyService } from './safety';
 import type { SourceService } from './sources';
+import { ProjectClock } from './project-clock';
+import type { ProjectStore } from './project-store';
 import { saveState, type LiveState } from './state';
 
-export const PROJECTS_KEY = 'projects';
-/** Projects with no open tab for this long (browser running time) are pruned on startup. */
-export const PRUNE_AFTER_MS = 7 * 24 * 3600_000;
+export { PROJECTS_KEY, ProjectStore } from './project-store';
+export { CLOSED_CLOCK_KEY, PRUNE_AFTER_MS } from './project-clock';
 /** Linked-PR searches per project at most this often (spec: 15 min). */
 export const LINKED_REFRESH_MS = 15 * 60_000;
-/** Closed time is added to the store at most this often (pruning works in days). */
-const CLOSED_FLUSH_MS = 3600_000;
-/** At most this much closed time is counted between two passes (the browser may not have been running). */
-const MAX_TICK_MS = 15 * 60_000;
-export const CLOSED_CLOCK_KEY = 'projects.closedClock';
-/** The last pass that saw open tabs, and closed time per project not yet added to its stored `closedFor`. */
-interface ClosedClock { lastTick?: number; pending: Record<string, number> }
 
 const PILLS = new Set<PrState>(['open', 'draft', 'merged', 'closed']);
 const CATEGORIES = new Set(['new', 'indeterminate', 'done']);
 const PR_OWNER = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/[A-Za-z0-9_.-]+\/pull\/\d+/;
 const urlOf = (t: TabSnap): string => (t.pendingUrl ? t.pendingUrl : t.url);
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null;
-const isProject = (x: unknown): x is Project => isObj(x) && typeof x.id === 'string' && typeof x.recipeId === 'string'
-  && typeof x.key === 'string' && Array.isArray(x.manual) && Array.isArray(x.excluded) && Array.isArray(x.linked);
-
-/** Stored projects, cached after the first read. A failed read is retried and never overwritten. */
-export class ProjectStore {
-  private cache?: Promise<Map<string, Project>>;
-  private chain: Promise<unknown> = Promise.resolve();
-
-  constructor(private readonly local: Pick<KeyValueArea, 'get' | 'set'>) {}
-
-  private load(): Promise<Map<string, Project>> {
-    this.cache ??= this.local.get(PROJECTS_KEY).then((r) => {
-      const v = r[PROJECTS_KEY];
-      return new Map((Array.isArray(v) ? v.filter(isProject) : []).map((p) => [p.id, p]));
-    }, (e: unknown) => {
-      this.cache = undefined;
-      throw e;
-    });
-    return this.cache;
-  }
-
-  async list(): Promise<Project[]> {
-    return [...(await this.load()).values()].map((p) => structuredClone(p));
-  }
-
-  /** Stores (adds or replaces) each project, in one write. */
-  put(...ps: Project[]): Promise<void> {
-    return this.write((m) => { for (const p of ps) m.set(p.id, structuredClone(p)); });
-  }
-
-  remove(...ids: string[]): Promise<void> {
-    return this.write((m) => { for (const id of ids) m.delete(id); });
-  }
-
-  private write(fn: (m: Map<string, Project>) => void): Promise<void> {
-    const next = this.chain.then(async () => {
-      const m = await this.load();
-      fn(m);
-      await this.local.set({ [PROJECTS_KEY]: [...m.values()] });
-    });
-    this.chain = next.catch(() => {});
-    return next;
-  }
-}
-
 export interface ProjectServiceDeps {
   store: ProjectStore;
   port: Pick<BrowserPort, 'snapshot' | 'createTab' | 'closeTab'>;
@@ -113,10 +61,11 @@ const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is
 export class ProjectService {
   private readonly now: () => number;
   private chain: Promise<unknown> = Promise.resolve();
-  private pruned = false;
+  private readonly clock: ProjectClock;
 
   constructor(private readonly deps: ProjectServiceDeps) {
     this.now = deps.now ?? Date.now;
+    this.clock = new ProjectClock(deps.session, this.now);
   }
 
   /** One at a time: every method reads and writes the store and the sticky map. Never held across the network. */
@@ -186,7 +135,7 @@ export class ProjectService {
         const summary = r.summaries.get(p.id);
         if (summary !== undefined && p.summary === undefined) { p.summary = summary; changed.add(p); }
       }
-      const removed = await this.closedTime(snap, projects, open, changed);
+      const removed = await this.clock.closedTime(snap, projects, open, changed);
       projects = projects.filter((p) => !removed.includes(p.id));
       if (changed.size) await this.deps.store.put(...[...changed].filter((p) => !removed.includes(p.id)));
       if (removed.length) await this.deps.store.remove(...removed);
@@ -205,53 +154,6 @@ export class ProjectService {
       return def && open.has(p.id) ? [{ id: p.id, title: projectGroupTitle(def, p) }] : [];
     }));
     return { program, defs, projects, assignments: r.assignments };
-  }
-
-  /**
-   * Counts browser running time without an open tab per project (`closedFor`), only between passes that see open
-   * tabs (a snapshot before session restore counts nothing), at most MAX_TICK_MS per gap. The clock (last tick and
-   * pending time) is kept in storage.session, so it runs across worker restarts and stops with the browser; pending
-   * time is added to the store hourly. The first such pass of a worker returns the projects closed for PRUNE_AFTER_MS.
-   */
-  private async closedTime(snap: Snapshot, projects: Project[], open: Set<string>, changed: Set<Project>): Promise<string[]> {
-    if (snap.tabs.length === 0) return [];
-    const now = this.now();
-    const clock = await this.readClock();
-    const dt = clock.lastTick === undefined ? 0 : Math.min(Math.max(0, now - clock.lastTick), MAX_TICK_MS);
-    const pending: Record<string, number> = {};
-    for (const p of projects) {
-      if (open.has(p.id)) {
-        if (p.closedFor !== undefined) { delete p.closedFor; changed.add(p); }
-        continue;
-      }
-      const ms = (clock.pending[p.id] ?? 0) + dt;
-      if (ms < CLOSED_FLUSH_MS) { if (ms > 0) pending[p.id] = ms; continue; }
-      p.closedFor = (p.closedFor ?? 0) + ms;
-      changed.add(p);
-    }
-    await this.writeClock({ lastTick: now, pending });
-    if (this.pruned) return [];
-    this.pruned = true;
-    return projects.filter((p) => !open.has(p.id) && (p.closedFor ?? 0) + (pending[p.id] ?? 0) >= PRUNE_AFTER_MS).map((p) => p.id);
-  }
-
-  private memoryClock: ClosedClock = { pending: {} };
-  private async readClock(): Promise<ClosedClock> {
-    if (!this.deps.session) return this.memoryClock;
-    try {
-      const v = await this.deps.session.get(CLOSED_CLOCK_KEY);
-      if (isObj(v) && isObj(v.pending)) {
-        const pending = Object.fromEntries(Object.entries(v.pending).filter((e): e is [string, number] => typeof e[1] === 'number'));
-        return { ...(typeof v.lastTick === 'number' && { lastTick: v.lastTick }), pending };
-      }
-    } catch (e) {
-      console.warn('[tabchef] project clock read failed', e);
-    }
-    return { pending: {} };
-  }
-  private async writeClock(c: ClosedClock): Promise<void> {
-    this.memoryClock = c;
-    await this.deps.session?.set(CLOSED_CLOCK_KEY, c).catch((e: unknown) => console.warn('[tabchef] project clock write failed', e));
   }
 
   private log(tabId: number, detail: string, ruleId?: string, action = 'project-join'): void {
