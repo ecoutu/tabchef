@@ -1,0 +1,13 @@
+{
+  "_comment": "Hand-written from GitHub's documented GraphQL shapes (M3-R26); replace with a sanitized recording after T0. Aliases r<i> = repository, p<j> = pullRequest.",
+  "data": {
+    "r0": {
+      "p0": { "state": "MERGED", "merged": true, "mergedAt": "2026-10-30T12:00:00Z", "isDraft": false, "title": "ABC-1: add thing", "headRefName": "abc-1-add-thing", "reviewDecision": "APPROVED", "url": "https://github.com/acme/web/pull/10" },
+      "p1": { "state": "OPEN", "merged": false, "mergedAt": null, "isDraft": true, "title": "WIP ABC-2", "headRefName": "ABC-2-wip", "reviewDecision": null, "url": "https://github.com/acme/web/pull/11" }
+    },
+    "r1": {
+      "p2": { "state": "CLOSED", "merged": false, "mergedAt": null, "isDraft": false, "title": "Nope", "headRefName": "nope", "reviewDecision": "CHANGES_REQUESTED", "url": "https://github.com/acme/api/pull/3" }
+    },
+    "rateLimit": { "cost": 1, "remaining": 4990, "limit": 5000, "resetAt": "2026-11-02T01:00:00Z" }
+  }
+}

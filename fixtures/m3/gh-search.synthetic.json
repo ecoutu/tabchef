@@ -1,0 +1,15 @@
+{
+  "_comment": "Hand-written (M3-R26) from GitHub's documented search(type: ISSUE) shape. s0 = title search for ABC-1, s1 = head search for ABC-1. The ABC-123 branch is a prefix false positive.",
+  "data": {
+    "s0": { "nodes": [
+      { "number": 5, "title": "ABC-1: fix", "url": "https://github.com/acme/web/pull/5", "state": "OPEN", "isDraft": false, "merged": false, "mergedAt": null, "headRefName": "fix-it", "repository": { "owner": { "login": "acme" }, "name": "web" } },
+      { "number": 6, "title": "ABC-12: other", "url": "https://github.com/acme/web/pull/6", "state": "OPEN", "isDraft": false, "merged": false, "mergedAt": null, "headRefName": "other", "repository": { "owner": { "login": "acme" }, "name": "web" } },
+      {}
+    ] },
+    "s1": { "nodes": [
+      { "number": 7, "title": "no key here", "url": "https://github.com/acme/api/pull/7", "state": "MERGED", "isDraft": false, "merged": true, "mergedAt": "2026-10-01T00:00:00Z", "headRefName": "abc-1-branch", "repository": { "owner": { "login": "acme" }, "name": "api" } },
+      { "number": 8, "title": "no key", "url": "https://github.com/acme/api/pull/8", "state": "OPEN", "isDraft": false, "merged": false, "mergedAt": null, "headRefName": "ABC-123-x", "repository": { "owner": { "login": "acme" }, "name": "api" } },
+      { "number": 5, "title": "ABC-1: fix", "url": "https://github.com/acme/web/pull/5", "state": "OPEN", "isDraft": false, "merged": false, "mergedAt": null, "headRefName": "fix-it", "repository": { "owner": { "login": "acme" }, "name": "web" } }
+    ] }
+  }
+}

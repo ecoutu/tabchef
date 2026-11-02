@@ -1,0 +1,11 @@
+{
+  "_comment": "Hand-written (M3-R26/R27): repo r1 is behind SAML SSO. GraphQL returns data.r1 null plus a FORBIDDEN error whose path[0] is the alias; no SSO url is given.",
+  "data": {
+    "r0": { "p0": { "state": "OPEN", "merged": false, "mergedAt": null, "isDraft": false, "title": "Open one", "headRefName": "feat/x", "reviewDecision": "REVIEW_REQUIRED", "url": "https://github.com/acme/web/pull/10" } },
+    "r1": null,
+    "rateLimit": { "cost": 1, "remaining": 4000, "limit": 5000, "resetAt": "2026-11-02T01:00:00Z" }
+  },
+  "errors": [
+    { "type": "FORBIDDEN", "path": ["r1"], "extensions": { "saml_failure": true }, "message": "Resource protected by organization SAML enforcement. You must grant your Personal Access token access to this organization." }
+  ]
+}

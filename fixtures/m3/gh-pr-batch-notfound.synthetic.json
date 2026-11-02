@@ -1,0 +1,10 @@
+{
+  "_comment": "Hand-written (M3-R26): PR p1 does not exist; GraphQL nulls the node and adds a NOT_FOUND error with path [alias, alias].",
+  "data": {
+    "r0": { "p0": { "state": "OPEN", "merged": false, "mergedAt": null, "isDraft": false, "title": "Here", "headRefName": "x", "reviewDecision": null, "url": "https://github.com/acme/web/pull/1" }, "p1": null },
+    "rateLimit": { "cost": 1, "remaining": 100, "limit": 5000, "resetAt": "2026-11-02T01:00:00Z" }
+  },
+  "errors": [
+    { "type": "NOT_FOUND", "path": ["r0", "p1"], "message": "Could not resolve to a PullRequest with the number of 99." }
+  ]
+}
