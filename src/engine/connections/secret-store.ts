@@ -11,7 +11,8 @@ export interface AccessToken { token: string; expiresAt?: number }
 export interface StoredSecret { token: string; refreshToken?: string; refreshExpiresAt?: number }
 
 export const CONNECTIONS_KEY = 'connections';
-const secretKey = (id: string) => `conn.secret.${id}`;
+/** storage.local key of a connection's long-lived secret (exported for the e2e seeding, M3-R91). */
+export const secretKey = (id: string) => `conn.secret.${id}`;
 const accessKey = (id: string) => `conn.access.${id}`;
 const BUILTIN_IDS = ['github', 'jira'];
 

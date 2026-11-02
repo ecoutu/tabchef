@@ -49,6 +49,10 @@ export const yamlJson = {
  * `import.meta.env.WXT_E2E_LOCALHOST` (M3-R35). Never set for `build` / `zip`; the m3 e2e spec's guard checks that.
  */
 const e2eLocalhost = process.env.WXT_E2E_LOCALHOST === '1';
+// A store package must never carry the localhost grant (M3-R91).
+if (e2eLocalhost && process.argv.slice(2).includes('zip')) {
+  throw new Error('WXT_E2E_LOCALHOST=1 is for e2e builds only: refusing to zip. Unset it and run `npm run zip` again.');
+}
 
 // See https://wxt.dev/api/reference/wxt/interfaces/inlineconfig.html
 export default defineConfig({

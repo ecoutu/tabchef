@@ -12,10 +12,13 @@ import { parse as parseYaml } from 'yaml';
 import { builtinConnectionDefs } from '../../src/core/connections/builtin';
 import type { ConnectionDef, ConnectionStatus } from '../../src/core/connections/types';
 import type { Recipe, RecipeRef } from '../../src/core/lang/types';
+import { RATE_KEY } from '../../src/engine/connections/rate-limiter';
+import { CONNECTIONS_KEY, secretKey } from '../../src/engine/connections/secret-store';
 import { config, EXT_PATH, launch, openTab, reset, send, setConfig, tabs, type Harness } from './helpers';
 import { MOCK_TOKEN, startMockServices, type MockServices } from './mock-services';
 
 interface ViewRow { tabId: number; url: string; source?: { state?: string; mergedAt?: string }; stale?: true }
+interface WhyEntry { tabId?: number; ruleId?: string; action: string; detail: string }
 
 const ROOT = resolve(import.meta.dirname, '../..');
 const RECIPE_ID = 'merged-prs-e2e';
@@ -29,18 +32,15 @@ const isE2eBuild = (() => {
 })();
 
 /**
- * The shipped Merged PRs recipe as a user recipe for the mock: its PR URL pattern points at the mock origin (the tabs
- * cannot be on github.com), and each rule's needs are "the github connection, or nothing" — the shipped page
- * alternative needs `scripting`, which e2e cannot grant, so without the `{}` alternative a needs-reauth connection
- * would pause the rule instead of leaving its rows stale.
+ * The shipped Merged PRs recipe as a user recipe for the mock: only its PR URL pattern changes, to the mock origin
+ * (the tabs cannot be on github.com). Its needs are the shipped ones: needs-reauth keeps the connection level (M3-R89).
  */
-function mergedPrsRecipe(origin: string): RecipeRef {
+function mergedPrsRecipe(origin: string, over: Pick<RecipeRef, 'params' | 'ruleEnabled'> = { params: {} }): RecipeRef {
   const shipped = parseYaml(readFileSync(join(ROOT, 'src/recipes/builtin/merged-prs.yaml'), 'utf8')) as Recipe;
   const host = new URL(origin).host;
   const body = JSON.parse(JSON.stringify(shipped).replaceAll('github.com/:owner/:repo/pull/', `${host}/:owner/:repo/pull/`)) as Recipe;
   body.recipe = RECIPE_ID;
-  for (const r of body.rules) r.needs = { anyOf: [{ connections: ['github'] }, {}] };
-  return { id: RECIPE_ID, enabled: true, params: {}, source: 'user', body };
+  return { id: RECIPE_ID, enabled: true, source: 'user', body, ...over };
 }
 
 test.describe('M3 with mocked services', () => {
@@ -67,24 +67,29 @@ test.describe('M3 with mocked services', () => {
   const mergedRows = async () => (await send<{ rows: ViewRow[] }>(h, { type: 'view.data', viewId: 'merged' })).rows;
   const recentUrls = async () => (await send<{ url: string }[]>(h, { type: 'recent.list' })).map((r) => r.url);
 
+  const withRecipe = (ref: RecipeRef) => ({ ...config([]), recipes: [...config([]).recipes, ref] });
+
   /**
    * The github connection on the mock: a PAT connection whose apiBaseUrl is the mock, stored in the shape setToken
-   * stores (`connections` def + SecretStore's `conn.secret.github`). setToken itself always validates against
-   * api.github.com, so it cannot target the mock. `connections.disconnect` first clears an earlier test's runtime status
-   * (needs-reauth); `connections.test` (GET /user through the ConnectionManager) proves the def reaches the mock. Then
-   * the recipe is enabled, whose config change re-evaluates the capability levels with the connection in place.
+   * stores (CONNECTIONS_KEY def + SecretStore's secretKey('github')); setToken itself always validates against
+   * api.github.com, so it cannot target the mock (M3-R91). Each test starts from a clean connection, so the tests do not
+   * depend on their order: `connections.disconnect` clears an earlier test's runtime status (needs-reauth), and the
+   * limiter's state (RATE_KEY: an earlier 403's block) is removed. `connections.test` (GET /user through the
+   * ConnectionManager) proves the def reaches the mock. Then the recipe is enabled, whose config change re-evaluates the
+   * capability levels with the connection in place.
    */
-  async function connectAndEnable(): Promise<void> {
+  async function connectAndEnable(ref: RecipeRef = mergedPrsRecipe(mock.origin)): Promise<void> {
     await send(h, { type: 'connections.disconnect', id: 'github' });
     const def: ConnectionDef = {
       ...builtinConnectionDefs().github, auth: 'token', baseUrl: mock.origin, apiBaseUrl: mock.origin, hosts: ['http://localhost/*'],
     };
-    await h.sw.evaluate(async ([d, token]) => {
-      await chrome.storage.local.set({ connections: [d], 'conn.secret.github': { token } });
-    }, [def, MOCK_TOKEN] as const);
+    await h.sw.evaluate(async ([items, rateKey]) => {
+      await chrome.storage.session.remove(rateKey);
+      await chrome.storage.local.set(items);
+    }, [{ [CONNECTIONS_KEY]: [def], [secretKey('github')]: { token: MOCK_TOKEN } }, RATE_KEY] as const);
     expect(await send<{ login?: string }>(h, { type: 'connections.test', id: 'github' })).toEqual({ login: 'e2e-user' });
     expect((await github())?.state).toBe('ok');
-    await setConfig(h, { ...config([]), recipes: [...config([]).recipes, mergedPrsRecipe(mock.origin)] });
+    await setConfig(h, withRecipe(ref));
     await expect.poll(async () => (await send<{ id: string }[]>(h, { type: 'views.list' })).map((v) => v.id), { timeout: 5000 })
       .toContain('merged');
   }
@@ -104,10 +109,14 @@ test.describe('M3 with mocked services', () => {
     expect(await recentUrls()).toContain(prUrl(1));
   });
 
-  test('(c) a 401 marks the connection needs-reauth; the merged row stays, stale, and no tab closes', async () => {
-    mock.github.setPr('acme/api#2', { state: 'MERGED', title: 'Fix logout', mergedAt: '2026-11-01T12:00:00Z' });
+  test('(c) a 401 marks the connection needs-reauth; the merged row stays, stale, and its due auto-close is skipped', async () => {
+    // Auto-close on, falling due 15 s after the merge: the merge is "now", so the close is not due until after the 401.
+    const AFTER_MS = 15_000;
+    const auto = { params: { autoCloseAfter: '15s' }, ruleEnabled: { 'auto-close-merged': true } };
+    await connectAndEnable(mergedPrsRecipe(mock.origin, auto));
+    const mergedAt = Date.now();
+    mock.github.setPr('acme/api#2', { state: 'MERGED', title: 'Fix logout', mergedAt: new Date(mergedAt).toISOString() });
     mock.github.setPr('acme/api#3', { state: 'OPEN', title: 'Refactor session' });
-    await connectAndEnable();
     const merged = await openTab(h, prUrl(2));
     await expect.poll(async () => (await mergedRows()).filter((r) => r.tabId === merged).map((r) => r.stale ?? false), { timeout: 5000 })
       .toEqual([false]);
@@ -116,13 +125,23 @@ test.describe('M3 with mocked services', () => {
     mock.github.failNext(401);
     const open = await openTab(h, prUrl(3));
     await expect.poll(async () => (await github())?.state, { timeout: 5000 }).toBe('needs-reauth');
+    expect(Date.now()).toBeLessThan(mergedAt + AFTER_MS); // the 401 came before the close was due
 
     // The next refresh (any tab change) sees needs-reauth: the final entry is kept and marked stale, nothing is sent.
+    // The shipped needs keep pr-state at its connection level (M3-R89), so the row stays listed.
     const sent = mock.github.requests;
     await openTab(h, `${mock.origin}/after-401`);
     await expect.poll(async () => (await mergedRows()).filter((r) => r.tabId === merged).map((r) => ({ state: r.source?.state, stale: r.stale })), { timeout: 5000 })
       .toEqual([{ state: 'merged', stale: true }]);
     expect(mock.github.requests).toBe(sent);
+
+    // Once the close is due, a config change re-evaluates every open tab (R51): the rule matches on the stale entry, and
+    // the close is skipped and logged (M3-R90) instead of executed.
+    await expect.poll(() => Date.now(), { timeout: AFTER_MS + 5000, intervals: [500] }).toBeGreaterThan(mergedAt + AFTER_MS + 500);
+    await setConfig(h, withRecipe(mergedPrsRecipe(mock.origin, { ...auto, params: { ...auto.params, includeClosed: true } })));
+    await expect.poll(async () => (await send<WhyEntry[]>(h, { type: 'why.all' }))
+      .filter((e) => e.tabId === merged && e.action === 'close-skipped').map((e) => ({ ruleId: e.ruleId, detail: e.detail })), { timeout: 5000 })
+      .toEqual([{ ruleId: `${RECIPE_ID}/auto-close-merged`, detail: 'Not closed: its source data is stale' }]);
     expect(await tabById(merged)).toMatchObject({ url: prUrl(2) });
     expect(await tabById(open)).toMatchObject({ url: prUrl(3) });
     const recent = await recentUrls();
