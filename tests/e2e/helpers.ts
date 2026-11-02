@@ -124,6 +124,10 @@ export async function groupOrder(h: Harness, windowId: number): Promise<string[]
 export const openTab = (h: Harness, url: string, windowId?: number) =>
   h.sw.evaluate(async ([u, w]) => (await chrome.tabs.create({ url: u, active: true, ...(w === undefined ? {} : { windowId: w }) })).id!, [url, windowId] as const);
 
+/** Opens a BACKGROUND tab (`active: false`): never active, so close fire-time protection does not apply (R17). */
+export const openBackgroundTab = (h: Harness, url: string) =>
+  h.sw.evaluate(async (u) => (await chrome.tabs.create({ url: u, active: false })).id!, url);
+
 /** Closes every web tab (keeps extension pages) and resets the config, so scenarios don't see each other's tabs. */
 export async function reset(h: Harness): Promise<void> {
   await setConfig(h, config([]));

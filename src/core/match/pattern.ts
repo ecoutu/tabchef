@@ -1,3 +1,5 @@
+import { slowRegexProblem } from './regex-safety';
+
 export class PatternError extends Error {
   constructor(message: string) {
     super(message);
@@ -30,6 +32,8 @@ function compileRegex(p: string): Matcher {
   } catch (e) {
     throw new PatternError(`invalid regex: ${(e as Error).message}`);
   }
+  const slow = slowRegexProblem(body); // R67: a nested quantifier could hang the worker on a page-controlled title
+  if (slow) throw new PatternError(slow);
   return (url) => {
     const m = re.exec(url);
     return m ? collect(m.groups) : null;

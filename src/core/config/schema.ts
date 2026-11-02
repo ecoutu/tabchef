@@ -1,6 +1,7 @@
 import type { Config, DedupeSettings, GroupColor } from '../types';
 import type { Cond, Rule } from '../lang/types';
 import { compilePattern, MAX_REGEX_LEN, PatternError, patternCaptures } from '../match/pattern';
+import { slowRegexProblem } from '../match/regex-safety';
 import { DURATION } from '../lang/duration';
 import { parseTemplate, TemplateError, templateTables, templateVars } from '../match/template';
 import schema from './config.schema.json';
@@ -15,6 +16,11 @@ export type ValidationResult = { ok: true; config: Config } | { ok: false; error
 /** The 9 Chrome tab-group colors. */
 export const COLORS: ReadonlySet<string> = new Set<string>(['grey', 'blue', 'red', 'yellow', 'green', 'pink', 'purple', 'cyan', 'orange'] satisfies GroupColor[]);
 const DURATION_MSG = 'must be a duration like 500ms, 30s, 15m, 2h or 1d';
+export const AGE_MSG = 'age conditions are not supported yet';
+/** Caps on what the watch content script can report (MAX_FACT_TEXT in src/engine/messages.ts; core can't import it). */
+export const MAX_PAGE_TEXT = 500;
+export const MAX_EXTRACT_NAME = 64;
+const PAGE_TEXT_MSG = `must be at most ${MAX_PAGE_TEXT} characters`;
 
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x);
 const list = <T>(x: T | T[]): T[] => (Array.isArray(x) ? x : [x]);
@@ -32,18 +38,18 @@ function patternProblem(p: string): string | undefined {
   }
 }
 /**
- * Error for a regex that does not compile, or, when `capped`, whose text (`measured`, default `source`) exceeds
- * MAX_REGEX_LEN. Rule regexes and dedupe urlTransforms (T18) are capped; stored over-long ones are removed on load
+ * Error for a regex that does not compile, that has a nested unbounded quantifier (R67, slowRegexProblem), or, when
+ * `capped`, whose text (`measured`, default `source`) exceeds MAX_REGEX_LEN. Rule regexes and dedupe urlTransforms (T18) are capped; stored over-long ones are removed on load
  * (repairConfig) instead of failing the whole config.
  */
 export function regexProblem(source: string, flags?: string, capped = false, measured = source): string | undefined {
   if (capped && measured.length > MAX_REGEX_LEN) return `regex too long (max ${MAX_REGEX_LEN} characters)`;
   try {
     new RegExp(source, flags);
-    return undefined;
   } catch (e) {
     return `invalid regex: ${(e as Error).message}`;
   }
+  return slowRegexProblem(source); // R67
 }
 
 export type Tables = Record<string, Record<string, string>>;
@@ -97,10 +103,17 @@ function condProblems(c: Cond, path: string, out: Problem[]): void {
       if (m) out.push({ path: `${path}/title`, message: m });
     }
   } else if ('age' in c) {
+    // R66: nothing feeds TabFacts.createdAt yet (M3), so an age condition would be dead, or inverted under `not`.
+    out.push({ path: `${path}/age`, message: AGE_MSG });
     for (const k of ['gt', 'lt'] as const) {
       const v = c.age[k];
       if (v !== undefined && !DURATION.test(v)) out.push({ path: `${path}/age/${k}`, message: DURATION_MSG });
     }
+  } else if ('pageText' in c) {
+    // I2: the watch reports needles up to MAX_FACT_TEXT (src/engine/messages.ts); a longer one could never match.
+    const long = (n: string) => n.length > MAX_PAGE_TEXT;
+    if (Array.isArray(c.pageText)) c.pageText.forEach((n, i) => { if (long(n)) out.push({ path: `${path}/pageText/${i}`, message: PAGE_TEXT_MSG }); });
+    else if (long(c.pageText)) out.push({ path: `${path}/pageText`, message: PAGE_TEXT_MSG });
   } else if ('opener' in c) condProblems(c.opener, `${path}/opener`, out);
   else if ('not' in c) condProblems(c.not, `${path}/not`, out);
   else if ('all' in c) c.all.forEach((x, i) => condProblems(x, `${path}/all/${i}`, out));
@@ -157,6 +170,7 @@ export function ruleProblems(rule: Rule, tables?: Tables): Problem[] {
   // Uniqueness is checked here, not with JSON-schema uniqueItems: ajv's standalone code for it needs a runtime require().
   rule.trigger?.on.forEach((k, j, all) => { if (all.indexOf(k) !== j) out.push({ path: `/trigger/on/${j}`, message: `duplicate trigger: ${k}` }); });
   for (const [name, x] of Object.entries(rule.extract ?? {})) {
+    if (name.length > MAX_EXTRACT_NAME) out.push({ path: `/extract/${name}`, message: `extract name too long (max ${MAX_EXTRACT_NAME} characters)` });
     if ('regex' in x) { const m = regexProblem(x.regex, undefined, true); if (m) out.push({ path: `/extract/${name}/regex`, message: m }); }
   }
   rule.actions.forEach((a, j) => {

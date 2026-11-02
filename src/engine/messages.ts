@@ -87,6 +87,20 @@ export function isPageFactsMessage(m: unknown): m is PageFactsMessage {
     && vals.every(([k, v]) => k.length <= MAX_FACT_TEXT && typeof v === 'string' && v.length <= MAX_EXTRACT_VALUE);
 }
 
+/**
+ * A page.facts message as the worker stores it (I2): undefined unless it is one with a boolean formEdited; otherwise
+ * `texts` or `extracts` that break the bounds (or are malformed) are dropped as a whole, and formEdited is kept, so
+ * one oversized field never loses the form-edit safety fact.
+ */
+export function pageFactsOf(m: unknown): PageFactsMessage | undefined {
+  if (typeof m !== 'object' || m === null) return undefined;
+  const x = m as Record<string, unknown>;
+  if (x.type !== 'page.facts' || typeof x.formEdited !== 'boolean') return undefined;
+  const texts = isPageFactsMessage({ ...x, extracts: {} }) ? (x.texts as string[]) : [];
+  const extracts = isPageFactsMessage({ ...x, texts: [] }) ? (x.extracts as Record<string, string>) : {};
+  return { type: 'page.facts', texts, extracts, formEdited: x.formEdited };
+}
+
 /** Protected-close banner copy (D22): "Close this tab? [Close] [Keep]". Keep is the default: no answer keeps the tab. */
 export const PROTECTED_CLOSE_TEXT = 'Close this tab?';
 
@@ -861,7 +875,8 @@ export function createContentHandler(d: ContentDeps): (msg: unknown, sender: Mes
       return Promise.resolve({ ok: true });
     }
     const hello = isWatchHello(msg);
-    if (!hello && !isPageFactsMessage(msg)) return undefined;
+    const pf = hello ? undefined : pageFactsOf(msg);
+    if (!hello && !pf) return undefined;
     if (!isTabContentScript(sender, d)) return Promise.resolve(forbidden);
     const tabId = sender.tab!.id!;
     if (hello) {
@@ -874,7 +889,7 @@ export function createContentHandler(d: ContentDeps): (msg: unknown, sender: Mes
       if (m.formEdited) d.safety.markFormEdited(tabId, sender.tab?.url);
       return d.getProgram().then((p): WatchConfigMessage => ({ type: 'watch.config', ...d.pageFacts.watchConfigFor(url, p) }));
     }
-    const m = msg as PageFactsMessage;
+    const m = pf!;
     d.pageFacts.set(tabId, { texts: [...m.texts], extracts: { ...m.extracts }, formEdited: m.formEdited });
     if (m.formEdited) d.safety.markFormEdited(tabId, sender.tab?.url);
     else d.safety.clearFormEdited(tabId);

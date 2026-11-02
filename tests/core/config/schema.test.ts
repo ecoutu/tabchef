@@ -47,7 +47,7 @@ describe('config schema', () => {
     const r = validateConfig(cfgRaw([v2({
       dryRun: true, trigger: { on: ['created', 'schedule'], every: '15m' },
       match: { all: [{ url: ['a.com/*'] }, { not: { pinned: true } }, { any: [{ title: '*x*' }, { opener: { group: 'G' } }, { audible: false }] },
-        { age: { gt: '1h', lt: '2d' } }, { pageText: ['done'] }] },
+        { pageText: ['done'] }] }, // age: rejected until M3 (R66), see below
       extract: { repo: { from: 'url', regex: '/(?<r>[^/]+)$', group: 'r' }, h: { selector: 'h1', attr: 'title' } },
       actions: [{ group: { title: '{repo}', color: 'blue', anchors: ['https://a.com/'] } }, { dedupe: { mode: 'ask', followFragment: false, keepFragment: true, matchTitle: true } },
         { close: { after: '30s', mode: 'suggest' } }, { showInView: { view: 'finished' } }],
@@ -75,7 +75,7 @@ describe('config schema', () => {
     const close = (after: string) => validateConfig(cfgRaw([v2({ actions: [{ close: { after } }] })]));
     for (const d of ['500ms', '30s', '15m', '2h', '1d']) expect(close(d).ok).toBe(true);
     for (const d of ['5', '1.5s', '10mss', '3w', 'ms', '-1s']) expect(close(d)).toEqual({ ok: false, errors: ['/rules/0/actions/0/close/after must be a duration like 500ms, 30s, 15m, 2h or 1d'] });
-    expect(validateConfig(cfgRaw([v2({ trigger: { on: ['schedule'], every: '250ms' }, match: { age: { gt: '100ms' } } })])).ok).toBe(true);
+    expect(validateConfig(cfgRaw([v2({ trigger: { on: ['schedule'], every: '250ms' } })])).ok).toBe(true);
   });
   it('caps title and extract regexes at the shared 500-character limit', () => {
     const body = 'a'.repeat(MAX_REGEX_LEN);
@@ -303,3 +303,74 @@ describe('RecipeRef.ruleEnabled (R56)', () => {
     expect(validateConfig({ ...c, recipes: c.recipes.map((r) => ({ ...r, disabledRules: ['x'] })) }).ok).toBe(false); // R55 field removed
   });
 });
+
+describe('age conditions are not supported yet (R66)', () => {
+  const AGE_RULE = { all: [{ url: 'example.com/*' }, { not: { age: { lt: '1h' } } }] };
+  it('validateConfig rejects an enabled rule using age anywhere in the tree', () => {
+    const r = validateConfig(cfgRaw([v2({ match: AGE_RULE, actions: [{ close: { after: '3s' } }] })]));
+    expect(r).toEqual({ ok: false, errors: ['/rules/0/match/all/1/not/age age conditions are not supported yet'] });
+    expect(validateConfig(cfgRaw([v2({ match: { opener: { age: { gt: '1m' } } } })])).ok).toBe(false);
+    expect(validateConfig(cfgRaw([v2({ match: { any: [{ age: { gt: '1m' } }] } })])).ok).toBe(false);
+  });
+  it('a disabled stored rule using age still validates', () => {
+    expect(validateConfig(cfgRaw([v2({ enabled: false, match: AGE_RULE })])).ok).toBe(true);
+  });
+  it('repairConfig disables a stored enabled age rule instead of failing the config', () => {
+    const r = repairConfig(cfgRaw([v2({ match: AGE_RULE }), v2({ id: 'ok', name: 'OK' })]));
+    const rules = (r.config as { rules: { id: string; enabled: boolean }[] }).rules;
+    expect(rules.map((x) => [x.id, x.enabled])).toEqual([['r1', false], ['ok', true]]);
+    expect(r.warnings).toEqual([expect.stringContaining('1 rule(s) disabled: R')]);
+    expect(validateConfig(r.config).ok).toBe(true);
+  });
+});
+
+describe('nested-quantifier regexes in stored config (R67)', () => {
+  it('validateConfig rejects them in rule title / url / extract regexes', () => {
+    for (const over of [
+      { match: { title: '/(a+)+$/' } }, { match: { url: '/(a+)+$/' } },
+      { extract: { n: { from: 'title', regex: '(a+)+$' } }, match: { url: 'a.com/*' } },
+    ]) {
+      const r = validateConfig(cfgRaw([v2(over)]));
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.errors.join()).toMatch(/regex may be too slow/);
+    }
+  });
+  it('repairConfig disables such a rule and drops such dedupe entries, with warnings, and the result validates', () => {
+    const input = {
+      ...cfgRaw([v2({ match: { title: '/(a+)+$/' } }), v2({ id: 'ok', name: 'OK' })]),
+      dedupe: {
+        ...defaultConfig().dedupe,
+        urlTransforms: [{ pattern: '(x+)+y', replacement: '' }, { pattern: 'ok', replacement: '' }],
+        fragmentOverrides: [{ pattern: '/(a|aa)+/', keepFragment: true }],
+        titleOverrides: [{ pattern: 'b.com/*', matchTitle: true }],
+      },
+    };
+    const r = repairConfig(input);
+    const out = r.config as Config;
+    expect(out.rules.map((x) => [x.id, x.enabled])).toEqual([['r1', false], ['ok', true]]);
+    expect(out.dedupe.urlTransforms).toEqual([{ pattern: 'ok', replacement: '' }]);
+    expect(out.dedupe.fragmentOverrides).toEqual([]);
+    expect(out.dedupe.titleOverrides).toEqual([{ pattern: 'b.com/*', matchTitle: true }]);
+    expect(r.warnings).toEqual([expect.stringContaining('1 rule(s) disabled'), expect.stringMatching(/2 dedupe setting\(s\) removed: .*too slow/)]);
+    expect(validateConfig(r.config).ok).toBe(true);
+  });
+});
+
+describe('pageText needles and extract names are capped in TS (I2)', () => {
+  it('validateConfig rejects an enabled rule with a pageText needle over 500 chars or an extract name over 64', () => {
+    const r1 = validateConfig(cfgRaw([v2({ match: { all: [{ url: 'a.com/*' }, { pageText: ['ok', 'x'.repeat(501)] }] } })]));
+    expect(r1).toEqual({ ok: false, errors: ['/rules/0/match/all/1/pageText/1 must be at most 500 characters'] });
+    const r2 = validateConfig(cfgRaw([v2({ match: { not: { pageText: 'x'.repeat(501) } } })]));
+    expect(r2).toEqual({ ok: false, errors: ['/rules/0/match/not/pageText must be at most 500 characters'] });
+    const name = 'n'.repeat(65);
+    const r3 = validateConfig(cfgRaw([v2({ extract: { [name]: { selector: 'h1' } } })]));
+    expect(r3).toEqual({ ok: false, errors: [`/rules/0/extract/${name} extract name too long (max 64 characters)`] });
+    expect(validateConfig(cfgRaw([v2({ match: { pageText: 'x'.repeat(500) }, extract: { ['n'.repeat(64)]: { selector: 'h1' } } })])).ok).toBe(true);
+  });
+  it('repairConfig disables a stored rule over the caps instead of failing the config', () => {
+    const r = repairConfig(cfgRaw([v2({ match: { pageText: 'x'.repeat(501) } })]));
+    expect((r.config as Config).rules[0]!.enabled).toBe(false);
+    expect(validateConfig(r.config).ok).toBe(true);
+  });
+});
+

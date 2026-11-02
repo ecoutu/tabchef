@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { startPageWatch, WATCH_SCAN_MS, MAX_EXTRACT_CHARS } from '../../src/engine/page-watch';
-import type { PageFactsMessage, WatchConfigMessage } from '../../src/engine/messages';
+import { isPageFactsMessage, MAX_FACT_ITEMS, MAX_FACT_TEXT, type PageFactsMessage, type WatchConfigMessage } from '../../src/engine/messages';
 
 type Sent = { type: string; [k: string]: unknown };
 
@@ -48,6 +48,24 @@ describe('page watch content script', () => {
     app.textContent = 'Call ended';
     await vi.advanceTimersByTimeAsync(WATCH_SCAN_MS);
     expect(facts()).toHaveLength(2);
+    w.stop();
+  });
+
+  it('never reports more than the worker guard accepts: needles over MAX_FACT_TEXT, more than MAX_FACT_ITEMS items, long keys (I2)', async () => {
+    const long = 'y'.repeat(MAX_FACT_TEXT + 1);
+    const many = Array.from({ length: MAX_FACT_ITEMS + 20 }, (_, i) => `n${i}`);
+    const keys = Array.from({ length: MAX_FACT_ITEMS + 5 }, (_, i) => ({ key: `r.k${i}`, selector: 'p' }));
+    const { facts, w } = setup(
+      { needles: [long, ...many], selectors: [{ key: 'r.'.padEnd(MAX_FACT_TEXT + 1, 'z'), selector: 'p' }, ...keys] },
+      `<p>v</p>${long} ${many.join(' ')}`,
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    const m = facts()[0]!;
+    expect(m.texts).toHaveLength(MAX_FACT_ITEMS);
+    expect(m.texts).not.toContain(long);
+    expect(Object.keys(m.extracts)).toHaveLength(MAX_FACT_ITEMS);
+    expect(Object.keys(m.extracts).every((k) => k.length <= MAX_FACT_TEXT)).toBe(true);
+    expect(isPageFactsMessage(m)).toBe(true);
     w.stop();
   });
 
