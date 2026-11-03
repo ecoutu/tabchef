@@ -19,7 +19,7 @@ const DAY = 86_400_000;
 const NOW = Date.parse('2026-11-02T10:00:00Z');
 type FetchFn = typeof fetch;
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
-// What Jira answers an unauthenticated /myself (Task 0): HTML, not JSON.
+// What Jira answers an unauthenticated /myself: HTML, not JSON.
 const html401 = () => new Response('Client must be authenticated to access this resource.', { status: 401, headers: { 'content-type': 'text/html' } });
 const myself = () => json(200, { accountId: '5b10a2844c20165700ede21g', displayName: 'Test User', active: true });
 
@@ -281,7 +281,7 @@ describe('Jira session mode', () => {
   });
 });
 
-describe('Task 7: Jira disconnect, expiry and session-provider guards (M3-R104)', () => {
+describe('Jira disconnect, expiry and session-provider guards (M3-R104)', () => {
   const saveToken = async (r: ReturnType<typeof rig>, expiresAt?: number) => {
     const out = await setJiraToken(r.deps, { site: 'acme.atlassian.net', email: EMAIL, token: TOKEN, tokenKind: 'classic', ...(expiresAt !== undefined && { expiresAt }) });
     expect(out.ok).toBe(true);
