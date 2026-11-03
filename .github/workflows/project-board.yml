@@ -5,9 +5,9 @@ name: Project board
 # "Item closed" / "Pull request merged" workflows are off).
 # A PR without a milestone takes the milestone of the first issue it closes ("Closes #n").
 #
-# Setup: a classic personal access token with the `project` and `repo` scopes in the secret PROJECT_TOKEN (user-owned
-# projects are not reachable with GITHUB_TOKEN or a GitHub App), and the board's number in the variable
-# PROJECT_NUMBER. Optional: PROJECT_STATUS_FIELD when the field is not named "Status".
+# Setup: a classic personal access token with the `project`, `repo` and `read:org` scopes in the secret PROJECT_TOKEN
+# (user-owned projects are not reachable with GITHUB_TOKEN or a GitHub App), and the board's number in the variable
+# PROJECT_NUMBER. Without `read:org`, `gh project` can't tell the owner is a user and fails with "unknown owner type". Optional: PROJECT_STATUS_FIELD when the field is not named "Status".
 on:
   issues:
     types: [opened, reopened, transferred, closed]
