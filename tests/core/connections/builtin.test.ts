@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   ALLOWED_API_HOSTS, GITHUB_CLIENT_ID, UNSUPPORTED_HOST_MESSAGE, builtinConnectionDefs, isAllowedBase, jiraDef,
 } from '../../../src/core/connections/builtin';
+import project from '../../../src/core/project.json' with { type: 'json' };
 
 describe('isAllowedBase', () => {
   it('accepts github.com, api.github.com, *.atlassian.net and api.atlassian.com over https', () => {
@@ -51,8 +52,8 @@ describe('builtinConnectionDefs', () => {
     expect(builtinConnectionDefs().github.hosts).toHaveLength(2);
   });
 
-  it('uses the registered GitHub App client id (M3-R47)', () => {
-    expect(GITHUB_CLIENT_ID).toBe('Iv23liQTWp7D0YtIccKH');
+  it('uses the registered GitHub App client id from project.json (M3-R47)', () => {
+    expect(GITHUB_CLIENT_ID).toBe(project.githubAppClientId);
   });
 });
 

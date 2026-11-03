@@ -1,10 +1,11 @@
 import type { ConnectionDef } from './types';
+import { GITHUB_APP_CLIENT_ID } from '../project';
 
 /**
  * Public client id of the registered Tabchef GitHub App (device flow; read-only Pull requests + Metadata) (M3-R47).
- * Never add a client secret anywhere.
+ * Set in src/core/project.json. Never add a client secret anywhere.
  */
-export const GITHUB_CLIENT_ID = 'Iv23liQTWp7D0YtIccKH';
+export const GITHUB_CLIENT_ID = GITHUB_APP_CLIENT_ID;
 
 /** v1 API hosts. `*.atlassian.net` means exactly one label below atlassian.net. */
 export const ALLOWED_API_HOSTS = ['github.com', 'api.github.com', '*.atlassian.net', 'api.atlassian.com'] as const;
