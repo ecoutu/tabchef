@@ -71,6 +71,28 @@ The extension icon's source is `docs/store/icon.svg`; after editing it, run `npm
 After changing `src/core/config/config.schema.json` or `src/core/lang/*.schema.json`, regenerate the validators with
 `npm run gen:validator`.
 
+### Store assets
+
+```sh
+npm run store:assets     # the Web Store screenshots and promo tiles, into docs/store/images/
+```
+
+It builds the e2e flavor of the extension into a temp dir (never `.output`, so `npm run zip` is unaffected), loads it
+in Playwright's Chromium with demo tabs and the `e2e:m3` mock GitHub and Jira services, captures the real popup, options
+page and side panel, and lays them out as the five captioned 1280×800 screenshots and the 440×280 and 1400×560 tiles
+listed in `docs/store/listing.md`. No network is used and no real account is involved. The pieces live in `store/`:
+
+- `brand.ts`: the product name (from `docs/store/terms.json`, which must match the manifest name), the tagline (the
+  listing's Tagline section) and the icon (`ICON_SVG`, the extension icon's source `docs/store/icon.svg`). A rename or a
+  new icon re-renders every image.
+- `captions.json`: every word the images add; `npm run check:terms` checks it like the listing.
+- `demo.ts`: the demo repositories, pull requests, Jira tickets and tabs.
+- `fonts/`: Bricolage Grotesque, IBM Plex Sans and IBM Plex Mono (SIL Open Font License, `OFL-*.txt`), embedded in the
+  images.
+
+`--keep-captures` (`npm run store:assets -- --keep-captures`) also writes the raw captures. The images are committed:
+after a UI, name or icon change, run the command again and commit the result.
+
 ## Release
 
 Merging to `main` releases. semantic-release picks the version from the commits, updates `CHANGELOG.md`, tags the

@@ -1,0 +1,37 @@
+{
+  "_comment": "Every word the store images show besides the real UI. {name} is the product name (store/brand.ts). npm run check:terms checks this file like the listing.",
+  "screenshots": [
+    {
+      "file": "screenshot-1-duplicates.png",
+      "headline": "Open it twice, keep it once.",
+      "sub": "Open a page you already have open and {name} switches you to the tab you had. The popup lists any copies left, to close in one click."
+    },
+    {
+      "file": "screenshot-2-groups.png",
+      "headline": "Your repos, in your groups.",
+      "sub": "Rules put tabs into Chrome tab groups by URL, title or GitHub repo, with the names, colors and order you choose."
+    },
+    {
+      "file": "screenshot-3-projects.png",
+      "headline": "A Jira ticket and its pull requests.",
+      "sub": "Pull requests that name the ticket's key join its group. The side panel shows each ticket's status, and offers to close the group once it is done."
+    },
+    {
+      "file": "screenshot-4-merged.png",
+      "headline": "Merged? Close it.",
+      "sub": "Connect GitHub and the Merged tab lists your open pull request tabs that have merged. Close them in one click, or have them close on their own."
+    },
+    {
+      "file": "screenshot-5-preview.png",
+      "headline": "See what changes first.",
+      "sub": "Before a settings change moves or closes tabs, a preview shows exactly what will happen. Apply it, or cancel."
+    }
+  ],
+  "smallTile": { "chips": ["group", "de-duplicate", "close"] },
+  "marquee": {
+    "tagline": "The tab manager that understands your dev workflow.",
+    "before": "Before",
+    "after": "After",
+    "legend": { "duplicate": "duplicate", "finished": "finished" }
+  }
+}

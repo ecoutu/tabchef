@@ -22,7 +22,8 @@
     "check:cycles": "node scripts/check-cycles.mjs",
     "check:terms": "node scripts/run-ts.mjs scripts/check-terms.ts",
     "validate:recipes": "node scripts/run-ts.mjs scripts/validate-recipes.ts",
-    "icons": "node scripts/render-icons.mjs"
+    "icons": "node scripts/render-icons.mjs",
+    "store:assets": "node scripts/run-ts.mjs store/generate.ts"
   },
   "devDependencies": {
     "@commitlint/cli": "21.2.4",
