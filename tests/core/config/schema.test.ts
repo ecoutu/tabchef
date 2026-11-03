@@ -176,7 +176,7 @@ describe('config schema', () => {
     expect(out.urlTransforms).toEqual([{ pattern: 'ok', replacement: '' }]);
     expect(out.fragmentOverrides).toEqual([{ pattern: 'a.com/*', keepFragment: true }]);
     expect(out.titleOverrides).toEqual([{ pattern: 'b.com/*', matchTitle: false }]);
-    expect(r.warnings).toEqual([expect.stringMatching(/^4 dedupe setting\(s\) removed: urlTransforms\/1 .*urlTransforms.*fragmentOverrides.*titleOverrides/)]);
+    expect(r.warnings).toEqual([expect.stringMatching(/^4 Duplicates setting\(s\) removed: urlTransforms\/1 .*urlTransforms.*fragmentOverrides.*titleOverrides/)]);
     expect(input.dedupe.urlTransforms).toHaveLength(3); // input not mutated
   });
   it('exports the JSON schema', () => {
@@ -350,7 +350,7 @@ describe('nested-quantifier regexes in stored config (R67)', () => {
     expect(out.dedupe.urlTransforms).toEqual([{ pattern: 'ok', replacement: '' }]);
     expect(out.dedupe.fragmentOverrides).toEqual([]);
     expect(out.dedupe.titleOverrides).toEqual([{ pattern: 'b.com/*', matchTitle: true }]);
-    expect(r.warnings).toEqual([expect.stringContaining('1 rule(s) disabled'), expect.stringMatching(/2 dedupe setting\(s\) removed: .*too slow/)]);
+    expect(r.warnings).toEqual([expect.stringContaining('1 rule(s) disabled'), expect.stringMatching(/2 Duplicates setting\(s\) removed: .*too slow/)]);
     expect(validateConfig(r.config).ok).toBe(true);
   });
 });

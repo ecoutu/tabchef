@@ -16,7 +16,7 @@ describe('RuleFields help tips', () => {
   it('every field of the rule form has a help tip beside (not inside) its label', () => {
     render(RuleFields, { rule, form: ruleForm(rule)!, index: 0, tabs: [], serverErrors: [], onPatch: vi.fn() });
     for (const name of ['URL patterns', 'Title pattern', 'Group tabs', 'Group name', 'Color', 'Group order', 'Collapsed',
-      'Strict', 'Merge across windows', 'Dedupe override', 'Close tabs', 'Close after', 'Close mode', 'Dry run']) {
+      'Strict', 'Merge across windows', 'Duplicates', 'Close tabs', 'Close after', 'Close mode', 'Dry run']) {
       const btn = screen.getByRole('button', { name: `About ${name}` });
       expect(btn.closest('label'), name).toBeNull();
       expect(document.getElementById(btn.getAttribute('aria-describedby')!)?.textContent?.length, name).toBeGreaterThan(20);

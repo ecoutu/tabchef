@@ -1,8 +1,8 @@
 // Wording guard: the store listing and the extension's own text must use the same words. Checks docs/store/*.md and
-// the markup of every .svelte file (script and style blocks are skipped) for: the product name spelled any other way,
-// a reference to a page or view that doesn't exist ("under Dedupe" when the page is called Duplicates), the banned
-// words in docs/store/terms.json, and store sections headed "(max N characters)" that run over. Page names come from
-// OPTIONS_ROUTES; view names from the built-in recipes.
+// the markup of every .svelte file (script and style blocks, {expressions} and component names are skipped) for: the
+// product name spelled any other way, a reference to a page or view that doesn't exist ("under Dedupe" when the page
+// is called Duplicates), the banned words in docs/store/terms.json, and store sections headed "(max N characters)"
+// that run over. Page names come from OPTIONS_ROUTES; view names from the built-in recipes.
 // Usage: npm run check:terms. Prints `file:line: message` per problem and exits 1 on any.
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
@@ -17,6 +17,37 @@ const walk = (d: string, ext: string): string[] => readdirSync(d).flatMap((n) =>
   return statSync(p).isDirectory() ? walk(p, ext) : p.endsWith(ext) ? [p] : [];
 });
 
+const blank = (s: string): string => s.replace(/[^\n]/g, ' ');
+
+/** The text of a .svelte file a user can read: script and style blocks and component tag names blanked, and inside
+ * {expressions} only the string literals that read as prose (contain a space) kept: `help={"The group's name…"}` is
+ * shown to users, while `{form.dedupe}` and `page === 'dedupe'` are code. Line breaks stay, so lines stay right. */
+function markup(src: string): string {
+  const text = src.replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/g, blank).replace(/<\/?[A-Z][\w.]*/g, blank);
+  let out = '';
+  let depth = 0;
+  let quote = '';
+  let lit = '';
+  for (const c of text) {
+    if (depth === 0) {
+      if (c === '{') depth = 1;
+      out += c === '{' ? ' ' : c;
+    } else if (quote) {
+      if (c !== quote) { lit += c; continue; }
+      out += ' ' + (/\s/.test(lit) ? lit : blank(lit)) + ' ';
+      quote = '';
+    } else if (c === "'" || c === '"' || c === '`') {
+      quote = c;
+      lit = '';
+    } else {
+      if (c === '{') depth++;
+      else if (c === '}') depth--;
+      out += c === '\n' ? c : ' ';
+    }
+  }
+  return out;
+}
+
 export default function main(): number {
   const terms = JSON.parse(readFileSync('docs/store/terms.json', 'utf8')) as Terms;
   const pages = new Set(OPTIONS_ROUTES.map((r) => r.label));
@@ -27,9 +58,7 @@ export default function main(): number {
 
   const sources: Source[] = [
     ...walk('docs/store', '.md').map((f) => ({ f, kind: 'store' as const, text: readFileSync(f, 'utf8') })),
-    ...walk('src/entrypoints', '.svelte').map((f) => ({
-      f, kind: 'ui' as const, text: readFileSync(f, 'utf8').replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/g, (s) => s.replace(/[^\n]/g, ' ')),
-    })),
+    ...walk('src/entrypoints', '.svelte').map((f) => ({ f, kind: 'ui' as const, text: markup(readFileSync(f, 'utf8')) })),
   ];
 
   const problems: string[] = [];

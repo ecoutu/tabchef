@@ -21,7 +21,7 @@ const UNLOCK_TITLE = 'Unlock this tab';
 const ITEMS: { id: string; title: string }[] = [
   { id: MENU_IDS.group, title: 'Group pages like this under…' },
   { id: MENU_IDS.close, title: 'Auto-close pages like this' },
-  { id: MENU_IDS.allowDup, title: 'Never dedupe this site' },
+  { id: MENU_IDS.allowDup, title: 'Allow duplicates of pages like this' },
   { id: MENU_IDS.lock, title: LOCK_TITLE },
   { id: MENU_IDS.why, title: 'Why is this tab here?' },
 ];

@@ -80,7 +80,7 @@
   </div>
   {#each ['stripFragment', 'ignoreTrailingSlash', 'followFragment', 'includeIncognito', 'matchTitle'].flatMap(sErr) as m (m)}<p class="err" role="alert">{m}</p>{/each}
 
-  {@render overrides('fragmentOverrides', 'Fragment override', 'Per-site #fragment handling (first matching pattern wins over "Ignore #fragment"; a rule\'s own dedupe setting wins over both)', 'keep', 'strip')}
+  {@render overrides('fragmentOverrides', 'Fragment override', 'Per-site #fragment handling (first matching pattern wins over "Ignore #fragment"; a rule\'s own Duplicates setting wins over both)', 'keep', 'strip')}
   {@render overrides('titleOverrides', 'Title override', 'Per-site title matching (first matching pattern wins over rules and the setting above)', 'compare', 'ignore')}
 
   <LinesField label="Strip query parameters (comma or newline separated; * wildcard)" value={d.stripParams} commas

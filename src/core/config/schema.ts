@@ -69,7 +69,7 @@ export function repairConfig(input: unknown): { config: unknown; warnings: strin
   const warnings: string[] = [];
   if (names.length) warnings.push(`${names.length} rule(s) disabled: ${names.join(', ')} — fix them on the Rules page.`);
   if (recipes.disabled.length) warnings.push(`${recipes.disabled.length} recipe(s) disabled: ${recipes.disabled.join(', ')} — fix them, then re-enable.`);
-  if (dedupe.removed.length) warnings.push(`${dedupe.removed.length} dedupe setting(s) removed: ${dedupe.removed.join(', ')} — restore the previous version from Backups to recover them.`);
+  if (dedupe.removed.length) warnings.push(`${dedupe.removed.length} Duplicates setting(s) removed: ${dedupe.removed.join(', ')} — restore the previous version from Backups to recover them.`);
   if (sections.fixed.length) warnings.push(`Rule sections repaired: ${sections.fixed.join('; ')}.`);
   if (!warnings.length) return { config: input, warnings };
   return {

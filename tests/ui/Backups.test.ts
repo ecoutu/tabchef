@@ -74,7 +74,7 @@ describe('Backups', () => {
     vi.spyOn(window, 'confirm').mockReturnValue(true);
     render(Backups, props({ saved }));
     await pick(file(JSON.stringify(old)));
-    await screen.findByText(/1 dedupe setting\(s\) removed: urlTransforms\/0/);
+    await screen.findByText(/1 Duplicates setting\(s\) removed: urlTransforms\/0/);
     await fireEvent.click(await screen.findByRole('button', { name: 'Apply import' }));
     const set = send.mock.calls.map((c) => c[0] as { type: string; config?: Config }).find((r) => r.type === 'config.set');
     expect(set?.config?.dedupe.urlTransforms).toEqual([]);
@@ -84,12 +84,12 @@ describe('Backups', () => {
     vi.spyOn(window, 'confirm').mockReturnValue(true);
     send.mockImplementation(async (req: { type: string }) => {
       if (req.type === 'config.backups') return { ok: true, data: [{ at: 1000, config: cfgWith('x') }] };
-      if (req.type === 'config.status') return { ok: true, data: { syncing: false, warning: '1 dedupe setting(s) removed: urlTransforms/0 (regex too long (max 500 characters))' } };
+      if (req.type === 'config.status') return { ok: true, data: { syncing: false, warning: '1 Duplicates setting(s) removed: urlTransforms/0 (regex too long (max 500 characters))' } };
       return { ok: true, data: null };
     });
     render(Backups, props());
     await fireEvent.click(await screen.findByRole('button', { name: /Restore backup/ }));
-    await screen.findByText(/Restored .*1 dedupe setting\(s\) removed/);
+    await screen.findByText(/Restored .*1 Duplicates setting\(s\) removed/);
   });
 
   it('rejects files over 5 MB before reading them', async () => {

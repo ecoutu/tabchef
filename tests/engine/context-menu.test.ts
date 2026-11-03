@@ -24,7 +24,7 @@ describe('context menu (M2 T16)', () => {
     expect(created.map((c) => [c.id, c.title])).toEqual([
       ['tc-group', 'Group pages like this under…'],
       ['tc-close', 'Auto-close pages like this'],
-      ['tc-allowdup', 'Never dedupe this site'],
+      ['tc-allowdup', 'Allow duplicates of pages like this'],
       ['tc-lock', 'Lock this tab'],
       ['tc-why', 'Why is this tab here?'],
       ['tc-project', 'Add to project'],

@@ -14,14 +14,14 @@
   } = $props();
 
   const COLORS: GroupColor[] = ['grey', 'blue', 'red', 'yellow', 'green', 'pink', 'purple', 'cyan', 'orange'];
-  const HEADINGS: Record<string, string> = { group: 'Group pages like this', close: 'Auto-close pages like this', allowDup: 'Never dedupe this site' };
-  const VERBS: Record<string, string> = { group: 'Group', close: 'Close', allowDup: 'Never dedupe' };
+  const HEADINGS: Record<string, string> = { group: 'Group pages like this', close: 'Auto-close pages like this', allowDup: 'Allow duplicates of pages like this' };
+  const VERBS: Record<string, string> = { group: 'Group', close: 'Close', allowDup: 'Allow duplicates of' };
 
   // The page's inputs are fixed for its lifetime (App re-creates it when the hash changes).
   // svelte-ignore state_referenced_locally
   const candidates = suggestPatterns(url);
   const host = (() => { try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return ''; } })();
-  // "Never dedupe this site" starts at the whole host; the others at the most specific candidate.
+  // "Allow duplicates of pages like this" starts at the whole host; the others at the most specific candidate.
   // svelte-ignore state_referenced_locally
   const initial = kind === 'allowDup' ? candidates.filter((c) => !c.startsWith('*.')).at(-1) : candidates[0];
 
@@ -112,7 +112,7 @@
       </div>
       {#if afterError}<p class="err" role="alert">after {afterError}</p>{/if}
     {:else}
-      <p class="help">Tabs matching this pattern are never closed as duplicates (dedupe off).</p>
+      <p class="help">Tabs matching this pattern are never closed as duplicates.</p>
     {/if}
 
     <div class="actions">

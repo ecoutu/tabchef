@@ -90,13 +90,13 @@
 {/if}
 
 <div class="grid">
-  <Field label="Dedupe override" help="How duplicates of this rule's tabs are handled. inherit global uses the Mode on the Duplicates page; the others replace it for these tabs only.">
+  <Field label="Duplicates" help="How duplicates of this rule's tabs are handled. Use the Duplicates page setting: the Mode on the Duplicates page applies; the others replace it for these tabs only.">
     <select value={form.dedupe ?? ''} onchange={(e) => { const v = e.currentTarget.value; onPatch({ dedupe: v === '' ? null : (v as DedupeMode) }); }}>
-      <option value="">inherit global</option><option value="always-switch">always-switch</option><option value="ask">ask</option><option value="off">off</option>
+      <option value="">Use the Duplicates page setting</option><option value="always-switch">always-switch</option><option value="ask">ask</option><option value="off">off</option>
     </select>
   </Field>
 </div>
-{#each sErr(actionPaths(rule).dedupe) as m (m)}<p class="err" role="alert">dedupe {m}</p>{/each}
+{#each sErr(actionPaths(rule).dedupe) as m (m)}<p class="err" role="alert">duplicates {m}</p>{/each}
 
 <Field label="Close tabs" help="Close tabs matching this rule, or only suggest closing them in the popup's Finished tab (see Close mode)." inline>
   <input type="checkbox" checked={form.close !== null} onchange={(e) => onPatch({ close: e.currentTarget.checked ? (form.close ?? NEW_CLOSE) : null })} />
@@ -115,7 +115,7 @@
   {#if afterError}<p class="err" role="alert">after {afterError}</p>{/if}
   {#each sErr(closePath) as m (m)}<p class="err" role="alert">close {m}</p>{/each}
 {/if}
-{#if noAction}<p class="err" role="alert">Pick at least one action (group, dedupe or close).</p>{/if}
+{#if noAction}<p class="err" role="alert">Pick at least one action (group, close duplicates or close).</p>{/if}
 
 <Field label="Dry run (log what it would do, change nothing)" helpLabel="Dry run" help="Try the rule out: History logs what it would group or close, but no tab is touched. Turn it off to let the rule act." inline>
   <input type="checkbox" checked={form.dryRun} onchange={(e) => onPatch({ dryRun: e.currentTarget.checked })} />

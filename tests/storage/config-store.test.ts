@@ -561,7 +561,7 @@ describe('ConfigStore', () => {
     await local().set({ 'cfg:backups': [{ at: 5, config: old }] });
     await s.restore(5);
     expect((await s.get()).dedupe.urlTransforms).toEqual([{ pattern: 'ok', replacement: '' }]);
-    expect((await s.status()).warning).toMatch(/1 dedupe setting\(s\) removed: urlTransforms\/0 \(regex too long/);
+    expect((await s.status()).warning).toMatch(/1 Duplicates setting\(s\) removed: urlTransforms\/0 \(regex too long/);
   });
 
   describe('adopt-remote only on a genuinely fresh device (CR#2, CR#3)', () => {
