@@ -312,6 +312,10 @@ export default defineBackground(() => {
   });
   // Tabs and page facts changed: look up what new or navigated tabs need (cache first; at most every few seconds).
   const scheduleSources = createDebounce(() => { sources.refresh('tabs').catch(warn('source refresh')); }, 1000, 5000);
+  // A title change re-plans (title conditions and extracts, e.g. a PR title naming its ticket). A same-document
+  // navigation (GitHub repo → Pull requests → a PR) changes the URL first and the title later, so the URL's pass saw
+  // the old title. Debounced with a max wait: a page whose title ticks still re-plans, without a pass per tick.
+  const scheduleTitlePass = createDebounce(() => reconciler.schedule('tab-title'), 1000, 5000);
   // M3-R75: the period is the smallest `refreshEvery` of the enabled recipes (default 5 min); the alarm is re-created
   // only when it is missing or its period differs, so config changes never postpone its next tick. Without a rule that
   // has a `source` (enabled and not paused) nothing can make a request: the alarm is cleared (as syncAgeTick does).
@@ -372,6 +376,7 @@ export default defineBackground(() => {
     if (info.title !== undefined && titleUrl) {
       dedupe.onTitleChanged(tabId, titleUrl).catch((e: unknown) => console.warn('[tabchef] dedupe failed', e));
     }
+    if (info.title !== undefined) scheduleTitlePass();
     if (info.url !== undefined) {
       safety.onTabSeen({ id: tabId, url: info.url, windowId: tab.windowId });
       void reconciler.onTabUrlChanged(tabId, info.url);

@@ -533,6 +533,22 @@ describe('background wiring', () => {
     expect(I('reconciler').onTabGroupChanged).toHaveBeenCalledWith(4, 9, 'https://c.test/');
   });
 
+  it('a title change re-plans (debounced, at most every 5 s): a same-tab navigation updates the title after the URL', async () => {
+    const t = { id: 4, windowId: 1, url: 'https://github.com/acme/api/pull/5', active: false };
+    vi.mocked(I('reconciler').schedule!).mockClear();
+    await fireAt('tabs.onUpdated', TAB, 4, { title: 'ABC-1 fix · Pull Request #5' }, t);
+    expect(I('reconciler').schedule).not.toHaveBeenCalledWith('tab-title');
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(I('reconciler').schedule).toHaveBeenCalledWith('tab-title');
+    // A title that ticks every 500 ms still re-plans within the max wait, not never.
+    vi.mocked(I('reconciler').schedule!).mockClear();
+    for (let i = 0; i < 12; i++) {
+      await fireAt('tabs.onUpdated', TAB, 4, { title: `(${i}) inbox` }, t);
+      await vi.advanceTimersByTimeAsync(500);
+    }
+    expect(vi.mocked(I('reconciler').schedule!).mock.calls.filter(([r]) => r === 'tab-title').length).toBeGreaterThanOrEqual(1);
+  });
+
   it.each([['tabs.onMoved', 'tab-moved'], ['tabs.onAttached', 'tab-attached']])('%s re-plans the tab order (%s)', async (event, reason) => {
     await fireAt(event, TAB, 1, {});
     expect(I('reconciler').onTabMovedOrAttached).toHaveBeenCalled();
