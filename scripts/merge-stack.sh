@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 # Land a stack of PRs whose bases chain: #1 -> main, #2 -> #1's branch, ... #N -> #(N-1)'s branch.
-# Never creates a merge commit: every PR is squash-merged (main keeps linear history).
+# Never creates a merge commit (main keeps linear history).
 #
 # Modes:
+#   --fast-forward              Keeps every commit: fast-forwards main to the top PR's head in ONE push, so
+#                               semantic-release cuts one release whose changelog lists every commit. The stack must
+#                               already sit on origin/main in one line, and every commit must be a Conventional Commit.
+#                               Retargets each PR to main first (GitHub marks a PR merged once its head is in its base),
+#                               pushes, waits until every PR shows as merged, then deletes the branches. Needs a token
+#                               that may bypass protect-main (the admin bypass).
 #   --single-release (default)  ONE squash commit on main, titled with the bottom PR's title.
 #                               Fold top-down: squash #N into #(N-1)'s branch, ..., #2 into #1's branch, then wait
 #                               for #1's checks and squash #1 into main. The commit body lists the folded PR titles.
@@ -17,7 +23,7 @@
 # Every PR title must be a Conventional Commit (same regex as .github/workflows/pr-title.yml); it becomes the squash
 # commit title. Validation happens before anything is touched.
 #
-# Usage: scripts/merge-stack.sh [--single-release|--bottom-up] [--dry-run] PR1 PR2 ... PRN
+# Usage: scripts/merge-stack.sh [--fast-forward|--single-release|--bottom-up] [--dry-run] PR1 PR2 ... PRN
 # Requires: gh (authenticated), every PR open, CI green on the PR that lands on main. --bottom-up also needs git and
 # a clean working tree. --dry-run prints every mutating command instead of running it.
 set -euo pipefail
@@ -29,14 +35,15 @@ dry=0
 prs=()
 for arg in "$@"; do
   case "$arg" in
+    --fast-forward) mode=fast-forward ;;
     --single-release) mode=single-release ;;
     --bottom-up) mode=bottom-up ;;
     --dry-run) dry=1 ;;
-    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,29p' "$0"; exit 0 ;;
     *) prs+=("$arg") ;;
   esac
 done
-[ "${#prs[@]}" -ge 1 ] || { echo "usage: $0 [--single-release|--bottom-up] [--dry-run] PR..." >&2; exit 2; }
+[ "${#prs[@]}" -ge 1 ] || { echo "usage: $0 [--fast-forward|--single-release|--bottom-up] [--dry-run] PR..." >&2; exit 2; }
 
 run() { if [ "$dry" = 1 ]; then echo "+ $*"; else "$@"; fi; }
 
@@ -70,7 +77,30 @@ wait_green() {
   gh pr checks "$1" --watch --fail-fast
 }
 
-if [ "$mode" = single-release ]; then
+if [ "$mode" = fast-forward ]; then
+  last=$((${#prs[@]}-1)); top=${oids[$last]}
+  git fetch --quiet origin
+  git merge-base --is-ancestor origin/main "$top" \
+    || { echo "origin/main is not an ancestor of #${prs[$last]}: restack onto origin/main first" >&2; exit 1; }
+  bad=$(git log --format=%s "origin/main..$top" | grep -vE "$title_re" || true)
+  [ -z "$bad" ] || { echo "not Conventional Commits:"$'\n'"$bad" >&2; exit 1; }
+  echo "$(git rev-list --count "origin/main..$top") commits from #${prs[0]}..#${prs[$last]} will land on main."
+  wait_green "${prs[$last]}"
+  for pr in "${prs[@]}"; do run gh pr edit "$pr" --base main; done
+  # A plain push of a descendant is a fast-forward; it is rejected if main moved meanwhile.
+  run git push origin "$top:refs/heads/main"
+  if [ "$dry" = 0 ]; then
+    for pr in "${prs[@]}"; do
+      for _ in $(seq 1 40); do
+        [ "$(gh pr view "$pr" --json state --jq .state)" = MERGED ] && break
+        sleep 3
+      done
+      [ "$(gh pr view "$pr" --json state --jq .state)" = MERGED ] \
+        || { echo "#$pr is not marked merged yet; delete its branch by hand once it is" >&2; exit 1; }
+    done
+  fi
+  for h in "${heads[@]}"; do run git push origin --delete "$h"; done
+elif [ "$mode" = single-release ]; then
   body="Squashed stack:"
   for i in "${!prs[@]}"; do body+=$'\n'"- ${titles[$i]} (#${prs[$i]})"; done
   # Fold top-down. Each fold is a squash into the PR's base branch; those intermediate commits never reach main.

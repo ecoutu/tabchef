@@ -16,7 +16,7 @@
   - anything else → no release
 - semantic-release alone decides the version. Never bump `package.json` versions, create tags, or edit release notes by hand.
 - Pick commit types carefully, because they *are* the changelog. Don't label a user-visible fix `chore`, or a refactor `feat`.
-- `main` is protected by the `protect-main` ruleset. Changes reach it only through PRs.
+- `main` is protected by the `protect-main` ruleset. Changes reach it through PRs. The admin bypass exists for the release job's changelog commit and for landing a prepared stack with `--fast-forward`; don't use it to push work that skipped review.
 
 ## History: never use merge commits
 - **Never create merge commits.** No `git merge` without `--ff-only`, no `git pull` without `--rebase`, and no `gh pr merge --merge`.
@@ -25,7 +25,11 @@
 - To land a PR, use one of these:
   - `gh pr merge --squash`: the squash commit's title (the PR title) must be a Conventional Commit. semantic-release reads it. The `pr-title` CI check enforces this, so keep PR titles conventional.
   - `gh pr merge --rebase`: every commit on the branch must be a Conventional Commit.
-- Stacked PRs: land them with `scripts/merge-stack.sh [--single-release|--bottom-up] [--dry-run] PR1 ... PRN`. Both modes squash. `--single-release` folds the stack into one squash commit titled like the bottom PR; `--bottom-up` squashes one PR at a time, rebasing the next branch with `git rebase --onto origin/main <old-base> <branch>`, `--force-with-lease`, and retargeting to `main`.
+- Stacked PRs: keep every commit, because the commits are the changelog. Before landing:
+  - restack the PRs into one line on top of `origin/main` (each PR based on the previous one);
+  - fold fixes of code that was never released into the commit they fix (`git commit --fixup=<sha>`, then `git rebase -i --autosquash --update-refs origin/main`), so the changelog lists only real fixes;
+  - re-sign after the rewrite (`git rebase --force-rebase --committer-date-is-author-date`).
+- Then land with `scripts/merge-stack.sh --fast-forward [--dry-run] PR1 ... PRN`. It fast-forwards `main` to the top PR in one push, so semantic-release cuts one release, and GitHub marks every PR merged. `--single-release` (one squash commit for the whole stack) and `--bottom-up` (one squash per PR) remain for stacks whose history doesn't matter.
 - Use `--force-with-lease` for force pushes, never plain `--force`. Never force-push `main`.
 
 ## Never commit
