@@ -501,6 +501,15 @@ describe('rules-model: sections (M4 rule sections T3)', () => {
     expect(res.ok && res.config.sections).toEqual([{ id: 'work', name: 'Work', rules: ['a', 'b2'] }]);
   });
 
+  it('gatherBlock joins a split block at the place of its first shown key', async () => {
+    const { gatherBlock } = await import('../../src/ui/rules-model');
+    const { builtinRecipes } = await import('../../src/recipes/load');
+    const c = { ...cfg('p', 'a', 'x', 'b'), order: ['user/p', 'user/a', 'user/x', 'user/b'] };
+    expect(gatherBlock(c, ['user/a', 'user/b'], builtinRecipes()).order).toEqual(['user/p', 'user/a', 'user/b', 'user/x']);
+    expect(gatherBlock(c, ['user/p', 'user/a'], builtinRecipes())).toBe(c);
+    expect(gatherBlock(c, ['nope/x'], builtinRecipes())).toBe(c);
+  });
+
   it('customizeRule leaves the new copy without a section', async () => {
     const { customizeRule, sectionOf } = await import('../../src/ui/rules-model');
     const { builtinRecipes } = await import('../../src/recipes/load');

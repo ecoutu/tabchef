@@ -471,3 +471,86 @@ describe('Rules: recipe rules as locked rows (M2 T15)', () => {
     });
   });
 });
+
+describe('Rules: sections (M4 rule sections T4)', () => {
+  const work = (rules: string[]) => [{ id: 'work', name: 'Work', rules }];
+  const groups = () => screen.getAllByRole('group').map((g) => g.getAttribute('aria-label'));
+  const sectionHeader = () => screen.getByRole('button', { name: /Work \(\d rules?\)/ });
+
+  it('a section of 2 rules starts collapsed under "Work (2 rules)"; clicking shows its rows', async () => {
+    render(Rules, props({ ...cfg(rule('a', 'a.com/*'), rule('b', 'b.com/*'), rule('c', 'c.com/*')), sections: work(['a', 'b']) }));
+    expect(sectionHeader().textContent).toContain('Work (2 rules)');
+    expect(sectionHeader().getAttribute('aria-expanded')).toBe('false');
+    expect(groups()[0]).toBe('Rule 1: Rule c');
+    await fireEvent.click(sectionHeader());
+    expect(groups().slice(0, 3)).toEqual(['Rule 1: Rule a', 'Rule 2: Rule b', 'Rule 3: Rule c']);
+  });
+
+  it('"Move section down" moves the section past the next unit', async () => {
+    const p = props({ ...cfg(rule('a', 'a.com/*'), rule('b', 'b.com/*'), rule('c', 'c.com/*')), sections: work(['a', 'b']) });
+    render(Rules, p);
+    expect((screen.getByRole('button', { name: 'Move section up' }) as HTMLButtonElement).disabled).toBe(true);
+    await fireEvent.click(screen.getByRole('button', { name: 'Move section down' }));
+    expect(p.onChange.mock.calls[0]![0].order).toEqual(['user/c', 'user/a', 'user/b']);
+  });
+
+  it('a section split by order renders two fragments sharing one open state; "Move section up" gathers them', async () => {
+    const c = { ...cfg(rule('p', 'p.com/*'), rule('a', 'a.com/*'), rule('x', 'x.com/*'), rule('b', 'b.com/*')), sections: work(['a', 'b']) };
+    const p = props(c);
+    render(Rules, p);
+    const headers = screen.getAllByRole('button', { name: /Work \(2 rules\)/ });
+    expect(headers).toHaveLength(2);
+    expect(headers.map((h) => h.getAttribute('aria-expanded'))).toEqual(['false', 'false']);
+    await fireEvent.click(headers[0]!);
+    expect(screen.getAllByRole('button', { name: /Work \(2 rules\)/ }).map((h) => h.getAttribute('aria-expanded'))).toEqual(['true', 'true']);
+    await fireEvent.click(screen.getAllByRole('button', { name: 'Move section up' })[0]!);
+    expect(p.onChange.mock.calls[0]![0].order).toEqual(['user/p', 'user/a', 'user/b', 'user/x']);
+  });
+
+  it('a section holding a shadowed rule is kept open, its header disabled', async () => {
+    send.mockReset();
+    send.mockImplementation(async (r: { type: string }) => (r.type === 'rules.shadowed' ? { ok: true, data: [{ key: 'user/b', shadowedBy: 'user/a', name: 'Rule a' }] } : { ok: true, data: null }));
+    render(Rules, props({ ...cfg(rule('a', 'a.com/*'), rule('b', 'b.com/*')), sections: work(['a', 'b']) }));
+    await vi.waitFor(() => expect(sectionHeader().getAttribute('aria-expanded')).toBe('true'));
+    expect((sectionHeader() as HTMLButtonElement).disabled).toBe(true);
+    send.mockReset();
+  });
+
+  it('a row\'s "Section" select calls assignSection; recipe rows get none', async () => {
+    const p = props({ ...cfg(rule('a', 'a.com/*'), rule('x', 'x.com/*'), rule('c', 'c.com/*')), sections: work(['a']) });
+    render(Rules, p);
+    const row = screen.getByRole('group', { name: /Rule c$/ });
+    const select = row.querySelector('select[aria-label="Section"], select') as HTMLSelectElement;
+    expect([...select.options].map((o) => o.textContent)).toEqual(['No section', 'Work']);
+    expect(row.querySelector('button[aria-label="About Section"]')).toBeTruthy();
+    await fireEvent.change(select, { target: { value: 'work' } });
+    const next = p.onChange.mock.calls[0]![0] as Config;
+    expect(next.sections).toEqual(work(['a', 'c']));
+    expect(next.order).toEqual(['user/a', 'user/c', 'user/x']);
+    expect(screen.getByRole('group', { name: /Group GitHub tabs by repository$/ }).querySelector('select')).toBeNull();
+  });
+
+  it('"New section" and "Rename section" ask for a name; "Delete section" confirms and leaves order unchanged', async () => {
+    const c = { ...cfg(rule('a', 'a.com/*')), sections: work(['a']) };
+    const p = props(c);
+    render(Rules, p);
+    const ask = vi.spyOn(window, 'prompt').mockReturnValue('Home');
+    await fireEvent.click(screen.getByRole('button', { name: 'New section' }));
+    expect(p.onChange.mock.calls[0]![0].sections).toEqual([...work(['a']), { id: 'home', name: 'Home', rules: [] }]);
+    await fireEvent.click(screen.getByRole('button', { name: 'Rename section' }));
+    expect(p.onChange.mock.calls[1]![0].sections).toEqual([{ id: 'work', name: 'Home', rules: ['a'] }]);
+    ask.mockRestore();
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    await fireEvent.click(screen.getByRole('button', { name: 'Delete section' }));
+    expect(confirm.mock.calls[0]![0]).toBe('Delete section Work? Its rules stay, without a section.');
+    expect(p.onChange.mock.calls[2]![0].sections).toEqual([]);
+    expect(p.onChange.mock.calls[2]![0].order).toBe(c.order);
+    confirm.mockRestore();
+  });
+
+  it('an empty section is still listed, so it can be renamed or deleted', () => {
+    render(Rules, props({ ...cfg(rule('a', 'a.com/*')), sections: [{ id: 'empty', name: 'Later', rules: [] }] }));
+    expect(screen.getByText('Later (0 rules)')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Delete section' })).toBeTruthy();
+  });
+});

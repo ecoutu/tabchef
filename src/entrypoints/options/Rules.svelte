@@ -5,12 +5,15 @@
   // Recipe rules are locked rows: reorder, turn on/off (RecipeRef.ruleEnabled overrides, R56; saved through Save),
   // test and Customize (copy into a user rule), never edit. Consecutive rules of one recipe sit under one collapsible
   // header (collapsed while it holds 2+ rules), which moves them as one block (Move rules up / down, or its drag handle:
-  // M4 rule sections T2); a rule that can never match (an empty URL list param) says so.
+  // M4 rule sections T2); a rule that can never match (an empty URL list param) says so. Named sections (T4,
+  // config.sections) group user rules the same way under a header that collapses, moves, renames and deletes; they are
+  // display only, priority stays `order`.
   import { tick } from 'svelte';
   import type { Config, TabSnap } from '../../core/types';
   import type { Rule } from '../../core/lang/types';
   import {
-    addRule, configPatternErrors, customizeRule, customizedCopy, errorsForPath, inactiveReason, moveBlock, neighborUnit, patchRuleForm, removeRule, reorder,
+    addRule, configPatternErrors, customizeRule, addSection, assignSection, customizedCopy, deleteSection, errorsForPath, gatherBlock, inactiveReason, moveBlock, neighborUnit, patchRuleForm,
+    removeRule, renameSection, reorder, sectionOf,
     replaceRule, ruleForm, ruleIndex, ruleRows, ruleSummary, ruleRuns, setRecipeRuleOn, type RuleForm, type RuleRow, type RuleRun,
   } from '../../ui/rules-model';
   import { withRecipe } from '../../ui/recipes-model';
@@ -31,7 +34,17 @@
 
   const builtins = builtinRecipes();
   const rows = $derived(ruleRows(config, builtins));
-  const runs = $derived(ruleRuns(rows));
+  const runs = $derived(ruleRuns(rows, sectionOf(config)));
+  const sections = $derived(config.sections ?? []);
+  const sectionById = $derived(new Map(sections.map((s) => [s.id, s])));
+  /** Sections with no rule shown: listed above the rules so they can still be renamed or deleted. */
+  const emptySections = $derived(sections.filter((s) => !rows.some((r, i) => runs.get(i)?.kind === 'section' && runs.get(i)!.id === s.id)));
+  /** Every shown key of the run's section or recipe, across fragments (a section moves and counts as a whole). */
+  const unitKeys = (run: RuleRun): string[] => (run.kind === 'section'
+    ? rows.filter((_, i) => { const r = runs.get(i); return r?.kind === 'section' && r.id === run.id; }).map((r) => r.key)
+    : run.keys);
+  /** A run with a header: every section run, and recipe runs of 2+ rules. */
+  const headed = (run: RuleRun | undefined): run is RuleRun => run !== undefined && (run.kind === 'section' || run.keys.length > 1);
   /**
    * Runs the user expanded, by `<kind>:<id>` (runKey): every run (fragment) of a recipe shares one state, so a
    * reorder or Customize that splits or re-heads a run keeps it open. A run of one rule is always shown.
@@ -41,9 +54,13 @@
   const membersOf = (run: RuleRun): RuleRow[] => rows.slice(run.start, run.start + run.keys.length);
   /** A member has a param error or a shadowed ("Likely") warning: the run is shown open, so it is not hidden. */
   const runNeedsAttention = (run: RuleRun): boolean => membersOf(run).some((r) => (r.kind === 'recipe' && r.error !== undefined) || shadowOf(r.key) !== undefined);
-  const runOpen = (run: RuleRun): boolean => run.keys.length < 2 || openRuns[runKey(run)] === true || runNeedsAttention(run);
+  const runOpen = (run: RuleRun): boolean => unitKeys(run).length < 2 || openRuns[runKey(run)] === true || runNeedsAttention(run);
   /** The header text of a run: its recipe, how many rules, how many on, how many can never match or have errors. */
   function runSummary(run: RuleRun): string {
+    if (run.kind === 'section') {
+      const n = unitKeys(run).length;
+      return `${sectionById.get(run.id)?.name ?? run.id} (${n} ${n === 1 ? 'rule' : 'rules'})`;
+    }
     const members = membersOf(run).filter((r) => r.kind === 'recipe');
     const on = members.filter((r) => r.on).length;
     const inactive = members.filter((r) => r.on && inactiveReason(r.rule)).length;
@@ -68,9 +85,26 @@
 
   const move = (key: string, to: number): void => onChange(reorder(config, key, to, builtins));
   /** Move rules up / down: the whole run past one adjacent unit (a run or a row), keeping its order. */
-  const moveRun = (run: RuleRun, dir: 'up' | 'down'): void => onChange(moveBlock(config, run.keys, neighborUnit(rows, runs, run.start, dir), builtins));
-  /** The run of 2+ rows that row `i` belongs to (one with a header), if any. */
-  const headedRun = (i: number): RuleRun | undefined => { const run = runs.get(i); return run && run.keys.length > 1 ? run : undefined; };
+  /** A section split by `order` (a sync merge, an import) is first gathered at its first fragment's place instead. */
+  function moveRun(run: RuleRun, dir: 'up' | 'down'): void {
+    const keys = unitKeys(run);
+    if (keys.length > run.keys.length) { onChange(gatherBlock(config, keys, builtins)); return; }
+    onChange(moveBlock(config, keys, neighborUnit(rows, runs, run.start, dir), builtins));
+  }
+  const runSplit = (run: RuleRun): boolean => unitKeys(run).length > run.keys.length;
+  /** The headed run row `i` belongs to, if any. */
+  const headedRun = (i: number): RuleRun | undefined => { const run = runs.get(i); return headed(run) ? run : undefined; };
+  function newSection(): void {
+    const name = window.prompt('Section name');
+    if (name) onChange(addSection(config, name));
+  }
+  function renameSectionAsk(id: string): void {
+    const name = window.prompt('Section name', sectionById.get(id)?.name ?? '');
+    if (name) onChange(renameSection(config, id, name));
+  }
+  function deleteSectionAsk(id: string): void {
+    if (window.confirm(`Delete section ${sectionById.get(id)?.name ?? id}? Its rules stay, without a section.`)) onChange(deleteSection(config, id));
+  }
   /**
    * Drops the dragged keys on row `i` (or a run header, as its first row). A single row dropped outside any headed
    * run, or among its own run's rows, moves to that position as before. Otherwise the target is a whole unit: a
@@ -156,26 +190,44 @@
 </script>
 
 <section>
-  <p class="help">Order is priority and tab-bar order: the first rule that matches a tab wins, and groups appear in the tab bar in this order. Drag the handle or use Move up / Move down; a recipe's header moves all its rules together. Recipe rules are locked: move them, turn them on or off, or Customize to edit a copy.</p>
+  <p class="help">Order is priority and tab-bar order: the first rule that matches a tab wins, and groups appear in the tab bar in this order. Drag the handle or use Move up / Move down; a recipe's or section's header moves all its rules together. Recipe rules are locked: move them, turn them on or off, or Customize to edit a copy.</p>
+
+  <div class="sections">
+    <button type="button" onclick={newSection}>New section</button>
+    <Help label="Sections" text="Name a section, then choose it in a rule's Section menu. A section collapses and moves as one block. It only groups rules on this page: order is still priority." />
+  </div>
+  {#each emptySections as s (s.id)}
+    <div class="run">
+      <span class="run-toggle empty-section">{s.name} (0 rules)</span>
+      <button type="button" onclick={() => renameSectionAsk(s.id)}>Rename section</button>
+      <button type="button" class="danger" onclick={() => deleteSectionAsk(s.id)}>Delete section</button>
+    </div>
+  {/each}
 
   {#each rows as row, i (row.key)}
     {@const form = row.kind === 'user' ? ruleForm(row.rule) : null}
     {@const asYaml = row.kind === 'user' && (yaml[row.rule.id] ?? false)}
     {@const run = runs.get(i)}
-    {#if run && run.start === i && run.keys.length > 1}
+    {#if headed(run) && run.start === i}
       <div class="run" role="presentation" ondragover={(e) => { if (dragKeys !== null) e.preventDefault(); }}
         ondrop={(e) => { e.preventDefault(); dropAt(run.start); }}>
         <span class="handle" role="img" aria-label="Drag to move these rules" title="Drag to move these rules" draggable="true"
-          ondragstart={(e) => dragStart(e, run.keys)} ondragend={() => (dragKeys = null)}>⠿</span>
+          ondragstart={(e) => dragStart(e, unitKeys(run))} ondragend={() => (dragKeys = null)}>⠿</span>
         <button type="button" class="run-toggle" aria-expanded={runOpen(run)} disabled={runNeedsAttention(run)}
           title={runNeedsAttention(run) ? 'Kept open while a rule here has an error or warning' : undefined}
           onclick={() => (openRuns[runKey(run)] = !runOpen(run))}>
           <span aria-hidden="true">{runOpen(run) ? '▾' : '▸'}</span> {runSummary(run)}
         </button>
-        <button type="button" aria-label="Move rules up" disabled={run.start === 0} onclick={() => moveRun(run, 'up')}>↑</button>
-        <button type="button" aria-label="Move rules down" disabled={run.start + run.keys.length === rows.length} onclick={() => moveRun(run, 'down')}>↓</button>
-        <Help label="Move rules" text={`Moves all of this ${run.kind === 'recipe' ? "recipe's" : "section's"} rules together, keeping their order: past the next rule, or the next whole group of rules. You can also drag the handle.`} />
-        <a href="#/recipes">Recipe settings</a>
+        <button type="button" aria-label={run.kind === 'recipe' ? 'Move rules up' : 'Move section up'} disabled={!runSplit(run) && run.start === 0} onclick={() => moveRun(run, 'up')}>↑</button>
+        <button type="button" aria-label={run.kind === 'recipe' ? 'Move rules down' : 'Move section down'} disabled={!runSplit(run) && run.start + run.keys.length === rows.length} onclick={() => moveRun(run, 'down')}>↓</button>
+        {#if run.kind === 'recipe'}
+          <Help label="Move rules" text="Moves all of this recipe's rules together, keeping their order: past the next rule, or the next whole group of rules. You can also drag the handle." />
+          <a href="#/recipes">Recipe settings</a>
+        {:else}
+          <Help label="Move section" text="Moves all of this section's rules together, keeping their order: past the next rule, or the next whole group of rules. You can also drag the handle. When other rules sit between the section's rules, the first move gathers them where the section starts." />
+          <button type="button" onclick={() => renameSectionAsk(run.id)}>Rename section</button>
+          <button type="button" class="danger" onclick={() => deleteSectionAsk(run.id)}>Delete section</button>
+        {/if}
       </div>
     {/if}
     {#if !run || runOpen(run)}
@@ -189,6 +241,14 @@
           <Field label="Enabled" inline help="Off: the rule is kept but does nothing until you turn it back on. Saved with Save.">
             <input type="checkbox" checked={row.rule.enabled} onchange={(e) => setEnabled(row.rule, e.currentTarget.checked)} />
           </Field>
+          {#if sections.length}
+            <Field label="Section" inline help="Sections only group your rules on this page; order is still priority. Joining a section moves the rule to the end of it.">
+              <select value={sectionOf(config)(row.rule.id) ?? ''} onchange={(e) => onChange(assignSection(config, row.rule.id, e.currentTarget.value || null, builtins))}>
+                <option value="">No section</option>
+                {#each sections as s (s.id)}<option value={s.id}>{s.name}</option>{/each}
+              </select>
+            </Field>
+          {/if}
           {#if form && !asYaml}
             <input class="name" aria-label="Rule name" value={form.name} oninput={(e) => patch(row.rule.id, { name: e.currentTarget.value })} />
           {:else}
@@ -276,6 +336,8 @@
   .run-toggle:hover:not(:disabled) { background: var(--hover); }
   .run-toggle:disabled { cursor: default; }
   .run a, .bar a { font-size: 12px; }
+  .sections { display: flex; align-items: center; gap: 8px; margin: 0 0 10px; }
+  .empty-section { color: var(--muted); cursor: default; }
   .chip.inactive { color: var(--muted); border-style: dashed; }
   .summary { margin: 0; padding-left: 18px; font-size: 12px; color: var(--muted); }
 </style>

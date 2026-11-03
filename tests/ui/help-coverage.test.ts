@@ -107,9 +107,10 @@ describe('every options setting has a help tip', () => {
   it('Rules page: the row bar of a user rule and of a recipe rule', () => {
     send.mockResolvedValue({ ok: false, error: 'x' });
     const user: Rule = { id: 'u', name: 'U', enabled: true, match: { url: 'a.com/*' }, actions: [{ group: { title: 'A', color: 'blue' } }] };
-    const config: Config = { ...defaultConfig(), rules: [user], order: ['user/u'] };
+    const config: Config = { ...defaultConfig(), rules: [user], order: ['user/u'], sections: [{ id: 'work', name: 'Work', rules: ['u'] }] };
     render(Rules, { config, tabs: [], dirty: false, saving: false, serverErrors: [], onChange: vi.fn(), onSave: vi.fn() });
     expect(screen.getByRole('button', { name: 'About Enabled' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'About Section' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'About On (this recipe rule)' })).toBeTruthy();
     const a = audit();
     expect(a.count).toBeGreaterThanOrEqual(14);
