@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <!-- Tabchef icon ("Toque", launch kit direction A): three tabs in Chrome group colors as a chef's hat.
+       Source of public/icon/*.png: edit this file, then run `npm run icons`. -->
+  <rect width="128" height="128" rx="28" fill="#1A1E24"/>
+  <path d="M18 86V50Q18 40 28 40H48Q58 40 58 50V86Z" fill="#1A73E8"/>
+  <path d="M70 86V50Q70 40 80 40H100Q110 40 110 50V86Z" fill="#188038"/>
+  <path d="M42 86V36Q42 24 54 24H74Q86 24 86 36V86Z" fill="#E8620C"/>
+  <rect x="26" y="84" width="76" height="22" rx="4" fill="#FFFFFF"/>
+  <path d="M38 92H90" stroke="#1A1E24" stroke-width="3" stroke-linecap="round" opacity=".25"/>
+</svg>

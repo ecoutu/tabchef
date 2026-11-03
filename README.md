@@ -65,6 +65,9 @@ npm run validate:recipes # the built-in recipes match the recipe schema
 
 The Chrome Web Store listing, the launch copy and the step-by-step submission guide are in [docs/store/](docs/store/).
 
+The extension icon's source is `docs/store/icon.svg`; after editing it, run `npm run icons` to render
+`public/icon/{16,32,48,96,128}.png` (the 128 px one, also the store icon, keeps 16 px of transparent padding).
+
 After changing `src/core/config/config.schema.json` or `src/core/lang/*.schema.json`, regenerate the validators with
 `npm run gen:validator`.
 
