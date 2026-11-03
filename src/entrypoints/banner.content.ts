@@ -1,5 +1,6 @@
 import { browser } from 'wxt/browser';
 import { bannerText, type BannerAck, type BannerChoice, type BannerShowMessage, type CloseChoiceMessage } from '../engine/messages';
+import { sendQuietly } from '../engine/send-quietly';
 
 const HOST_ID = 'tabchef-dedupe-banner';
 
@@ -52,7 +53,7 @@ function showUndo(entryId: string, message: string): void {
   const b = document.createElement('button');
   b.textContent = 'Undo';
   b.addEventListener('click', () => {
-    void browser.runtime.sendMessage({ type: 'banner.choice', choice: 'undo', entryId });
+    void sendQuietly(() => browser.runtime.sendMessage({ type: 'banner.choice', choice: 'undo', entryId }));
     host.remove();
   });
   box.append(text, b);
@@ -74,7 +75,7 @@ function showProtectedClose(message: string): void {
     const b = document.createElement('button');
     b.textContent = label;
     b.addEventListener('click', () => {
-      void browser.runtime.sendMessage({ type: 'banner.closeChoice', choice } satisfies CloseChoiceMessage);
+      void sendQuietly(() => browser.runtime.sendMessage({ type: 'banner.closeChoice', choice } satisfies CloseChoiceMessage));
       host.remove();
     });
     box.append(b);
@@ -89,7 +90,7 @@ function show(tabId: number, existingTabId: number, groupTitle: string | undefin
   box.append(text);
 
   const choose = (choice: BannerChoice) => {
-    void browser.runtime.sendMessage({ type: 'banner.choice', choice, tabId, existingTabId });
+    void sendQuietly(() => browser.runtime.sendMessage({ type: 'banner.choice', choice, tabId, existingTabId }));
     host.remove();
   };
   for (const [label, choice] of [
