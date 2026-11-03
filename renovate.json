@@ -4,7 +4,24 @@
   "schedule": ["before 6am on monday"],
   "timezone": "America/Toronto",
   "rangeStrategy": "pin",
+  "semanticCommitType": "chore",
+  "semanticCommitScope": "deps",
+  "osvVulnerabilityAlerts": true,
+  "vulnerabilityAlerts": {
+    "description": "Security fixes open right away, outside the weekly schedule",
+    "schedule": ["at any time"]
+  },
+  "lockFileMaintenance": {
+    "description": "Refresh transitive dependencies (most Dependabot alerts are transitive dev tooling)",
+    "enabled": true,
+    "schedule": ["before 6am on the first day of the month"]
+  },
   "packageRules": [
+    {
+      "description": "lzma and yaml ship in the extension zip: fix(deps) so semantic-release releases the update",
+      "matchDepTypes": ["dependencies"],
+      "semanticCommitType": "fix"
+    },
     {
       "description": "WXT is pre-1.0: every minor can break, review individually",
       "matchPackageNames": ["wxt", "@wxt-dev/**"],
@@ -20,7 +37,7 @@
       "description": "Low-risk dev tooling, grouped",
       "matchDepTypes": ["devDependencies"],
       "matchUpdateTypes": ["minor", "patch"],
-      "excludePackageNames": ["wxt", "@playwright/test"],
+      "matchPackageNames": ["!wxt", "!@wxt-dev/**", "!@playwright/test"],
       "groupName": "dev tooling (minor/patch)"
     },
     {
@@ -28,6 +45,5 @@
       "matchManagers": ["github-actions"],
       "groupName": "github actions"
     }
-  ],
-  "commitMessagePrefix": "chore(deps):"
+  ]
 }
