@@ -60,7 +60,7 @@
 </Field>
 {#if form.group}
   <div class="grid">
-    <Field label="Group title template" help={"The group's name. {name} inserts a value captured by the URL pattern: {repo} with github.com/:owner/:repo* gives one group per repository."}>
+    <Field label="Group name" help={"The group's name. {name} inserts a value captured by the URL pattern: {repo} with github.com/:owner/:repo* gives one group per repository."}>
       <input value={form.group.title} oninput={(e) => group({ title: e.currentTarget.value })} />
     </Field>
     {#each sErr(`${groupPath}/title`) as m (m)}<p class="err" role="alert">title {m}</p>{/each}
