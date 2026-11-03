@@ -623,3 +623,26 @@ describe('SourceService: linkedFor', () => {
     expect(t.fetch).not.toHaveBeenCalled();
   });
 });
+
+describe('SourceService: same-document navigation', () => {
+  // The built-in recipes match a PR's sub-pages too (`:num*`): Files changed, Commits, Checks.
+  const subPageRule: Rule = { ...prRule, match: { url: 'github.com/:owner/:repo/pull/:num*' } };
+  const at = async () => {
+    const t = setup({ tabs: [prTab(1, 7)], rules: [subPageRule] });
+    await t.svc.refresh('manual');
+    return t;
+  };
+
+  it("keeps a PR's data when the tab moves to one of its sub-pages, before the next refresh re-indexes it", async () => {
+    const t = await at();
+    for (const sub of ['/files', '/commits', '/commits/abc123', '#issuecomment-1']) {
+      expect(t.svc.factsFor(1, `https://github.com/acme/api/pull/7${sub}`)?.['rec/pr']).toMatchObject({ data: { state: 'open' } });
+    }
+  });
+  it("drops the data when the tab moves to another PR or off the PR", async () => {
+    const t = await at();
+    expect(t.svc.factsFor(1, 'https://github.com/acme/api/pull/8')).toBeUndefined();
+    expect(t.svc.factsFor(1, 'https://github.com/acme/web/pull/7/files')).toBeUndefined();
+    expect(t.svc.factsFor(1, 'https://github.com/acme/api')).toBeUndefined();
+  });
+});

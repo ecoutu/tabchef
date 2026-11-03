@@ -21,7 +21,7 @@ import { buildKeySearchQuery, buildPrStateQuery, parseKeySearchResponse, parsePr
 import { buildIssueSearch, parseIssueSearch, resolveInHalves, type IssueFailureDetail } from '../core/sources/jira';
 import { pickFields, SOURCE_QUERIES } from '../core/sources/registry';
 import type { JiraIssue, PrInfo, SourceEntry } from '../core/sources/types';
-import type { Snapshot } from '../core/types';
+import type { Snapshot, TabSnap } from '../core/types';
 import { isExemptUrl } from '../core/url/normalize';
 import type { BrowserPort } from '../platform/browser-port';
 import type { ConnectionManager } from './connections/manager';
@@ -146,7 +146,9 @@ const chunks = <T>(xs: T[], n: number): T[][] => Array.from({ length: Math.ceil(
 
 export class SourceService {
   private readonly cache: SourceCache;
-  private byTab = new Map<number, { url: string; reqs: SourceRequest[] }>();
+  private byTab = new Map<number, { url: string; tab: TabSnap; reqs: SourceRequest[] }>();
+  /** The program the tabs were last indexed with: factsFor re-derives a navigated tab's lookups with it. */
+  private program?: Program;
   private lastPopup = -Infinity;
   /** Per indexed tab, the picked data last reported through onUpdated (or seen at load): what rules have read. */
   private reported = new Map<number, string>();
@@ -246,10 +248,12 @@ export class SourceService {
 
   private index(snap: Snapshot, p: Program): SourceRequest[] {
     const reqs = this.requestsFor(snap, p);
-    const urls = new Map(snap.tabs.map((t) => [t.id, t.pendingUrl || t.url]));
+    const tabs = new Map(snap.tabs.map((t) => [t.id, t]));
+    this.program = p;
     this.byTab = new Map();
     for (const r of reqs) {
-      const e = this.byTab.get(r.tabId) ?? { url: urls.get(r.tabId) ?? r.url, reqs: [] };
+      const tab = tabs.get(r.tabId)!;
+      const e = this.byTab.get(r.tabId) ?? { url: tab.pendingUrl || tab.url, tab, reqs: [] };
       e.reqs.push(r);
       this.byTab.set(r.tabId, e);
     }
@@ -258,19 +262,31 @@ export class SourceService {
 
   /**
    * The tab's source entries per rule key, `data` projected to the rule's `fields` (pickFields: PrState 'unknown' is
-   * never a value, M3-R45). Undefined when nothing is known, or when `url` differs from the URL the tab was indexed at.
+   * never a value, M3-R45). Undefined when nothing is known. When `url` differs from the URL the tab was indexed at
+   * (it navigated since), only the lookups the tab would also make at `url` count: a same-document move to a PR's
+   * Files changed tab keeps the PR's data until the next refresh re-indexes the tab; another page's data is dropped.
    */
   factsFor(tabId: number, url?: string): TabSourceFacts | undefined {
     const t = this.byTab.get(tabId);
-    if (!t || (url !== undefined && url !== t.url)) return undefined;
+    if (!t) return undefined;
+    const reqs = url === undefined || url === t.url ? t.reqs : this.reqsAt(t.tab, t.reqs, url);
     const out: TabSourceFacts = {};
-    for (const r of t.reqs) {
+    for (const r of reqs) {
       const e = this.cache.get(r.key);
       if (!e) continue;
       const { data, ...rest } = publicOf(e);
       out[r.ruleKey] = { ...rest, ...(data !== undefined && { data: pickFields(data, r.fields) }) };
     }
     return Object.keys(out).length ? out : undefined;
+  }
+
+  /** Those of `reqs` (made for `tab`) that `tab` would also make at `url`: same rule, same lookup. */
+  private reqsAt(tab: TabSnap, reqs: SourceRequest[], url: string): SourceRequest[] {
+    if (!this.program) return [];
+    const moved: TabSnap = { ...tab, url };
+    delete moved.pendingUrl;
+    const at = new Set(this.requestsFor({ tabs: [moved], groups: [], windows: [] }, this.program).map((r) => `${r.ruleKey}|${r.key}`));
+    return reqs.filter((r) => at.has(`${r.ruleKey}|${r.key}`));
   }
 
   /** Repos of open PR tabs the GitHub API cannot read (see `unreadable`), sorted. */

@@ -258,7 +258,7 @@ describe('jira-ticket: level 2 (Page details: github.com granted, the PR page re
     });
     await svc.refresh('manual');
     const facts: Facts = Object.fromEntries(tabs.map((t) => [t.id, { ...(pages[t.id] && { page: pages[t.id] }), ...(svc.factsFor(t.id) && { source: svc.factsFor(t.id) }) }]));
-    return { s, keys: keys(p, tabs, facts).byTab };
+    return { s, svc, p, keys: keys(p, tabs, facts).byTab };
   }
 
   it('branch variant: the PR whose title lacks the key joins ABC-1 by its branch feat/ABC-1-login', async () => {
@@ -266,6 +266,17 @@ describe('jira-ticket: level 2 (Page details: github.com granted, the PR page re
     expect(await s.pm.levelFor('jira-ticket-branch/pr')).toBe('page');
     expect(await s.levels()).toEqual(['Titles: available', 'Page details: available', 'Connections: locked, needs Jira or GitHub connection']);
     expect(k).toEqual({ 1: 'ABC-1', 2: 'ABC-1' });
+  });
+
+  it("a PR tab that moves to its Files changed tab stays with its ticket before the next source refresh", async () => {
+    // GitHub's PR links navigate the same document: the URL changes first, the page is re-read later.
+    const pages: Record<number, ReturnType<typeof prPage>> = { 2: prPage('feat/ABC-1-login') };
+    const { svc, p, keys: before } = await run('branch', [tab(1, TICKET, '[ABC-1] Login fails - Jira'), tab(2, PR, 'Fix login')], pages);
+    expect(before).toEqual({ 1: 'ABC-1', 2: 'ABC-1' });
+    delete pages[2];
+    const moved = [tab(1, TICKET, '[ABC-1] Login fails - Jira'), tab(2, `${PR}/files`, 'Fix login')];
+    const facts: Facts = Object.fromEntries(moved.map((t) => [t.id, { ...(svc.factsFor(t.id, t.url) && { source: svc.factsFor(t.id, t.url) }) }]));
+    expect(keys(p, moved, facts).byTab).toEqual({ 1: 'ABC-1', 2: 'ABC-1' });
   });
 
   it('the real fixtures PR: branch feature/scrum-1-login joins SCRUM-1', async () => {
