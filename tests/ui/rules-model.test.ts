@@ -122,7 +122,8 @@ describe('rules-model: YAML (M2 T15)', () => {
     const { builtinRecipes } = await import('../../src/recipes/load');
     const c = { ...defaultConfig(), recipes: defaultConfig().recipes.map((r) => ({ ...r, enabled: true })) };
     const rows = ruleRows(c, builtinRecipes()).filter((r) => r.kind === 'recipe');
-    expect(rows.map((r) => r.key)).toEqual(['github-prs/group-by-repo', 'finished/oauth-callback', 'finished/meet-ended', 'finished/redirect', 'merged-prs/pr-state', 'merged-prs/auto-close-merged']);
+    expect(rows.map((r) => r.key)).toEqual(['github-prs/group-by-repo', 'finished/oauth-callback', 'finished/meet-ended', 'finished/redirect', 'merged-prs/pr-state', 'merged-prs/auto-close-merged',
+      ...['title', 'branch', 'either'].flatMap((v) => [`jira-ticket-${v}/ticket`, `jira-ticket-${v}/pr`])]);
     for (const row of rows) expect(yamlToRule(ruleToYaml(row.rule))).toEqual({ ok: true, rule: row.rule });
   });
 
@@ -293,6 +294,8 @@ describe('rules-model: form and helpers (M2 T15)', () => {
       'Source: github.pull_request via the github connection',
       'Assign to project ABC-1 (create it if missing)',
     ]);
+    const fb = { ...r, match: { url: 'a.com/*' }, source: undefined, actions: [{ assignProject: { key: '{keyTitle}', fallbackKey: '{keyBranch}' } }] } as Rule;
+    expect(ruleSummary(fb).at(-1)).toBe('Assign to project {keyTitle}, else {keyBranch}');
   });
 
   it('patternHints: exact-path patterns and open-ended host globs', async () => {

@@ -184,11 +184,14 @@ export function validateRecipe(x: unknown): RecipeResult {
   needsHosts(r.needs, '/needs');
   // M3: project templates and color, conflicts, levels, and assignProject only with a project.
   if (r.project) {
+    // Checked with the param defaults substituted (`color: '{params.color}'`), as compileProgram renders it.
+    let project = r.project;
+    try { project = substitute(r.project, defaults) as Recipe['project'] & object; } catch { /* a placeholder problem: reported above */ }
     for (const k of ['key', 'title', 'color'] as const) {
-      const m = templateProblem(r.project[k]);
+      const m = templateProblem(project[k]);
       if (m) out.push({ path: `/project/${k}`, message: m });
     }
-    if (!COLORS.has(r.project.color) && templateVars(r.project.color).length === 0) {
+    if (!COLORS.has(project.color) && templateVars(project.color).length === 0) {
       out.push({ path: '/project/color', message: `must be one of ${[...COLORS].join(', ')}, or a {template}` });
     }
   }

@@ -35,8 +35,12 @@ export type Action =
   | { dedupe: DedupeAction }
   | { close: { after?: string; mode?: CloseMode } }
   | { showInView: { view: string } }
-  /** Recipe rules only (M3-R15): make this tab a candidate for the recipe's project `key` (a template). */
-  | { assignProject: { key: string; create?: boolean /* default false */ } };
+  /**
+   * Recipe rules only (M3-R15): make this tab a candidate for the recipe's project `key` (a template). `fallbackKey`
+   * (a template) adds a second, lower candidate when it renders to another non-empty key: the first that resolves wins
+   * (T16's either variant: the PR title's key, else its branch's; M2's `default:` filter takes only a literal).
+   */
+  | { assignProject: { key: string; fallbackKey?: string; create?: boolean /* default false */ } };
 /**
  * Host match patterns, optional permissions and connections a recipe (or one recipe rule, T10) needs to run.
  * `anyOf` lists alternatives, best first; the first satisfied one is the rule's level (needsLevel, M3-R12), which

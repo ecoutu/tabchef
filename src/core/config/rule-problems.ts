@@ -220,8 +220,12 @@ export function ruleProblems(rule: Rule, tables?: Tables): Problem[] {
     } else if ('close' in a && a.close.after !== undefined && !DURATION.test(a.close.after)) {
       out.push({ path: `/actions/${j}/close/after`, message: DURATION_MSG });
     } else if ('assignProject' in a) {
-      const tp = templateProblem(a.assignProject.key, tables);
-      for (const m of tp ? [tp] : varProblems(rule, a.assignProject.key)) out.push({ path: `/actions/${j}/assignProject/key`, message: m });
+      for (const k of ['key', 'fallbackKey'] as const) {
+        const t = a.assignProject[k];
+        if (t === undefined) continue;
+        const tp = templateProblem(t, tables);
+        for (const m of tp ? [tp] : varProblems(rule, t)) out.push({ path: `/actions/${j}/assignProject/${k}`, message: m });
+      }
     }
   });
   return out;

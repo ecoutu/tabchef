@@ -10,7 +10,7 @@ import type { RecentlyClosed, RecentlyClosedItem } from '../core/safety/recently
 import type { WhyEntry, WhyLog } from '../core/safety/why-log';
 import type { BrowserPort } from '../platform/browser-port';
 import type { ConfigStore, Backup } from '../storage/config-store';
-import { compileProgram, paramProblem } from '../core/lang/compile';
+import { compileProgram, conflictingRecipes, paramProblem } from '../core/lang/compile';
 import { applyCollapse, suggestCollapse, type CollapseSuggestion } from '../core/lang/collapse';
 import type { Program, Recipe, RecipeRef, Rule, TabFacts } from '../core/lang/types';
 import { emptyProgram, previewChange, type PreviewContext, type PreviewResult } from '../core/lang/preview';
@@ -801,13 +801,17 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
     return { program, needs: program.needs[id] ?? { origins: [], permissions: [] }, rules, errors: own };
   }
 
-  /** Changes one recipe ref in a single store update (conflict when `baseRev` is stale or the ref is gone). */
-  async function updateRecipe(id: string, baseRev: string | undefined, fn: (r: RecipeRef) => RecipeRef): Promise<Response> {
+  /**
+   * Changes one recipe ref in a single store update (conflict when `baseRev` is stale or the ref is gone); `disable`
+   * names recipes turned off in the same update (those conflicting with an enabled one, M3-R17).
+   */
+  async function updateRecipe(id: string, baseRev: string | undefined, fn: (r: RecipeRef) => RecipeRef, disable?: (cur: Config) => string[]): Promise<Response> {
     try {
       await deps.store.update((cur) => {
         if (baseRev !== undefined && configRev(cur) !== baseRev) throw new Conflict();
         if (!cur.recipes.some((r) => r.id === id)) throw new Conflict();
-        return { ...cur, recipes: cur.recipes.map((r) => (r.id === id ? fn(r) : r)) };
+        const off = disable?.(cur) ?? [];
+        return { ...cur, recipes: cur.recipes.map((r) => (r.id === id ? fn(r) : off.includes(r.id) ? { ...r, enabled: false } : r)) };
       });
     } catch (e) {
       if (e instanceof Conflict) return fail('conflict');
@@ -856,11 +860,15 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
           if (errors.length) return fail('invalid params', errors);
         }
         const over = req.params !== undefined ? { params: req.params } : {};
-        const { needs, errors } = compileRecipe(cfg, req.id, d.builtins, over);
+        // M3-R17: enabling a recipe turns off the enabled recipes it conflicts with, in the same update.
+        const conflicting = (c: Config) => conflictingRecipes(c, req.id, d.builtins);
+        const off = conflicting(cfg);
+        const base = off.length ? { ...cfg, recipes: cfg.recipes.map((r) => (off.includes(r.id) ? { ...r, enabled: false } : r)) } : cfg;
+        const { needs, errors } = compileRecipe(base, req.id, d.builtins, over);
         if (errors.length) return fail(req.params !== undefined ? 'invalid params' : 'invalid recipe', errors);
         // R5: only recipe-level needs gate the enable; an unmet rule-level need pauses that rule after enabling.
         if (!(await d.permissions.check(needs)).ok) return fail('missing permissions');
-        return updateRecipe(req.id, req.baseRev, (r) => ({ ...r, enabled: true, ...(req.params !== undefined && { params: { ...req.params } }) }));
+        return updateRecipe(req.id, req.baseRev, (r) => ({ ...r, enabled: true, ...(req.params !== undefined && { params: { ...req.params } }) }), conflicting);
       }
       case 'recipes.disable': return updateRecipe(req.id, req.baseRev, (r) => ({ ...r, enabled: false }));
       case 'recipes.setParams': {

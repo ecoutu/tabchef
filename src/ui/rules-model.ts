@@ -471,7 +471,10 @@ export function ruleSummary(r: Rule): string[] {
     else if ('dedupe' in a) out.push(`De-duplicate${a.dedupe.mode ? `: ${a.dedupe.mode}` : ''}`);
     else if ('close' in a) out.push(`Close${a.close.after ? ` after ${a.close.after}` : ''}${a.close.mode ? ` (${a.close.mode})` : ''}`);
     else if ('showInView' in a) out.push(`Show in view ${a.showInView.view}`);
-    else if ('assignProject' in a) out.push(`Assign to project ${a.assignProject.key}${a.assignProject.create ? ' (create it if missing)' : ''}`);
+    else if ('assignProject' in a) {
+      const or = a.assignProject.fallbackKey !== undefined ? `, else ${a.assignProject.fallbackKey}` : '';
+      out.push(`Assign to project ${a.assignProject.key}${or}${a.assignProject.create ? ' (create it if missing)' : ''}`);
+    }
     else out.push(JSON.stringify(a));
   }
   if (r.dryRun) out.push('Dry run: logged only');

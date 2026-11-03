@@ -44,7 +44,7 @@ export interface EvalResult {
    * there. A view's `show`, `groupBy` and `sort` read them as `extract.<name>` (M2 T17). Absent when `views` is empty.
    */
   viewVars?: Record<string, Record<string, string>>;
-  /** M3: every matching `assignProject` (key rendered non-empty), in priority order; T14 picks among them. */
+  /** M3: every matching `assignProject` (key, then a different fallbackKey, rendered non-empty), in priority order; T14 picks among them. */
   project?: ProjectCandidate[];
   /** Every matching rule key, in priority order (the conflict view). */
   matched: string[];
@@ -198,10 +198,12 @@ export function evaluateTab(p: Program, f: TabFacts, now: number): EvalResult {
         }
       } else if ('assignProject' in a) {
         const key = renderTemplate(a.assignProject.key, vars, p.tables);
+        const fallback = a.assignProject.fallbackKey !== undefined ? renderTemplate(a.assignProject.fallbackKey, vars, p.tables) : '';
         const summary = vars.summary;
-        if (key !== '') {
+        for (const k of new Set([key, fallback])) {
+          if (k === '') continue;
           (out.project ??= []).push({
-            key, ruleKey: r.key, index: r.index, create: a.assignProject.create ?? false, ...(summary ? { summary } : {}),
+            key: k, ruleKey: r.key, index: r.index, create: a.assignProject.create ?? false, ...(summary ? { summary } : {}),
           });
         }
       }

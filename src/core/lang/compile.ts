@@ -27,7 +27,8 @@
 // PermissionsManager, so compile stays free of permission and connection state (R45). A needs alternative with its
 // own `anyOf` is reported. Declared recipe `levels` are carried in Program.levels. A recipe rule with `assignProject` needs the recipe's `project`. Recipes that
 // `conflicts` with each other (either side may list the other) are not both compiled: the later one in
-// config.recipes is reported and skipped (M3-R17).
+// config.recipes is reported and skipped (M3-R17); enabling one through recipes.enable turns the others off
+// (conflictingRecipes).
 //
 // Errors: a broken recipe (unknown body, bad param, unknown placeholder, invalid rule, bad urlTransform) is reported
 // in `errors` and skipped as a whole (rules, tables, views, needs); a broken user rule is reported and skipped alone.
@@ -281,6 +282,21 @@ function resolveRecipes(config: Config, builtins: Record<string, Recipe>, errors
   return withoutConflicts(out, errors);
 }
 
+/**
+ * The enabled recipes of `config` that conflict with recipe `id` (either side lists the other, M3-R17): what enabling
+ * `id` turns off (recipes.enable and its preview, so the two never disagree).
+ */
+export function conflictingRecipes(config: Pick<Config, 'recipes'>, id: string, builtins: Record<string, Recipe>): string[] {
+  const bodyOf = (r: RecipeRef): unknown => (r.source === 'builtin' ? (own(builtins, r.id) ? builtins[r.id] : undefined) : r.body);
+  const lists = (r: RecipeRef | undefined): unknown[] => {
+    const b = r && bodyOf(r);
+    return isObj(b) && Array.isArray(b.conflicts) ? b.conflicts : [];
+  };
+  const recipes = Array.isArray(config.recipes) ? config.recipes.filter(isObj) : [];
+  const self = recipes.find((r) => r.id === id);
+  return recipes.filter((r) => r.id !== id && r.enabled && (lists(self).includes(r.id) || lists(r).includes(id))).map((r) => r.id);
+}
+
 /** `recipes` minus each one that conflicts with an earlier kept one (either side lists the other, M3-R17). */
 function withoutConflicts(recipes: Candidate[], errors: CompileError[]): Candidate[] {
   const lists = (c: Candidate): unknown[] => (Array.isArray(c.body.conflicts) ? c.body.conflicts : []);
@@ -359,7 +375,7 @@ export function compileProgram(
     if (!isObj(r) || !r.enabled) continue;
     const key = `user/${String(r.id)}`;
     const es = ruleErrors(r, checkTables);
-    if (own(r, 'needs')) es.push('needs: only recipe rules declare needs (R44)');
+    if (own(r, 'needs')) es.push('needs: only recipe rules can declare needs');
     else if (!es.length) es.push(...m3Problems(r, undefined));
     if (userIds.has(r.id)) es.push('duplicate rule id');
     userIds.add(r.id);

@@ -1,0 +1,100 @@
+# Jira ticket (by PR branch), M3 T16: one project per Jira issue key. A Jira ticket tab creates the project (key
+# from the URL); a GitHub pull request tab joins it when its head branch names the key. The branch comes from the
+# GitHub connection, else the PR page (github.com access) through the source fallback, so the PR rule is paused
+# without either. One of the three jira-ticket-* variants can be enabled at a time (conflicts).
+# The ticket rule's needs end with an empty alternative: without the Jira connection or host access it still runs at
+# the Titles level (key from the URL, summary from the title). A PR's key creates no project on its own unless its
+# prefix is confirmed (projectPrefixes, or a key the Jira API answered for): Review Focus #5.
+recipe: jira-ticket-branch
+version: 1
+name: Jira ticket projects (PR branch)
+description: Groups each Jira ticket tab with the GitHub pull requests whose branch names its key, one group per ticket.
+params:
+  jiraSite:
+    type: string
+    default: '*.atlassian.net'
+    label: Jira site
+    help: The host name of your Jira site, e.g. acme.atlassian.net. The default matches every Jira Cloud site.
+  keyPattern:
+    type: regex
+    default: '[A-Z][A-Z0-9]+-\d+'
+    label: Issue key pattern
+    help: A regular expression for an issue key, e.g. [A-Z][A-Z0-9]+-\d+ for ABC-123.
+  projectPrefixes:
+    type: string[]
+    default: []
+    label: Your Jira project keys
+    help: One per line, e.g. ABC. When set, only keys with these prefixes count, and a pull request with such a key starts a project even without its ticket tab open. Empty means any key whose ticket tab is open.
+  ignoredPrefixes:
+    type: string[]
+    default: [UTF, ISO, SHA, RFC, CVE, GPT, COVID, HTTP, TLS, SSL, MD, AES, RSA, ES, PEP, WCAG, IPV, X86, ARM, CP, KB, JSR]
+    label: Prefixes that are never keys
+    help: One per line. Text like UTF-8 or SHA-256 looks like an issue key but is not. Not used when Your Jira project keys is set.
+  titleFormat:
+    type: string
+    default: '{key}'
+    enum: ['{key}', '{key} · {summary}']
+    label: Group title
+    help: "{key} shows the issue key (ABC-123); {key} · {summary} adds the ticket's summary once it is known."
+  color:
+    type: string
+    default: blue
+    enum: [grey, blue, red, yellow, green, pink, purple, cyan, orange]
+    label: Group color
+    help: The color of each ticket's tab group.
+  githubOrgs:
+    type: string[]
+    default: []
+    label: GitHub organizations to search for linked pull requests
+    help: One per line. With the GitHub connection, the Projects tab lists pull requests that mention the key in these organizations (and those of the project's open pull requests). Empty searches pull requests involving you.
+project: {key: '{key}', title: '{params.titleFormat}', color: '{params.color}', container: group, join: [rules, manual]}
+conflicts: [jira-ticket-title, jira-ticket-either]
+rules:
+  - id: ticket
+    name: Ticket tab
+    enabled: true
+    needs:
+      anyOf:
+        - connections: [jira]
+        - hosts: ['https://{params.jiraSite}/*']
+        - {}
+    source:
+      connection: jira
+      query: jira.issue
+      args: {key: '{key}'}
+      fields: {status: status, statusCategory: statusCategory, summary: summary}
+      fallback: {adapter: jira.issuePage}
+    match:
+      any:
+        - url: '{params.jiraSite}/browse/*'
+        - url: '{params.jiraSite}/*selectedIssue=*'
+    extract:
+      key: {from: url, jiraKey: {pattern: '{params.keyPattern}', allow: '{params.projectPrefixes}', ignore: '{params.ignoredPrefixes}'}}
+      summary: {from: title, regex: '^\[[^\]]+\]\s*(?<s>.+?)\s*-\s*Jira$', group: s}
+    actions:
+      - assignProject: {key: '{key}', create: true}
+  - id: pr
+    name: PR by branch
+    enabled: true
+    needs:
+      anyOf:
+        - connections: [github]
+        - hosts: ['https://github.com/*']
+    source:
+      connection: github
+      query: github.pull_request
+      args: {owner: '{owner}', repo: '{repo}', number: '{num}'}
+      fields: {headRefName: headRefName, state: state}
+      fallback: {adapter: github.prPage}
+    match:
+      url: 'github.com/:owner/:repo/pull/:num*'
+    extract:
+      key: {from: source.headRefName, jiraKey: {pattern: '{params.keyPattern}', allow: '{params.projectPrefixes}', ignore: '{params.ignoredPrefixes}'}}
+    actions:
+      - assignProject: {key: '{key}'}
+levels:
+  - {id: titles, label: Titles, rules: [ticket]}
+  - {id: page, label: Page details, rules: [ticket, pr]}
+  - {id: connections, label: Connections, rules: [ticket, pr]}
+views:
+  - {id: projects, tab: Projects, kind: projects, actions: []}

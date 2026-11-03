@@ -9,7 +9,7 @@ import type { RecentlyClosed } from '../core/safety/recently-closed';
 import type { GroupTarget } from '../core/group/evaluate';
 import type { Program, TabFacts } from '../core/lang/types';
 import type { Project, ProjectAssignment, ProjectCardData, ProjectDef } from '../core/projects/types';
-import type { PrInfo, PrState, SourceEntry } from '../core/sources/types';
+import type { JiraIssue, PrInfo, PrState, SourceEntry } from '../core/sources/types';
 import type { Snapshot, TabSnap } from '../core/types';
 import { normalizeUrl } from '../core/url/normalize';
 import type { BrowserPort } from '../platform/browser-port';
@@ -30,6 +30,19 @@ const PILLS = new Set<PrState>(['open', 'draft', 'merged', 'closed']);
 const CATEGORIES = new Set(['new', 'indeterminate', 'done']);
 const PR_OWNER = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/[A-Za-z0-9_.-]+\/pull\/\d+/;
 const urlOf = (t: TabSnap): string => (t.pendingUrl ? t.pendingUrl : t.url);
+const hostOf = (url: string): string | undefined => { try { return new URL(url).host; } catch { return undefined; } };
+/** projectId → the host of its first tab joined by a `jira.issue` rule (its ticket tab, M3-R110). */
+function ticketSites(program: Program, snap: Snapshot, assignments: Map<number, ProjectAssignment>): Map<string, string> {
+  const jira = new Set(program.rules.filter((r) => r.rule.source?.query === 'jira.issue').map((r) => r.key));
+  const tabs = new Map(snap.tabs.map((t) => [t.id, t]));
+  const out = new Map<string, string>();
+  for (const [id, a] of assignments) {
+    const t = tabs.get(id);
+    const host = t && a.ruleKey !== undefined && jira.has(a.ruleKey) ? hostOf(urlOf(t)) : undefined;
+    if (host !== undefined && !out.has(a.projectId)) out.set(a.projectId, host);
+  }
+  return out;
+}
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null;
 /** Closed by Close group (M3-R84): kept for undo, out of membership and the UI. */
 const isTomb = (p: Project): boolean => p.closedAt !== undefined;
@@ -48,7 +61,7 @@ export interface ProjectServiceDeps {
   store: ProjectStore;
   port: Pick<BrowserPort, 'snapshot' | 'createTab' | 'closeTab'>;
   getProgram: () => Promise<Program>;
-  sources: Pick<SourceService, 'factsFor' | 'issues' | 'linkedFor'>;
+  sources: Pick<SourceService, 'factsFor' | 'issues' | 'linkedFor' | 'jiraSite'>;
   facts: Pick<PageFacts, 'get'>;
   log: WhyLog;
   recentlyClosed: Pick<RecentlyClosed, 'add'>;
@@ -157,6 +170,11 @@ export class ProjectService {
       for (const p of projects) {
         const summary = r.summaries.get(p.id);
         if (summary !== undefined && p.summary === undefined) { p.summary = summary; changed.add(p); }
+      }
+      const sites = ticketSites(program, snap, r.assignments);
+      for (const p of projects) {
+        const site = sites.get(p.id);
+        if (site !== undefined && p.site === undefined) { p.site = site; changed.add(p); }
       }
       const removed = await this.clock.closedTime(snap, projects, open, changed);
       projects = projects.filter((p) => !removed.includes(p.id));
@@ -340,12 +358,12 @@ export class ProjectService {
         if (id !== undefined) tabsOf.set(id, [...(tabsOf.get(id) ?? []), t]);
       }
       const defOf = new Map(defs.map((d) => [d.recipeId, d]));
-      return { program, defOf, tabsOf, open: projects.filter((p) => tabsOf.has(p.id) && defOf.has(p.recipeId)) };
+      return { program, defOf, tabsOf, sites: ticketSites(program, snap, assignments), open: projects.filter((p) => tabsOf.has(p.id) && defOf.has(p.recipeId)) };
     });
-    const { program, defOf, tabsOf, open } = plan;
+    const { program, defOf, tabsOf, sites, open } = plan;
     if (open.length === 0) return [];
     const now = this.now();
-    const [linked, issues] = await Promise.all([this.fetchLinked(program, open, tabsOf, now), this.deps.sources.issues(open.map((p) => p.key))]);
+    const [linked, { issues, asked }] = await Promise.all([this.fetchLinked(program, open, tabsOf, now), this.fetchIssues(open, tabsOf, sites)]);
     return this.serial(async () => {
       const current = new Map((await this.deps.store.list()).map((p) => [p.id, p]));
       const factsOf = (t: TabSnap): SourceEntry<Record<string, unknown>>[] => Object.values(this.deps.sources.factsFor(t.id, urlOf(t)) ?? {});
@@ -361,7 +379,7 @@ export class ProjectService {
           p.linkedFetchedAt = now;
           if (l.prs) p.linked = l.prs.map((x) => ({ url: x.url, title: x.title ?? x.url, state: x.state }));
         }
-        const issue = issues.get(p.key);
+        const issue = asked.has(p.id) ? issues.get(p.key) : undefined;
         if (p.summary === undefined && issue?.data?.summary) p.summary = issue.data.summary;
         // M3-R90: the status shown may be last known (a stale entry, else the stored one), but only a fresh entry
         // (via api or page, not stale) says Done: stale or unknown data never drives the close prompt.
@@ -388,6 +406,18 @@ export class ProjectService {
       if (changed.length) await this.deps.store.put(...changed);
       return cards;
     });
+  }
+
+  /**
+   * Ticket status through SourceService.issues for the projects on the Jira connection's site only (M3-R110): a tab
+   * on that site, else the project's ticket site (stored, else its ticket tab's now) is it, or none is known (a
+   * PR-only project). A same-key ticket on another site is another issue: its status comes from its own tab's page.
+   */
+  private async fetchIssues(open: Project[], tabsOf: Map<string, TabSnap[]>, sites: Map<string, string>): Promise<{ issues: Map<string, SourceEntry<JiraIssue>>; asked: Set<string> }> {
+    const site = await this.deps.sources.jiraSite();
+    const on = site === undefined ? [] : open.filter((p) => tabsOf.get(p.id)!.some((t) => hostOf(urlOf(t)) === site) || (p.site ?? sites.get(p.id) ?? site) === site);
+    const issues = on.length ? await this.deps.sources.issues(on.map((p) => p.key)) : new Map<string, SourceEntry<JiraIssue>>();
+    return { issues, asked: new Set(on.map((p) => p.id)) };
   }
 
   /**

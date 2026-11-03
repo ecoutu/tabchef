@@ -30,6 +30,12 @@ export interface Project {
   excluded: string[];
   linked: { url: string; title: string; state: PrState }[];
   linkedFetchedAt?: number;
+  /**
+   * The host of the first ticket tab (a tab joined by a `jira.issue` rule) seen in this project, e.g.
+   * 'other.atlassian.net' (M3-R110): the Jira connection is asked for its status only when this is its site (or a
+   * tab is on that site). Unset (a project started by a PR, or stored before R110): the connected site's.
+   */
+  site?: string;
   /** Browser running time (ms) without an open tab, counted by T15's passes; pruned on startup once 7 days. */
   closedFor?: number;
   /**

@@ -105,7 +105,7 @@ describe('migrateConfig v1 -> v2', () => {
 });
 
 describe('defaultConfig v2', () => {
-  it('validates, with duplicates and github-prs enabled, finished and merged-prs disabled, dryRun false', () => {
+  it('validates, with duplicates and github-prs enabled, finished, merged-prs and the jira-ticket variants disabled, dryRun false', () => {
     const c = defaultConfig();
     expect(validateConfig(c).ok).toBe(true);
     expect(c.version).toBe(2);
@@ -113,6 +113,7 @@ describe('defaultConfig v2', () => {
     expect(c.dryRun).toBe(false);
     expect(c.recipes.map((r) => [r.id, r.enabled, r.source])).toEqual([
       ['duplicates', true, 'builtin'], ['github-prs', true, 'builtin'], ['finished', false, 'builtin'], ['merged-prs', false, 'builtin'],
+      ['jira-ticket-title', false, 'builtin'], ['jira-ticket-branch', false, 'builtin'], ['jira-ticket-either', false, 'builtin'],
     ]);
     expect(c.dedupe).toMatchObject({ fragmentOverrides: [], matchTitle: false, titleOverrides: [] });
   });
@@ -123,7 +124,8 @@ describe('fillConfigDefaults: built-in recipes added later (M2, R68)', () => {
     const d = defaultConfig();
     const user = { id: 'mine', enabled: true, params: {}, source: 'user' as const, body: {} };
     const out = fillConfigDefaults({ ...d, recipes: [user, d.recipes.find((r) => r.id === 'finished')!] }) as ConfigV2;
-    expect(out.recipes.map((r) => [r.id, r.enabled])).toEqual([['mine', true], ['finished', false], ['duplicates', false], ['github-prs', false], ['merged-prs', false]]);
+    expect(out.recipes.map((r) => [r.id, r.enabled])).toEqual([['mine', true], ['finished', false], ['duplicates', false], ['github-prs', false], ['merged-prs', false],
+      ['jira-ticket-title', false], ['jira-ticket-branch', false], ['jira-ticket-either', false]]);
     expect(out.recipes[2]).toEqual({ id: 'duplicates', enabled: false, params: {}, source: 'builtin' });
   });
   it('returns the stored recipes array untouched when none is missing, and never mutates the input', () => {

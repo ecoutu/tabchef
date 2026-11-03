@@ -243,6 +243,15 @@ describe('evaluateTab: M3 T1 fields and projects', () => {
     const b = { p: recipe('p', [rule('a', { url: 'github.com/*' }, [assign('K-1')], { extract: { summary: { from: 'title', regex: '^\\d+ (.+)$' } } })], { project }) };
     expect(ev(config({ recipes: [ref('p')] }), facts(), b).project).toEqual([{ key: 'K-1', ruleKey: 'p/a', index: 0, create: false, summary: 'Fix it' }]);
   });
+  it('T16: fallbackKey adds a second candidate after key; an empty key or a fallback equal to it adds none', () => {
+    const x = { extract: { a: { from: 'title' as const, regex: '^(\\d+)' }, b: { from: 'title' as const, regex: '^(zzz)' } } };
+    const fb = (key: string, fallbackKey: string) => ({ p: recipe('p', [rule('r', { url: 'github.com/*' }, [{ assignProject: { key, fallbackKey } }], x)], { project }) });
+    const keys = (b: ReturnType<typeof fb>) => ev(config({ recipes: [ref('p')] }), facts(), b).project?.map((c) => c.key);
+    expect(keys(fb('{a}', 'B-{a}'))).toEqual(['42', 'B-42']);
+    expect(keys(fb('{b}', 'B-{a}'))).toEqual(['B-42']);
+    expect(keys(fb('{a}', '{a}'))).toEqual(['42']);
+    expect(keys(fb('{b}', '{b}'))).toBeUndefined();
+  });
   it('a key that renders empty is skipped; no candidates leaves project undefined', () => {
     const b = { p: recipe('p', [rule('a', { url: 'github.com/*' }, [assign('{t}')], { extract: { t: { from: 'title', regex: '^(zzz)' } } })], { project }) };
     expect(ev(config({ recipes: [ref('p')] }), facts(), b).project).toBeUndefined();

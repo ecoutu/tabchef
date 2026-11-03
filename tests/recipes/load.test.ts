@@ -28,10 +28,12 @@ describe('built-in recipes', () => {
       views: [{ id: 'duplicates', tab: 'Duplicates', kind: 'duplicates', actions: ['focus', 'close', 'close-all'] }],
     });
   });
-  it('every built-in compiles with default params', () => {
+  it('every built-in compiles with default params (alone: the jira-ticket variants conflict, M3-R17)', () => {
     const b = builtinRecipes();
-    const config = { ...defaultConfig(), recipes: Object.keys(b).map((id) => ({ id, enabled: true, params: {}, source: 'builtin' as const })) };
-    expect(compileProgram(config, b).errors).toEqual([]);
+    for (const id of Object.keys(b)) {
+      const config = { ...defaultConfig(), recipes: [{ id, enabled: true, params: {}, source: 'builtin' as const }] };
+      expect(compileProgram(config, b).errors).toEqual([]);
+    }
   });
   it('built-in recipes are frozen', () => {
     expect(Object.isFrozen(builtinRecipes().duplicates)).toBe(true);

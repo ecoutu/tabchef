@@ -310,6 +310,19 @@ describe('SourceService: fallback', () => {
     expect(stateOf(t.svc, 1)).toMatchObject({ via: 'api', data: { state: 'merged' }, stale: true });
   });
 
+  it('the connection is ok but cannot read the PR (repo not visible to the token) → the loaded page is read instead', async () => {
+    const page = { texts: [], extracts: { 'adapter:github.prPage.state': 'Open', 'adapter:github.prPage.branch': 'feat/abc-12/parser' }, formEdited: false };
+    const notVisible = async (): Promise<ApiResult> => ({ ok: true, status: 200, data: { data: { r0: null }, errors: [{ type: 'NOT_FOUND', path: ['r0'], message: 'Could not resolve to a Repository' }] } });
+    const t = setup({ tabs: [prTab(1)], granted: true, facts: { 1: page }, fetch: notVisible, rules: [{ ...prRule, source: { ...prRule.source!, fields: { state: 'state', headRefName: 'headRefName' } } }] });
+    await t.svc.refresh('alarm');
+    expect(t.fetch).toHaveBeenCalledTimes(1);
+    expect(stateOf(t.svc, 1)).toMatchObject({ via: 'page', data: { state: 'open', headRefName: 'feat/abc-12/parser' }, stale: false });
+    // Without a readable page it stays a failed lookup.
+    const u = setup({ tabs: [prTab(1)], granted: true, fetch: notVisible });
+    await u.svc.refresh('alarm');
+    expect(stateOf(u.svc, 1)).toMatchObject({ via: 'none', error: 'not-found' });
+  });
+
   it('no connection and a loaded tab with page facts → via page with the parsed state', async () => {
     const t = setup({ tabs: [prTab(1)], conn: { github: 'not-configured' }, granted: true, facts: { 1: merged } });
     await t.svc.refresh('alarm');
@@ -532,6 +545,29 @@ describe('SourceService: Jira', () => {
     const paths = t.fetch.mock.calls.map(([, req]) => req.path);
     expect(paths.filter((p) => p === '/rest/api/3/myself')).toHaveLength(1);
     expect(t.fetch.mock.calls.find(([, req]) => req.path === '/rest/api/3/myself')![1]).toMatchObject({ method: 'GET', background: false });
+  });
+
+  it('M3-R110: a ticket tab on another Jira site is never looked up on the connected one, nor shares its cache entry', async () => {
+    const done = (keys: string[]) => ({ issues: keys.map((key) => ({ key, fields: { summary: `Acme ${key}`, status: { name: 'Done', statusCategory: { key: 'done' } } } })) });
+    const t = setup({
+      tabs: [tab(1, 'https://other.atlassian.net/browse/SCRUM-1')], rules: [issueRule],
+      fetch: async (_id, req) => ({ ok: true, status: 200, data: done(jql(req)) }),
+    });
+    await t.svc.refresh('manual');
+    expect(t.fetch).not.toHaveBeenCalled();
+    expect(stateOf(t.svc, 1, 'rec/issue')?.via).not.toBe('api');
+    // The same key on the connected site is looked up; the other site's tab still does not see that answer.
+    t.snap.tabs.push(tab(2, 'https://acme.atlassian.net/browse/SCRUM-1'));
+    await t.svc.refresh('manual');
+    expect(t.fetch).toHaveBeenCalledTimes(1);
+    expect(jql(t.fetch.mock.calls[0]![1])).toEqual(['SCRUM-1']);
+    expect(stateOf(t.svc, 2, 'rec/issue')).toMatchObject({ via: 'api', data: { status: 'Done', cat: 'done' } });
+    expect(stateOf(t.svc, 1, 'rec/issue')?.via).not.toBe('api');
+    expect(stateOf(t.svc, 1, 'rec/issue')?.data ?? {}).not.toHaveProperty('status');
+    // issues() (the connected site) shares the on-site tab's entry, not the other site's.
+    expect((await t.svc.issues(['SCRUM-1'])).get('SCRUM-1')).toMatchObject({ via: 'api', data: { summary: 'Acme SCRUM-1' } });
+    expect(t.fetch).toHaveBeenCalledTimes(1);
+    expect(await t.svc.jiraSite()).toBe('acme.atlassian.net');
   });
 
   it('a 200 with some keys keeps the absent ones not-found and does not re-validate (M3-R100)', async () => {

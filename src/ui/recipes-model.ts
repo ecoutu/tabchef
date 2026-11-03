@@ -4,7 +4,7 @@ import type { Config, RecipeRef } from '../core/types';
 import type { ParamDef, Recipe } from '../core/lang/types';
 import type { RecipeListItem } from '../engine/messages';
 import type { Needs } from '../engine/permissions';
-import { paramProblem } from '../core/lang/compile';
+import { conflictingRecipes, paramProblem } from '../core/lang/compile';
 import { matchPatternProblem } from '../core/lang/schema';
 
 /** Everything Enable requests in one prompt: the recipe's own needs plus every rule-level need (Meet for Finished). */
@@ -13,9 +13,13 @@ export function requestedNeeds(item: RecipeListItem): Needs {
   return { origins: [...new Set(all.flatMap((n) => n.origins))], permissions: [...new Set(all.flatMap((n) => n.permissions))] };
 }
 
-/** `c` with recipe `id`'s ref patched: the config that enable / disable / setParams would store. */
-export function withRecipe(c: Config, id: string, patch: Partial<Pick<RecipeRef, 'enabled' | 'params'>>): Config {
-  return { ...c, recipes: c.recipes.map((r) => (r.id === id ? { ...r, ...patch } : r)) };
+/**
+ * `c` with recipe `id`'s ref patched: the config that enable / disable / setParams would store. Enabling (with the
+ * built-in bodies) also turns off the recipes it conflicts with, as recipes.enable does (M3-R17).
+ */
+export function withRecipe(c: Config, id: string, patch: Partial<Pick<RecipeRef, 'enabled' | 'params'>>, builtins?: Record<string, Recipe>): Config {
+  const off = patch.enabled === true && builtins ? conflictingRecipes(c, id, builtins) : [];
+  return { ...c, recipes: c.recipes.map((r) => (r.id === id ? { ...r, ...patch } : off.includes(r.id) ? { ...r, enabled: false } : r)) };
 }
 
 /** The complete params object (user values, else defaults): setParams / enable replace the whole object (T8). */

@@ -8,7 +8,7 @@
 // (connection or page); 4. `via: 'none'`. Failures keep the previous data with `stale: true` and `error`: good data never becomes unknown.
 import { adapterOf } from '../core/adapters';
 import type { AdapterId } from '../core/adapters';
-import type { ApiRequest, ApiResult, ConnErrorKind, ConnectionState } from '../core/connections/types';
+import type { ApiRequest, ApiResult, ConnErrorKind, ConnectionDef, ConnectionState } from '../core/connections/types';
 import { DEFAULT_KEY_PATTERN } from '../core/keys/jira-key';
 import { evalCond } from '../core/lang/cond';
 import { DURATION, parseDuration } from '../core/lang/duration';
@@ -50,7 +50,8 @@ const GITHUB = 'github';
 const JIRA = 'jira';
 
 export type RefreshReason = 'alarm' | 'popup' | 'tabs' | 'manual';
-type Target = { pr: PrRef } | { issue: string };
+/** An issue names its site (the tab's host, M3-R110): only the connected site's issues are looked up through the API. */
+type Target = { pr: PrRef } | { issue: string; site: string };
 /** One tab's lookup for one rule. `key` is the cache key (connection, query and the normalized target). */
 export interface SourceRequest {
   tabId: number; url: string; ruleKey: string; connection: string; query: SourceQueryKind; key: string; target: Target;
@@ -96,15 +97,38 @@ function optimistic(c: Cond): Cond {
 }
 const optimisticOf = new WeakMap<Rule, Cond>();
 
-/** The lookup target of rendered `args`, or undefined (missing / malformed args, or a query rules cannot name). */
-function targetOf(query: SourceQueryKind, a: Record<string, string>): { target: Target; id: string } | undefined {
+/** The Jira site a connection talks to (its `jira.site`, else its base host), or undefined (an unset template). */
+function siteOf(def: ConnectionDef | undefined): string | undefined {
+  if (!def) return undefined;
+  if (def.jira?.site) return def.jira.site;
+  try {
+    return new URL(def.baseUrl).host;
+  } catch {
+    return undefined;
+  }
+}
+const issueId = (site: string, key: string) => `${site}/${key}`;
+
+/**
+ * The lookup target of rendered `args` on a tab at `url`, or undefined (missing / malformed args, or a query rules
+ * cannot name). A jira.issue target is keyed by the tab's host too: the same key on two sites is two issues (M3-R110).
+ */
+function targetOf(query: SourceQueryKind, a: Record<string, string>, url: string): { target: Target; id: string } | undefined {
   if (query === 'github.pull_request') {
     const [owner, repo, n] = [a.owner?.toLowerCase(), a.repo?.toLowerCase(), a.number]; // M3-R61
     if (!owner || !repo || !NAME_RE.test(owner) || !NAME_RE.test(repo) || !n || !/^[1-9]\d{0,9}$/.test(n)) return undefined;
     const pr = { owner, repo, number: Number(n) };
     return { target: { pr }, id: prKey(pr) };
   }
-  if (query === 'jira.issue' && a.key && KEY_RE.test(a.key)) return { target: { issue: a.key }, id: a.key };
+  if (query === 'jira.issue' && a.key && KEY_RE.test(a.key)) {
+    let site: string;
+    try {
+      site = new URL(url).host;
+    } catch {
+      return undefined;
+    }
+    return { target: { issue: a.key, site }, id: issueId(site, a.key) };
+  }
   return undefined;
 }
 const cacheKey = (connection: string, query: SourceQueryKind, id: string) => `${connection}|${query}|${id}`;
@@ -204,7 +228,7 @@ export class SourceService {
         const { vars } = varsOf(r, c.captures, f);
         const s = r.rule.source;
         const args = Object.fromEntries(Object.entries(s.args).map(([k, v]) => [k, renderTemplate(v, vars, p.tables)]));
-        const tg = targetOf(s.query, args);
+        const tg = targetOf(s.query, args, url);
         if (!tg) continue;
         out.push({
           tabId: t.id, url, ruleKey: r.key, connection: s.connection, query: s.query, key: cacheKey(s.connection, s.query, tg.id),
@@ -292,15 +316,28 @@ export class SourceService {
         apiGroups.set(g, [...(apiGroups.get(g) ?? []), r]);
         continue;
       }
-      const page = await this.readPage(rs.filter((x) => { const k = kinds.get(x.ruleKey); return k === 'connection' || k === 'page'; }));
-      if (page) this.cache.putPage(key, page, now);
-      else this.fail(key, r.target, blocked ? 'rate-limited' : stateError(state), blocked ? { retryAt: e!.retryAt! } : {}, now);
+      await this.fallBack(key, rs, kinds, blocked ? 'rate-limited' : stateError(state), blocked ? { retryAt: e!.retryAt! } : {}, now);
     }
     for (const rs of apiGroups.values()) {
       const { connection, query } = rs[0]!;
-      if (query === 'github.pull_request') await this.fetchPrs(connection, rs, background, now);
-      else await this.fetchIssues(connection, rs.map((r) => (r.target as { issue: string }).issue), background, now);
+      if (query === 'github.pull_request') {
+        // A PR the API cannot read (a repo the token or App installation does not cover) reads its page instead.
+        await this.fetchPrs(connection, rs, background, now, (r, kind, d) => this.fallBack(r.key, byKey.get(r.key)!, kinds, kind, d, now));
+        continue;
+      }
+      // M3-R110: the API answers for its own site only; a same-key issue on another site is another ticket.
+      const site = siteOf((await this.deps.conn.defs()).find((d) => d.id === connection));
+      const on = rs.filter((r) => (r.target as { site: string }).site === site);
+      for (const r of rs) if (!on.includes(r)) await this.fallBack(r.key, byKey.get(r.key)!, kinds, 'not-configured', {}, now);
+      if (site && on.length) await this.fetchIssues(connection, site, on.map((r) => (r.target as { issue: string }).issue), background, now);
     }
+  }
+
+  /** The page adapter's reading for `rs` (rules whose level allows page access), else a failed lookup. */
+  private async fallBack(key: string, rs: SourceRequest[], kinds: Map<string, NeedsKind | undefined>, error: ConnErrorKind, d: IssueFailureDetail, now: number): Promise<void> {
+    const page = await this.readPage(rs.filter((x) => { const k = kinds.get(x.ruleKey); return k === 'connection' || k === 'page'; }));
+    if (page) this.cache.putPage(key, page, now);
+    else this.fail(key, rs[0]!.target, error, d, now);
   }
 
   /**
@@ -353,13 +390,15 @@ export class SourceService {
     }
   }
 
-  private async fetchPrs(connection: string, rs: SourceRequest[], background: boolean, now: number): Promise<void> {
+  /** `failed`: what a PR the API answered for without its data becomes (default: a failed lookup). */
+  private async fetchPrs(connection: string, rs: SourceRequest[], background: boolean, now: number,
+    failed: (r: SourceRequest, kind: ConnErrorKind, d: IssueFailureDetail) => Promise<void> = async (r, kind, d) => this.fail(r.key, r.target, kind, d, now)): Promise<void> {
     for (const batch of chunks(rs, SOURCE_QUERIES['github.pull_request'].batch)) {
       const q = buildPrStateQuery(batch.map((r) => (r.target as { pr: PrRef }).pr));
       const res = await this.send(connection, { method: 'POST', path: '/graphql', json: { query: q.query, variables: q.variables } }, background);
       if (!res) return; // background budget spent: leave the rest as they are
       if (!res.ok) {
-        for (const r of batch) this.fail(r.key, r.target, res.kind, detailOf(res), now);
+        for (const r of batch) this.fail(r.key, r.target, res.kind, detailOf(res), now); // keeps retryAt (rate limits)
         continue;
       }
       const parsed = parsePrStateResponse(res.data, q.aliases);
@@ -368,17 +407,14 @@ export class SourceService {
         const id = prKey((r.target as { pr: PrRef }).pr);
         const err = errors.get(id);
         const info = parsed.prs.get(id);
-        if (err || !info) this.fail(r.key, r.target, err?.kind ?? 'not-found', detailOf(err ?? {}), now);
+        if (err || !info) await failed(r, err?.kind ?? 'not-found', detailOf(err ?? {}));
         else this.cache.put(r.key, { data: info, via: 'api', fetchedAt: now, final: SOURCE_QUERIES['github.pull_request'].final(info), stale: false }, now);
       }
     }
   }
 
-  /** jira.issue lookups of `keys` in batches (bad requests bisected, M3-R31); stops when the background budget is spent. */
-  private async fetchIssues(connection: string, keys: string[], background: boolean, now: number): Promise<void> {
-    const def = (await this.deps.conn.defs()).find((d) => d.id === connection);
-    if (!def) return;
-    const site = def.jira?.site ?? new URL(def.baseUrl).host;
+  /** jira.issue lookups of `keys` on `site` (the connection's) in batches (bad requests bisected, M3-R31); stops when the background budget is spent. */
+  private async fetchIssues(connection: string, site: string, keys: string[], background: boolean, now: number): Promise<void> {
     let revalidated = false;
     for (const batch of chunks(keys, SOURCE_QUERIES['jira.issue'].batch)) {
       let spent = false;
@@ -395,10 +431,10 @@ export class SourceService {
         await this.send(connection, { method: 'GET', path: '/rest/api/3/myself' }, background);
       }
       for (const k of batch) {
-        const key = cacheKey(connection, 'jira.issue', k);
+        const key = cacheKey(connection, 'jira.issue', issueId(site, k));
         const issue = r.issues.get(k);
         if (issue) this.cache.put(key, { data: issue, via: 'api', fetchedAt: now, final: false, stale: false }, now);
-        else this.fail(key, { issue: k }, r.errors.get(k) ?? 'not-found', r.details.get(k) ?? {}, now);
+        else this.fail(key, { issue: k, site }, r.errors.get(k) ?? 'not-found', r.details.get(k) ?? {}, now);
       }
     }
   }
@@ -446,15 +482,25 @@ export class SourceService {
     });
   }
 
-  /** jira.issue entries per key (shared with the tabs' lookups; 5 min TTL). Malformed keys are skipped. */
+  /** The host of the Jira connection's site (e.g. 'acme.atlassian.net'), or undefined while none is set up. */
+  async jiraSite(): Promise<string | undefined> {
+    return siteOf((await this.deps.conn.defs()).find((d) => d.id === JIRA));
+  }
+
+  /**
+   * jira.issue entries per key on the Jira connection's site (shared with that site's tabs' lookups; 5 min TTL).
+   * Malformed keys are skipped; nothing is known without a site.
+   */
   issues(keys: string[]): Promise<Map<string, SourceEntry<JiraIssue>>> {
     return this.serial(async () => {
       await this.ensureLoaded();
       const now = this.now();
+      const site = await this.jiraSite();
+      if (!site) return new Map<string, SourceEntry<JiraIssue>>();
       const valid = [...new Set(keys)].filter((k) => KEY_RE.test(k));
-      const key = (k: string) => cacheKey(JIRA, 'jira.issue', k);
+      const key = (k: string) => cacheKey(JIRA, 'jira.issue', issueId(site, k));
       // Settled: tab rules read these entries too.
-      await this.settling(async () => this.fetchIssues(JIRA, await this.due(JIRA, valid, 'jira.issue', key, now), false, now));
+      await this.settling(async () => this.fetchIssues(JIRA, site, await this.due(JIRA, valid, 'jira.issue', key, now), false, now));
       const out = new Map<string, SourceEntry<JiraIssue>>();
       for (const k of valid) {
         const e = this.cache.get(key(k));

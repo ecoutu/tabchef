@@ -102,7 +102,7 @@
     const rule = JSON.stringify(row.rule);
     const draft = $state.snapshot(config) as Config;
     // A recipe rule is tested as if on: its recipe enabled and the rule turned on (R56 override when off).
-    const cfg = row.kind === 'recipe' ? setRecipeRuleOn(withRecipe(draft, row.recipeId, { enabled: true }), row.key, true, builtins) : draft;
+    const cfg = row.kind === 'recipe' ? setRecipeRuleOn(withRecipe(draft, row.recipeId, { enabled: true }, builtins), row.key, true, builtins) : draft;
     const res = await send({ type: 'preview.change', config: cfg, only: row.key });
     const n = res.ok ? previewCounts(res.data) : undefined;
     tested[row.key] = { rule, text: n ? `${n.moves} tabs would move · ${n.closes} would close` : `Could not test: ${res.ok ? '' : res.error}` };

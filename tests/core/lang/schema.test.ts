@@ -359,6 +359,18 @@ describe('M3 T1: sources, fields, keys and projects', () => {
     expect(validateRecipe(recipe({ project: { ...project, container: 'window' } })).ok).toBe(false);
     expect(at(validateRecipe(recipe({ project: { ...project, color: 'mauve' } })), '/project/color').length).toBe(1);
   });
+  it('T16: a project color from a param is checked with the default substituted', () => {
+    const project = { key: '{key}', title: '{params.fmt}', color: '{params.color}', container: 'group', join: ['rules'] };
+    const params = (color: string) => ({ color: { type: 'string', default: color, label: 'C' }, fmt: { type: 'string', default: '{key}', label: 'F' } });
+    expect(errorsOf(validateRecipe(recipe({ project, params: params('blue') })))).toEqual([]);
+    expect(at(validateRecipe(recipe({ project, params: params('mauve') })), '/project/color').length).toBe(1);
+  });
+  it('T16: assignProject.fallbackKey is a template whose vars must be provided', () => {
+    const ok = rule({ extract: { a: { from: 'title', jiraKey: {} }, b: { from: 'url', jiraKey: {} } }, actions: [{ assignProject: { key: '{a}', fallbackKey: '{b}' } }] });
+    expect(errorsOf(validateRule(ok))).toEqual([]);
+    expect(at(validateRule(rule({ actions: [{ assignProject: { key: 'K-1', fallbackKey: '{nope}' } }] })), '/actions/0/assignProject/fallbackKey').length).toBe(1);
+    expect(validateRule(rule({ actions: [{ assignProject: { key: 'K-1', fallbackKey: '' } }] })).ok).toBe(false);
+  });
   it('a recipe rule with assignProject needs the recipe to declare a project', () => {
     const r = recipe({ rules: [rule({ actions: [{ assignProject: { key: 'ABC-1' } }] })] });
     expect(at(validateRecipe(r), '/rules/0/actions/0/assignProject').length).toBe(1);
