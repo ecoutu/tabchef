@@ -19,12 +19,19 @@ Each of these has an issue in M5. The submission needs all of them.
 
 ## 1. Register as a Chrome Web Store developer (once)
 
+**Choose the publisher account first.** The listing, its users, its reviews and its item ID belong to the Google
+account that publishes it, not to the GitHub repository. Moving the repository later is cheap (GitHub redirects the
+old links), but moving a published item to another developer account means asking Chrome Web Store support.
+Publishing it again as a new item loses every user. Tabchef is published from the maintainer's personal Google account
+as an individual. If a company should own it one day, decide that before this step.
+
 1. Sign in to the Google account that will own the listing. Turn on 2-Step Verification for it first: the dashboard
    requires it.
 2. Open the [Developer Dashboard](https://chrome.google.com/webstore/devconsole), accept the developer agreement and
    pay the one-time registration fee.
 3. Account section: set the publisher (display) name, then add and verify a contact email. Items can't be published
-   until the email is verified.
+   until the email is verified. The contact email is public on the listing, so use an address you can redirect later,
+   such as a forwarding alias, rather than your main inbox.
 4. Account section: answer the trader declaration (EU Digital Services Act). A free extension made by one person
    with no business behind it is normally "non-trader"; a trader's address and phone number are shown on the listing.
 
