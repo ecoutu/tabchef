@@ -323,6 +323,19 @@ describe('SourceService: fallback', () => {
     expect(stateOf(u.svc, 1)).toMatchObject({ via: 'none', error: 'not-found' });
   });
 
+  it('unreadableRepos: repos of open PR tabs the API answered without the PR, cleared once a PR there is read', async () => {
+    let visible = false;
+    const fetch = async (_id: string, req: ApiRequest): Promise<ApiResult> => (visible ? prResponse(req, new Map())
+      : { ok: true, status: 200, data: { data: { r0: null }, errors: [{ type: 'NOT_FOUND', path: ['r0'], message: 'Could not resolve to a Repository' }] } });
+    const t = setup({ tabs: [prTab(1)], fetch });
+    await t.svc.refresh('alarm');
+    expect(t.svc.unreadableRepos()).toEqual([{ repo: 'acme/api', error: 'not-found' }]);
+    visible = true;
+    t.advance(10 * MIN);
+    await t.svc.refresh('alarm');
+    expect(t.svc.unreadableRepos()).toEqual([]);
+  });
+
   it('no connection and a loaded tab with page facts → via page with the parsed state', async () => {
     const t = setup({ tabs: [prTab(1)], conn: { github: 'not-configured' }, granted: true, facts: { 1: merged } });
     await t.svc.refresh('alarm');

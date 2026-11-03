@@ -59,11 +59,15 @@
   /** Bumped on every Connect: a poll answer for an older flow is ignored. */
   let flowGen = 0;
 
+  /** Repos of open PR tabs the GitHub connection cannot read (connections.list). */
+  let unreadable = $state<{ repo: string; error: string }[]>([]);
+
   async function load(): Promise<void> {
     const r = await send({ type: 'connections.list' });
     if (!r.ok) { error = r.error; return; }
     defs = r.data.defs;
     status = r.data.status;
+    unreadable = r.data.unreadable ?? [];
     loaded = true;
     prefillJira();
     scheduleUnblock();
@@ -332,6 +336,15 @@
       {#each github.ssoLinks as l (l.org)}
         <p><a href={l.url} target="_blank" rel="noopener noreferrer">{l.text}</a></p>
       {/each}
+      {#if github.state === 'ok' && unreadable.length}
+        <p class="warn" role="status">
+          This connection cannot read pull requests in {unreadable.map((u) => u.repo).join(', ')}, so their state and branch
+          come from the open page only.
+          {github.auth === 'token'
+            ? 'Use a personal access token that can read these repositories (and is authorized for SAML SSO if the organization uses it).'
+            : 'Ask an organization owner to install the Tabchef GitHub App on these repositories, or connect with a personal access token that can read them.'}
+        </p>
+      {/if}
 
       {#if flow}
         <div class="flow">

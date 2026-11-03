@@ -60,6 +60,19 @@ async function open() {
 }
 
 describe('Connections page', () => {
+  it('names the repositories whose pull requests the GitHub connection cannot read, with what fixes it', async () => {
+    status = [st({ state: 'ok' })];
+    send.mockImplementation(async (req: { type: string }) => (req.type === 'connections.list'
+      ? { ok: true, data: { defs, status, unreadable: [{ repo: 'acme/api', error: 'not-found' }, { repo: 'acme/web', error: 'sso-required' }] } }
+      : { ok: true, data: null }));
+    await open();
+    const card = screen.getByRole('region', { name: 'GitHub' });
+    const note = within(card).getByText(/cannot read pull requests in/).closest('p')!;
+    expect(note.textContent).toContain('acme/api');
+    expect(note.textContent).toContain('acme/web');
+    expect(note.textContent).toMatch(/install the Tabchef GitHub App|personal access token/);
+  });
+
   it('lists GitHub with its badge; Connect GitHub when not connected', async () => {
     await open();
     expect(screen.getByRole('region', { name: 'GitHub' })).toBeTruthy();

@@ -27,7 +27,7 @@ import { dedupeDecision, openerOf } from './dedupe-handler';
 import { readViews, samePage, type ViewData, type ViewsDeps, type ViewSummary } from './views';
 import { builtinConnectionDefs } from '../core/connections/builtin';
 import { redact } from '../core/connections/redact';
-import type { ConnectionDef, ConnectionStatus } from '../core/connections/types';
+import type { ConnErrorKind, ConnectionDef, ConnectionStatus } from '../core/connections/types';
 // Types only: the banner content script imports this module and must never bundle engine/connections (secrets).
 import type { ConnectionManager } from './connections/manager';
 import type { DevicePollResult, GitHubDeviceAuth } from './connections/github-auth';
@@ -329,7 +329,8 @@ export interface ResponseData {
   /** null for one tab; `{closed, skipped}` for `tabs` (close-all). */
   'view.close': null | { closed: number; skipped: number };
   'view.keep': null;
-  'connections.list': { defs: ConnectionDef[]; status: ConnectionStatus[] };
+  /** `unreadable`: repos of open PR tabs the GitHub connection cannot read (SourceService.unreadableRepos). */
+  'connections.list': { defs: ConnectionDef[]; status: ConnectionStatus[]; unreadable?: { repo: string; error: ConnErrorKind }[] };
   'connections.github.start': { userCode: string; verificationUri: string; expiresAt: number; interval: number };
   'connections.github.poll': DevicePollResult;
   'connections.setToken': ConnectionStatus;
@@ -527,7 +528,7 @@ export interface HandlerDeps {
   /** projects.* (M3 T15). Without it they fail. */
   projects?: Pick<ProjectService, 'cards' | 'addTab' | 'removeTab' | 'openLinked' | 'closeGroup'>;
   /** sources.refresh (M3 T17). Without it the request fails. */
-  sources?: Pick<SourceService, 'refresh'>;
+  sources?: Pick<SourceService, 'refresh'> & Partial<Pick<SourceService, 'unreadableRepos'>>;
   now?: () => number;
 }
 
@@ -536,9 +537,9 @@ export interface ConnectionsDeps {
   manager: Pick<ConnectionManager, 'defs' | 'status' | 'fetch' | 'disconnect'>;
   /** `cancel`: Disconnect abandons a pending device flow, so no later poll stores credentials. */
   github: Pick<GitHubDeviceAuth, 'start' | 'poll' | 'cancel'>;
-  /** setGitHubToken with the shared manager, secret store, port and fetch (Task 5a). */
+  /** setGitHubToken with the shared manager, secret store, port and fetch. */
   setGitHubToken: (token: string) => Promise<SetTokenResult>;
-  /** setJiraToken / setJiraSession with the shared manager, secret store, port, fetch and JiraAuth (Task 6). */
+  /** setJiraToken / setJiraSession with the shared manager, secret store, port, fetch and JiraAuth. */
   setJiraToken: (input: JiraTokenInput) => Promise<SetTokenResult>;
   setJiraSession: (site: string) => Promise<SetTokenResult>;
   /** Every stored token: a last redact pass over every connections.* response (SecretStore.knownSecrets). */
@@ -972,7 +973,8 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
         const builtins = Object.values(builtinConnectionDefs()).map((b) => stored.find((d) => d.id === b.id) ?? b);
         const defs = [...builtins, ...stored.filter((d) => !builtins.includes(d))].map(publicDef);
         const status = (await Promise.all(defs.map((d) => c.manager.status(d.id)))).flat();
-        return ok({ defs, status });
+        const unreadable = deps.sources?.unreadableRepos?.() ?? [];
+        return ok({ defs, status, ...(unreadable.length && { unreadable }) });
       }
       case 'connections.github.start': {
         const r = await c.github.start(builtinConnectionDefs().github);

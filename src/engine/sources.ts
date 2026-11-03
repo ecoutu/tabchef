@@ -150,6 +150,11 @@ export class SourceService {
   private lastPopup = -Infinity;
   /** Per indexed tab, the picked data last reported through onUpdated (or seen at load): what rules have read. */
   private reported = new Map<number, string>();
+  /**
+   * `owner/repo` → why the API answered a PR there without it (not-found / sso-required: the token or the
+   * App installation does not cover the repo). In memory only; a PR read there clears it. The Connections page shows it.
+   */
+  private unreadable = new Map<string, ConnErrorKind>();
   private chain: Promise<unknown> = Promise.resolve();
   private readonly now: () => number;
   /** The cache loaded and the open tabs indexed (no network): factsFor answers from here on. */
@@ -266,6 +271,15 @@ export class SourceService {
       out[r.ruleKey] = { ...rest, ...(data !== undefined && { data: pickFields(data, r.fields) }) };
     }
     return Object.keys(out).length ? out : undefined;
+  }
+
+  /** Repos of open PR tabs the GitHub API cannot read (see `unreadable`), sorted. */
+  unreadableRepos(): { repo: string; error: ConnErrorKind }[] {
+    const open = new Set<string>();
+    for (const { reqs } of this.byTab.values()) {
+      for (const r of reqs) if ('pr' in r.target) open.add(`${r.target.pr.owner}/${r.target.pr.repo}`.toLowerCase());
+    }
+    return [...this.unreadable].filter(([repo]) => open.has(repo)).sort(([a], [b]) => a.localeCompare(b)).map(([repo, error]) => ({ repo, error }));
   }
 
   /** Popup refreshes run at most once per POPUP_THROTTLE_MS; refreshes run one at a time. */
@@ -407,8 +421,15 @@ export class SourceService {
         const id = prKey((r.target as { pr: PrRef }).pr);
         const err = errors.get(id);
         const info = parsed.prs.get(id);
-        if (err || !info) await failed(r, err?.kind ?? 'not-found', detailOf(err ?? {}));
-        else this.cache.put(r.key, { data: info, via: 'api', fetchedAt: now, final: SOURCE_QUERIES['github.pull_request'].final(info), stale: false }, now);
+        const repo = `${(r.target as { pr: PrRef }).pr.owner}/${(r.target as { pr: PrRef }).pr.repo}`.toLowerCase();
+        if (err || !info) {
+          const kind = err?.kind ?? 'not-found';
+          if (kind === 'not-found' || kind === 'sso-required') this.unreadable.set(repo, kind);
+          await failed(r, kind, detailOf(err ?? {}));
+        } else {
+          this.unreadable.delete(repo);
+          this.cache.put(r.key, { data: info, via: 'api', fetchedAt: now, final: SOURCE_QUERIES['github.pull_request'].final(info), stale: false }, now);
+        }
       }
     }
   }
