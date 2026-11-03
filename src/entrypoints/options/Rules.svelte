@@ -2,7 +2,7 @@
   // The Rules page (M2 T15, formerly GroupRules): user rules and the rules of enabled recipes in one priority order
   // (`order`), reordered by drag or Move up / Move down across both. A user rule is edited in the form (RuleFields)
   // or as YAML (RuleYaml), toggled per rule; one the form cannot show is a read-only summary with "Edit in YAML".
-  // Recipe rules are locked rows: reorder, turn on/off (RecipeRef.ruleEnabled overrides, R56; saved through Save),
+  // Recipe rules are read-only rows: reorder, turn on/off (RecipeRef.ruleEnabled overrides, R56; saved through Save),
   // test and Customize (copy into a user rule), never edit. Consecutive rules of one recipe sit under one collapsible
   // header (collapsed while it holds 2+ rules), which moves them as one block (Move rules up / down, or its drag handle:
   // M4 rule sections T2); a rule that can never match (an empty URL list param) says so. Named sections (T4,
@@ -34,15 +34,20 @@
 
   const builtins = builtinRecipes();
   const rows = $derived(ruleRows(config, builtins));
-  const runs = $derived(ruleRuns(rows, sectionOf(config)));
+  const ofSection = $derived(sectionOf(config));
+  const runs = $derived(ruleRuns(rows, ofSection));
   const sections = $derived(config.sections ?? []);
   const sectionById = $derived(new Map(sections.map((s) => [s.id, s])));
+  /** Each section's shown keys across its fragments, in display order: built once per render, not per header. */
+  const sectionKeys = $derived.by(() => {
+    const out: Record<string, string[]> = {};
+    for (const [i, run] of runs) if (run.kind === 'section' && run.start === i) (out[run.id] ??= []).push(...run.keys);
+    return out;
+  });
   /** Sections with no rule shown: listed above the rules so they can still be renamed or deleted. */
-  const emptySections = $derived(sections.filter((s) => !rows.some((r, i) => runs.get(i)?.kind === 'section' && runs.get(i)!.id === s.id)));
+  const emptySections = $derived(sections.filter((s) => !(s.id in sectionKeys)));
   /** Every shown key of the run's section or recipe, across fragments (a section moves and counts as a whole). */
-  const unitKeys = (run: RuleRun): string[] => (run.kind === 'section'
-    ? rows.filter((_, i) => { const r = runs.get(i); return r?.kind === 'section' && r.id === run.id; }).map((r) => r.key)
-    : run.keys);
+  const unitKeys = (run: RuleRun): string[] => (run.kind === 'section' ? sectionKeys[run.id] ?? run.keys : run.keys);
   /** A run with a header: every section run, and recipe runs of 2+ rules. */
   const headed = (run: RuleRun | undefined): run is RuleRun => run !== undefined && (run.kind === 'section' || run.keys.length > 1);
   /**
@@ -190,7 +195,7 @@
 </script>
 
 <section>
-  <p class="help">Order is priority and tab-bar order: the first rule that matches a tab wins, and groups appear in the tab bar in this order. Drag the handle or use Move up / Move down; a recipe's or section's header moves all its rules together. Recipe rules are locked: move them, turn them on or off, or Customize to edit a copy.</p>
+  <p class="help">Order is priority and tab-bar order: the first rule that matches a tab wins, and groups appear in the tab bar in this order. Drag the handle or use Move up / Move down; a recipe's or section's header moves all its rules together. Recipe rules are read-only: move them, turn them on or off, or Customize to edit a copy.</p>
 
   <div class="sections">
     <button type="button" onclick={newSection}>New section</button>
@@ -243,7 +248,7 @@
           </Field>
           {#if sections.length}
             <Field label="Section" inline help="Sections only group your rules on this page; order is still priority. Joining a section moves the rule to the end of it.">
-              <select value={sectionOf(config)(row.rule.id) ?? ''} onchange={(e) => onChange(assignSection(config, row.rule.id, e.currentTarget.value || null, builtins))}>
+              <select value={ofSection(row.rule.id) ?? ''} onchange={(e) => onChange(assignSection(config, row.rule.id, e.currentTarget.value || null, builtins))}>
                 <option value="">No section</option>
                 {#each sections as s (s.id)}<option value={s.id}>{s.name}</option>{/each}
               </select>
@@ -255,7 +260,7 @@
             <span class="name">{row.rule.name}</span>
           {/if}
         {:else}
-          <span class="chip" title="Recipe rules can be moved, turned on or off, tested and customized, not edited">🔒 Locked · {row.recipeName}</span>
+          <span class="chip" title="Recipe rules can be moved, turned on or off, tested and customized, not edited">From recipe · {row.recipeName}</span>
           <Field label="On" helpLabel="On (this recipe rule)" inline help="Turn this recipe rule on or off without turning off its recipe. Saved with Save.">
             <input type="checkbox" checked={row.on} onchange={(e) => onChange(setRecipeRuleOn(config, row.key, e.currentTarget.checked, builtins))} />
           </Field>

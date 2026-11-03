@@ -11,7 +11,7 @@ import { builtinRecipes } from '../recipes/load';
 
 // The Rules page (M2 T15) lists user rules and the rules of enabled recipes in one priority order (`order`). User
 // rules are edited in a form (ruleForm) or as YAML (ruleToYaml / yamlToRule), toggled per rule; a rule the form
-// cannot show is a read-only summary (ruleSummary) with "Edit in YAML". Recipe rules are locked rows: they can be
+// cannot show is a read-only summary (ruleSummary) with "Edit in YAML". Recipe rules are read-only rows: they can be
 // reordered, tested and customized (copied into a user rule), not edited. Display order = priority = `order`.
 
 export { orderedUserRules } from '../core/config/group-view';

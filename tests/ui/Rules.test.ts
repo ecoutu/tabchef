@@ -176,14 +176,15 @@ describe('Rules: recipe rules as locked rows (M2 T15)', () => {
   /** Finished's three rules start collapsed under their recipe header. */
   const expand = () => fireEvent.click(screen.getByRole('button', { name: /Finished · 3 rules/ }));
 
-  it('lists recipe rules after user rules, locked: summary, no editor, no Delete', async () => {
+  it('lists recipe rules after user rules, read-only: summary, no editor, no Delete', async () => {
     render(Rules, props(withFinished(cfg(rule('a', 'a.com/*')))));
     await expand();
     const rows = screen.getAllByRole('group').map((g) => g.getAttribute('aria-label'));
     expect(rows).toEqual(['Rule 1: Rule a', 'Rule 2: Group GitHub tabs by repository', 'Rule 3: Close OAuth callback tabs', 'Rule 4: Close Meet tabs after the call ends', 'Rule 5: Close redirect landing tabs']);
     const oauth = screen.getByRole('group', { name: 'Rule 3: Close OAuth callback tabs' });
-    expect(oauth.textContent).toContain('Finished');
-    expect(oauth.textContent).toContain('Locked');
+    // "Locked" is the tab lock (popup, menu); a recipe rule is labelled by where it comes from.
+    expect(oauth.textContent).toContain('From recipe · Finished');
+    expect(oauth.textContent).not.toMatch(/lock/i);
     expect(oauth.textContent).toContain('Close after 3s (auto)');
     expect(oauth.querySelector('textarea, input[aria-label="Rule name"]')).toBeNull();
     expect(screen.getAllByRole('button', { name: 'Delete' })).toHaveLength(1);
