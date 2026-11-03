@@ -29,6 +29,7 @@ import { SecretStore, type KeyValueArea } from '../engine/connections/secret-sto
 import { RateLimiter } from '../engine/connections/rate-limiter';
 import { GitHubDeviceAuth } from '../engine/connections/github-auth';
 import { TokenAuth, setGitHubToken } from '../engine/connections/token-auth';
+import { JiraAuth, JiraSessionAuth } from '../engine/connections/jira-auth';
 import type { ConnectionsChangedMessage } from '../engine/messages';
 import { refreshPeriodMinutes, SourceService, SOURCES_ALARM } from '../engine/sources';
 
@@ -267,11 +268,15 @@ export default defineBackground(() => {
     // Lazy: the manager is built below with this provider in its auth map (Task 5b).
     manager: () => connections,
   });
-  const tokenAuth = new TokenAuth();
+  // Jira tokens (scoped / classic, Basic email:token) and session mode (read-only, the browser's cookies) (Task 6).
+  // setJiraToken / setJiraSession take these instances when Task 7 adds their messages.
+  const jiraAuth = new JiraAuth({ fetch: connFetch, secrets, now: Date.now });
+  const tokenAuth = new TokenAuth({ jira: jiraAuth });
+  const jiraSession = new JiraSessionAuth();
   const connections: ConnectionManager = new ConnectionManager({
     local: localArea, session: sessionArea, secrets, limiter, port, fetch: connFetch, log: whyLog,
-    // session / oauth-* sign-in is not implemented yet (Task 6 / later): their defs never reach the manager.
-    auth: { 'device-code': githubAuth, token: tokenAuth, session: tokenAuth, 'oauth-pkce': tokenAuth, 'oauth-proxy': tokenAuth },
+    // oauth-* sign-in is not implemented yet: their defs never reach the manager.
+    auth: { 'device-code': githubAuth, token: tokenAuth, session: jiraSession, 'oauth-pkce': tokenAuth, 'oauth-proxy': tokenAuth },
     allowLocalhost,
   });
   // Tell open extension pages (Connections) a status changed; they re-list. "No receiver" rejections are expected.

@@ -15,16 +15,23 @@ export const githubHeaders: HeaderBuilder = (token) => ({
 });
 
 /**
- * Per-kind header builders for personal access tokens. Task 6 adds `jira` (Basic base64(email:token)) here; Jira's
- * secret is the email:token pair, so its builder will read more than the bare token.
+ * Per-kind header builders for personal access tokens. Jira's secret is the email:token pair, so it is a provider of
+ * its own (JiraAuth, Basic base64(email:token)) passed to the TokenAuth constructor.
  */
 const BUILDERS: Partial<Record<ConnectionDef['kind'], HeaderBuilder>> = {
   github: githubHeaders,
 };
 
-/** Sends the stored personal access token. No `refresh`: a rejected PAT leads to needs-reauth. */
+/**
+ * Sends the stored personal access token; kinds in `byKind` (Jira) build their own headers. No `refresh`: a rejected
+ * token leads to needs-reauth.
+ */
 export class TokenAuth implements AuthProvider {
+  constructor(private readonly byKind: Partial<Record<ConnectionDef['kind'], AuthProvider>> = {}) {}
+
   async headers(def: ConnectionDef, secrets: SecretStore): Promise<Record<string, string> | null> {
+    const own = this.byKind[def.kind];
+    if (own) return own.headers(def, secrets);
     const build = BUILDERS[def.kind];
     if (!build) return null;
     const s = await secrets.getSecret(def.id);
@@ -62,11 +69,12 @@ export interface ReplaceCredentialsDeps {
 /**
  * Switches a connection to new credentials: new values first, stale ones last, with rollback, so a storage failure
  * never drops the previous working credentials. Order: setSecret(new) → setAccess(new) if given → save(def) →
- * clearAccess when no new access token was given. On failure the previous def, status (needs-reauth, last error),
+ * clearAccess when no new access token was given. A `null` secret (Jira session mode: nothing to store) clears the
+ * stored secret and access token after the save instead. On failure the previous def, status (needs-reauth, last error),
  * secret and access token are restored (best effort) and the original error is rethrown; callers redact it.
  */
 export async function replaceCredentials(
-  deps: ReplaceCredentialsDeps, def: ConnectionDef, secret: StoredSecret, access?: AccessToken,
+  deps: ReplaceCredentialsDeps, def: ConnectionDef, secret: StoredSecret | null, access?: AccessToken,
 ): Promise<void> {
   // Captures run before the try: if one throws, nothing has been written yet, so there is nothing to roll back — and
   // rolling back with an undefined capture would delete the working connection.
@@ -75,10 +83,11 @@ export async function replaceCredentials(
   const prevAccess: AccessToken | undefined = await deps.secrets.getAccess(def.id);
   const prevDef: ConnectionDef | undefined = (await deps.manager.defs()).find((d) => d.id === def.id);
   try {
-    await deps.secrets.setSecret(def.id, secret);
+    if (secret) await deps.secrets.setSecret(def.id, secret);
     if (access) await deps.secrets.setAccess(def.id, access);
     await deps.manager.save(def);
-    if (!access) await deps.secrets.clearAccess(def.id);
+    if (!secret) await deps.secrets.clear(def.id);
+    else if (!access) await deps.secrets.clearAccess(def.id);
   } catch (e) {
     try {
       if (prevDef) await deps.manager.save(prevDef); else await deps.manager.remove(def.id);

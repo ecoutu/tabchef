@@ -10,7 +10,8 @@ export interface ConnectionDef {
   hosts: string[]; // origins it needs, e.g. ['https://github.com/*','https://api.github.com/*']
   auth: AuthStyle;
   scopes: string[];
-  jira?: { site: string; email?: string; tokenKind: 'scoped' | 'classic'; cloudId?: string; tokenExpiresAt?: number };
+  // tokenKind is absent in session mode (auth 'session'); tokenExpiresAt is user-entered (Atlassian does not return it).
+  jira?: { site: string; email?: string; tokenKind?: 'scoped' | 'classic'; cloudId?: string; tokenExpiresAt?: number };
   revokeUrl?: string; // shown on the Connections page
   login?: string; // account name shown on the Connections page (metadata only)
 }

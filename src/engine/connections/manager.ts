@@ -1,4 +1,4 @@
-import { UNSUPPORTED_HOST_MESSAGE, isAllowedBase } from '../../core/connections/builtin';
+import { JIRA_TOKEN_EXPIRED, UNSUPPORTED_HOST_MESSAGE, isAllowedBase, jiraTokenExpiresInDays } from '../../core/connections/builtin';
 import { classifyResponse } from '../../core/connections/classify';
 import { redact } from '../../core/connections/redact';
 import type {
@@ -265,8 +265,11 @@ export class ConnectionManager {
         scopes: def.scopes,
       };
     }
+    // A Jira token past its user-entered expiry is needs-reauth without a request (Atlassian returns no expiry).
+    const days = jiraTokenExpiresInDays(def, this.now());
+    const expired = stored && days !== undefined && days <= 0;
     // A disconnected connection is not-configured even while an earlier rate-limit block lasts.
-    if (rt?.needsReauth) state = 'needs-reauth';
+    if (rt?.needsReauth || expired) state = 'needs-reauth';
     else if (!stored) state = 'not-configured';
     else if (!gate.ok) state = 'rate-limited';
     else if (rt?.lastKind && ERROR_KINDS.has(rt.lastKind)) state = 'error';
@@ -274,8 +277,9 @@ export class ConnectionManager {
     return {
       id, state,
       ...(rt?.lastUsedAt !== undefined && { lastUsedAt: rt.lastUsedAt }),
-      ...(rt?.lastError !== undefined && { lastError: rt.lastError }),
+      ...(expired ? { lastError: JIRA_TOKEN_EXPIRED } : rt?.lastError !== undefined && { lastError: rt.lastError }),
       ...(!gate.ok && gate.retryAt !== undefined && { blockedUntil: gate.retryAt }),
+      ...(stored && days !== undefined && { expiresInDays: Math.max(0, days) }),
       ssoRequired: rt?.ssoRequired ?? [],
       scopes: def.scopes,
     };
@@ -331,7 +335,10 @@ export class ConnectionManager {
   private async fetchInner(id: string, req: ApiRequest): Promise<ApiResult & { extraSecrets?: string[] }> {
     const def = (await this.defs()).find((d) => d.id === id);
     if (!def) return notConfigured(`${id} is not connected`);
+    // Session mode rides the browser's cookies: never anything but a read.
+    if (def.auth === 'session' && req.method !== 'GET') return { ok: false, kind: 'read-only', message: 'session mode is read-only' };
     if ((await this.runtime(id))?.needsReauth) return this.unauthorized(def);
+    if ((jiraTokenExpiresInDays(def, this.now()) ?? 1) <= 0) return this.expired(def);
     if (!def.apiBaseUrl) return notConfigured(def.kind === 'jira' ? 'cloudId not discovered yet' : `${def.label} has no API address`);
     if (!isAllowedBase(def.apiBaseUrl, this.deps.allowLocalhost)) return notConfigured(UNSUPPORTED_HOST_MESSAGE);
     if (!(await this.deps.port.hasPermission({ origins: def.hosts }))) {
@@ -359,6 +366,13 @@ export class ConnectionManager {
 
   private unauthorized(def: ConnectionDef): ApiResult {
     return { ok: false, kind: 'unauthorized', status: 401, message: reauthMessage(def) };
+  }
+
+  /** An expired Jira token is never sent: needs-reauth with "Jira token expired". */
+  private async expired(def: ConnectionDef): Promise<ApiResult> {
+    const r: ApiResult = { ok: false, kind: 'unauthorized', status: 401, message: JIRA_TOKEN_EXPIRED };
+    await this.afterResult(def, r, true, []);
+    return r;
   }
 
   private rateLimited(def: ConnectionDef, retryAt?: number): ApiResult {

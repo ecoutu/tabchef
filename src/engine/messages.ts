@@ -524,8 +524,8 @@ export interface ConnectionsDeps {
   knownSecrets: () => Promise<string[]>;
 }
 
-/** The test call per connection kind: a cheap authenticated GET. Task 6 adds Jira. */
-const TEST_PATHS: Partial<Record<ConnectionDef['kind'], string>> = { github: '/user' };
+/** The test call per connection kind: a cheap authenticated GET. */
+const TEST_PATHS: Partial<Record<ConnectionDef['kind'], string>> = { github: '/user', jira: '/rest/api/3/myself' };
 const GITHUB_LOGIN = /^[A-Za-z0-9-]{1,100}$/;
 /** Shortest setToken candidate used as a redaction needle (as the manager's header values). */
 const MIN_NEEDLE = 8;

@@ -51,21 +51,37 @@ export function builtinConnectionDefs(): Record<'github' | 'jira', ConnectionDef
   };
 }
 
+/** A bare Jira Cloud host ('acme.atlassian.net'): exactly one label below atlassian.net, no scheme, path or port. */
+export const isJiraSite = (site: string): boolean => JIRA_SITE.test(site);
+
 /**
  * The Jira connection for `site` (a bare host such as 'acme.atlassian.net'). Scoped tokens call
  * api.atlassian.com/ex/jira/<cloudId> and do not authenticate against the site. An empty `apiBaseUrl` means "cloudId
- * not discovered yet" (Task 4 fills it); api.atlassian.com is already in `hosts` so one permission request covers both.
- * Classic tokens call the site directly.
+ * not discovered yet" (filled in once the site's cloudId is known); api.atlassian.com is already in `hosts` so one permission request covers both.
+ * Classic tokens and session mode (the browser's Jira cookies, read-only) call the site directly.
  */
-export function jiraDef(site: string, tokenKind: 'scoped' | 'classic', cloudId?: string): ConnectionDef {
+export function jiraDef(site: string, mode: 'scoped' | 'classic' | 'session', cloudId?: string): ConnectionDef {
   if (!JIRA_SITE.test(site)) throw new Error(UNSUPPORTED_HOST_MESSAGE);
   const baseUrl = `https://${site}`;
-  const scoped = tokenKind === 'scoped';
+  const scoped = mode === 'scoped';
   return {
     ...builtinConnectionDefs().jira,
     baseUrl,
     apiBaseUrl: !scoped ? baseUrl : cloudId ? `https://api.atlassian.com/ex/jira/${encodeURIComponent(cloudId)}` : '',
     hosts: scoped ? [`${baseUrl}/*`, 'https://api.atlassian.com/*'] : [`${baseUrl}/*`],
-    jira: { site, tokenKind, ...(cloudId !== undefined && { cloudId }) },
+    ...(mode === 'session' && { auth: 'session' as const }),
+    jira: { site, ...(mode !== 'session' && { tokenKind: mode }), ...(cloudId !== undefined && { cloudId }) },
   };
+}
+
+export const JIRA_TOKEN_EXPIRED = 'Jira token expired';
+const DAY_MS = 86_400_000;
+
+/**
+ * Whole days (rounded up) until a Jira token's user-entered expiry, ≤ 0 once it passed; undefined when none was
+ * entered or the connection does not use a token.
+ */
+export function jiraTokenExpiresInDays(def: ConnectionDef, now: number): number | undefined {
+  const at = def.kind === 'jira' && def.auth === 'token' ? def.jira?.tokenExpiresAt : undefined;
+  return typeof at === 'number' && Number.isFinite(at) ? Math.ceil((at - now) / DAY_MS) : undefined;
 }
