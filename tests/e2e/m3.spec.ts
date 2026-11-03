@@ -9,13 +9,12 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { parse as parseYaml } from 'yaml';
-import { builtinConnectionDefs } from '../../src/core/connections/builtin';
-import type { ConnectionDef, ConnectionStatus } from '../../src/core/connections/types';
+import type { ConnectionStatus } from '../../src/core/connections/types';
 import type { Recipe, RecipeRef } from '../../src/core/lang/types';
 import { RATE_KEY } from '../../src/engine/connections/rate-limiter';
-import { CONNECTIONS_KEY, secretKey } from '../../src/engine/connections/secret-store';
 import { config, EXT_PATH, groups, launch, openTab, reset, send, setConfig, tabs, type Harness } from './helpers';
-import { MOCK_JIRA_EMAIL, MOCK_JIRA_TOKEN, MOCK_TOKEN, startMockServices, type MockServices } from './mock-services';
+import { connectionItems, issue, MOCK_LOGIN, mergedPr, mockGithubDef, mockJiraDef, openPr, prKey } from '../helpers/demo';
+import { startMockServices, type MockServices } from './mock-services';
 
 interface ViewRow { tabId: number; url: string; source?: { state?: string; mergedAt?: string }; stale?: true }
 interface WhyEntry { tabId?: number; ruleId?: string; action: string; detail: string }
@@ -94,14 +93,11 @@ test.describe('M3 with mocked services', () => {
    */
   async function connectAndEnable(ref: RecipeRef = mergedPrsRecipe(mock.origin)): Promise<void> {
     await send(h, { type: 'connections.disconnect', id: 'github' });
-    const def: ConnectionDef = {
-      ...builtinConnectionDefs().github, auth: 'token', baseUrl: mock.origin, apiBaseUrl: mock.origin, hosts: ['http://localhost/*'],
-    };
     await h.sw.evaluate(async ([items, rateKey]) => {
       await chrome.storage.session.remove(rateKey);
       await chrome.storage.local.set(items);
-    }, [{ [CONNECTIONS_KEY]: [def], [secretKey('github')]: { token: MOCK_TOKEN } }, RATE_KEY] as const);
-    expect(await send<{ login?: string }>(h, { type: 'connections.test', id: 'github' })).toEqual({ login: 'e2e-user' });
+    }, [connectionItems([mockGithubDef(mock.origin)]), RATE_KEY] as const);
+    expect(await send<{ login?: string }>(h, { type: 'connections.test', id: 'github' })).toEqual({ login: MOCK_LOGIN });
     expect((await github())?.state).toBe('ok');
     await setConfig(h, withRecipe(ref));
     await expect.poll(async () => (await send<{ id: string }[]>(h, { type: 'views.list' })).map((v) => v.id), { timeout: 5000 })
@@ -109,7 +105,7 @@ test.describe('M3 with mocked services', () => {
   }
 
   test('(a) a merged PR tab is listed by the Merged view within 5 s; close-all closes it into Recently closed', async () => {
-    mock.github.setPr('acme/api#1', { state: 'MERGED', title: 'Add login', mergedAt: '2026-11-01T12:00:00Z' });
+    mock.github.setPr(prKey('acme/api', 1), mergedPr('Add login', '2026-11-01T12:00:00Z'));
     await connectAndEnable();
     const id = await openTab(h, prUrl(1));
 
@@ -124,8 +120,8 @@ test.describe('M3 with mocked services', () => {
   });
 
   test('(b) Titles level, no connection: a Jira ticket tab and a PR tab naming its key share one ABC-1 group', async () => {
-    mock.jira.setIssue('ABC-1', { summary: 'Login', status: 'In Progress', category: 'indeterminate' });
-    mock.github.setPr('acme/api#1', { state: 'OPEN', title: 'ABC-1 fix' });
+    mock.jira.setIssue('ABC-1', issue('Login', 'In Progress'));
+    mock.github.setPr(prKey('acme/api', 1), openPr('ABC-1 fix'));
     // No connections: an earlier test's github connection would lift the PR rule above the Titles level.
     await send(h, { type: 'connections.disconnect', id: 'github' });
     await send(h, { type: 'connections.disconnect', id: 'jira' });
@@ -154,19 +150,14 @@ test.describe('M3 with mocked services', () => {
 
   test('(b2) with a Jira token connection on the mock, a Done ticket shows the close prompt data', async () => {
     // The source cache keeps an issue for 5 minutes, so each status is set before its ticket tab opens.
-    mock.jira.setIssue('ABC-2', { summary: 'Logout', status: 'Done', category: 'done' });
-    mock.jira.setIssue('ABC-3', { summary: 'Signup', status: 'In Progress', category: 'indeterminate' });
+    mock.jira.setIssue('ABC-2', issue('Logout', 'Done'));
+    mock.jira.setIssue('ABC-3', issue('Signup', 'In Progress'));
     // Same shape setJiraToken stores (classic token: apiBaseUrl is the site); setJiraToken validates against Atlassian hosts.
-    const host = new URL(mock.origin).host;
-    const def: ConnectionDef = {
-      ...builtinConnectionDefs().jira, baseUrl: mock.origin, apiBaseUrl: mock.origin, hosts: ['http://localhost/*'],
-      jira: { site: host, email: MOCK_JIRA_EMAIL, tokenKind: 'classic' },
-    };
     await send(h, { type: 'connections.disconnect', id: 'jira' });
     await h.sw.evaluate(async ([items, rateKey]) => {
       await chrome.storage.session.remove(rateKey);
       await chrome.storage.local.set(items);
-    }, [{ [CONNECTIONS_KEY]: [def], [secretKey('jira')]: { token: MOCK_JIRA_TOKEN } }, RATE_KEY] as const);
+    }, [connectionItems([mockJiraDef(mock.origin, new URL(mock.origin).host)]), RATE_KEY] as const);
     await setConfig(h, withRecipe(jiraRecipe(mock.origin)));
 
     const id = await openTab(h, `${mock.origin}/browse/ABC-2`);
@@ -186,8 +177,8 @@ test.describe('M3 with mocked services', () => {
     const auto = { params: { autoCloseAfter: '15s' }, ruleEnabled: { 'auto-close-merged': true } };
     await connectAndEnable(mergedPrsRecipe(mock.origin, auto));
     const mergedAt = Date.now();
-    mock.github.setPr('acme/api#2', { state: 'MERGED', title: 'Fix logout', mergedAt: new Date(mergedAt).toISOString() });
-    mock.github.setPr('acme/api#3', { state: 'OPEN', title: 'Refactor session' });
+    mock.github.setPr(prKey('acme/api', 2), mergedPr('Fix logout', new Date(mergedAt)));
+    mock.github.setPr(prKey('acme/api', 3), openPr('Refactor session'));
     const merged = await openTab(h, prUrl(2));
     await expect.poll(async () => (await mergedRows()).filter((r) => r.tabId === merged).map((r) => r.stale ?? false), { timeout: 5000 })
       .toEqual([false]);
@@ -221,8 +212,8 @@ test.describe('M3 with mocked services', () => {
   });
 
   test('(d) a 403 with retry-after: 60 blocks the connection; a refresh within 60 s sends no request', async () => {
-    mock.github.setPr('acme/api#4', { state: 'OPEN', title: 'Add metrics' });
-    mock.github.setPr('acme/api#5', { state: 'OPEN', title: 'Add tracing' });
+    mock.github.setPr(prKey('acme/api', 4), openPr('Add metrics'));
+    mock.github.setPr(prKey('acme/api', 5), openPr('Add tracing'));
     await connectAndEnable();
     mock.github.failNext(403, { 'retry-after': '60' });
     const startedAt = Date.now();

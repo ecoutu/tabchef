@@ -3,20 +3,13 @@
 // pull request / Jira issue pages the tabs open. The tokens are dummies; nothing here logs request headers.
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { MOCK_JIRA_EMAIL, MOCK_JIRA_TOKEN, MOCK_LOGIN, MOCK_TOKEN, type MockIssue, type MockPr } from '../helpers/demo';
 
-/** The dummy token the tests store for the github connection. The mock answers 401 to anything else. */
-export const MOCK_TOKEN = 'ghp_e2eDummyToken0000000000000000000000';
-
-/** The dummy Jira credentials the tests store (Basic email:token). The mock answers 401 to anything else. */
-export const MOCK_JIRA_EMAIL = 'e2e@example.test';
-export const MOCK_JIRA_TOKEN = 'e2e-dummy-jira-token-0000';
+// The data shapes, builders and dummy credentials are shared with the store images: tests/helpers/demo.ts.
+export { MOCK_JIRA_EMAIL, MOCK_JIRA_TOKEN, MOCK_TOKEN, type MockIssue, type MockPr };
 const JIRA_BASIC = `Basic ${Buffer.from(`${MOCK_JIRA_EMAIL}:${MOCK_JIRA_TOKEN}`).toString('base64')}`;
 /** Answered by /_edge/tenant_info. */
 export const MOCK_CLOUD_ID = '11111111-2222-3333-4444-555555555555';
-
-export interface MockIssue { summary: string; status: string; category: 'new' | 'indeterminate' | 'done' }
-
-export interface MockPr { state: 'OPEN' | 'CLOSED' | 'MERGED'; title: string; mergedAt?: string }
 
 export interface MockServices {
   port: number;
@@ -96,7 +89,7 @@ export async function startMockServices(): Promise<MockServices> {
         return;
       }
       if (url.pathname === '/user') {
-        json(200, { login: 'e2e-user' });
+        json(200, { login: MOCK_LOGIN });
         req.resume();
         return;
       }

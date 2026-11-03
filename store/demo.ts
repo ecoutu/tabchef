@@ -1,28 +1,12 @@
 // Demo data for the store images: a made-up "acme" shop with two repositories (acme/api, acme/web) and a Jira site
-// (acme.atlassian.net, project SHOP). The mock services answer the pull requests and tickets; the pages the tabs
-// open are answered in-process by capture.ts. Nothing here is a real account, repository or ticket.
+// (acme.atlassian.net, project SHOP): the scenes' tabs. The mock services answer the pull requests and tickets; the
+// pages the tabs open are answered in-process by capture.ts. Nothing here is a real account, repository or ticket.
 import type { GroupColor } from '../src/core/types';
-import type { MockIssue, MockPr } from '../tests/e2e/mock-services';
+
+// The pull requests and tickets (and their shapes, shared with the e2e mock services): tests/helpers/demo.ts.
+export { DEMO_ISSUES, DEMO_PRS } from '../tests/helpers/demo';
 
 export const JIRA_SITE = 'acme.atlassian.net';
-
-const hoursAgo = (h: number) => new Date(Date.now() - h * 3_600_000).toISOString();
-
-/** Pull requests, keyed 'owner/repo#number' as the mock wants them. */
-export const DEMO_PRS: Record<string, MockPr> = {
-  'acme/api#412': { state: 'OPEN', title: 'SHOP-142 Saved carts API' },
-  'acme/web#88': { state: 'OPEN', title: 'SHOP-142 Saved carts page' },
-  'acme/web#91': { state: 'MERGED', title: 'SHOP-139 Gift card balance check', mergedAt: hoursAgo(5) },
-  'acme/api#405': { state: 'MERGED', title: 'Rate-limit the login endpoint', mergedAt: hoursAgo(2) },
-  'acme/api#398': { state: 'MERGED', title: 'Upgrade the API to Node 24', mergedAt: hoursAgo(26) },
-  'acme/web#86': { state: 'MERGED', title: 'Fix the checkout button focus ring', mergedAt: hoursAgo(49) },
-  'acme/api#417': { state: 'OPEN', title: 'Add request IDs to the access log' },
-};
-
-export const DEMO_ISSUES: Record<string, MockIssue> = {
-  'SHOP-142': { summary: 'Saved carts', status: 'In Progress', category: 'indeterminate' },
-  'SHOP-139': { summary: 'Gift card balance', status: 'Done', category: 'done' },
-};
 
 export interface DemoPage { url: string }
 const gh = (path: string): DemoPage => ({ url: `https://github.com/${path}` });

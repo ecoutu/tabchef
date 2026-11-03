@@ -6,13 +6,11 @@ import { chromium, type BrowserContext, type Page, type Route, type Worker } fro
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { builtinConnectionDefs } from '../src/core/connections/builtin';
-import type { ConnectionDef } from '../src/core/connections/types';
 import type { RecipeRef } from '../src/core/lang/types';
 import type { Config } from '../src/core/types';
-import { CONNECTIONS_KEY, secretKey } from '../src/engine/connections/secret-store';
 import { config, rule, send, setConfig, type Harness } from '../tests/e2e/helpers';
-import { MOCK_JIRA_EMAIL, MOCK_JIRA_TOKEN, MOCK_TOKEN, startMockServices, type MockServices } from '../tests/e2e/mock-services';
+import { startMockServices, type MockServices } from '../tests/e2e/mock-services';
+import { connectionItems, MOCK_LOGIN, mockGithubDef, mockJiraDef } from '../tests/helpers/demo';
 import { DEMO_ISSUES, DEMO_PRS, JIRA_SITE, pageTitle, type DemoPage } from './demo';
 
 /** One capture: a PNG of part of a real extension page, at 2x. */
@@ -146,18 +144,11 @@ async function settle(h: Session, n: number): Promise<void> {
 
 /** The github and jira connections on the mock, stored the way the e2e:m3 tests store them (setToken validates against the real hosts). */
 async function connect(h: Session): Promise<void> {
-  const github: ConnectionDef = {
-    ...builtinConnectionDefs().github, auth: 'token', apiBaseUrl: h.mock.origin, hosts: ['http://localhost/*'],
-  };
-  const jira: ConnectionDef = {
-    ...builtinConnectionDefs().jira, baseUrl: h.mock.origin, apiBaseUrl: h.mock.origin, hosts: ['http://localhost/*'],
-    jira: { site: JIRA_SITE, email: MOCK_JIRA_EMAIL, tokenKind: 'classic' },
-  };
-  await h.sw.evaluate(async (items) => { await chrome.storage.local.set(items); }, {
-    [CONNECTIONS_KEY]: [github, jira], [secretKey('github')]: { token: MOCK_TOKEN }, [secretKey('jira')]: { token: MOCK_JIRA_TOKEN },
-  });
+  // The pull request tabs are on github.com (the recipes' patterns); only the API calls go to the mock.
+  const items = connectionItems([mockGithubDef(h.mock.origin, 'https://github.com'), mockJiraDef(h.mock.origin, JIRA_SITE)]);
+  await h.sw.evaluate(async (i) => { await chrome.storage.local.set(i); }, items);
   const login = await send<{ login?: string }>(h, { type: 'connections.test', id: 'github' });
-  if (login.login !== 'e2e-user') throw new Error('store:assets: the github connection did not reach the mock');
+  if (login.login !== MOCK_LOGIN) throw new Error('store:assets: the github connection did not reach the mock');
 }
 
 const recipes = (c: Config, over: Record<string, Partial<RecipeRef>>): Config => ({
