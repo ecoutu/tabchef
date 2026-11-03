@@ -18,6 +18,7 @@
       {
         "assets": [{ "path": ".output/*-chrome.zip", "label": "Chrome extension (zip)" }]
       }
-    ]
+    ],
+    ["@semantic-release/exec", { "publishCmd": "scripts/submit-stores.sh" }]
   ]
 }

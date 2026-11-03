@@ -48,8 +48,12 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      # After the GitHub release, scripts/submit-stores.sh uploads the zip to the Chrome Web Store and submits it for
+      # review. Without the CHROME_* secrets it skips, and the release is on GitHub only.
       - run: npx semantic-release
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token || secrets.PROJECT_TOKEN }}
-
-# The Chrome Web Store upload is not automated yet: upload the release's zip by hand.
+          CHROME_EXTENSION_ID: ${{ secrets.CHROME_EXTENSION_ID }}
+          CHROME_PUBLISHER_ID: ${{ secrets.CHROME_PUBLISHER_ID }}
+          CHROME_SERVICE_ACCOUNT_CLIENT_EMAIL: ${{ secrets.CHROME_SERVICE_ACCOUNT_CLIENT_EMAIL }}
+          CHROME_SERVICE_ACCOUNT_PRIVATE_KEY: ${{ secrets.CHROME_SERVICE_ACCOUNT_PRIVATE_KEY }}
