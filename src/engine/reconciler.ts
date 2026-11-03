@@ -9,7 +9,7 @@ import { DragRetryExhausted, withDragRetry } from '../platform/retry';
 import { anchorLeaveAlone, type AnchorService } from './anchors';
 import { EXPECTATION_TTL_MS, loadState, saveState, type LiveState } from './state';
 
-/** Structural why-log (Task 12 provides the real ring buffer). */
+/** Structural why-log interface (implemented by the History log). */
 export interface WhyLog {
   add(e: { tabId?: number; ruleId?: string; action: string; detail: string; at: number; dryRun?: true }): void;
 }
