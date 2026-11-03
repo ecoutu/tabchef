@@ -1,7 +1,8 @@
 name: Store assets
 
 # Renders the Web Store screenshots and promo tiles (npm run store:assets) from the pull request's extension, so a
-# UI change shows up in the store images before it ships. The images are a run artifact; nothing is committed.
+# UI change shows up in the store images before it ships. The images are a run artifact; nothing is committed. One
+# comment on the pull request (found again by its hidden marker) links the latest run's images.
 on:
   pull_request:
     paths:
@@ -14,6 +15,8 @@ on:
 
 permissions:
   contents: read
+  # The sticky comment linking the images.
+  pull-requests: write
 
 jobs:
   store-assets:
@@ -30,8 +33,46 @@ jobs:
       # Builds its own e2e flavor into a temp dir and uses only local mock services: no secrets, no network.
       - run: npm run store:assets
       - uses: actions/upload-artifact@v4
+        id: upload
         with:
           name: store-assets
           path: docs/store/images/*.png
           if-no-files-found: error
           retention-days: 14
+      # A fork's token cannot write to this repository, so its pull requests get the artifact but no comment.
+      - name: Link the images from the pull request
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          # Passed via env, never interpolated into the script (injection).
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          marker='<!-- store-assets -->'
+          {
+            echo "$marker"
+            echo "### Store images"
+            echo
+            echo "Rendered by \`npm run store:assets\` from ${SHA:0:7} ([run]($RUN_URL)): **[download the images]($ARTIFACT_URL)** (kept 14 days)."
+            echo
+            echo "| Image | Size | File size |"
+            echo "|---|---|---|"
+            for f in docs/store/images/*.png; do
+              # Width and height from the PNG header (bytes 16-23).
+              dims=$(node -e 'const b = require("fs").readFileSync(process.argv[1]); console.log(`${b.readUInt32BE(16)}×${b.readUInt32BE(20)}`)' "$f")
+              echo "| \`$(basename "$f")\` | $dims | $(( $(stat -c %s "$f") / 1024 )) KiB |"
+            done
+          } > comment.md
+          ids=$(gh api --paginate "repos/$REPO/issues/$PR/comments" \
+            --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id")
+          id=$(printf '%s\n' "$ids" | sed -n 1p)
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$id" -F body=@comment.md > /dev/null
+            echo "Updated comment $id"
+          else
+            gh api -X POST "repos/$REPO/issues/$PR/comments" -F body=@comment.md > /dev/null
+            echo "Added the comment"
+          fi
