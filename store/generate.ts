@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
 import { FACES, layoutInPage, marquee, page, screenshots, smallTile, type Captions } from './art';
 import { loadBrand } from './brand';
+import { fitScript, type Fit } from './fit';
 import { capture } from './capture';
 import * as demo from './demo';
 
@@ -41,11 +42,12 @@ async function render(browser: Browser, html: string, size: { width: number; hei
       return out;
     }, FACES);
     if (missing.length) throw new Error(`store:assets: fonts did not load: ${missing.join(', ')} (see store/fonts)`);
+    await p.addScriptTag({ content: fitScript() });
     const problems = await p.evaluate(layoutInPage);
     // Screenshots: the caption must fit its column and the canvas.
     problems.push(...await p.evaluate(() => [...document.querySelectorAll('.copy > *, .ui')].flatMap((e) => {
-      const r = e.getBoundingClientRect();
-      const over = r.top < 0 || r.bottom > innerHeight || r.right > innerWidth || e.scrollWidth > e.clientWidth + 1;
+      const fit = (globalThis as unknown as { storeFit: Fit }).storeFit;
+      const over = fit.columnOverflow(e.getBoundingClientRect(), e.scrollWidth, e.clientWidth, { width: innerWidth, height: innerHeight });
       return over ? [`${e.className || e.tagName} "${(e.textContent ?? '').slice(0, 40)}" does not fit`] : [];
     })));
     if (problems.length) throw new Error(`store:assets: ${file}: ${problems.join('; ')}`);

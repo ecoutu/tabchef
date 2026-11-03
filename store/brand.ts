@@ -13,13 +13,14 @@ export const ICON_SVG = 'docs/store/icon.svg';
 
 export interface Brand { name: string; tagline: string; iconSvg: string }
 
-export function loadBrand(): Brand {
-  const name = (JSON.parse(readFileSync(join(ROOT, 'docs/store/terms.json'), 'utf8')) as { name: string }).name;
-  if (manifestConfig.name !== name) {
-    throw new Error(`store:assets: docs/store/terms.json names the product "${name}" but the manifest (wxt.config.ts) says "${manifestConfig.name}"; make them the same`);
+/** `root` and `manifestName` are for tests: the repository and the manifest's name by default. */
+export function loadBrand(root = ROOT, manifestName: string | undefined = manifestConfig.name): Brand {
+  const name = (JSON.parse(readFileSync(join(root, 'docs/store/terms.json'), 'utf8')) as { name: string }).name;
+  if (manifestName !== name) {
+    throw new Error(`store:assets: docs/store/terms.json names the product "${name}" but the manifest (wxt.config.ts) says "${manifestName}"; make them the same`);
   }
-  const listing = readFileSync(join(ROOT, 'docs/store/listing.md'), 'utf8');
+  const listing = readFileSync(join(root, 'docs/store/listing.md'), 'utf8');
   const tagline = /^## Tagline\n+(.+)$/m.exec(listing)?.[1]?.trim();
   if (!tagline) throw new Error('store:assets: docs/store/listing.md has no "## Tagline" section');
-  return { name, tagline, iconSvg: readFileSync(join(ROOT, ICON_SVG), 'utf8') };
+  return { name, tagline, iconSvg: readFileSync(join(root, ICON_SVG), 'utf8') };
 }

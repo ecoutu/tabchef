@@ -7,6 +7,7 @@ import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { Brand } from './brand';
 import type { Captures, TabStripGroup } from './capture';
+import { fitBox, type Fit } from './fit';
 
 const FONTS = resolve(import.meta.dirname, 'fonts');
 
@@ -86,10 +87,7 @@ function copy(c: Captions['screenshots'][number], brand: Brand, top = 0): string
 /** A capture in the right-hand area (x 600–1216, y top–bottom), at most `zoom` times its CSS size, centered. */
 function ui(shot: Buffer, { top = 56, bottom = 744, left = 600, right = 1216, zoom = 1.25 } = {}): string {
   const { w, h } = cssSize(shot);
-  const k = Math.min(zoom, (right - left) / w, (bottom - top) / h);
-  const [dw, dh] = [Math.round(w * k), Math.round(h * k)];
-  const x = Math.round(left + (right - left - dw) / 2);
-  const y = Math.round(top + (bottom - top - dh) / 2);
+  const { x, y, width: dw, height: dh } = fitBox(w, h, { left, top, right, bottom }, zoom);
   return `<div class="ui" style="left:${x}px; top:${y}px; width:${dw}px; height:${dh}px"><img src="${png(shot)}" alt=""></div>`;
 }
 
@@ -177,9 +175,11 @@ export function marquee(brand: Brand, captions: Captions): string {
 /**
  * Runs in the page once the fonts have loaded: lays out the chips and tab rows from the measured text (the kit
  * estimated widths from character counts), and squeezes any `data-max` text wider than its room. Returns the
- * problems found (text still out of bounds), which fail the render.
+ * problems found (text still out of bounds), which fail the render. The fitting rules are store/fit.ts, installed
+ * in the page as `storeFit` (fitScript) first.
  */
 export function layoutInPage(): string[] {
+  const fit = (globalThis as unknown as { storeFit: Fit }).storeFit;
   const NS = 'http://www.w3.org/2000/svg';
   const el = (t: string, a: Record<string, string | number>, p: Element): SVGElement => {
     const e = document.createElementNS(NS, t);
@@ -198,7 +198,8 @@ export function layoutInPage(): string[] {
 
   for (const t of document.querySelectorAll<SVGTextElement>('text[data-max]')) {
     const max = Number(t.dataset.max);
-    if (t.getComputedTextLength() > max) { t.setAttribute('textLength', String(max)); t.setAttribute('lengthAdjust', 'spacingAndGlyphs'); }
+    const length = fit.squeeze(t.getComputedTextLength(), max);
+    if (length !== undefined) { t.setAttribute('textLength', String(length)); t.setAttribute('lengthAdjust', 'spacingAndGlyphs'); }
   }
 
   for (const g of document.querySelectorAll<SVGGElement>('g[data-chips]')) {
@@ -217,7 +218,8 @@ export function layoutInPage(): string[] {
   // Tabs: the measured title plus 16 px either side, at least 96 px; a row wider than its room shrinks to fit.
   const row = (g: SVGGElement, room: number, draw: (scale: number) => number) => {
     const w = draw(1);
-    if (w > room) { g.replaceChildren(); draw(room / w); }
+    const k = fit.rowScale(w, room);
+    if (k < 1) { g.replaceChildren(); draw(k); }
   };
   const measure = (s: string, size: number) => {
     const t = text(document.querySelector('svg')!, s, { 'font-family': MONO, 'font-size': size, x: -9999, y: -9999 });
@@ -282,7 +284,7 @@ export function layoutInPage(): string[] {
     for (const t of svg.querySelectorAll('text, path, rect, image')) {
       const r = t.getBoundingClientRect();
       if (r.width === 0) continue;
-      if (r.left < box.left - 0.5 || r.right > box.right + 0.5 || r.top < box.top - 0.5 || r.bottom > box.bottom + 0.5) {
+      if (fit.outside(r, box)) {
         problems.push(`${t.tagName} "${t.textContent ?? ''}" runs off the tile`);
       }
     }
