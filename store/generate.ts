@@ -68,7 +68,9 @@ export default async function main(args: string[]): Promise<number> {
   try {
     const ext = buildE2e(tmp);
     console.log('store:assets: capturing the popup, options page and side panel');
+    const started = Date.now();
     shots = await capture(ext, demo, args.includes('--keep-captures') ? join(OUT, 'captures') : undefined);
+    console.log(`store:assets: captured in ${((Date.now() - started) / 1000).toFixed(1)} s`);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

@@ -147,6 +147,19 @@ const recipes = (c: Config, over: Record<string, Partial<RecipeRef>>): Config =>
   ...c, recipes: c.recipes.map((r) => (over[r.id] ? { ...r, ...over[r.id] } : r)),
 });
 
+/**
+ * Ends a scene: closes every tab but the worker's own options page (closing a tab drops it from its group, and an
+ * empty group goes away), puts back the default config and removes both connections, so the next scene sees none of
+ * this one's tabs, groups, rules or connections.
+ */
+async function scene(h: Session): Promise<void> {
+  for (const p of h.context.pages()) if (p !== h.ui) await p.close();
+  await setConfig(h, config([]));
+  for (const id of ['github', 'jira']) await send(h, { type: 'connections.disconnect', id });
+  await until('the scene to end', async () => (await webTabs(h)).length === 0
+    && (await h.sw.evaluate(() => chrome.tabGroups.query({}))).length === 0);
+}
+
 /** A popup capture: popup.html with `view` open, as tall as its content. */
 async function popup(h: Session, view: string, ready: (p: Page) => Promise<unknown>): Promise<Shot> {
   await h.sw.evaluate(async (v) => { await chrome.storage.local.set({ 'popup.lastTab': v }); }, view);
@@ -168,99 +181,104 @@ export async function capture(extPath: string, demo: typeof import('./demo'), ke
       return Reflect.set(t, k, v);
     },
   });
+  // One browser for all scenes; each scene starts from a clean slate (scene()). The duplicates scene goes first:
+  // it needs the startup grace of a freshly started worker.
+  const h = await session(extPath);
   const run = async (fn: (h: Session) => Promise<void>) => {
-    const h = await session(extPath);
-    try { await fn(h); } finally { await h.close(); }
+    await fn(h);
+    await scene(h);
   };
-
-  // 1. Duplicates: tabs opened during the startup grace stay open as duplicates; the popup lists each set once.
-  await run(async (h) => {
-    for (const p of demo.DUPLICATE_TABS) await open(h, p);
-    await settle(h, demo.DUPLICATE_TABS.length);
-    out.duplicates = await popup(h, 'duplicates', (p) => p.getByRole('button', { name: 'Close all duplicates' }).waitFor());
-  });
-
-  // 2. Groups by repo: the user's own group rules, then the tab strip they produced, read from chrome.tabGroups.
-  await run(async (h) => {
-    await setConfig(h, config(demo.GROUP_RULES.map((g) => rule(g.id, g.url, g.title, g.color))));
-    for (const p of demo.GROUP_TABS) await open(h, p);
-    await settle(h, demo.GROUP_TABS.length);
-    await until('the tab groups', async () => (await h.sw.evaluate(() => chrome.tabGroups.query({}))).length === demo.GROUP_RULES.length);
-    await sleep(800);
-    out.strip = await h.sw.evaluate(async () => {
-      const tabs = (await chrome.tabs.query({})).filter((t) => !(t.url ?? '').startsWith('chrome-extension://')).sort((a, b) => a.index - b.index);
-      const gs = new Map((await chrome.tabGroups.query({})).map((g) => [g.id, g]));
-      const strip: { title: string; color: string; tabs: string[] }[] = [];
-      for (const t of tabs) {
-        const g = gs.get(t.groupId);
-        const title = g?.title ?? '';
-        const last = strip[strip.length - 1];
-        if (last && last.title === title && g) last.tabs.push(t.title ?? '');
-        else strip.push({ title, color: g?.color ?? '', tabs: [t.title ?? ''] });
-      }
-      return strip;
+  try {
+    // 1. Duplicates: tabs opened during the startup grace stay open as duplicates; the popup lists each set once.
+    await run(async (h) => {
+      for (const p of demo.DUPLICATE_TABS) await open(h, p);
+      await settle(h, demo.DUPLICATE_TABS.length);
+      out.duplicates = await popup(h, 'duplicates', (p) => p.getByRole('button', { name: 'Close all duplicates' }).waitFor());
     });
-    const p = await h.page('options.html#/rules', { width: 760, height: 900 });
-    const yaml = p.getByRole('button', { name: 'YAML', exact: true });
-    await until('the rule cards', async () => (await yaml.count()) === demo.GROUP_RULES.length);
-    for (let i = demo.GROUP_RULES.length - 1; i >= 0; i--) await yaml.nth(i).click();
-    await sleep(800);
-    // The first two rules, each shown as YAML; the third is more of the same.
-    const box = await p.locator('div.rule').nth(0).evaluate((e, next) => {
-      const a = e.getBoundingClientRect();
-      const b = (document.querySelectorAll('div.rule')[next] ?? e).getBoundingClientRect();
-      return { x: a.left - 8, y: a.top + window.scrollY - 8, width: a.width + 16, height: b.bottom - a.top + 16 };
-    }, 1);
-    out.rules = await p.screenshot({ fullPage: true, clip: box });
-    await p.close();
-  });
 
-  // 3 and 4. Merged PRs and the Jira ticket projects, on the mock GitHub and Jira connections.
-  await run(async (h) => {
-    await connect(h);
-    await setConfig(h, recipes(config([]), {
-      'merged-prs': { enabled: true },
-      'jira-ticket-either': { enabled: true, params: { jiraSite: JIRA_SITE, titleFormat: '{key} · {summary}' } },
-    }));
-    for (const p of demo.PROJECT_TABS) await open(h, p);
-    await settle(h, demo.PROJECT_TABS.length);
-    await until('the merged pull requests', async () =>
-      (await send<{ rows: unknown[] }>(h, { type: 'view.data', viewId: 'merged' })).rows.length === demo.MERGED_COUNT);
-    await until('the projects', async () => {
-      const cards = await send<{ status?: unknown; tabs: unknown[] }[]>(h, { type: 'projects.list' });
-      return cards.length === demo.PROJECT_COUNT && cards.every((c) => c.status);
+    // 2. Groups by repo: the user's own group rules, then the tab strip they produced, read from chrome.tabGroups.
+    await run(async (h) => {
+      await setConfig(h, config(demo.GROUP_RULES.map((g) => rule(g.id, g.url, g.title, g.color))));
+      for (const p of demo.GROUP_TABS) await open(h, p);
+      await settle(h, demo.GROUP_TABS.length);
+      await until('the tab groups', async () => (await h.sw.evaluate(() => chrome.tabGroups.query({}))).length === demo.GROUP_RULES.length);
+      await sleep(800);
+      out.strip = await h.sw.evaluate(async () => {
+        const tabs = (await chrome.tabs.query({})).filter((t) => !(t.url ?? '').startsWith('chrome-extension://')).sort((a, b) => a.index - b.index);
+        const gs = new Map((await chrome.tabGroups.query({})).map((g) => [g.id, g]));
+        const strip: { title: string; color: string; tabs: string[] }[] = [];
+        for (const t of tabs) {
+          const g = gs.get(t.groupId);
+          const title = g?.title ?? '';
+          const last = strip[strip.length - 1];
+          if (last && last.title === title && g) last.tabs.push(t.title ?? '');
+          else strip.push({ title, color: g?.color ?? '', tabs: [t.title ?? ''] });
+        }
+        return strip;
+      });
+      const p = await h.page('options.html#/rules', { width: 760, height: 900 });
+      const yaml = p.getByRole('button', { name: 'YAML', exact: true });
+      await until('the rule cards', async () => (await yaml.count()) === demo.GROUP_RULES.length);
+      for (let i = demo.GROUP_RULES.length - 1; i >= 0; i--) await yaml.nth(i).click();
+      await sleep(800);
+      // The first two rules, each shown as YAML; the third is more of the same.
+      const box = await p.locator('div.rule').nth(0).evaluate((e, next) => {
+        const a = e.getBoundingClientRect();
+        const b = (document.querySelectorAll('div.rule')[next] ?? e).getBoundingClientRect();
+        return { x: a.left - 8, y: a.top + window.scrollY - 8, width: a.width + 16, height: b.bottom - a.top + 16 };
+      }, 1);
+      out.rules = await p.screenshot({ fullPage: true, clip: box });
+      await p.close();
     });
-    await sleep(800);
-    out.merged = await popup(h, 'merged', (p) => p.getByRole('button', { name: /close all/i }).first().waitFor());
-    out.popupProjects = await popup(h, 'projects', (p) => p.locator('article.card').first().waitFor());
-    const panel = await h.page('panel.html', { width: 400, height: 760 });
-    await panel.locator('article.card').nth(demo.PROJECT_COUNT - 1).waitFor();
-    await sleep(600);
-    const end = await panel.locator('article.card').last().evaluate((e) => e.getBoundingClientRect().bottom);
-    out.projects = await panel.screenshot({ clip: { x: 0, y: 0, width: 400, height: Math.ceil(end) + 8 } });
-    await panel.close();
-  });
 
-  // 5. Preview before apply: the group rules are there but off; turning them on and saving opens the preview.
-  await run(async (h) => {
-    const off = demo.GROUP_RULES.map((g) => ({ ...rule(g.id, g.url, g.title, g.color), enabled: false }));
-    await setConfig(h, config(off));
-    for (const p of demo.PREVIEW_TABS) await open(h, p);
-    await settle(h, demo.PREVIEW_TABS.length);
-    const p = await h.page('options.html#/rules', { width: 900, height: 760 });
-    const boxes = p.getByRole('checkbox', { name: 'Enabled' });
-    await until('the rule cards', async () => (await boxes.count()) === demo.GROUP_RULES.length);
-    for (let i = 0; i < demo.GROUP_RULES.length; i++) await boxes.nth(i).check();
-    await p.getByRole('button', { name: 'Save', exact: true }).click();
-    await p.getByRole('dialog').waitFor();
-    await sleep(600);
-    // The crop is the dialog's box, whose edges fall between device pixels: make the backdrop opaque white (the
-    // card the image sits on), so no sliver of the page behind it shows at the edges or rounded corners.
-    await p.addStyleTag({ content: '.backdrop { background: #fff !important; }' });
-    await sleep(100);
-    out.preview = await p.locator('.dialog').screenshot();
-    await p.close();
-  });
+    // 3 and 4. Merged PRs and the Jira ticket projects, on the mock GitHub and Jira connections.
+    await run(async (h) => {
+      await connect(h);
+      await setConfig(h, recipes(config([]), {
+        'merged-prs': { enabled: true },
+        'jira-ticket-either': { enabled: true, params: { jiraSite: JIRA_SITE, titleFormat: '{key} · {summary}' } },
+      }));
+      for (const p of demo.PROJECT_TABS) await open(h, p);
+      await settle(h, demo.PROJECT_TABS.length);
+      await until('the merged pull requests', async () =>
+        (await send<{ rows: unknown[] }>(h, { type: 'view.data', viewId: 'merged' })).rows.length === demo.MERGED_COUNT);
+      await until('the projects', async () => {
+        const cards = await send<{ status?: unknown; tabs: unknown[] }[]>(h, { type: 'projects.list' });
+        return cards.length === demo.PROJECT_COUNT && cards.every((c) => c.status);
+      });
+      await sleep(800);
+      out.merged = await popup(h, 'merged', (p) => p.getByRole('button', { name: /close all/i }).first().waitFor());
+      out.popupProjects = await popup(h, 'projects', (p) => p.locator('article.card').first().waitFor());
+      const panel = await h.page('panel.html', { width: 400, height: 760 });
+      await panel.locator('article.card').nth(demo.PROJECT_COUNT - 1).waitFor();
+      await sleep(600);
+      const end = await panel.locator('article.card').last().evaluate((e) => e.getBoundingClientRect().bottom);
+      out.projects = await panel.screenshot({ clip: { x: 0, y: 0, width: 400, height: Math.ceil(end) + 8 } });
+      await panel.close();
+    });
 
+    // 5. Preview before apply: the group rules are there but off; turning them on and saving opens the preview.
+    await run(async (h) => {
+      const off = demo.GROUP_RULES.map((g) => ({ ...rule(g.id, g.url, g.title, g.color), enabled: false }));
+      await setConfig(h, config(off));
+      for (const p of demo.PREVIEW_TABS) await open(h, p);
+      await settle(h, demo.PREVIEW_TABS.length);
+      const p = await h.page('options.html#/rules', { width: 900, height: 760 });
+      const boxes = p.getByRole('checkbox', { name: 'Enabled' });
+      await until('the rule cards', async () => (await boxes.count()) === demo.GROUP_RULES.length);
+      for (let i = 0; i < demo.GROUP_RULES.length; i++) await boxes.nth(i).check();
+      await p.getByRole('button', { name: 'Save', exact: true }).click();
+      await p.getByRole('dialog').waitFor();
+      await sleep(600);
+      // The crop is the dialog's box, whose edges fall between device pixels: make the backdrop opaque white (the
+      // card the image sits on), so no sliver of the page behind it shows at the edges or rounded corners.
+      await p.addStyleTag({ content: '.backdrop { background: #fff !important; }' });
+      await sleep(100);
+      out.preview = await p.locator('.dialog').screenshot();
+      await p.close();
+    });
+  } finally {
+    await h.close();
+  }
   return out as Captures;
 }
