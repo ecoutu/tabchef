@@ -3,7 +3,7 @@
   "description": "Rule-based tab grouping and de-duplication for Chrome",
   "license": "MIT",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.1.0",
   "type": "module",
   "scripts": {
     "dev": "wxt",

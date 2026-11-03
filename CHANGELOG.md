@@ -1,1 +1,76 @@
+# [1.1.0](https://github.com/ecoutu/tabchef/compare/v1.0.0...v1.1.0) (2026-11-03)
+
+
+### Bug Fixes
+
+* **background:** give a new tab's pending URL to safety ([c6547ba](https://github.com/ecoutu/tabchef/commit/c6547ba78767b1cd56f1e1da93db739b05872285))
+* **banner:** never throw when the extension context is invalidated ([cd8a07c](https://github.com/ecoutu/tabchef/commit/cd8a07c73388d02123d5bff331b35fbe0b697f8b))
+* **close:** never offer locked or pinned tabs for closing ([135a65e](https://github.com/ecoutu/tabchef/commit/135a65e93cfeeb64197581a88d43f46279cecfbf))
+* **engine:** re-plan when a tab's title changes ([b137f13](https://github.com/ecoutu/tabchef/commit/b137f13d463ec3de4fcb3a006f70da43bd536eb8))
+* **manifest:** stop requesting the unused identity and bookmarks permissions ([7f02747](https://github.com/ecoutu/tabchef/commit/7f027475f9abbfead2444c70952f7679f758849d))
+* **options:** name the Duplicates page in the Import hint ([1618754](https://github.com/ecoutu/tabchef/commit/161875401547f9a7233e386c20788323fb04679c))
+* **options:** preview restores and imports before replacing the config ([d9aa3a2](https://github.com/ecoutu/tabchef/commit/d9aa3a2014868b75cfff871a838a613325255381))
+* **options:** widen the options page to 1200px so rule controls fit on one line ([53142ac](https://github.com/ecoutu/tabchef/commit/53142ac72029e490b68a17a1dad8993635041a4b))
+* **popup:** widen the popup to 520px so the tab strip no longer overflows ([c072ac2](https://github.com/ecoutu/tabchef/commit/c072ac247f688b3278b10874dd5de40cb53c9747))
+
+
+### Features
+
+* **config:** named sections for user rules ([35d2bee](https://github.com/ecoutu/tabchef/commit/35d2beee7f166a1f3662cdee659260804db259f3))
+* **config:** one priority order for your rules and recipe rules, upgrading existing settings ([a761f98](https://github.com/ecoutu/tabchef/commit/a761f98c41b6a521edae40789d7b149d351a59ee))
+* **config:** override recipe rule defaults in both directions ([0b00aeb](https://github.com/ecoutu/tabchef/commit/0b00aeb1614a82b91a6565b765cf71e40f8fb4a1))
+* **config:** toggle recipe rules one at a time ([e834725](https://github.com/ecoutu/tabchef/commit/e834725d69a4fde7463194973f27e7460dddfec0))
+* **connections:** github personal access tokens ([8ac12fc](https://github.com/ecoutu/tabchef/commit/8ac12fcc9212eb46dea2862bd4cb2933ff929751))
+* **connections:** jira scoped/classic token and read-only session auth ([1a477a9](https://github.com/ecoutu/tabchef/commit/1a477a95442679ffcb694560a269b836a3309a1e))
+* **connections:** keep connection tokens on this device only and redact them from errors ([0394f7e](https://github.com/ecoutu/tabchef/commit/0394f7e8ccf192361a6fd15e7ae0c0fc33f544ee))
+* **connections:** name the repos whose pull requests github cannot read ([b6c5338](https://github.com/ecoutu/tabchef/commit/b6c5338717a9fb41e5ac08d1a907e6c6b423163a))
+* **connections:** refresh expired tokens and respect github and jira rate limits ([96c7c08](https://github.com/ecoutu/tabchef/commit/96c7c08921f992d7360c324ffcc0ec90412635ca))
+* **connections:** sign in through the tabchef github app ([8367f45](https://github.com/ecoutu/tabchef/commit/8367f456094b01f460fab13f9bf8381da219aeb7))
+* **connections:** sign in with github via device flow ([a129513](https://github.com/ecoutu/tabchef/commit/a12951331db546810c119ec10361bb2f6ca875be))
+* **dedupe:** per-site fragment overrides and optional title-aware dedupe ([26bba1c](https://github.com/ecoutu/tabchef/commit/26bba1cdc1b9a2d3eec6900e16b2d6ed4ec0fd42))
+* **engine:** anchor tabs for groups ([0068de0](https://github.com/ecoutu/tabchef/commit/0068de060d52aa2e51988fd8670bd63d660bda85))
+* **engine:** dry-run mode per rule and globally ([b74fdb2](https://github.com/ecoutu/tabchef/commit/b74fdb201d7f8e187e17963bcebca29e99f5bd7d))
+* **engine:** remember when each tab was opened and re-check age rules every minute ([73dc094](https://github.com/ecoutu/tabchef/commit/73dc0947a4db14e72a5d27e212ccaaddc787e132))
+* **import:** suggest collapsing per-repo rules into one templated rule ([079a127](https://github.com/ecoutu/tabchef/commit/079a1272e4ca532c2d547e74c3072079c37856ce))
+* **options:** collapsible, movable rule sections ([4b1eaa4](https://github.com/ecoutu/tabchef/commit/4b1eaa4e3aeeaac82d9494b7a366e1d00208881e))
+* **options:** connections page with github device flow and personal access tokens ([dc0c7bf](https://github.com/ecoutu/tabchef/commit/dc0c7bfba1b199eea3d3de7b7b9c04305a10d11c))
+* **options:** help tips for the duplicate settings ([6f76184](https://github.com/ecoutu/tabchef/commit/6f76184a59846bcf981f5b9500af0214287ec14b))
+* **options:** help tips on recipe settings and the rule form ([8374d0a](https://github.com/ecoutu/tabchef/commit/8374d0a04682350c4a8b99ea2b28d42aabde19fc))
+* **options:** jira connection card with scoped, classic and session modes ([61f9882](https://github.com/ecoutu/tabchef/commit/61f98829557402c41308bee6f7b6151b6bd7ce96))
+* **options:** move a recipe's rules as one block ([8fa3aa4](https://github.com/ecoutu/tabchef/commit/8fa3aa4ab163fd8a6468e10eefdc73dfa1bf598d))
+* **popup:** recipe-declared views with overflow ([1f52893](https://github.com/ecoutu/tabchef/commit/1f52893cbe4f46c5e9f01766d28682e0e778bd02))
+* **projects:** add tabs to a project by hand and close a project's group in one step ([2a4dda6](https://github.com/ecoutu/tabchef/commit/2a4dda6f9f65c1426aace91d6b557f0be8349caf))
+* **projects:** find jira keys in urls, titles and branches, skipping look-alikes such as utf-8 ([fa2a695](https://github.com/ecoutu/tabchef/commit/fa2a695dd377496709d2531f578a7c501f83265c))
+* **projects:** projects that tabs join by rule or by hand ([6a49eb2](https://github.com/ecoutu/tabchef/commit/6a49eb2a53ed046b9475bbeda6dcad026010e367))
+* **recipes:** access levels that show what a recipe can do with the access you granted ([735cdd0](https://github.com/ecoutu/tabchef/commit/735cdd03d56f033433d4ba4223fa019bc5d9f949))
+* **recipes:** ask for the site access a recipe needs, and pause it when access is revoked ([7161a9c](https://github.com/ecoutu/tabchef/commit/7161a9ca24518dc3d91fe819e333aa76c853dd8d))
+* **recipes:** built-in recipes, checked against the recipe schema ([f5533a1](https://github.com/ecoutu/tabchef/commit/f5533a12d6d61d8feb2cbe38e3a398fe880995c8))
+* **recipes:** finished recipe for OAuth callbacks, redirects and ended Meet calls ([1f7899d](https://github.com/ecoutu/tabchef/commit/1f7899d14f5c9657fc4f76094e8900c5b32695eb))
+* **recipes:** jira ticket project recipes with title, branch and either variants ([9e88445](https://github.com/ecoutu/tabchef/commit/9e884455512ad1f73d46c89b011e066e59db5a81))
+* **recipes:** merged prs recipe and popup tab ([7b33b3f](https://github.com/ecoutu/tabchef/commit/7b33b3f654ad9132b864639c95b351ff3802af0c))
+* **rules:** close tabs after a delay or suggest closing them, skipping tabs still in use ([634ebb4](https://github.com/ecoutu/tabchef/commit/634ebb4a20d6e7de9c10bf0d40e7583db37c17c9))
+* **rules:** durations, group title templates with filters, and lookup tables ([0561f31](https://github.com/ecoutu/tabchef/commit/0561f31510b86314100908228f7b04ce2656a64a))
+* **rules:** group a recipe's rules under one header; mark rules that cannot match ([da3d653](https://github.com/ecoutu/tabchef/commit/da3d653e3d75e7cc27b3e7e13ffea301abbdf1a6))
+* **rules:** let a rule fall back to reading the open page when no connection is set up ([b263982](https://github.com/ecoutu/tabchef/commit/b2639826051da5c2d4c86add61289220108a01c6))
+* **rules:** match any port in url patterns ([8d3987e](https://github.com/ecoutu/tabchef/commit/8d3987e7145e4683889be23079052d10f89b4e54))
+* **rules:** match on how long ago a tab was opened ([ee40e97](https://github.com/ecoutu/tabchef/commit/ee40e97fe10af50b5ae152629767a8f1c4b08df4))
+* **rules:** match on url, title and opener, combined with any, all and not ([f581dc4](https://github.com/ecoutu/tabchef/commit/f581dc40a186e037ff509a400e31a77e3719b99a))
+* **rules:** react to text on the page, read values from it, and notice unsaved form edits ([502f672](https://github.com/ecoutu/tabchef/commit/502f672ab485ee23cf80024518dc47cf4cf0efdd))
+* **rules:** read pull request and ticket data, compare its fields, and assign tabs to projects ([8750e3d](https://github.com/ecoutu/tabchef/commit/8750e3d16dd4f119ef0cc595e101f72b833c9100))
+* **rules:** run your rules and recipe rules together in priority order ([3a47bd4](https://github.com/ecoutu/tabchef/commit/3a47bd43889fddee06b3c8a39ad78b1d4ca52023))
+* **sources:** cache pull request and ticket data and keep the last known state when a lookup fails ([17da29d](https://github.com/ecoutu/tabchef/commit/17da29d8e2494c3b519bc799023aa412011f8a19))
+* **sources:** look up jira ticket status and summary in batches ([145a1ae](https://github.com/ecoutu/tabchef/commit/145a1ae640d9929ebfb290e1ac6457ea62717e1d))
+* **sources:** look up pull request state and linked pull requests on github in batches ([be84291](https://github.com/ecoutu/tabchef/commit/be8429135946483d8fbfbffbc1a798c3d8b94f9b))
+* **sources:** read pull request and ticket state from the open page ([0e9bbf8](https://github.com/ecoutu/tabchef/commit/0e9bbf80be2a3986899d751b6c47724e219b1f0e))
+* **ui:** conflict view and shadowed-rule warnings ([78f00f1](https://github.com/ecoutu/tabchef/commit/78f00f11522c1d2cfc364fb62159fd8707051563))
+* **ui:** context menu with pre-filled rule creation ([37c10c9](https://github.com/ecoutu/tabchef/commit/37c10c95dda4213d0a359e0f2c31682fee7e11fb))
+* **ui:** popup projects tab and side panel ([1d5208d](https://github.com/ecoutu/tabchef/commit/1d5208d69d5e7bade2282fa7f1d05af2338633c6))
+* **ui:** preview before apply and test against open tabs ([ba4a0ef](https://github.com/ecoutu/tabchef/commit/ba4a0ef63162138af4c6429a8a9365e800d6c953))
+* **ui:** recipes page and YAML rule editor ([080da89](https://github.com/ecoutu/tabchef/commit/080da899fa28c789c7747ee2025f0fb918cbeb7d))
+
+
+### Performance Improvements
+
+* **options:** build section membership once per rules page render ([9e04820](https://github.com/ecoutu/tabchef/commit/9e04820ac0d80b3ba86cdd8d1524ab63be48b2f8))
+
 # Changelog
