@@ -1,0 +1,37 @@
+name: Store assets
+
+# Renders the Web Store screenshots and promo tiles (npm run store:assets) from the pull request's extension, so a
+# UI change shows up in the store images before it ships. The images are a run artifact; nothing is committed.
+on:
+  pull_request:
+    paths:
+      - 'src/entrypoints/**'
+      - 'src/ui/**'
+      - 'store/**'
+      - 'docs/store/**'
+      - 'wxt.config.ts'
+      - 'package-lock.json'
+
+permissions:
+  contents: read
+
+jobs:
+  store-assets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      # Bundled Chromium in new headless mode loads unpacked extensions; no xvfb needed.
+      - run: npx playwright install --with-deps chromium
+      # Builds its own e2e flavor into a temp dir and uses only local mock services: no secrets, no network.
+      - run: npm run store:assets
+      - uses: actions/upload-artifact@v4
+        with:
+          name: store-assets
+          path: docs/store/images/*.png
+          if-no-files-found: error
+          retention-days: 14
