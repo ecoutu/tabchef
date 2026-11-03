@@ -2,6 +2,8 @@
 
 Recipes for your tabs: a Chrome extension that groups, de-duplicates and closes tabs with rules you can read and change.
 
+![The popup's Duplicates tab: three pages open more than once, each with a button to close the extra copies](docs/store/images/screenshot-1-duplicates.png)
+
 ## Install
 
 Coming soon to the Chrome Web Store. Until then, download `tabchef-<version>-chrome.zip` from the
@@ -27,6 +29,16 @@ on `chrome://extensions` (Developer mode on).
     The popup's Projects tab and the side panel show each ticket with its status.
 - **See what changes and why:** a preview before a change moves or closes tabs, a History of what happened and which
   rule did it, and "Why is this tab here?" for any open tab.
+
+<details>
+<summary>More screenshots</summary>
+
+![Rules grouping GitHub tabs by repository, shown above the rules page](docs/store/images/screenshot-2-groups.png)
+![The side panel's Projects: two Jira tickets, each with its status and its pull requests](docs/store/images/screenshot-3-projects.png)
+![The popup's Merged tab: four pull requests that have merged, each with a Close button](docs/store/images/screenshot-4-merged.png)
+![The preview shown before a settings change moves tabs](docs/store/images/screenshot-5-preview.png)
+
+</details>
 
 To change what a recipe does or write rules of your own, see the [guide to recipes and rules](docs/recipes.md).
 
