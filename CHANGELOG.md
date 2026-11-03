@@ -1,3 +1,10 @@
+## [1.1.1](https://github.com/ecoutu/tabchef/compare/v1.1.0...v1.1.1) (2026-11-03)
+
+
+### Bug Fixes
+
+* **sources:** keep a pull request's data while its tab moves between the pr's own pages ([7f21488](https://github.com/ecoutu/tabchef/commit/7f21488f38b6f26cfe0aabfeed6356dd47c5cc79))
+
 # [1.1.0](https://github.com/ecoutu/tabchef/compare/v1.0.0...v1.1.0) (2026-11-03)
 
 
