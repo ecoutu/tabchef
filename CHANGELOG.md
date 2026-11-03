@@ -1,3 +1,17 @@
+# [1.2.0](https://github.com/ecoutu/tabchef/compare/v1.1.1...v1.2.0) (2026-11-03)
+
+
+### Bug Fixes
+
+* **rules:** label the rule form's group title field group name ([23c055e](https://github.com/ecoutu/tabchef/commit/23c055e99273d9581c83c69becbbd39a8bd44a60))
+* **ui:** say duplicates instead of dedupe in labels, menus and warnings ([a54d200](https://github.com/ecoutu/tabchef/commit/a54d20031cfc7b2be6c621e6daca6a63f21676c5))
+
+
+### Features
+
+* **icon:** replace the placeholder icon with the toque ([810afd5](https://github.com/ecoutu/tabchef/commit/810afd5283ab407b06835ebc71bbf981efd69ab8))
+* **options:** link the guide to recipes and rules from the rules and recipes pages ([d98945e](https://github.com/ecoutu/tabchef/commit/d98945ef3303392feac09f91612e8bcaa43b57f4))
+
 ## [1.1.1](https://github.com/ecoutu/tabchef/compare/v1.1.0...v1.1.1) (2026-11-03)
 
 
