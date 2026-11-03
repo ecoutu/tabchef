@@ -398,7 +398,7 @@
           {#if jira.lastError}<div><dt>Last error</dt><dd class="err">{jira.lastError}</dd></div>{/if}
         </dl>
       {/if}
-      {#if jira.expiryWarning}<p class="warn">{jira.expiryWarning}</p>{/if}
+      {#if jira.expiryWarning}<p class="warn" role="status">{jira.expiryWarning}</p>{/if}
 
       <div class="row">
         {#if jira.hostsMissing.length}

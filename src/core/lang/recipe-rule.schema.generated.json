@@ -473,7 +473,7 @@
           "additionalProperties": false,
           "properties": {
             "assignProject": {
-              "$comment": "M3, recipe rules only (M3-R15): the tab is a candidate for the recipe's project `key` (a template), then for `fallbackKey` (a template; when it renders to another key, e.g. a PR's branch key after its title key).",
+              "$comment": "M3, recipe rules only (M3-R15): the tab is a candidate for the recipe's project `key` (a template), then for `fallbackKey` (a template; when it renders to another key, e.g. a PR's branch key after its title key). `create` applies to both `key` and `fallbackKey`; the built-in PR rules never set it (prefix confirmation gates their joins).",
               "type": "object",
               "required": [
                 "key"

@@ -273,10 +273,10 @@ export function configRev(c: Config): string {
   return `${h.toString(16)}-${j.length}`;
 }
 
-/** Broadcast to extension pages when a connection's status changes (ConnectionManager.onStatusChange). Id only. */
 /** The non-secret half of a Jira setToken (the token travels in `token`). */
 export type JiraTokenFields = Omit<JiraTokenInput, 'token'>;
 
+/** Broadcast to extension pages when a connection's status changes (ConnectionManager.onStatusChange). Id only. */
 export type ConnectionsChangedMessage = { type: 'connections.changed'; id: string };
 export function isConnectionsChangedMessage(m: unknown): m is ConnectionsChangedMessage {
   return typeof m === 'object' && m !== null && (m as Record<string, unknown>).type === 'connections.changed' && typeof (m as Record<string, unknown>).id === 'string';

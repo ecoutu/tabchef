@@ -25,7 +25,7 @@ params:
     type: string[]
     default: []
     label: Your Jira project keys
-    help: One per line, e.g. ABC. When set, only keys with these prefixes count, and a pull request with such a key starts a project even without its ticket tab open. Empty means any key whose ticket tab is open.
+    help: One per line, e.g. ABC. When set, only keys with these prefixes count, and a pull request with such a key starts a project even without its ticket tab open. Empty means any key whose ticket tab is open. A prefix is also confirmed by a known Jira project key (a ticket the Jira connection answered for, once Jira is connected) or by an open ticket tab.
   ignoredPrefixes:
     type: string[]
     default: [UTF, ISO, SHA, RFC, CVE, GPT, COVID, HTTP, TLS, SSL, MD, AES, RSA, ES, PEP, WCAG, IPV, X86, ARM, CP, KB, JSR]
