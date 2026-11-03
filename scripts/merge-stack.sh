@@ -24,6 +24,9 @@
 # commit title. Validation happens before anything is touched.
 #
 # Usage: scripts/merge-stack.sh [--fast-forward|--single-release|--bottom-up] [--dry-run] PR1 PR2 ... PRN
+# A PR that GitHub closed because its base branch was force-pushed can't be reopened; the script says so and prints
+# the command for a replacement PR.
+#
 # Requires: gh (authenticated), every PR open, CI green on the PR that lands on main. --bottom-up also needs git and
 # a clean working tree. --dry-run prints every mutating command instead of running it.
 set -euo pipefail
@@ -39,7 +42,7 @@ for arg in "$@"; do
     --single-release) mode=single-release ;;
     --bottom-up) mode=bottom-up ;;
     --dry-run) dry=1 ;;
-    -h|--help) sed -n '2,29p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,/^set -euo/{/^set -euo/d;p}' "$0"; exit 0 ;;
     *) prs+=("$arg") ;;
   esac
 done
@@ -47,15 +50,40 @@ done
 
 run() { if [ "$dry" = 1 ]; then echo "+ $*"; else "$@"; fi; }
 
-# Verify the chain and titles before touching anything (one gh call per PR).
+# Did GitHub close PR $1 itself because its base branch was force-pushed? It then logs base_ref_force_pushed
+# within seconds of the close, and refuses to reopen the PR.
+closed_by_base_push() {
+  # shellcheck disable=SC2016 # $closed is a jq variable
+  [ "$(gh api "repos/{owner}/{repo}/issues/$1/events?per_page=100" --jq '
+    ([.[] | select(.event == "closed")] | last | .created_at | fromdate) as $closed
+    | any(.[]; .event == "base_ref_force_pushed" and ((.created_at | fromdate) - $closed | fabs) <= 10)')" = true ]
+}
+
+# Verify the chain and titles before touching anything (one gh call for the whole stack).
+listing=$(gh pr list --state all --limit 1000 --json number,state,baseRefName,headRefName,headRefOid,title \
+  --jq '.[] | [.number, .state, .baseRefName, .headRefName, .headRefOid, .title] | @tsv')
 titles=(); heads=(); oids=()
 prev_head=""
 for i in "${!prs[@]}"; do
   pr=${prs[$i]}
-  IFS=$'\t' read -r state base head oid title < <(gh pr view "$pr" \
-    --json state,baseRefName,headRefName,headRefOid,title \
-    --jq '[.state, .baseRefName, .headRefName, .headRefOid, .title] | @tsv')
-  [ "$state" = "OPEN" ] || { echo "PR #$pr is not open" >&2; exit 1; }
+  row=$(awk -F'\t' -v n="$pr" '$1 == n' <<<"$listing")
+  [ -n "$row" ] || { echo "PR #$pr not found" >&2; exit 1; }
+  IFS=$'\t' read -r _ state base head oid title <<<"$row"
+  case "$state" in
+    OPEN) ;;
+    MERGED) echo "PR #$pr is already merged" >&2; exit 1 ;;
+    *)
+      if closed_by_base_push "$pr"; then
+        cat >&2 <<MSG
+GitHub closed PR #$pr when its base branch $base was force-pushed, and it won't reopen it. Open a replacement and
+use its number instead:
+  gh pr create --base $base --head $head --title '$title'
+MSG
+      else
+        echo "PR #$pr is closed" >&2
+      fi
+      exit 1 ;;
+  esac
   if [ "$i" -eq 0 ]; then
     [ "$base" = "main" ] || { echo "PR #$pr must target main (targets $base)" >&2; exit 1; }
   else
