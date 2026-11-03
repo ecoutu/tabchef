@@ -122,12 +122,13 @@ async function session(extPath: string): Promise<Session> {
  * Opens a demo tab in the background: chrome.tabs.create (the extension sees a new tab in the same window), then the
  * page loads through Playwright, so its routes answer it (they do not see a navigation the extension starts itself).
  */
-async function open(h: Session, p: DemoPage): Promise<void> {
+async function open(h: Session, p: DemoPage): Promise<Page> {
   const [page] = await Promise.all([
     h.context.waitForEvent('page'),
     h.sw.evaluate(async () => { await chrome.tabs.create({ url: 'about:blank', active: false }); }),
   ]);
   await page.goto(p.url);
+  return page;
 }
 
 const webTabs = (h: Session) => h.sw.evaluate(async () => (await chrome.tabs.query({}))
@@ -242,35 +243,6 @@ export async function capture(extPath: string, demo: typeof import('./demo'), ke
       });
     });
 
-    // 2. Groups by repo: the user's own group rules, then the tab strip they produced, read from chrome.tabGroups.
-    await run('groups', async (h) => {
-      await setConfig(h, config(demo.GROUP_RULES.map((g) => rule(g.id, g.url, g.title, g.color))));
-      for (const p of demo.GROUP_TABS) await open(h, p);
-      await settle(h, demo.GROUP_TABS.length);
-      const order = demo.GROUP_RULES.map((g) => g.title).join(',');
-      out.strip = await until(`every tab grouped, groups in the order ${order}`, async () => {
-        const strip = await tabStrip(h);
-        const grouped = strip.every((g) => g.title !== '') && strip.reduce((n, g) => n + g.tabs.length, 0) === demo.GROUP_TABS.length;
-        return grouped && strip.map((g) => g.title).join(',') === order && strip;
-      });
-      const p = await h.page('options.html#/rules', { width: 760, height: 900 });
-      const yaml = p.getByRole('button', { name: 'YAML', exact: true });
-      await until('the rule cards', async () => (await yaml.count()) === demo.GROUP_RULES.length);
-      for (let i = demo.GROUP_RULES.length - 1; i >= 0; i--) await yaml.nth(i).click();
-      await count(p, 'rule shown as YAML', 'div.rule textarea', demo.GROUP_RULES.length);
-      await until('the YAML of each rule', () => p.evaluate((n) =>
-        [...document.querySelectorAll('div.rule textarea')].slice(0, n).every((t) => (t as HTMLTextAreaElement).value.includes('color:')), demo.GROUP_RULES.length));
-      await painted(p);
-      // The first two rules, each shown as YAML; the third is more of the same.
-      const box = await p.locator('div.rule').nth(0).evaluate((e, next) => {
-        const a = e.getBoundingClientRect();
-        const b = (document.querySelectorAll('div.rule')[next] ?? e).getBoundingClientRect();
-        return { x: a.left - 8, y: a.top + window.scrollY - 8, width: a.width + 16, height: b.bottom - a.top + 16 };
-      }, 1);
-      out.rules = await p.screenshot({ fullPage: true, clip: box });
-      await p.close();
-    });
-
     // 3 and 4. Merged PRs and the Jira ticket projects, on the mock GitHub and Jira connections.
     await run('merged and projects', async (h) => {
       await connect(h);
@@ -295,8 +267,9 @@ export async function capture(extPath: string, demo: typeof import('./demo'), ke
       await panel.close();
     });
 
-    // 5. Preview before apply: the group rules are there but off; turning them on and saving opens the preview.
-    await run('preview', async (h) => {
+    // 5, then 2: the preview of turning the group rules on, then the groups they make, on the same tabs.
+    await run('preview and groups', async (h) => {
+      // 5. Preview before apply: the group rules are there but off; turning them on and saving opens the preview.
       const off = demo.GROUP_RULES.map((g) => ({ ...rule(g.id, g.url, g.title, g.color), enabled: false }));
       await setConfig(h, config(off));
       for (const p of demo.PREVIEW_TABS) await open(h, p);
@@ -316,7 +289,37 @@ export async function capture(extPath: string, demo: typeof import('./demo'), ke
       await painted(p);
       out.preview = await p.locator('.dialog').screenshot();
       await p.close();
+
+      // 2. Groups by repo: drop the tabs only the preview needed, open the rest, and turn the rules on (the preview
+      // was never applied). Then the tab strip they produced, read from chrome.tabGroups, and the rules as YAML.
+      for (const t of h.context.pages()) if (demo.PREVIEW_ONLY_TABS.some((d) => d.url === t.url())) await t.close();
+      for (const t of demo.GROUP_EXTRA_TABS) await open(h, t);
+      await settle(h, demo.GROUP_TAB_COUNT);
+      await setConfig(h, config(demo.GROUP_RULES.map((g) => rule(g.id, g.url, g.title, g.color))));
+      const order = demo.GROUP_RULES.map((g) => g.title).join(',');
+      out.strip = await until(`every tab grouped, groups in the order ${order}`, async () => {
+        const strip = await tabStrip(h);
+        const grouped = strip.every((g) => g.title !== '') && strip.reduce((n, g) => n + g.tabs.length, 0) === demo.GROUP_TAB_COUNT;
+        return grouped && strip.map((g) => g.title).join(',') === order && strip;
+      });
+      const rules = await h.page('options.html#/rules', { width: 760, height: 900 });
+      const yaml = rules.getByRole('button', { name: 'YAML', exact: true });
+      await until('the rule cards', async () => (await yaml.count()) === demo.GROUP_RULES.length);
+      for (let i = demo.GROUP_RULES.length - 1; i >= 0; i--) await yaml.nth(i).click();
+      await count(rules, 'rule shown as YAML', 'div.rule textarea', demo.GROUP_RULES.length);
+      await until('the YAML of each rule', () => rules.evaluate((n) =>
+        [...document.querySelectorAll('div.rule textarea')].slice(0, n).every((t) => (t as HTMLTextAreaElement).value.includes('color:')), demo.GROUP_RULES.length));
+      await painted(rules);
+      // The first two rules, each shown as YAML; the third is more of the same.
+      const box = await rules.locator('div.rule').nth(0).evaluate((e, next) => {
+        const a = e.getBoundingClientRect();
+        const b = (document.querySelectorAll('div.rule')[next] ?? e).getBoundingClientRect();
+        return { x: a.left - 8, y: a.top + window.scrollY - 8, width: a.width + 16, height: b.bottom - a.top + 16 };
+      }, 1);
+      out.rules = await rules.screenshot({ fullPage: true, clip: box });
+      await rules.close();
     });
+
   } finally {
     await h.close();
   }

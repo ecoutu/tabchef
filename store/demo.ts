@@ -57,19 +57,11 @@ export const DUPLICATE_TABS: DemoPage[] = [
 /** The sets the popup lists: the pull request (4 copies), acme/web and the issues page (2 each). */
 export const DUPLICATE_SETS = 3;
 
-/** Screenshot 2: the user's own group rules, in their order, and the tabs they group. */
+/** Screenshots 2 and 5: the user's own group rules, in their order. */
 export const GROUP_RULES: { id: string; url: string; title: string; color: GroupColor }[] = [
   { id: 'api', url: 'github.com/acme/api*', title: 'api', color: 'blue' },
   { id: 'web', url: 'github.com/acme/web*', title: 'web', color: 'green' },
   { id: 'docs', url: 'developer.mozilla.org/*', title: 'docs', color: 'purple' },
-];
-export const GROUP_TABS: DemoPage[] = [
-  gh('acme/web/pull/88'),
-  { url: 'https://developer.mozilla.org/en-US/docs/Web/API/URL_Pattern_API' },
-  gh('acme/api/pull/412'),
-  gh('acme/web/actions'),
-  gh('acme/api/issues'),
-  gh('acme/api/pull/417'),
 ];
 
 /** Screenshots 3 and 4: Jira tickets with their pull requests, and the merged pull requests. */
@@ -88,7 +80,10 @@ export const PROJECT_COUNT = 2;
 /** What the Projects view shows once every lookup has answered: the tickets' status and the pull requests' state. */
 export const PROJECT_PILLS: [text: string, count: number][] = [['Done', 1], ['In Progress', 1], ['merged', 1], ['open', 2]];
 
-/** Screenshot 5: the tabs the preview reports on. */
+/**
+ * Screenshots 5 and 2 share their tabs. The preview (5) reports on PREVIEW_TABS with the group rules off; then the
+ * tabs only the preview needs close, GROUP_EXTRA_TABS open, and the rules go on, grouping the tabs of screenshot 2.
+ */
 export const PREVIEW_TABS: DemoPage[] = [
   gh('acme/api/pull/412'),
   gh('acme/web/pull/88'),
@@ -98,3 +93,12 @@ export const PREVIEW_TABS: DemoPage[] = [
 ];
 /** The preview's moves: every tab but the callback page joins a group. */
 export const PREVIEW_MOVES = 4;
+/** Closed after the preview: screenshot 2's tab strip does not show them. */
+export const PREVIEW_ONLY_TABS: DemoPage[] = [PREVIEW_TABS[3]!, PREVIEW_TABS[4]!];
+export const GROUP_EXTRA_TABS: DemoPage[] = [
+  { url: 'https://developer.mozilla.org/en-US/docs/Web/API/URL_Pattern_API' },
+  gh('acme/web/actions'),
+  gh('acme/api/pull/417'),
+];
+/** The tabs screenshot 2 groups: api (412, issues, 417), web (88, actions) and docs (MDN). */
+export const GROUP_TAB_COUNT = PREVIEW_TABS.length - PREVIEW_ONLY_TABS.length + GROUP_EXTRA_TABS.length;
