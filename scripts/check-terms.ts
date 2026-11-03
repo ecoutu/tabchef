@@ -1,9 +1,10 @@
 // Wording guard: the store listing, the user guides and the extension's own text must use the same words. Checks
-// docs/store/*.md, every other tracked docs/**/*.md guide (as store text, with inline code and fenced code blocks
-// skipped: rule syntax such as a `dedupe:` action is not wording) and the markup of every .svelte file (script and
-// style blocks, {expressions} and component names are skipped) for: the product name spelled any other way, a
-// reference to a page or view that doesn't exist ("under Dedupe" when the page is called Duplicates), the banned words
-// in docs/store/terms.json, and store sections headed "(max N characters)" that run over. Page names come from
+// docs/store/*.md, the store images' captions (store/captions.json, rendered by npm run store:assets), every other
+// tracked docs/**/*.md guide (as store text, with inline code and fenced code blocks skipped: rule syntax such as a
+// `dedupe:` action is not wording) and the markup of every .svelte file (script and style blocks, {expressions} and
+// component names are skipped) for: the product name spelled any other way, a reference to a page or view that
+// doesn't exist ("under Dedupe" when the page is called Duplicates), the banned words in docs/store/terms.json, and
+// store sections headed "(max N characters)" that run over. Page names come from
 // OPTIONS_ROUTES; view names from the built-in recipes.
 // Usage: npm run check:terms. Prints `file:line: message` per problem and exits 1 on any.
 import { execFileSync } from 'node:child_process';
@@ -68,7 +69,7 @@ export default function main(): number {
   }
 
   const sources: Source[] = [
-    ...walk('docs/store', '.md').map((f) => ({ f, kind: 'store' as const, text: readFileSync(f, 'utf8') })),
+    ...[...walk('docs/store', '.md'), 'store/captions.json'].map((f) => ({ f, kind: 'store' as const, text: readFileSync(f, 'utf8') })),
     ...guides().map((f) => ({ f, kind: 'store' as const, text: withoutCode(readFileSync(f, 'utf8')) })),
     ...walk('src/entrypoints', '.svelte').map((f) => ({ f, kind: 'ui' as const, text: markup(readFileSync(f, 'utf8')) })),
   ];
