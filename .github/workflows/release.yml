@@ -52,4 +52,4 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token || secrets.PROJECT_TOKEN }}
 
-# Task 19: submit-chrome job
+# The Chrome Web Store upload is not automated yet: upload the release's zip by hand.
