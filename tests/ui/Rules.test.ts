@@ -422,4 +422,52 @@ describe('Rules: recipe rules as locked rows (M2 T15)', () => {
     expect(await screen.findByText('0 tabs would move · 0 would close')).toBeTruthy();
     expect(send.mock.calls.map((c) => c[0]).find((r) => r.type === 'preview.change').only).toBe('user/odd');
   });
+
+  describe('moving a run as one block (M4 rule sections T2)', () => {
+    const order = ['finished/oauth-callback', 'finished/meet-ended', 'finished/redirect', 'user/a'];
+    const block = () => screen.getByRole('button', { name: /Finished · 3 rules/ }).closest('.run')!;
+
+    it('"Move rules down" moves the whole Finished run past the next row; "Move rules up" is disabled on the first run', async () => {
+      const p = props({ ...withFinished(cfg(rule('a', 'a.com/*'))), order });
+      render(Rules, p);
+      const up = screen.getByRole('button', { name: 'Move rules up' }) as HTMLButtonElement;
+      expect(up.disabled).toBe(true);
+      expect(screen.getByRole('button', { name: 'About Move rules' })).toBeTruthy();
+      await fireEvent.click(screen.getByRole('button', { name: 'Move rules down' }));
+      expect(p.onChange.mock.calls[0]![0].order).toEqual(['user/a', 'finished/oauth-callback', 'finished/meet-ended', 'finished/redirect']);
+    });
+
+    it('"Move rules up" moves the run past one whole unit and keeps it collapsed', async () => {
+      live({ ...withFinished(cfg(rule('a', 'a.com/*'))), order: ['user/a', ...order.slice(0, 3)] });
+      // rows: a, Finished ×3, github-prs (appended)
+      expect((screen.getByRole('button', { name: 'Move rules down' }) as HTMLButtonElement).disabled).toBe(false);
+      await fireEvent.click(screen.getByRole('button', { name: 'Move rules up' }));
+      await tick();
+      expect(header().getAttribute('aria-expanded')).toBe('false');
+      // Finished is collapsed and now sits first.
+      expect(screen.getAllByRole('group').map((g) => g.getAttribute('aria-label'))).toEqual(['Rule 1: Rule a', 'Rule 2: Group GitHub tabs by repository']);
+      expect(block().nextElementSibling?.getAttribute('aria-label')).toBe('Rule 1: Rule a');
+    });
+
+    it('dragging a run header onto a row moves the whole run there', async () => {
+      const p = props({ ...withFinished(cfg(rule('a', 'a.com/*'))), order });
+      render(Rules, p);
+      await fireEvent.dragStart(block().querySelector('.handle')!);
+      await fireEvent.drop(screen.getByRole('group', { name: /Group GitHub tabs by repository$/ }));
+      expect(p.onChange.mock.calls[0]![0].order).toEqual(['user/a', 'github-prs/group-by-repo', ...order.slice(0, 3)]);
+    });
+
+    it('a row dropped on a run\'s interior lands beside the whole run, not inside it; within its own run it still reorders', async () => {
+      const p = props({ ...withFinished(cfg(rule('a', 'a.com/*'))), order: ['user/a', ...order.slice(0, 3)] });
+      render(Rules, p);
+      await expand();
+      const row = (name: RegExp) => screen.getByRole('group', { name });
+      await fireEvent.dragStart(row(/Rule a$/).querySelector('.handle')!);
+      await fireEvent.drop(row(/Close Meet tabs after the call ends$/));
+      expect(p.onChange.mock.calls[0]![0].order).toEqual([...order.slice(0, 3), 'user/a']);
+      await fireEvent.dragStart(row(/Close OAuth callback tabs$/).querySelector('.handle')!);
+      await fireEvent.drop(row(/Close Meet tabs after the call ends$/));
+      expect(p.onChange.mock.calls[1]![0].order).toEqual(['user/a', 'finished/meet-ended', 'finished/oauth-callback', 'finished/redirect']);
+    });
+  });
 });

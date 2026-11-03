@@ -396,3 +396,61 @@ describe('rules-model: pre-filled rules (M2 T16)', () => {
   });
 });
 
+
+describe('rules-model: moving a run as one block (M4 rule sections T2)', () => {
+  /** User rules u1, u2 plus Finished's three rules; every other recipe off. */
+  const withOnlyFinished = (c: Config): Config => ({ ...c, recipes: c.recipes.map((r) => ({ ...r, enabled: r.id === 'finished' })) });
+  const base = () => ({ ...withOnlyFinished(cfg('u1', 'u2')), order: ['user/u1', 'finished/oauth-callback', 'finished/meet-ended', 'user/u2'] });
+
+  it('moveBlock moves the shown rows as one block before a key, keeping their order', async () => {
+    const { moveBlock, ruleRows } = await import('../../src/ui/rules-model');
+    const { builtinRecipes } = await import('../../src/recipes/load');
+    const keys = (c: Config) => ruleRows(c, builtinRecipes()).map((r) => r.key);
+    const c = base();
+    expect(keys(c)).toEqual(['user/u1', 'finished/oauth-callback', 'finished/meet-ended', 'user/u2', 'finished/redirect']);
+    const moved = moveBlock(c, ['finished/oauth-callback', 'finished/meet-ended'], 'user/u1', builtinRecipes());
+    expect(keys(moved)).toEqual(['finished/oauth-callback', 'finished/meet-ended', 'user/u1', 'user/u2', 'finished/redirect']);
+    expect(moved.order).toEqual(['finished/oauth-callback', 'finished/meet-ended', 'user/u1', 'user/u2']); // default tail trimmed
+    expect(moved.rules).toBe(c.rules);
+    expect(validateConfig(moved).ok).toBe(true);
+    expect(c.order).toEqual(['user/u1', 'finished/oauth-callback', 'finished/meet-ended', 'user/u2']);
+  });
+
+  it('moveBlock keeps the slots of order entries it does not show (a disabled recipe) in place', async () => {
+    const { moveBlock } = await import('../../src/ui/rules-model');
+    const { builtinRecipes } = await import('../../src/recipes/load');
+    const c = { ...base(), order: ['user/u1', 'github-prs/group-by-repo', 'finished/oauth-callback', 'finished/meet-ended', 'user/u2'] };
+    const moved = moveBlock(c, ['finished/oauth-callback', 'finished/meet-ended'], 'user/u1', builtinRecipes());
+    expect(moved.order).toEqual(['finished/oauth-callback', 'github-prs/group-by-repo', 'finished/meet-ended', 'user/u1', 'user/u2']);
+    expect(moved.order.indexOf('github-prs/group-by-repo')).toBe(1);
+  });
+
+  it('moveBlock gathers a split block; no move, a target inside the block or an unknown target returns c', async () => {
+    const { moveBlock, ruleRows } = await import('../../src/ui/rules-model');
+    const { builtinRecipes } = await import('../../src/recipes/load');
+    const keys = (c: Config) => ruleRows(c, builtinRecipes()).map((r) => r.key);
+    const c = { ...withOnlyFinished(cfg('u1')), order: ['finished/oauth-callback', 'user/u1', 'finished/meet-ended', 'finished/redirect'] };
+    const block = ['finished/oauth-callback', 'finished/meet-ended', 'finished/redirect'];
+    expect(keys(moveBlock(c, block, null, builtinRecipes()))).toEqual(['user/u1', ...block]);
+    expect(keys(moveBlock(c, ['finished/redirect', 'finished/oauth-callback'], 'user/u1', builtinRecipes()))).toEqual([
+      'finished/oauth-callback', 'finished/redirect', 'user/u1', 'finished/meet-ended',
+    ]); // display order, not argument order
+    expect(moveBlock(c, block, 'finished/meet-ended', builtinRecipes())).toBe(c);
+    expect(moveBlock(c, ['user/u1'], 'finished/meet-ended', builtinRecipes())).toBe(c);
+    expect(moveBlock(c, block, 'nope/x', builtinRecipes())).toBe(c);
+    expect(moveBlock(c, ['nope/x'], null, builtinRecipes())).toBe(c);
+  });
+
+  it('neighborUnit: the beforeKey that moves a unit past one adjacent unit (a whole run or one row)', async () => {
+    const { neighborUnit, ruleRows, ruleRuns } = await import('../../src/ui/rules-model');
+    const { builtinRecipes } = await import('../../src/recipes/load');
+    const c = { ...base(), order: ['user/u1', 'finished/oauth-callback', 'finished/meet-ended', 'finished/redirect', 'user/u2'] };
+    const rows = ruleRows(c, builtinRecipes());
+    const runs = ruleRuns(rows);
+    expect(neighborUnit(rows, runs, 1, 'down')).toBeNull(); // the run past u2: to the end
+    expect(neighborUnit(rows, runs, 1, 'up')).toBe('user/u1');
+    expect(neighborUnit(rows, runs, 4, 'up')).toBe('finished/oauth-callback'); // u2 past the whole run
+    expect(neighborUnit(rows, runs, 0, 'down')).toBe('user/u2'); // u1 past the whole run
+    expect(neighborUnit(rows, runs, 0, 'up')).toBe('user/u1'); // already first: its own key (moveBlock: no change)
+  });
+});

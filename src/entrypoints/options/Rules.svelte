@@ -4,12 +4,13 @@
   // or as YAML (RuleYaml), toggled per rule; one the form cannot show is a read-only summary with "Edit in YAML".
   // Recipe rules are locked rows: reorder, turn on/off (RecipeRef.ruleEnabled overrides, R56; saved through Save),
   // test and Customize (copy into a user rule), never edit. Consecutive rules of one recipe sit under one collapsible
-  // header (collapsed while it holds 2+ rules); a rule that can never match (an empty URL list param) says so.
+  // header (collapsed while it holds 2+ rules), which moves them as one block (Move rules up / down, or its drag handle:
+  // M4 rule sections T2); a rule that can never match (an empty URL list param) says so.
   import { tick } from 'svelte';
   import type { Config, TabSnap } from '../../core/types';
   import type { Rule } from '../../core/lang/types';
   import {
-    addRule, configPatternErrors, customizeRule, customizedCopy, errorsForPath, inactiveReason, patchRuleForm, removeRule, reorder,
+    addRule, configPatternErrors, customizeRule, customizedCopy, errorsForPath, inactiveReason, moveBlock, neighborUnit, patchRuleForm, removeRule, reorder,
     replaceRule, ruleForm, ruleIndex, ruleRows, ruleSummary, ruleRuns, setRecipeRuleOn, type RuleForm, type RuleRow, type RuleRun,
   } from '../../ui/rules-model';
   import { withRecipe } from '../../ui/recipes-model';
@@ -21,6 +22,7 @@
   import RuleFields from './RuleFields.svelte';
   import RuleYaml from './RuleYaml.svelte';
   import Field from './Field.svelte';
+  import Help from './Help.svelte';
 
   let { config, tabs, dirty, saving, serverErrors, onChange, onSave }: {
     config: Config; tabs: TabSnap[]; dirty: boolean; saving: boolean; serverErrors: string[];
@@ -56,7 +58,8 @@
     return out;
   });
   const hasErrors = $derived(configPatternErrors(config).length > 0);
-  let dragFrom = $state<string | null>(null);
+  /** The keys being dragged: one row's, or a whole run's (dragged by its header). */
+  let dragKeys = $state<string[] | null>(null);
   /** Rules shown as YAML (by id); every other user rule shows its form, or its summary when the form cannot. */
   let yaml = $state<Record<string, boolean>>({});
   /** Rule ids whose YAML text is invalid right now: Save waits for them. */
@@ -64,6 +67,31 @@
   const yamlBlocked = $derived(Object.values(yamlInvalid).some(Boolean));
 
   const move = (key: string, to: number): void => onChange(reorder(config, key, to, builtins));
+  /** Move rules up / down: the whole run past one adjacent unit (a run or a row), keeping its order. */
+  const moveRun = (run: RuleRun, dir: 'up' | 'down'): void => onChange(moveBlock(config, run.keys, neighborUnit(rows, runs, run.start, dir), builtins));
+  /** The run of 2+ rows that row `i` belongs to (one with a header), if any. */
+  const headedRun = (i: number): RuleRun | undefined => { const run = runs.get(i); return run && run.keys.length > 1 ? run : undefined; };
+  /**
+   * Drops the dragged keys on row `i` (or a run header, as its first row). A single row dropped outside any headed
+   * run, or among its own run's rows, moves to that position as before. Otherwise the target is a whole unit: a
+   * headed run (its interior snaps to it) or the row. The dragged block lands before it when coming from below,
+   * after it when coming from above.
+   */
+  function dropAt(i: number): void {
+    const keys = dragKeys;
+    dragKeys = null;
+    if (!keys || keys.includes(rows[i]!.key)) return;
+    const run = headedRun(i);
+    if (keys.length === 1 && (!run || run.keys.includes(keys[0]!))) { move(keys[0]!, i); return; }
+    const start = run?.start ?? i;
+    const from = rows.findIndex((r) => r.key === keys[0]);
+    const before = from > start ? rows[start]!.key : (rows[start + (run?.keys.length ?? 1)]?.key ?? null);
+    onChange(moveBlock(config, keys, before, builtins));
+  }
+  function dragStart(e: DragEvent, keys: string[]): void {
+    dragKeys = keys;
+    if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', keys[0]!); }
+  }
   const patch = (id: string, p: Partial<RuleForm>): void => onChange(patchRuleForm(config, id, p));
   const setEnabled = (r: Rule, enabled: boolean): void => {
     const res = replaceRule(config, r.id, { ...r, enabled });
@@ -128,30 +156,35 @@
 </script>
 
 <section>
-  <p class="help">Order is priority and tab-bar order: the first rule that matches a tab wins, and groups appear in the tab bar in this order. Drag the handle or use Move up / Move down. Recipe rules are locked: move them, turn them on or off, or Customize to edit a copy.</p>
+  <p class="help">Order is priority and tab-bar order: the first rule that matches a tab wins, and groups appear in the tab bar in this order. Drag the handle or use Move up / Move down; a recipe's header moves all its rules together. Recipe rules are locked: move them, turn them on or off, or Customize to edit a copy.</p>
 
   {#each rows as row, i (row.key)}
     {@const form = row.kind === 'user' ? ruleForm(row.rule) : null}
     {@const asYaml = row.kind === 'user' && (yaml[row.rule.id] ?? false)}
     {@const run = runs.get(i)}
     {#if run && run.start === i && run.keys.length > 1}
-      <div class="run">
+      <div class="run" role="presentation" ondragover={(e) => { if (dragKeys !== null) e.preventDefault(); }}
+        ondrop={(e) => { e.preventDefault(); dropAt(run.start); }}>
+        <span class="handle" role="img" aria-label="Drag to move these rules" title="Drag to move these rules" draggable="true"
+          ondragstart={(e) => dragStart(e, run.keys)} ondragend={() => (dragKeys = null)}>⠿</span>
         <button type="button" class="run-toggle" aria-expanded={runOpen(run)} disabled={runNeedsAttention(run)}
           title={runNeedsAttention(run) ? 'Kept open while a rule here has an error or warning' : undefined}
           onclick={() => (openRuns[runKey(run)] = !runOpen(run))}>
           <span aria-hidden="true">{runOpen(run) ? '▾' : '▸'}</span> {runSummary(run)}
         </button>
+        <button type="button" aria-label="Move rules up" disabled={run.start === 0} onclick={() => moveRun(run, 'up')}>↑</button>
+        <button type="button" aria-label="Move rules down" disabled={run.start + run.keys.length === rows.length} onclick={() => moveRun(run, 'down')}>↓</button>
+        <Help label="Move rules" text={`Moves all of this ${run.kind === 'recipe' ? "recipe's" : "section's"} rules together, keeping their order: past the next rule, or the next whole group of rules. You can also drag the handle.`} />
         <a href="#/recipes">Recipe settings</a>
       </div>
     {/if}
     {#if !run || runOpen(run)}
-    <div class="rule" data-key={row.key} tabindex="-1" class:dragging={dragFrom === row.key} class:locked={row.kind === 'recipe'} role="group" aria-label={`Rule ${shownNumber[row.key]}: ${row.rule.name}`}
-      ondragover={(e) => { if (dragFrom !== null) e.preventDefault(); }}
-      ondrop={(e) => { e.preventDefault(); if (dragFrom !== null) move(dragFrom, i); dragFrom = null; }}>
+    <div class="rule" data-key={row.key} tabindex="-1" class:dragging={dragKeys?.includes(row.key) ?? false} class:locked={row.kind === 'recipe'} role="group" aria-label={`Rule ${shownNumber[row.key]}: ${row.rule.name}`}
+      ondragover={(e) => { if (dragKeys !== null) e.preventDefault(); }}
+      ondrop={(e) => { e.preventDefault(); dropAt(i); }}>
       <div class="bar">
         <span class="handle" role="img" aria-label="Drag to reorder" title="Drag to reorder" draggable="true"
-          ondragstart={(e) => { dragFrom = row.key; if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', row.key); } }}
-          ondragend={() => (dragFrom = null)}>⠿</span>
+          ondragstart={(e) => dragStart(e, [row.key])} ondragend={() => (dragKeys = null)}>⠿</span>
         {#if row.kind === 'user'}
           <Field label="Enabled" inline help="Off: the rule is kept but does nothing until you turn it back on. Saved with Save.">
             <input type="checkbox" checked={row.rule.enabled} onchange={(e) => setEnabled(row.rule, e.currentTarget.checked)} />

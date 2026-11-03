@@ -285,6 +285,38 @@ export function reorder(c: Config, fromKey: string, toIndex: number, builtins: R
 }
 
 /**
+ * Moves the shown rows `keys` as one contiguous block, in their display order, to just before the shown row
+ * `beforeKey` (`null` = the end); a split block is gathered. Same `order` path as reorder: entries not shown keep
+ * their slots. No shown key in `keys`, `beforeKey` unknown or one of `keys`, or no change → `c`.
+ */
+export function moveBlock(c: Config, keys: string[], beforeKey: string | null, builtins: Record<string, Recipe> = builtinRecipes()): Config {
+  const shown = ruleRows(c, builtins).map((r) => r.key);
+  const set = new Set(keys);
+  const block = shown.filter((k) => set.has(k));
+  if (!block.length || (beforeKey !== null && (set.has(beforeKey) || !shown.includes(beforeKey)))) return c;
+  const rest = shown.filter((k) => !set.has(k));
+  const at = beforeKey === null ? rest.length : rest.indexOf(beforeKey);
+  const next = [...rest.slice(0, at), ...block, ...rest.slice(at)];
+  if (next.every((k, i) => k === shown[i])) return c;
+  return { ...c, order: trimDefaultTail(c, shown, refill(fullOrder(c, shown), next)) };
+}
+
+/**
+ * The moveBlock `beforeKey` that moves the unit starting at row `start` past one adjacent unit, where a whole run
+ * (`runs`, ruleRuns) or a single row counts as one unit. `null` = the end. A unit already first gets its own first
+ * key, which moveBlock leaves unchanged.
+ */
+export function neighborUnit(rows: readonly RuleRow[], runs: Map<number, RuleRun>, start: number, dir: 'up' | 'down'): string | null {
+  const unitLength = (i: number): number => (runs.get(i)?.start === i ? runs.get(i)!.keys.length : 1);
+  if (dir === 'up') {
+    if (start <= 0) return rows[start]?.key ?? null;
+    return rows[runs.get(start - 1)?.start ?? start - 1]!.key;
+  }
+  const next = start + unitLength(start);
+  return rows[next + unitLength(next)]?.key ?? null;
+}
+
+/**
  * Drops the keys `order` gained when they still sit at its end in their default sequence: compileProgram appends
  * missing keys in that same sequence, so the result means the same and `order` only grows when it must.
  */
