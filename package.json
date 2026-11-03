@@ -1,6 +1,7 @@
 {
   "name": "tabchef",
   "description": "Rule-based tab grouping and de-duplication for Chrome",
+  "license": "MIT",
   "private": true,
   "version": "0.0.0",
   "type": "module",
