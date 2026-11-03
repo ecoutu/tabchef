@@ -9,8 +9,8 @@
   import type { Config, TabSnap } from '../../core/types';
   import type { Rule } from '../../core/lang/types';
   import {
-    addRule, configPatternErrors, customizeRule, customizedCopy, errorsForPath, inactiveReason, patchRuleForm, recipeRuns, removeRule, reorder,
-    replaceRule, ruleForm, ruleIndex, ruleRows, ruleSummary, setRecipeRuleOn, type RecipeRun, type RuleForm, type RuleRow,
+    addRule, configPatternErrors, customizeRule, customizedCopy, errorsForPath, inactiveReason, patchRuleForm, removeRule, reorder,
+    replaceRule, ruleForm, ruleIndex, ruleRows, ruleSummary, ruleRuns, setRecipeRuleOn, type RuleForm, type RuleRow, type RuleRun,
   } from '../../ui/rules-model';
   import { withRecipe } from '../../ui/recipes-model';
   import { builtinRecipes } from '../../recipes/load';
@@ -29,23 +29,24 @@
 
   const builtins = builtinRecipes();
   const rows = $derived(ruleRows(config, builtins));
-  const runs = $derived(recipeRuns(rows));
+  const runs = $derived(ruleRuns(rows));
   /**
-   * Recipes whose runs the user expanded, by recipe id: every run (fragment) of a recipe shares one state, so a
+   * Runs the user expanded, by `<kind>:<id>` (runKey): every run (fragment) of a recipe shares one state, so a
    * reorder or Customize that splits or re-heads a run keeps it open. A run of one rule is always shown.
    */
   let openRuns = $state<Record<string, boolean>>({});
-  const membersOf = (run: RecipeRun): RuleRow[] => rows.slice(run.start, run.start + run.keys.length);
+  const runKey = (run: RuleRun): string => `${run.kind}:${run.id}`;
+  const membersOf = (run: RuleRun): RuleRow[] => rows.slice(run.start, run.start + run.keys.length);
   /** A member has a param error or a shadowed ("Likely") warning: the run is shown open, so it is not hidden. */
-  const runNeedsAttention = (run: RecipeRun): boolean => membersOf(run).some((r) => (r.kind === 'recipe' && r.error !== undefined) || shadowOf(r.key) !== undefined);
-  const runOpen = (run: RecipeRun): boolean => run.keys.length < 2 || openRuns[run.recipeId] === true || runNeedsAttention(run);
+  const runNeedsAttention = (run: RuleRun): boolean => membersOf(run).some((r) => (r.kind === 'recipe' && r.error !== undefined) || shadowOf(r.key) !== undefined);
+  const runOpen = (run: RuleRun): boolean => run.keys.length < 2 || openRuns[runKey(run)] === true || runNeedsAttention(run);
   /** The header text of a run: its recipe, how many rules, how many on, how many can never match or have errors. */
-  function runSummary(run: RecipeRun): string {
+  function runSummary(run: RuleRun): string {
     const members = membersOf(run).filter((r) => r.kind === 'recipe');
     const on = members.filter((r) => r.on).length;
     const inactive = members.filter((r) => r.on && inactiveReason(r.rule)).length;
     const errors = members.filter((r) => r.error !== undefined).length;
-    return `🔒 ${members[0]?.recipeName ?? run.recipeId} · ${members.length} rules · ${on} on${inactive ? ` · ${inactive} inactive` : ''}${errors ? ` · ${errors} with errors` : ''}`;
+    return `From recipe · ${members[0]?.recipeName ?? run.id} · ${members.length} rules · ${on} on${inactive ? ` · ${inactive} inactive` : ''}${errors ? ` · ${errors} with errors` : ''}`;
   }
   /** "Rule N" labels count only the rows shown, so a collapsed run leaves no gap in the numbering. */
   const shownNumber = $derived.by(() => {
@@ -137,7 +138,7 @@
       <div class="run">
         <button type="button" class="run-toggle" aria-expanded={runOpen(run)} disabled={runNeedsAttention(run)}
           title={runNeedsAttention(run) ? 'Kept open while a rule here has an error or warning' : undefined}
-          onclick={() => (openRuns[run.recipeId] = !runOpen(run))}>
+          onclick={() => (openRuns[runKey(run)] = !runOpen(run))}>
           <span aria-hidden="true">{runOpen(run) ? '▾' : '▸'}</span> {runSummary(run)}
         </button>
         <a href="#/recipes">Recipe settings</a>

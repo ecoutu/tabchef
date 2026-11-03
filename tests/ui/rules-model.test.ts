@@ -370,18 +370,29 @@ describe('rules-model: pre-filled rules (M2 T16)', () => {
     expect(inactiveReason(r({ url: ['a.com/*'] }))).toBeUndefined();
   });
 
-  it('recipeRuns: consecutive rows of one recipe form a run, split by any other row', async () => {
-    const { recipeRuns } = await import('../../src/ui/rules-model');
-    const u = (k: string) => ({ key: `user/${k}`, kind: 'user' as const });
+  it('ruleRuns: consecutive rows of one recipe form a run, split by any other row', async () => {
+    const { ruleRuns } = await import('../../src/ui/rules-model');
+    const u = (k: string) => ({ key: `user/${k}`, kind: 'user' as const, rule: { id: k } });
     const f = (k: string) => ({ key: `finished/${k}`, kind: 'recipe' as const, recipeId: 'finished' });
     const g = (k: string) => ({ key: `github-prs/${k}`, kind: 'recipe' as const, recipeId: 'github-prs' });
-    const runs = recipeRuns([u('a'), f('o'), f('m'), g('r'), f('x'), u('b')] as never);
+    const runs = ruleRuns([u('a'), f('o'), f('m'), g('r'), f('x'), u('b')] as never);
     expect([...runs.entries()]).toEqual([
-      [1, { recipeId: 'finished', start: 1, keys: ['finished/o', 'finished/m'] }],
-      [2, { recipeId: 'finished', start: 1, keys: ['finished/o', 'finished/m'] }],
-      [3, { recipeId: 'github-prs', start: 3, keys: ['github-prs/r'] }],
-      [4, { recipeId: 'finished', start: 4, keys: ['finished/x'] }],
+      [1, { kind: 'recipe', id: 'finished', start: 1, keys: ['finished/o', 'finished/m'] }],
+      [2, { kind: 'recipe', id: 'finished', start: 1, keys: ['finished/o', 'finished/m'] }],
+      [3, { kind: 'recipe', id: 'github-prs', start: 3, keys: ['github-prs/r'] }],
+      [4, { kind: 'recipe', id: 'finished', start: 4, keys: ['finished/x'] }],
     ]);
+  });
+
+  it('ruleRuns: consecutive user rows of one section form a run; a row with neither ends it', async () => {
+    const { ruleRuns } = await import('../../src/ui/rules-model');
+    const u = (k: string) => ({ key: `user/${k}`, kind: 'user' as const, rule: { id: k } });
+    const f = (k: string) => ({ key: `finished/${k}`, kind: 'recipe' as const, recipeId: 'finished' });
+    const sectionOf = (id: string) => (id === 'a' || id === 'b' ? 'work' : undefined);
+    const runs = ruleRuns([u('a'), u('b'), f('x'), u('c')] as never, sectionOf);
+    const work = { kind: 'section', id: 'work', start: 0, keys: ['user/a', 'user/b'] };
+    expect([...runs.entries()]).toEqual([[0, work], [1, work], [2, { kind: 'recipe', id: 'finished', start: 2, keys: ['finished/x'] }]]);
+    expect(runs.has(3)).toBe(false);
   });
 });
 

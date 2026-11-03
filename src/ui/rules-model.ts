@@ -232,16 +232,24 @@ export function inactiveReason(r: Rule): string | undefined {
   return neverReason(r.match);
 }
 
-/** A run of consecutive rows from one recipe on the Rules page (shown under one collapsible header). */
-export interface RecipeRun { recipeId: string; start: number; keys: string[] }
+/**
+ * A run of consecutive rows on the Rules page shown under one collapsible header: rows of one recipe (`kind: 'recipe'`,
+ * `id` the recipe id) or user rows of one section (`kind: 'section'`, `id` the section id).
+ */
+export interface RuleRun { kind: 'recipe' | 'section'; id: string; start: number; keys: string[] }
 
-/** Each recipe row's run, by row index: consecutive rows of the same recipe share one; any other row ends it. */
-export function recipeRuns(rows: readonly RuleRow[]): Map<number, RecipeRun> {
-  const out = new Map<number, RecipeRun>();
-  let run: RecipeRun | undefined;
+/**
+ * Each row's run, by row index: consecutive recipe rows of the same recipe share one, and so do consecutive user rows
+ * of the same section (`sectionOf`, by rule id). A row with neither ends any run and has none.
+ */
+export function ruleRuns(rows: readonly RuleRow[], sectionOf: (ruleId: string) => string | undefined = () => undefined): Map<number, RuleRun> {
+  const out = new Map<number, RuleRun>();
+  let run: RuleRun | undefined;
   rows.forEach((r, i) => {
-    if (r.kind !== 'recipe') { run = undefined; return; }
-    if (!run || run.recipeId !== r.recipeId) run = { recipeId: r.recipeId, start: i, keys: [] };
+    const kind = r.kind === 'recipe' ? 'recipe' : 'section';
+    const id = r.kind === 'recipe' ? r.recipeId : sectionOf(r.rule.id);
+    if (id === undefined) { run = undefined; return; }
+    if (!run || run.kind !== kind || run.id !== id) run = { kind, id, start: i, keys: [] };
     run.keys.push(r.key);
     out.set(i, run);
   });
