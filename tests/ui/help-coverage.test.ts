@@ -75,15 +75,21 @@ describe('every options setting has a help tip', () => {
     expect(a.unhelped).toEqual([]);
   });
 
-  it('Connections page (M3 T7): the personal access token field', async () => {
+  it('Connections page (M3 T7): the personal access token field and the Jira form', async () => {
     send.mockResolvedValue({ ok: true, data: {
-      defs: [{ id: 'github', kind: 'github', label: 'GitHub', baseUrl: 'https://github.com', apiBaseUrl: 'https://api.github.com', hosts: [], auth: 'device-code', scopes: [] }],
-      status: [{ id: 'github', state: 'not-configured', ssoRequired: [], scopes: [] }],
+      defs: [
+        { id: 'github', kind: 'github', label: 'GitHub', baseUrl: 'https://github.com', apiBaseUrl: 'https://api.github.com', hosts: [], auth: 'device-code', scopes: [] },
+        { id: 'jira', kind: 'jira', label: 'Jira', baseUrl: '', apiBaseUrl: '', hosts: [], auth: 'token', scopes: [] },
+      ],
+      status: [{ id: 'github', state: 'not-configured', ssoRequired: [], scopes: [] }, { id: 'jira', state: 'not-configured', ssoRequired: [], scopes: [] }],
     } });
     render(Connections);
     expect(await screen.findByRole('button', { name: 'About Personal access token' })).toBeTruthy();
+    for (const label of ['Jira site', 'Atlassian account email', 'API token', 'Scoped API token — recommended', 'Classic API token', 'Token expiry (optional)', 'Browser session']) {
+      expect(screen.getByRole('button', { name: `About ${label}` }), label).toBeTruthy();
+    }
     const a = audit();
-    expect(a.count).toBeGreaterThanOrEqual(1);
+    expect(a.count).toBeGreaterThanOrEqual(7);
     expect(a.unhelped).toEqual([]);
   });
 

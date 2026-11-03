@@ -1,18 +1,32 @@
 <script lang="ts">
-  // Connections page (M3 T7, GitHub part). Tokens never enter this page's state: the token field is read from the
-  // input on Save and cleared; responses are metadata only. Jira's rows and forms land with Task 6.
+  // Connections page (M3 T7): GitHub and Jira. Tokens never enter this page's state: a token field is read from the
+  // input on Save and cleared; responses are metadata only. Every permission request is made synchronously in its
+  // click handler, before any await (Chrome needs the click's user gesture).
   import { onMount } from 'svelte';
   import { browser } from 'wxt/browser';
   import Field from './Field.svelte';
+  import Help from './Help.svelte';
   import { send } from '../../ui/send';
   import { requestPermissions } from '../../ui/permissions';
-  import { connectionRows, hostName, type ConnectionRow } from '../../ui/connections-model';
+  import { connectionRows, endOfLocalDay, hostName, type ConnectionRow } from '../../ui/connections-model';
   import { isConnectionsChangedMessage } from '../../engine/messages';
-  import { builtinConnectionDefs } from '../../core/connections/builtin';
+  import { builtinConnectionDefs, isJiraSite, jiraDef } from '../../core/connections/builtin';
   import type { ConnectionDef, ConnectionStatus } from '../../core/connections/types';
 
   const NEEDS_HOSTS = 'Tabchef needs access to github.com and api.github.com to connect GitHub.';
   const TOKEN_HELP = 'Fine-grained token (recommended): choose the repositories, then Repository permissions → Pull requests: Read-only (Metadata: Read-only is added automatically). Classic token: the repo scope, which also grants write access. Tabchef only reads.';
+  const JIRA_TOKENS_URL = 'https://id.atlassian.com/manage-profile/security/api-tokens';
+  const JIRA_SESSION_LABEL = 'Use my browser session instead (read-only, best effort)';
+  const JIRA_HELP = {
+    site: 'Your Jira Cloud address without https://, for example your-site.atlassian.net.',
+    email: 'The email address of the Atlassian account the API token belongs to.',
+    token: `Create API tokens at ${JIRA_TOKENS_URL}. A scoped token needs the read:jira-work and read:jira-user scopes.`,
+    scoped: 'Recommended: a token limited to the read:jira-work and read:jira-user scopes. Tabchef only reads.',
+    classic: 'A token with the full access of your Atlassian account. Tabchef only reads.',
+    expiry: 'Atlassian does not report when a token expires, so enter its expiry date to get a warning before it stops working.',
+    session: 'Uses the Jira sign-in of this browser instead of a token: read-only, and it may stop working if Chrome blocks third-party cookies.',
+  };
+  const BAD_SITE = 'Enter your Jira site, like your-site.atlassian.net.';
 
   let defs = $state<ConnectionDef[]>([]);
   let status = $state<ConnectionStatus[]>([]);
@@ -24,9 +38,17 @@
   let flow = $state<{ userCode: string; verificationUri: string } | null>(null);
   let copied = $state(false);
   let tokenInput = $state<HTMLInputElement | null>(null);
+  // The Jira form: site, email and kind are not secret (prefilled from a stored connection); the token is read from its
+  // input on Save and cleared.
+  let jiraSite = $state('');
+  let jiraEmail = $state('');
+  let jiraKind = $state<'scoped' | 'classic'>('scoped');
+  let jiraExpiry = $state('');
+  let jiraTokenInput = $state<HTMLInputElement | null>(null);
 
   const rows = $derived(connectionRows(defs, status, Date.now()));
   const github = $derived(rows.find((r) => r.id === 'github'));
+  const jira = $derived(rows.find((r) => r.id === 'jira'));
   const githubHosts = $derived(defs.find((d) => d.id === 'github')?.hosts ?? builtinConnectionDefs().github.hosts);
 
   let pollTimer: ReturnType<typeof setTimeout> | undefined;
@@ -43,6 +65,7 @@
     defs = r.data.defs;
     status = r.data.status;
     loaded = true;
+    prefillJira();
     scheduleUnblock();
   }
 
@@ -53,6 +76,95 @@
     if (!alive || until.length === 0) return;
     const wait = Math.min(Math.max(Math.min(...until) - Date.now(), 0) + 1_000, MAX_UNBLOCK_WAIT_MS);
     unblockTimer = setTimeout(() => { unblockTimer = undefined; void load(); }, wait);
+  }
+
+  /** Once, fills the empty Jira form fields from the stored connection (a re-sign-in keeps the site, email and kind). */
+  let jiraPrefilled = false;
+  function prefillJira(): void {
+    const j = defs.find((d) => d.id === 'jira')?.jira;
+    if (jiraPrefilled || !j?.site) return;
+    jiraPrefilled = true;
+    if (!jiraSite) jiraSite = j.site;
+    if (!jiraEmail && j.email) jiraEmail = j.email;
+    if (j.tokenKind) jiraKind = j.tokenKind;
+  }
+
+  /** The typed site as the engine reads it (trimmed, lowercased), or undefined with the inline error set. */
+  function typedSite(): string | undefined {
+    const site = jiraSite.trim().toLowerCase();
+    if (isJiraSite(site)) return site;
+    error = BAD_SITE;
+    return undefined;
+  }
+
+  /** Awaits a permission prompt started in a click handler; false (with the inline message) when denied. */
+  async function hostsGranted(granted: Promise<boolean>, hosts: string[]): Promise<boolean> {
+    let ok: boolean;
+    try { ok = await granted; } catch (e) { ok = false; error = e instanceof Error ? e.message : String(e); }
+    if (alive && !ok && !error) error = `Tabchef needs access to ${hosts.map(hostName).join(' and ')} to connect Jira.`;
+    return alive && ok;
+  }
+
+  /**
+   * Connect Jira with a token. Validation is synchronous, then the permission request for the typed site's hosts,
+   * before any await; the token field is cleared at once.
+   */
+  function connectJira(e: SubmitEvent): void {
+    e.preventDefault();
+    const input = jiraTokenInput;
+    const token = input?.value.trim() ?? '';
+    if (input) input.value = '';
+    error = ''; info = '';
+    const site = typedSite();
+    if (!site) return;
+    const email = jiraEmail.trim();
+    if (!email) { error = 'Enter the email address of your Atlassian account.'; return; }
+    if (!token) { error = 'Paste a token first.'; return; }
+    const expiresAt = jiraExpiry ? endOfLocalDay(jiraExpiry) : undefined;
+    if (jiraExpiry && expiresAt === undefined) { error = 'Enter a valid expiry date.'; return; }
+    if (expiresAt !== undefined && expiresAt <= Date.now()) { error = 'The expiry date is in the past.'; return; }
+    const tokenKind = jiraKind;
+    const hosts = jiraDef(site, tokenKind).hosts;
+    const granted = requestPermissions({ origins: [...hosts] });
+    busy = true;
+    void (async () => {
+      try {
+        if (!(await hostsGranted(granted, hosts))) return;
+        const r = await send({
+          type: 'connections.setToken', id: 'jira', token,
+          jira: { site, email, tokenKind, ...(expiresAt !== undefined && { expiresAt }) },
+        });
+        if (!alive) return;
+        if (!r.ok) { error = r.error; return; }
+        jiraExpiry = '';
+        info = 'Connected to Jira.';
+        await load();
+      } finally {
+        busy = false;
+      }
+    })();
+  }
+
+  /** Jira session mode: the typed site's host is requested synchronously, then setSession. */
+  function connectJiraSession(): void {
+    error = ''; info = '';
+    const site = typedSite();
+    if (!site) return;
+    const hosts = jiraDef(site, 'session').hosts;
+    const granted = requestPermissions({ origins: [...hosts] });
+    busy = true;
+    void (async () => {
+      try {
+        if (!(await hostsGranted(granted, hosts))) return;
+        const r = await send({ type: 'connections.setSession', site });
+        if (!alive) return;
+        if (!r.ok) { error = r.error; return; }
+        info = 'Connected to Jira with your browser session (read-only).';
+        await load();
+      } finally {
+        busy = false;
+      }
+    })();
   }
 
   function stopPolling(): void {
@@ -168,7 +280,10 @@
     const r = await send({ type: 'connections.test', id: row.id });
     busy = false;
     if (!r.ok) error = r.error;
-    else info = r.data.login ? `Connection works (signed in as ${r.data.login}).` : 'Connection works.';
+    else {
+      const who = r.data.login ?? r.data.displayName;
+      info = who ? `Connection works (signed in as ${who}).` : 'Connection works.';
+    }
     await load();
   }
 
@@ -266,7 +381,81 @@
         </form>
       </details>
     </section>
-  {:else if loaded}
+  {/if}
+
+  {#if jira}
+    <section class="card" aria-labelledby="conn-jira">
+      <div class="head">
+        <h3 id="conn-jira">{jira.label}</h3>
+        <span class="badge" class:good={jira.state === 'ok'} class:bad={jira.state === 'needs-reauth' || jira.state === 'error' || jira.state === 'rate-limited' || jira.hostsMissing.length > 0}>{jira.badge}</span>
+      </div>
+      {#if jira.stored}
+        <dl>
+          {#if jira.site}<div><dt>Site</dt><dd>{jira.site}</dd></div>{/if}
+          {#if jira.mode}<div><dt>Mode</dt><dd>{jira.mode}</dd></div>{/if}
+          {#if jira.email}<div><dt>Account</dt><dd>{jira.email}</dd></div>{/if}
+          <div><dt>Last used</dt><dd>{jira.lastUsed}</dd></div>
+          {#if jira.lastError}<div><dt>Last error</dt><dd class="err">{jira.lastError}</dd></div>{/if}
+        </dl>
+      {/if}
+      {#if jira.expiryWarning}<p class="warn">{jira.expiryWarning}</p>{/if}
+
+      <div class="row">
+        {#if jira.hostsMissing.length}
+          <button type="button" class="primary" onclick={() => grantAccess(jira!)} disabled={busy}>Grant access</button>
+        {/if}
+        {#if jira.state !== 'not-configured'}
+          <button type="button" onclick={() => testConnection(jira!)} disabled={busy}>Test connection</button>
+        {/if}
+        {#if jira.stored}
+          <button type="button" class="danger" onclick={() => disconnect(jira!)} disabled={busy}>Disconnect</button>
+        {/if}
+        {#if jira.revokeUrl && jira.stored}
+          <a href={jira.revokeUrl} target="_blank" rel="noopener noreferrer">Revoke on Atlassian</a>
+        {/if}
+      </div>
+
+      {#if !jira.hostsMissing.length && (jira.state === 'not-configured' || jira.state === 'needs-reauth')}
+        <form onsubmit={connectJira}>
+          <div class="row">
+            <Field label="Jira site" help={JIRA_HELP.site}>
+              <input type="text" placeholder="your-site.atlassian.net" autocomplete="off" spellcheck="false" bind:value={jiraSite} />
+            </Field>
+            <Field label="Atlassian account email" help={JIRA_HELP.email}>
+              <input type="email" autocomplete="email" spellcheck="false" bind:value={jiraEmail} />
+            </Field>
+          </div>
+          <fieldset>
+            <legend>Token kind</legend>
+            <Field label="Scoped API token — recommended" help={JIRA_HELP.scoped} inline>
+              <input type="radio" name="jira-kind" value="scoped" bind:group={jiraKind} />
+            </Field>
+            <Field label="Classic API token" help={JIRA_HELP.classic} inline>
+              <input type="radio" name="jira-kind" value="classic" bind:group={jiraKind} />
+            </Field>
+          </fieldset>
+          <div class="row">
+            <Field label="API token" help={JIRA_HELP.token}>
+              <input type="password" autocomplete="off" spellcheck="false" bind:this={jiraTokenInput} />
+            </Field>
+            <Field label="Token expiry (optional)" help={JIRA_HELP.expiry}>
+              <input type="date" bind:value={jiraExpiry} />
+            </Field>
+            <button type="submit" class="primary" disabled={busy}>Connect Jira</button>
+          </div>
+          <p class="help">
+            <a href={JIRA_TOKENS_URL} target="_blank" rel="noopener noreferrer">Create a token</a> on your Atlassian account.
+          </p>
+        </form>
+        <div class="row">
+          <button type="button" onclick={connectJiraSession} disabled={busy}>{JIRA_SESSION_LABEL}</button>
+          <Help label="Browser session" text={JIRA_HELP.session} />
+        </div>
+      {/if}
+    </section>
+  {/if}
+
+  {#if loaded && !github && !jira}
     <p class="muted">No connections.</p>
   {/if}
 </div>
@@ -293,5 +482,8 @@
   form { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
   a { color: var(--accent); }
   .err { color: var(--danger); margin: 0; }
+  .warn { color: var(--danger); margin: 0; }
+  fieldset { border: none; margin: 0; padding: 0; display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+  legend { color: var(--muted); font-size: 12px; padding: 0; margin-bottom: 2px; }
   .ok { color: var(--accent); margin: 0; }
 </style>

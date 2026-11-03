@@ -2,10 +2,10 @@
 // Connections page (M3 T7, GitHub part). Connect GitHub requests both GitHub hosts synchronously inside the click
 // handler (the user gesture is lost after an await), then sends connections.github.start and polls while open.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/svelte';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/svelte';
 import { browser } from 'wxt/browser';
 import { fakeBrowser } from 'wxt/testing/fake-browser';
-import { builtinConnectionDefs } from '../../src/core/connections/builtin';
+import { builtinConnectionDefs, jiraDef } from '../../src/core/connections/builtin';
 import type { ConnectionDef, ConnectionStatus } from '../../src/core/connections/types';
 
 const send = vi.fn();
@@ -366,5 +366,220 @@ describe('Connections page', () => {
     send.mockImplementation(async () => ({ ok: false, error: 'connections unavailable' }));
     await open();
     expect(screen.getByRole('alert').textContent).toContain('connections unavailable');
+  });
+});
+
+describe('Connections page: Jira', () => {
+  const JTOKEN = 'ATATT3xFfGF0abcdefghijklmnopqrstuvwxyz0123456789';
+  const EMAIL = 'user@example.com';
+  const SITE = 'acme.atlassian.net';
+  const SCOPED_HOSTS = ['https://acme.atlassian.net/*', 'https://api.atlassian.com/*'];
+  const SITE_HOSTS = ['https://acme.atlassian.net/*'];
+  const js = (o: Partial<ConnectionStatus> = {}): ConnectionStatus => st({ id: 'jira', ...o });
+  const jd = (mode: 'scoped' | 'classic' | 'session', o: Partial<NonNullable<ConnectionDef['jira']>> = {}): ConnectionDef => {
+    const d = jiraDef(SITE, mode, mode === 'scoped' ? '00000000-0000-4000-8000-000000000000' : undefined);
+    return { ...d, jira: { ...d.jira!, ...(mode !== 'session' && { email: EMAIL }), ...o } };
+  };
+  const card = () => within(screen.getByRole('region', { name: 'Jira' }));
+  const field = (label: string) => card().getByLabelText(label) as HTMLInputElement;
+  async function fill(o: { site?: string; email?: string; token?: string; classic?: boolean; expiry?: string } = {}) {
+    await fireEvent.input(field('Jira site'), { target: { value: o.site ?? SITE } });
+    await fireEvent.input(field('Atlassian account email'), { target: { value: o.email ?? EMAIL } });
+    await fireEvent.input(field('API token'), { target: { value: o.token ?? JTOKEN } });
+    if (o.classic) await fireEvent.click(field('Classic API token'));
+    if (o.expiry !== undefined) await fireEvent.input(field('Token expiry (optional)'), { target: { value: o.expiry } });
+  }
+  const connect = () => fireEvent.click(card().getByRole('button', { name: 'Connect Jira' }));
+
+  beforeEach(() => {
+    defs = [gh(), builtinConnectionDefs().jira];
+    status = [st(), js()];
+  });
+
+  it('not connected: the form (site placeholder, email, password token, kind radios, expiry date) and the session action', async () => {
+    await open();
+    expect(card().getByText('Not connected')).toBeTruthy();
+    expect(field('Jira site').placeholder).toBe('your-site.atlassian.net');
+    expect(field('Atlassian account email').type).toBe('email');
+    expect(field('API token').type).toBe('password');
+    expect(field('Scoped API token — recommended').checked).toBe(true);
+    expect(field('Classic API token').type).toBe('radio');
+    expect(field('Token expiry (optional)').type).toBe('date');
+    expect(card().getByRole('button', { name: 'Use my browser session instead (read-only, best effort)' })).toBeTruthy();
+    const create = card().getByRole('link', { name: /Create a token/ }) as HTMLAnchorElement;
+    expect(create.href).toBe('https://id.atlassian.com/manage-profile/security/api-tokens');
+    expect(card().queryByRole('button', { name: 'Disconnect' })).toBeNull();
+    expect(card().queryByRole('button', { name: 'Test connection' })).toBeNull();
+  });
+
+  it('help: scopes, where to create tokens, why the expiry, and what session mode is', async () => {
+    await open();
+    const tips = [...document.querySelectorAll('section[aria-labelledby="conn-jira"] [role="tooltip"], section[aria-labelledby="conn-jira"] .help-tip')]
+      .map((e) => e.textContent).join(' ');
+    expect(tips).toContain('read:jira-work');
+    expect(tips).toContain('read:jira-user');
+    expect(tips).toContain('https://id.atlassian.com/manage-profile/security/api-tokens');
+    expect(tips).toMatch(/Atlassian does not report/);
+    expect(tips).toMatch(/third-party cookies/);
+  });
+
+  it('Connect Jira (scoped): requests both hosts synchronously in the handler, then sends setToken; the token field is cleared', async () => {
+    reply('connections.setToken', { ok: true, data: js({ state: 'ok' }) });
+    await open();
+    await fill();
+    log = [];
+    await connect();
+    expect(request).toHaveBeenCalledWith({ origins: SCOPED_HOSTS });
+    expect(field('API token').value).toBe('');
+    await flush();
+    expect(log.slice(0, 2)).toEqual([`request ${JSON.stringify({ origins: SCOPED_HOSTS })}`, 'connections.setToken']);
+    expect(sent('connections.setToken')).toEqual([{ type: 'connections.setToken', id: 'jira', token: JTOKEN, jira: { site: SITE, email: EMAIL, tokenKind: 'scoped' } }]);
+    expect(screen.getByRole('status').textContent).toContain('Connected to Jira.');
+    expect(document.body.innerHTML).not.toContain(JTOKEN);
+  });
+
+  it('classic: requests the site only; the expiry date → expiresAt at the end of that local day', async () => {
+    await open();
+    const d = new Date(Date.now() + 3 * 86_400_000);
+    const ymd = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    await fill({ classic: true, expiry: ymd, site: ' ACME.atlassian.net ' });
+    await connect();
+    expect(request).toHaveBeenCalledWith({ origins: SITE_HOSTS });
+    await flush();
+    const end = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999).getTime();
+    expect(sent('connections.setToken')).toEqual([{ type: 'connections.setToken', id: 'jira', token: JTOKEN, jira: { site: SITE, email: EMAIL, tokenKind: 'classic', expiresAt: end } }]);
+  });
+
+  it.each([
+    ['an invalid site', { site: 'https://acme.atlassian.net/' }, 'Enter your Jira site, like your-site.atlassian.net.'],
+    ['a site outside Jira Cloud', { site: 'jira.example.com' }, 'Enter your Jira site, like your-site.atlassian.net.'],
+    ['no email', { email: ' ' }, 'Enter the email address of your Atlassian account.'],
+    ['no token', { token: '' }, 'Paste a token first.'],
+    ['a past expiry date', { expiry: '2020-01-01' }, 'The expiry date is in the past.'],
+  ])('%s: an inline error, no permission request, nothing sent', async (_, o, message) => {
+    await open();
+    await fill(o);
+    await connect();
+    await flush();
+    expect(request).not.toHaveBeenCalled();
+    expect(sent('connections.setToken')).toEqual([]);
+    expect(screen.getByRole('alert').textContent).toContain(message);
+  });
+
+  it('a denied permission: an inline message, nothing sent', async () => {
+    granted = false;
+    await open();
+    await fill();
+    await connect();
+    await flush();
+    expect(sent('connections.setToken')).toEqual([]);
+    expect(screen.getByRole('alert').textContent).toContain('Tabchef needs access to acme.atlassian.net and api.atlassian.com to connect Jira.');
+  });
+
+  it('a rejected token shows its error', async () => {
+    reply('connections.setToken', { ok: false, error: 'Jira rejected this token (401)' });
+    await open();
+    await fill();
+    await connect();
+    await flush();
+    expect(screen.getByRole('alert').textContent).toContain('Jira rejected this token (401)');
+    expect(field('API token').value).toBe('');
+  });
+
+  it('browser session: requests the site host synchronously, then sends setSession', async () => {
+    reply('connections.setSession', { ok: true, data: js({ state: 'ok' }) });
+    await open();
+    await fireEvent.input(field('Jira site'), { target: { value: SITE } });
+    log = [];
+    await fireEvent.click(card().getByRole('button', { name: 'Use my browser session instead (read-only, best effort)' }));
+    expect(request).toHaveBeenCalledWith({ origins: SITE_HOSTS });
+    await flush();
+    expect(log.slice(0, 2)).toEqual([`request ${JSON.stringify({ origins: SITE_HOSTS })}`, 'connections.setSession']);
+    expect(sent('connections.setSession')).toEqual([{ type: 'connections.setSession', site: SITE }]);
+  });
+
+  it('browser session with an invalid site or a denied permission: nothing sent', async () => {
+    await open();
+    await fireEvent.click(card().getByRole('button', { name: 'Use my browser session instead (read-only, best effort)' }));
+    await flush();
+    expect(request).not.toHaveBeenCalled();
+    expect(screen.getByRole('alert').textContent).toContain('Enter your Jira site, like your-site.atlassian.net.');
+    granted = false;
+    await fireEvent.input(field('Jira site'), { target: { value: SITE } });
+    await fireEvent.click(card().getByRole('button', { name: 'Use my browser session instead (read-only, best effort)' }));
+    await flush();
+    expect(sent('connections.setSession')).toEqual([]);
+    expect(screen.getByRole('alert').textContent).toContain('Tabchef needs access to acme.atlassian.net to connect Jira.');
+  });
+
+  it('connected (scoped token): site, mode, email, last used, Test, Disconnect and the revoke link; no form', async () => {
+    defs = [gh(), jd('scoped')];
+    status = [st(), js({ state: 'ok', lastUsedAt: Date.now() })];
+    reply('connections.test', { ok: true, data: { displayName: 'Test User' } });
+    await open();
+    expect(card().getByText('Connected')).toBeTruthy();
+    expect(card().getByText(SITE)).toBeTruthy();
+    expect(card().getByText('Scoped token')).toBeTruthy();
+    expect(card().getByText(EMAIL)).toBeTruthy();
+    expect(card().getByText('just now')).toBeTruthy();
+    expect((card().getByRole('link', { name: 'Revoke on Atlassian' }) as HTMLAnchorElement).href).toBe('https://id.atlassian.com/manage-profile/security/api-tokens');
+    expect(card().queryByRole('button', { name: 'Connect Jira' })).toBeNull();
+    await fireEvent.click(card().getByRole('button', { name: 'Test connection' }));
+    await flush();
+    expect(sent('connections.test')).toEqual([{ type: 'connections.test', id: 'jira' }]);
+    expect(screen.getByRole('status').textContent).toContain('Connection works (signed in as Test User).');
+    defs = [gh(), builtinConnectionDefs().jira];
+    status = [st(), js()];
+    await fireEvent.click(card().getByRole('button', { name: 'Disconnect' }));
+    await flush();
+    expect(sent('connections.disconnect')).toEqual([{ type: 'connections.disconnect', id: 'jira' }]);
+    expect(card().getByText('Not connected')).toBeTruthy();
+    expect(card().getByRole('button', { name: 'Connect Jira' })).toBeTruthy();
+  });
+
+  it('connected (classic / browser session): the mode; session shows no email and no revoke link', async () => {
+    defs = [gh(), jd('classic')];
+    status = [st(), js({ state: 'ok' })];
+    await open();
+    expect(card().getByText('Classic token')).toBeTruthy();
+    cleanup();
+    defs = [gh(), jd('session')];
+    await open();
+    expect(card().getByText('Browser session (read-only)')).toBeTruthy();
+    expect(card().queryByText(EMAIL)).toBeNull();
+    expect(card().queryByRole('link', { name: 'Revoke on Atlassian' })).toBeNull();
+    expect(card().getByRole('button', { name: 'Disconnect' })).toBeTruthy();
+  });
+
+  it('expiry warning, and an expired token (needs-reauth): the badge, the error once, and the form again (prefilled)', async () => {
+    defs = [gh(), jd('classic')];
+    status = [st(), js({ state: 'ok', expiresInDays: 3 })];
+    await open();
+    expect(card().getByText('Jira token expires in 3 days')).toBeTruthy();
+    cleanup();
+    status = [st(), js({ state: 'needs-reauth', expiresInDays: 0, lastError: 'Jira token expired' })];
+    await open();
+    expect(card().getByText('Sign in to Jira again')).toBeTruthy();
+    expect(card().getAllByText('Jira token expired')).toHaveLength(1);
+    expect(card().getByRole('button', { name: 'Connect Jira' })).toBeTruthy();
+    expect(field('Jira site').value).toBe(SITE);
+    expect(field('Atlassian account email').value).toBe(EMAIL);
+    expect(field('Classic API token').checked).toBe(true);
+    expect(field('API token').value).toBe('');
+  });
+
+  it('M3-R96: revoked host access: Grant access requests only the missing hosts; Disconnect stays', async () => {
+    defs = [gh(), jd('scoped')];
+    status = [st(), js({ state: 'not-configured', hostsMissing: ['https://api.atlassian.com/*'] })];
+    await open();
+    expect(card().getByText('Needs access to api.atlassian.com')).toBeTruthy();
+    expect(card().queryByRole('button', { name: 'Connect Jira' })).toBeNull();
+    expect(card().getByRole('button', { name: 'Disconnect' })).toBeTruthy();
+    log = [];
+    await fireEvent.click(card().getByRole('button', { name: 'Grant access' }));
+    expect(request).toHaveBeenCalledWith({ origins: ['https://api.atlassian.com/*'] });
+    await flush();
+    expect(log).toEqual([`request ${JSON.stringify({ origins: ['https://api.atlassian.com/*'] })}`, 'connections.list']);
+    expect(sent('connections.setToken')).toEqual([]);
   });
 });

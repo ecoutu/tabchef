@@ -29,7 +29,7 @@ import { SecretStore, type KeyValueArea } from '../engine/connections/secret-sto
 import { RateLimiter } from '../engine/connections/rate-limiter';
 import { GitHubDeviceAuth } from '../engine/connections/github-auth';
 import { TokenAuth, setGitHubToken } from '../engine/connections/token-auth';
-import { JiraAuth, JiraSessionAuth } from '../engine/connections/jira-auth';
+import { JiraAuth, JiraSessionAuth, setJiraSession, setJiraToken } from '../engine/connections/jira-auth';
 import type { ConnectionsChangedMessage } from '../engine/messages';
 import { refreshPeriodMinutes, SourceService, SOURCES_ALARM } from '../engine/sources';
 
@@ -252,7 +252,7 @@ export default defineBackground(() => {
   const refreshActiveMenu = () => {
     browser.tabs.query({ active: true, lastFocusedWindow: true }).then(([t]) => refreshMenu(t), warn('menu refresh'));
   };
-  // Connections (M3): one ConnectionManager, SecretStore and limiter shared by every consumer (Task 4). The e2e-only
+  // Connections (M3): one ConnectionManager, SecretStore and limiter shared by every consumer. The e2e-only
   // build flag allows http://localhost APIs (M3-R35); it is read here only, never in core or the engine.
   const allowLocalhost = import.meta.env.WXT_E2E_LOCALHOST === '1';
   const localArea = browser.storage.local as unknown as KeyValueArea;
@@ -265,11 +265,11 @@ export default defineBackground(() => {
   const connFetch: typeof fetch = (input, init) => fetch(input, init);
   const githubAuth: GitHubDeviceAuth = new GitHubDeviceAuth({
     fetch: connFetch, secrets, session: sessionArea, port,
-    // Lazy: the manager is built below with this provider in its auth map (Task 5b).
+    // Lazy: the manager is built below with this provider in its auth map.
     manager: () => connections,
   });
-  // Jira tokens (scoped / classic, Basic email:token) and session mode (read-only, the browser's cookies) (Task 6).
-  // setJiraToken / setJiraSession take these instances when Task 7 adds their messages.
+  // Jira tokens (scoped / classic, Basic email:token) and session mode (read-only, the browser's cookies).
+  // setJiraToken / setJiraSession (connections.setToken / setSession) take these instances.
   const jiraAuth = new JiraAuth({ fetch: connFetch, secrets, now: Date.now });
   const tokenAuth = new TokenAuth({ jira: jiraAuth });
   const jiraSession = new JiraSessionAuth();
@@ -492,11 +492,14 @@ export default defineBackground(() => {
       facts: tabFacts,
       permissions,
     },
-    // connections.* (M3 T7): the shared instances; setToken validates and stores a GitHub PAT (Task 5a).
+    // connections.* (M3 T7): the shared instances; setToken validates and stores a GitHub PAT or a Jira API
+    // token, setSession switches Jira to session mode.
     connections: {
       manager: connections,
       github: githubAuth,
       setGitHubToken: (token) => setGitHubToken({ manager: connections, secrets, port, fetch: connFetch, allowLocalhost }, token),
+      setJiraToken: (input) => setJiraToken({ manager: connections, secrets, port, fetch: connFetch, allowLocalhost, jira: jiraAuth }, input),
+      setJiraSession: (site) => setJiraSession({ manager: connections, secrets, port, fetch: connFetch, allowLocalhost, jira: jiraAuth }, { site }),
       knownSecrets: () => secrets.knownSecrets(),
     },
     projects,

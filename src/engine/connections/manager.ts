@@ -1,4 +1,4 @@
-import { JIRA_TOKEN_EXPIRED, UNSUPPORTED_HOST_MESSAGE, isAllowedBase, jiraTokenExpiresInDays } from '../../core/connections/builtin';
+import { JIRA_TOKEN_EXPIRED, UNSUPPORTED_HOST_MESSAGE, builtinConnectionDefs, isAllowedBase, jiraTokenExpiresInDays } from '../../core/connections/builtin';
 import { classifyResponse } from '../../core/connections/classify';
 import { redact } from '../../core/connections/redact';
 import type {
@@ -200,7 +200,8 @@ export class ConnectionManager {
 
   /**
    * Signs out (Connections page): clears the secrets (storage.local and the session access token) and the runtime
-   * status, and keeps the def, without the account's login and scopes, so it lists as not-configured.
+   * status, and keeps the def, without the account's login and scopes, so it lists as not-configured. A Jira
+   * session-mode def (configured without secrets) goes back to the unconfigured template; a token's expiry is dropped.
    */
   async disconnect(id: string): Promise<void> {
     await this.deps.secrets.clear(id);
@@ -209,8 +210,16 @@ export class ConnectionManager {
       const defs = await this.defs();
       const i = defs.findIndex((d) => d.id === id);
       if (i < 0) return;
-      const next: ConnectionDef = { ...defs[i]!, scopes: [] };
+      const cur = defs[i]!;
+      // Session mode is configured without secrets: back to the unconfigured template (of the built-in id), so the
+      // connection lists not-configured and the page offers Connect again. A token's user-entered expiry goes too.
+      const template = cur.auth === 'session' ? (builtinConnectionDefs() as Record<string, ConnectionDef | undefined>)[cur.id] : undefined;
+      const next: ConnectionDef = template ?? { ...cur, scopes: [] };
       delete next.login;
+      if (next.jira) {
+        next.jira = { ...next.jira };
+        delete next.jira.tokenExpiresAt;
+      }
       defs[i] = next;
       await this.deps.local.set({ [CONNECTIONS_KEY]: defs });
     });
@@ -338,7 +347,8 @@ export class ConnectionManager {
     // Session mode rides the browser's cookies: never anything but a read.
     if (def.auth === 'session' && req.method !== 'GET') return { ok: false, kind: 'read-only', message: 'session mode is read-only' };
     if ((await this.runtime(id))?.needsReauth) return this.unauthorized(def);
-    if ((jiraTokenExpiresInDays(def, this.now()) ?? 1) <= 0) return this.expired(def);
+    // Expiry matters only for a stored token (as statusOf): a disconnected def stays not-configured.
+    if ((jiraTokenExpiresInDays(def, this.now()) ?? 1) <= 0 && (await this.configured(def))) return this.expired(def);
     if (!def.apiBaseUrl) return notConfigured(def.kind === 'jira' ? 'cloudId not discovered yet' : `${def.label} has no API address`);
     if (!isAllowedBase(def.apiBaseUrl, this.deps.allowLocalhost)) return notConfigured(UNSUPPORTED_HOST_MESSAGE);
     if (!(await this.deps.port.hasPermission({ origins: def.hosts }))) {

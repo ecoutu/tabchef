@@ -10,6 +10,7 @@ import type { Config } from '../../src/core/types';
 import { programOf, withGroupRules } from '../helpers/config';
 import { builtinRecipes } from '../../src/recipes/load';
 import { builtinConnectionDefs } from '../../src/core/connections/builtin';
+import { base64Utf8 } from '../../src/core/connections/redact';
 import { fakeBrowser } from 'wxt/testing/fake-browser';
 import { compileProgram } from '../../src/core/lang/compile';
 import { liveProgram } from '../../src/core/lang/dry-run';
@@ -884,6 +885,9 @@ describe('explain.tab / rules.shadowed (M2 T14)', () => {
 
 describe('connections.* (M3 T7)', () => {
   const PAT = 'ghp_abcdefghijklmnopqrstuvwxyz0123456789';
+  const JIRA_TOKEN = 'ATATT3xFfGF0abcdefghijklmnopqrstuvwxyz0123456789';
+  const JIRA_EMAIL = 'user@example.com';
+  const JIRA_CLOUD = '00000000-0000-4000-8000-000000000000';
   const DEVICE_CODE = 'dc_3584d83530557fdd1f46af8289938c8ef79f9dc5';
   const ACCESS = 'ghu_16C7e42F292c6912E7710c838347Ae178B4a';
   const SECRET_KEYS = /^(token|device_code|deviceCode|access_token|refresh_token|refreshToken)$/;
@@ -905,13 +909,14 @@ describe('connections.* (M3 T7)', () => {
     }
   }
 
-  async function connRig(opts: { token?: () => Response; user?: () => Response } = {}) {
+  async function connRig(opts: { token?: () => Response; user?: () => Response; myself?: () => Response } = {}) {
     fakeBrowser.reset();
     const { SecretStore } = await import('../../src/engine/connections/secret-store');
     const { RateLimiter } = await import('../../src/engine/connections/rate-limiter');
     const { ConnectionManager } = await import('../../src/engine/connections/manager');
     const { GitHubDeviceAuth, GITHUB_DEVICE_CODE_URL, GITHUB_TOKEN_URL } = await import('../../src/engine/connections/github-auth');
     const { TokenAuth, setGitHubToken } = await import('../../src/engine/connections/token-auth');
+    const { JiraAuth, JiraSessionAuth, setJiraToken, setJiraSession } = await import('../../src/engine/connections/jira-auth');
     const secrets = new SecretStore({ local: browser.storage.local, session: browser.storage.session });
     const f = vi.fn<FetchFn>(async (u) => {
       const url = urlOf(u);
@@ -920,35 +925,47 @@ describe('connections.* (M3 T7)', () => {
       }
       if (url === GITHUB_TOKEN_URL) return (opts.token ?? (() => json(200, { error: 'authorization_pending' })))();
       if (url === 'https://api.github.com/user') return (opts.user ?? (() => json(200, { login: 'octo' })))();
+      if (url === 'https://acme.atlassian.net/_edge/tenant_info') return json(200, { cloudId: JIRA_CLOUD });
+      if (url.endsWith('/rest/api/3/myself')) {
+        return (opts.myself ?? (() => json(200, { accountId: 'acc-1', displayName: 'Test User', emailAddress: JIRA_EMAIL })))();
+      }
       return json(404, {});
     });
     const port = { hasPermission: vi.fn(async () => true) };
     const holder: { manager?: InstanceType<typeof ConnectionManager> } = {};
     const device = new GitHubDeviceAuth({ fetch: f, secrets, session: browser.storage.session, port, manager: () => holder.manager! });
-    const token = new TokenAuth();
+    const jira = new JiraAuth({ fetch: f, secrets, now: Date.now });
+    const token = new TokenAuth({ jira });
+    const session = new JiraSessionAuth();
     const manager = new ConnectionManager({
       local: browser.storage.local, session: browser.storage.session, secrets, limiter: new RateLimiter(browser.storage.session),
-      port, fetch: f, auth: { 'device-code': device, token, session: token, 'oauth-pkce': token, 'oauth-proxy': token },
+      port, fetch: f, auth: { 'device-code': device, token, session, 'oauth-pkce': token, 'oauth-proxy': token },
     });
     holder.manager = manager;
+    const jiraDeps = { manager, secrets, port, fetch: f, jira };
     const connections: NonNullable<HandlerDeps['connections']> = {
       manager, github: device, knownSecrets: () => secrets.knownSecrets(),
       setGitHubToken: (t) => setGitHubToken({ manager, secrets, port, fetch: f }, t),
+      setJiraToken: (input) => setJiraToken(jiraDeps, input),
+      setJiraSession: (site) => setJiraSession(jiraDeps, { site }),
     };
     return { ...setup({ connections }), manager, secrets, device, fetch: f, connections };
   }
-  const all = async () => [PAT, DEVICE_CODE, ACCESS];
+  const all = async () => [PAT, DEVICE_CODE, ACCESS, JIRA_TOKEN, `${JIRA_EMAIL}:${JIRA_TOKEN}`, base64Utf8(`${JIRA_EMAIL}:${JIRA_TOKEN}`), 'Authorization', 'Basic '];
 
   it('connections.list: the GitHub def (built in until saved) and its status, never a token (deep scan)', async () => {
     const s = await connRig();
     const empty = await s.handle({ type: 'connections.list' }, ui);
-    expect(empty).toMatchObject({ ok: true, data: { defs: [{ id: 'github', label: 'GitHub' }], status: [{ id: 'github', state: 'not-configured' }] } });
+    expect(empty).toMatchObject({
+      ok: true,
+      data: { defs: [{ id: 'github', label: 'GitHub' }, { id: 'jira', label: 'Jira' }], status: [{ id: 'github', state: 'not-configured' }, { id: 'jira', state: 'not-configured' }] },
+    });
     // A token stored, a stray `token` field in the stored def, and a raw token in the stored last error.
     await s.secrets.setSecret('github', { token: PAT });
     await browser.storage.local.set({ connections: [{ ...builtinConnectionDefs().github, auth: 'token', login: 'octo', token: PAT, extra: { refresh_token: PAT } }] });
     await browser.storage.session.set({ 'conn.status': { github: { lastError: `boom ${PAT}`, lastKind: 'server' } } });
     const r = await s.handle({ type: 'connections.list' }, ui);
-    expect(r).toMatchObject({ ok: true, data: { defs: [{ id: 'github', auth: 'token', login: 'octo' }], status: [{ id: 'github', state: 'error' }] } });
+    expect(r).toMatchObject({ ok: true, data: { defs: [{ id: 'github', auth: 'token', login: 'octo' }, { id: 'jira' }], status: [{ id: 'github', state: 'error' }, { id: 'jira' }] } });
     deepScan(r, await all());
   });
 
@@ -1016,7 +1033,7 @@ describe('connections.* (M3 T7)', () => {
     const done = await s.handle({ type: 'connections.github.poll' }, ui);
     expect(done).toEqual({ ok: true, data: { state: 'done' } });
     const list = await s.handle({ type: 'connections.list' }, ui);
-    expect(list).toMatchObject({ ok: true, data: { defs: [{ id: 'github', auth: 'device-code', login: 'octo' }], status: [{ state: 'ok' }] } });
+    expect(list).toMatchObject({ ok: true, data: { defs: [{ id: 'github', auth: 'device-code', login: 'octo' }, { id: 'jira' }], status: [{ state: 'ok' }, { state: 'not-configured' }] } });
     for (const r of [pending, done, list]) deepScan(r, await all());
   });
 
@@ -1052,12 +1069,10 @@ describe('connections.* (M3 T7)', () => {
     expect(await s.handle({ type: 'connections.setToken', id: 'github', token: long }, ui)).toEqual({ ok: false, error: 'bad «redacted»' });
   });
 
-  it('connections.setToken: a rejected token is an error response without the token; jira is not available yet', async () => {
+  it('connections.setToken: a rejected token is an error response without the token', async () => {
     const s = await connRig({ user: () => json(401, { message: `bad credentials ${PAT}` }) });
     const r = await s.handle({ type: 'connections.setToken', id: 'github', token: PAT }, ui);
     expect(r).toEqual({ ok: false, error: 'GitHub rejected this token (401)' });
-    expect(await s.handle({ type: 'connections.setToken', id: 'jira', token: PAT }, ui)).toEqual({ ok: false, error: 'Jira connections are not available yet' });
-    expect(await s.secrets.getSecret('jira')).toBeUndefined();
   });
 
   it('connections.test: GET /user through the manager → the login; a failure is an error response', async () => {
@@ -1089,8 +1104,115 @@ describe('connections.* (M3 T7)', () => {
     expect(clear).toHaveBeenCalledWith('github');
     expect(await s.secrets.getSecret('github')).toBeUndefined();
     expect(await s.handle({ type: 'connections.list' }, ui)).toMatchObject({
-      ok: true, data: { defs: [{ id: 'github' }], status: [{ id: 'github', state: 'not-configured' }] },
+      ok: true, data: { defs: [{ id: 'github' }, { id: 'jira' }], status: [{ id: 'github', state: 'not-configured' }, { id: 'jira', state: 'not-configured' }] },
     });
+  });
+
+  // ---- Jira (M3 T7, Jira half) ----
+  const JIRA = { site: 'acme.atlassian.net', email: JIRA_EMAIL, tokenKind: 'scoped' as const };
+
+  it('isRequest: Jira setToken needs a well-typed jira object; setSession needs a site', () => {
+    expect(isRequest({ type: 'connections.setToken', id: 'jira', token: 'x', jira: JIRA })).toBe(true);
+    expect(isRequest({ type: 'connections.setToken', id: 'jira', token: 'x', jira: { ...JIRA, tokenKind: 'classic', expiresAt: 5 } })).toBe(true);
+    expect(isRequest({ type: 'connections.setToken', id: 'jira', token: 'x' })).toBe(false);
+    for (const jira of [null, 'x', { ...JIRA, site: 1 }, { ...JIRA, email: undefined }, { ...JIRA, tokenKind: 'oauth' }, { ...JIRA, expiresAt: '5' }, { ...JIRA, expiresAt: Infinity }]) {
+      expect(isRequest({ type: 'connections.setToken', id: 'jira', token: 'x', jira }), JSON.stringify(jira)).toBe(false);
+    }
+    expect(isRequest({ type: 'connections.setToken', id: 'github', token: 'x', jira: JIRA })).toBe(false);
+    expect(isRequest({ type: 'connections.setSession', site: 'acme.atlassian.net' })).toBe(true);
+    expect(isRequest({ type: 'connections.setSession' })).toBe(false);
+    expect(isRequest({ type: 'connections.setSession', site: 3 })).toBe(false);
+  });
+
+  it('connections.setToken jira / setSession from a content script are forbidden; nothing runs', async () => {
+    const s = await connRig();
+    const spies = [vi.spyOn(s.connections, 'setJiraToken'), vi.spyOn(s.connections, 'setJiraSession')];
+    for (const sender of [content, { id: 'other' }]) {
+      expect(await s.handle({ type: 'connections.setToken', id: 'jira', token: JIRA_TOKEN, jira: JIRA }, sender)).toEqual({ ok: false, error: 'forbidden' });
+      expect(await s.handle({ type: 'connections.setSession', site: 'acme.atlassian.net' }, sender)).toEqual({ ok: false, error: 'forbidden' });
+    }
+    for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+    expect(s.fetch).not.toHaveBeenCalled();
+  });
+
+  it('connections.setToken jira: setJiraToken with the site, email, kind and expiry; the status and list never carry the token', async () => {
+    const s = await connRig();
+    const spy = vi.spyOn(s.connections, 'setJiraToken');
+    const expiresAt = Date.now() + 5 * 86_400_000;
+    const r = await s.handle({ type: 'connections.setToken', id: 'jira', token: JIRA_TOKEN, jira: { ...JIRA, expiresAt } }, ui);
+    expect(spy).toHaveBeenCalledWith({ site: 'acme.atlassian.net', email: JIRA_EMAIL, token: JIRA_TOKEN, tokenKind: 'scoped', expiresAt });
+    expect(r).toMatchObject({ ok: true, data: { id: 'jira', state: 'ok', expiresInDays: 5 } });
+    expect(await s.secrets.getSecret('jira')).toEqual({ token: JIRA_TOKEN });
+    const list = await s.handle({ type: 'connections.list' }, ui);
+    expect(list).toMatchObject({
+      ok: true,
+      data: {
+        defs: [{ id: 'github' }, { id: 'jira', auth: 'token', jira: { site: 'acme.atlassian.net', email: JIRA_EMAIL, tokenKind: 'scoped', cloudId: JIRA_CLOUD } }],
+        status: [{ id: 'github' }, { id: 'jira', state: 'ok' }],
+      },
+    });
+    for (const x of [r, list]) deepScan(x, await all());
+  });
+
+  it('connections.setToken jira: a failure echoing the token or email:token comes back redacted', async () => {
+    const s = await connRig();
+    vi.spyOn(s.connections, 'setJiraToken').mockResolvedValue({ ok: false, error: `bad ${JIRA_TOKEN} / ${JIRA_EMAIL}:${JIRA_TOKEN} / Basic ${base64Utf8(`${JIRA_EMAIL}:${JIRA_TOKEN}`)}` });
+    const r = await s.handle({ type: 'connections.setToken', id: 'jira', token: JIRA_TOKEN, jira: { ...JIRA, tokenKind: 'classic' } }, ui);
+    expect(r.ok).toBe(false);
+    deepScan(r, [JIRA_TOKEN, `${JIRA_EMAIL}:${JIRA_TOKEN}`, base64Utf8(`${JIRA_EMAIL}:${JIRA_TOKEN}`)]);
+    // A rejected token through the real setJiraToken: an error, nothing stored.
+    const s2 = await connRig({ myself: () => json(401, { message: `nope ${JIRA_TOKEN}` }) });
+    expect(await s2.handle({ type: 'connections.setToken', id: 'jira', token: JIRA_TOKEN, jira: { ...JIRA, tokenKind: 'classic' } }, ui))
+      .toEqual({ ok: false, error: 'Jira rejected this token (401)' });
+    expect(await s2.secrets.getSecret('jira')).toBeUndefined();
+  });
+
+  it('connections.setSession: setJiraSession for the site; the session def lists as Jira with auth session', async () => {
+    const s = await connRig();
+    const spy = vi.spyOn(s.connections, 'setJiraSession');
+    const r = await s.handle({ type: 'connections.setSession', site: 'acme.atlassian.net' }, ui);
+    expect(spy).toHaveBeenCalledWith('acme.atlassian.net');
+    expect(r).toMatchObject({ ok: true, data: { id: 'jira', state: 'ok' } });
+    expect(await s.handle({ type: 'connections.list' }, ui)).toMatchObject({
+      ok: true, data: { defs: [{ id: 'github' }, { id: 'jira', auth: 'session', jira: { site: 'acme.atlassian.net' } }] },
+    });
+    expect(await s.handle({ type: 'connections.setSession', site: 'https://evil.example/' }, ui)).toEqual({ ok: false, error: 'Only github.com and Jira Cloud are supported in this version.' });
+  });
+
+  it('connections.test jira: GET /rest/api/3/myself → only the display name (capped); never the email or a token', async () => {
+    const s = await connRig();
+    await s.handle({ type: 'connections.setToken', id: 'jira', token: JIRA_TOKEN, jira: { ...JIRA, tokenKind: 'classic' } }, ui);
+    const fetchSpy = vi.spyOn(s.manager, 'fetch');
+    const tested = await s.handle({ type: 'connections.test', id: 'jira' }, ui);
+    expect(tested).toEqual({ ok: true, data: { displayName: 'Test User' } });
+    expect(fetchSpy).toHaveBeenCalledWith('jira', { method: 'GET', path: '/rest/api/3/myself' });
+    deepScan(tested, [...(await all()), JIRA_EMAIL]);
+    fetchSpy.mockResolvedValueOnce({ ok: true, status: 200, data: { displayName: 'x'.repeat(500), emailAddress: JIRA_EMAIL } });
+    const long = await s.handle({ type: 'connections.test', id: 'jira' }, ui);
+    expect(long).toEqual({ ok: true, data: { displayName: 'x'.repeat(100) } });
+    fetchSpy.mockResolvedValueOnce({ ok: true, status: 200, data: { displayName: 42 } });
+    expect(await s.handle({ type: 'connections.test', id: 'jira' }, ui)).toEqual({ ok: true, data: {} });
+    fetchSpy.mockResolvedValueOnce({ ok: true, status: 200, data: { displayName: `who ${JIRA_TOKEN}` } });
+    deepScan(await s.handle({ type: 'connections.test', id: 'jira' }, ui), await all());
+  });
+
+  it('connections.disconnect jira (token mode): secrets cleared, not-configured', async () => {
+    const s = await connRig();
+    await s.handle({ type: 'connections.setToken', id: 'jira', token: JIRA_TOKEN, jira: JIRA }, ui);
+    const clear = vi.spyOn(s.secrets, 'clear');
+    const out = await s.handle({ type: 'connections.disconnect', id: 'jira' }, ui);
+    expect(out).toEqual({ ok: true, data: null });
+    expect(clear).toHaveBeenCalledWith('jira');
+    expect(await s.secrets.getSecret('jira')).toBeUndefined();
+    expect(await s.handle({ type: 'connections.list' }, ui)).toMatchObject({ ok: true, data: { status: [{ id: 'github' }, { id: 'jira', state: 'not-configured' }] } });
+  });
+
+  it('connections.disconnect jira (session mode): not-configured, the def back to the unconfigured template', async () => {
+    const s = await connRig();
+    await s.handle({ type: 'connections.setSession', site: 'acme.atlassian.net' }, ui);
+    expect(await s.handle({ type: 'connections.disconnect', id: 'jira' }, ui)).toEqual({ ok: true, data: null });
+    const list = await s.handle({ type: 'connections.list' }, ui);
+    expect(list).toMatchObject({ ok: true, data: { defs: [{ id: 'github' }, { id: 'jira', auth: 'token', baseUrl: '' }], status: [{ id: 'github' }, { id: 'jira', state: 'not-configured' }] } });
   });
 });
 

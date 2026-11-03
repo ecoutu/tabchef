@@ -24,9 +24,10 @@ export class JiraAuth implements AuthProvider {
   async headers(def: ConnectionDef, secrets: SecretStore): Promise<Record<string, string> | null> {
     const email = def.jira?.email;
     if (def.kind !== 'jira' || !email) return null;
-    if ((jiraTokenExpiresInDays(def, this.deps.now()) ?? 1) <= 0) throw new ReauthRequiredError(JIRA_TOKEN_EXPIRED);
     const s = await secrets.getSecret(def.id);
-    return s ? jiraBasic(email, s.token) : null;
+    if (!s) return null; // nothing stored: not configured, whatever the expiry says
+    if ((jiraTokenExpiresInDays(def, this.deps.now()) ?? 1) <= 0) throw new ReauthRequiredError(JIRA_TOKEN_EXPIRED);
+    return jiraBasic(email, s.token);
   }
 
   /** The site's cloudId from `GET https://<site>/_edge/tenant_info` (unauthenticated). Throws for a site outside *.atlassian.net, before any fetch. */
@@ -49,8 +50,9 @@ export class JiraAuth implements AuthProvider {
 export class JiraSessionAuth implements AuthProvider {
   readonly credentials: RequestCredentials = 'include';
 
-  async headers(): Promise<Record<string, string>> {
-    return {};
+  /** null (not configured) for anything but a Jira def: a future non-Jira session def never rides on cookies by accident. */
+  async headers(def: ConnectionDef): Promise<Record<string, string> | null> {
+    return def.kind === 'jira' ? {} : null;
   }
 }
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { connectionRows, hhmm } from '../../src/ui/connections-model';
-import { builtinConnectionDefs } from '../../src/core/connections/builtin';
+import { builtinConnectionDefs, jiraDef } from '../../src/core/connections/builtin';
 import type { ConnectionDef, ConnectionStatus } from '../../src/core/connections/types';
 
 const NOW = new Date(2026, 10, 2, 13, 0).getTime();
@@ -59,5 +59,58 @@ describe('connectionRows', () => {
 
   it('hhmm pads hours and minutes', () => {
     expect(hhmm(new Date(2026, 0, 1, 9, 7).getTime())).toBe('09:07');
+  });
+});
+
+describe('connectionRows: Jira', () => {
+  const jira = (mode: 'scoped' | 'classic' | 'session', o: Partial<NonNullable<ConnectionDef['jira']>> = {}): ConnectionDef => {
+    const d = jiraDef('acme.atlassian.net', mode, mode === 'scoped' ? '00000000-0000-4000-8000-000000000000' : undefined);
+    return { ...d, jira: { ...d.jira!, ...(mode !== 'session' && { email: 'user@example.com' }), ...o } };
+  };
+  const js = (o: Partial<ConnectionStatus> = {}): ConnectionStatus => st({ id: 'jira', ...o });
+
+  it('needs-reauth → "Sign in to Jira again"; rate-limited uses the label', () => {
+    expect(row(jira('classic'), js({ state: 'needs-reauth' })).badge).toBe('Sign in to Jira again');
+    const blockedUntil = new Date(2026, 10, 2, 14, 5).getTime();
+    expect(row(jira('classic'), js({ state: 'rate-limited', blockedUntil })).badge).toBe('Jira rate limit reached. Retrying at 14:05.');
+  });
+
+  it('expiry warning: 2–7 days → "in N days", 1 → "in 1 day", none beyond 7 or once expired (lastError carries it)', () => {
+    const w = (n: number | undefined) => row(jira('classic'), js({ ...(n !== undefined && { expiresInDays: n }) })).expiryWarning;
+    expect(w(3)).toBe('Jira token expires in 3 days');
+    expect(w(7)).toBe('Jira token expires in 7 days');
+    expect(w(2)).toBe('Jira token expires in 2 days');
+    expect(w(1)).toBe('Jira token expires in 1 day');
+    expect(w(8)).toBeUndefined();
+    expect(w(undefined)).toBeUndefined();
+    const expired = row(jira('classic'), js({ state: 'needs-reauth', expiresInDays: 0, lastError: 'Jira token expired' }));
+    expect(expired).toMatchObject({ badge: 'Sign in to Jira again', lastError: 'Jira token expired' });
+    expect(expired.expiryWarning).toBeUndefined();
+  });
+
+  it('site, mode and email; the revoke link for token modes only', () => {
+    expect(row(jira('scoped'), js())).toMatchObject({
+      site: 'acme.atlassian.net', mode: 'Scoped token', email: 'user@example.com',
+      revokeUrl: 'https://id.atlassian.com/manage-profile/security/api-tokens',
+    });
+    expect(row(jira('classic'), js())).toMatchObject({ mode: 'Classic token', email: 'user@example.com' });
+    const session = row(jira('session'), js());
+    expect(session).toMatchObject({ site: 'acme.atlassian.net', mode: 'Browser session (read-only)' });
+    expect(session.email).toBeUndefined();
+    expect(session.revokeUrl).toBeUndefined();
+  });
+
+  it('the unconfigured template: no site, mode or email', () => {
+    const r = row(builtinConnectionDefs().jira, js({ state: 'not-configured' }));
+    expect(r).toMatchObject({ badge: 'Not connected', stored: false });
+    expect(r.site).toBeUndefined();
+    expect(r.mode).toBeUndefined();
+  });
+
+  it('GitHub rows carry no site, mode or expiry warning', () => {
+    const r = row(gh(), st({ expiresInDays: 3 }));
+    expect(r.site).toBeUndefined();
+    expect(r.mode).toBeUndefined();
+    expect(r.expiryWarning).toBeUndefined();
   });
 });

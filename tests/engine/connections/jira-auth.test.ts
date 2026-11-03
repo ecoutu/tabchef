@@ -8,7 +8,7 @@ import { RateLimiter } from '../../../src/engine/connections/rate-limiter';
 import { ConnectionManager } from '../../../src/engine/connections/manager';
 import { TokenAuth } from '../../../src/engine/connections/token-auth';
 import { JiraAuth, JiraSessionAuth, setJiraSession, setJiraToken } from '../../../src/engine/connections/jira-auth';
-import { jiraDef } from '../../../src/core/connections/builtin';
+import { builtinConnectionDefs, jiraDef } from '../../../src/core/connections/builtin';
 import { base64Utf8 } from '../../../src/core/connections/redact';
 import type { AuthStyle, ConnectionDef } from '../../../src/core/connections/types';
 
@@ -278,5 +278,63 @@ describe('Jira session mode', () => {
     out = true;
     await r.manager.fetch('jira', { method: 'GET', path: '/rest/api/3/myself' });
     expect((await r.manager.status('jira'))[0]!.state).toBe('needs-reauth');
+  });
+});
+
+describe('Task 7: Jira disconnect, expiry and session-provider guards (M3-R104)', () => {
+  const saveToken = async (r: ReturnType<typeof rig>, expiresAt?: number) => {
+    const out = await setJiraToken(r.deps, { site: 'acme.atlassian.net', email: EMAIL, token: TOKEN, tokenKind: 'classic', ...(expiresAt !== undefined && { expiresAt }) });
+    expect(out.ok).toBe(true);
+  };
+
+  it('disconnect (token mode) → not-configured; the secret and the user-entered expiry are dropped', async () => {
+    const r = rig();
+    await saveToken(r, NOW + 5 * DAY);
+    await r.manager.disconnect('jira');
+    expect((await r.manager.status('jira'))[0]).toMatchObject({ state: 'not-configured' });
+    expect((await r.manager.status('jira'))[0]!.expiresInDays).toBeUndefined();
+    expect(await r.secrets.getSecret('jira')).toBeUndefined();
+    expect((await r.manager.defs())[0]!.jira?.tokenExpiresAt).toBeUndefined();
+  });
+
+  it('disconnect (session mode) → not-configured: the def goes back to the unconfigured Jira template', async () => {
+    const r = rig();
+    expect((await setJiraSession(r.deps, { site: 'acme.atlassian.net' })).ok).toBe(true);
+    expect((await r.manager.status('jira'))[0]!.state).toBe('ok');
+    await r.manager.disconnect('jira');
+    expect((await r.manager.status('jira'))[0]).toMatchObject({ state: 'not-configured' });
+    expect((await r.manager.defs())[0]).toEqual(builtinConnectionDefs().jira);
+    r.fetch.mockClear();
+    expect(await r.manager.fetch('jira', { method: 'GET', path: '/rest/api/3/myself' })).toMatchObject({ ok: false, kind: 'not-configured' });
+    expect(r.fetch).not.toHaveBeenCalled();
+  });
+
+  it('a fetch on a Jira def with a past expiry but no stored token stays not-configured (no needs-reauth written)', async () => {
+    const r = rig();
+    await r.manager.save({ ...jiraDef('acme.atlassian.net', 'classic'), jira: { site: 'acme.atlassian.net', email: EMAIL, tokenKind: 'classic', tokenExpiresAt: NOW - DAY } });
+    const res = await r.manager.fetch('jira', { method: 'GET', path: '/rest/api/3/myself' });
+    expect(res).toMatchObject({ ok: false, kind: 'not-configured' });
+    expect(r.fetch).not.toHaveBeenCalled();
+    expect((await r.manager.status('jira'))[0]).toMatchObject({ state: 'not-configured' });
+    expect((await r.manager.status('jira'))[0]!.lastError).toBeUndefined();
+  });
+
+  it('a fresh token over an expired (needs-reauth) connection leaves it ok, without "Jira token expired"', async () => {
+    const r = rig();
+    await saveToken(r, NOW + DAY);
+    r.advance(2 * DAY);
+    await r.manager.fetch('jira', { method: 'GET', path: '/rest/api/3/myself' });
+    expect((await r.manager.status('jira'))[0]).toMatchObject({ state: 'needs-reauth', lastError: 'Jira token expired' });
+    const out = await setJiraToken(r.deps, { site: 'acme.atlassian.net', email: EMAIL, token: TOKEN, tokenKind: 'classic', expiresAt: NOW + 30 * DAY });
+    expect(out).toMatchObject({ ok: true, status: { state: 'ok' } });
+    const [s] = await r.manager.status('jira');
+    expect(s).toMatchObject({ state: 'ok' });
+    expect(s!.lastError).toBeUndefined();
+  });
+
+  it('JiraSessionAuth.headers is null for anything but a Jira def (no cookies ride a non-Jira session def)', async () => {
+    const session = new JiraSessionAuth();
+    expect(await session.headers({ ...jiraDef('acme.atlassian.net', 'session') })).toEqual({});
+    expect(await session.headers({ ...jiraDef('acme.atlassian.net', 'session'), kind: 'custom' })).toBeNull();
   });
 });

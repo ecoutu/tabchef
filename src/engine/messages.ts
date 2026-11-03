@@ -32,6 +32,7 @@ import type { ConnectionDef, ConnectionStatus } from '../core/connections/types'
 import type { ConnectionManager } from './connections/manager';
 import type { DevicePollResult, GitHubDeviceAuth } from './connections/github-auth';
 import type { SetTokenResult } from './connections/token-auth';
+import type { JiraTokenInput } from './connections/jira-auth';
 
 /** Messages between the background worker and the dedupe banner content script. */
 export type BannerShowMessage = {
@@ -205,9 +206,14 @@ export type Request =
   | { type: 'connections.github.start' }
   /** One poll of the pending device flow (the open Connections page drives polling). */
   | { type: 'connections.github.poll' }
-  /** Validates and stores a personal access token. `jira` (site, email, token kind, expiry) lands with Task 6. */
-  | { type: 'connections.setToken'; id: 'github' | 'jira'; token: string }
-  /** A test call through the ConnectionManager (GitHub: GET /user). */
+  /**
+   * Validates and stores a token: a GitHub personal access token, or a Jira API token with `jira` (required for Jira:
+   * the bare site host, the account email, scoped or classic, and the user-entered expiry in ms).
+   */
+  | { type: 'connections.setToken'; id: 'github' | 'jira'; token: string; jira?: JiraTokenFields }
+  /** Jira session mode for `site` (read-only, the browser's Jira cookies); clears a stored Jira token. */
+  | { type: 'connections.setSession'; site: string }
+  /** A test call through the ConnectionManager (GitHub: GET /user; Jira: GET /rest/api/3/myself). */
   | { type: 'connections.test'; id: string }
   /** Clears the secrets and runtime status; the def stays, not-configured. */
   | { type: 'connections.disconnect'; id: string }
@@ -268,6 +274,9 @@ export function configRev(c: Config): string {
 }
 
 /** Broadcast to extension pages when a connection's status changes (ConnectionManager.onStatusChange). Id only. */
+/** The non-secret half of a Jira setToken (the token travels in `token`). */
+export type JiraTokenFields = Omit<JiraTokenInput, 'token'>;
+
 export type ConnectionsChangedMessage = { type: 'connections.changed'; id: string };
 export function isConnectionsChangedMessage(m: unknown): m is ConnectionsChangedMessage {
   return typeof m === 'object' && m !== null && (m as Record<string, unknown>).type === 'connections.changed' && typeof (m as Record<string, unknown>).id === 'string';
@@ -324,7 +333,9 @@ export interface ResponseData {
   'connections.github.start': { userCode: string; verificationUri: string; expiresAt: number; interval: number };
   'connections.github.poll': DevicePollResult;
   'connections.setToken': ConnectionStatus;
-  'connections.test': { login?: string };
+  'connections.setSession': ConnectionStatus;
+  /** GitHub: the login; Jira: the display name only (never the email), capped at 100 characters. */
+  'connections.test': { login?: string; displayName?: string };
   'connections.disconnect': null;
   'projects.list': ProjectCardData[];
   'projects.addTab': null;
@@ -345,6 +356,11 @@ const isParams = (v: unknown): v is Record<string, unknown> => typeof v === 'obj
 
 /** The connection ids requests may name: the built-ins (custom connections come later). */
 const CONNECTION_IDS = new Set<unknown>(['github', 'jira']);
+const isJiraFields = (v: unknown): v is JiraTokenFields => {
+  if (typeof v !== 'object' || v === null) return false;
+  const j = v as Record<string, unknown>;
+  return str(j.site) && str(j.email) && (j.tokenKind === 'scoped' || j.tokenKind === 'classic') && (j.expiresAt === undefined || num(j.expiresAt));
+};
 const isImportSource = (v: unknown): v is ImportSource => v === 'auto-group-tabs' || v === 'tab-deduper';
 const isCollapse = (v: unknown): boolean => v === undefined || (Array.isArray(v) && v.every((i) => Number.isInteger(i) && (i as number) >= 0));
 
@@ -435,7 +451,9 @@ export function isRequest(m: unknown): m is Request {
     case 'view.data': return str(x.viewId);
     case 'view.close': return str(x.viewId) && (Array.isArray(x.tabs) ? x.tabs.length > 0 && x.tabs.every(isViewTab) : isViewTab(x));
     case 'view.keep': return str(x.viewId) && isViewTab(x);
-    case 'connections.setToken': return (x.id === 'github' || x.id === 'jira') && str(x.token);
+    case 'connections.setToken':
+      return str(x.token) && ((x.id === 'github' && x.jira === undefined) || (x.id === 'jira' && isJiraFields(x.jira)));
+    case 'connections.setSession': return str(x.site);
     case 'connections.test': case 'connections.disconnect': return CONNECTION_IDS.has(x.id as string);
     case 'projects.addTab': return num(x.tabId) && str(x.projectId);
     case 'projects.removeTab': return num(x.tabId);
@@ -520,6 +538,9 @@ export interface ConnectionsDeps {
   github: Pick<GitHubDeviceAuth, 'start' | 'poll' | 'cancel'>;
   /** setGitHubToken with the shared manager, secret store, port and fetch (Task 5a). */
   setGitHubToken: (token: string) => Promise<SetTokenResult>;
+  /** setJiraToken / setJiraSession with the shared manager, secret store, port, fetch and JiraAuth (Task 6). */
+  setJiraToken: (input: JiraTokenInput) => Promise<SetTokenResult>;
+  setJiraSession: (site: string) => Promise<SetTokenResult>;
   /** Every stored token: a last redact pass over every connections.* response (SecretStore.knownSecrets). */
   knownSecrets: () => Promise<string[]>;
 }
@@ -527,6 +548,8 @@ export interface ConnectionsDeps {
 /** The test call per connection kind: a cheap authenticated GET. */
 const TEST_PATHS: Partial<Record<ConnectionDef['kind'], string>> = { github: '/user', jira: '/rest/api/3/myself' };
 const GITHUB_LOGIN = /^[A-Za-z0-9-]{1,100}$/;
+/** Jira's display name is free text: a string, trimmed, at most this long. Never the email (personal data). */
+const MAX_DISPLAY_NAME = 100;
 /** Shortest setToken candidate used as a redaction needle (as the manager's header values). */
 const MIN_NEEDLE = 8;
 
@@ -548,6 +571,10 @@ function publicDef(d: ConnectionDef): ConnectionDef {
     }),
   };
 }
+
+/** Only the known Jira fields of a request (a stray field never reaches setJiraToken). */
+const pickJira = (j: JiraTokenFields): JiraTokenFields =>
+  ({ site: j.site, email: j.email, tokenKind: j.tokenKind, ...(j.expiresAt !== undefined && { expiresAt: j.expiresAt }) });
 
 /** Redacts every string in `v` (deep) against the stored tokens: the last guard on what a connections.* answer carries. */
 function scrub<T>(v: T, secrets: string[]): T {
@@ -932,9 +959,10 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
   async function runConnections(req: Extract<Request, { type: `connections.${string}` }>, c: ConnectionsDeps): Promise<Response> {
     switch (req.type) {
       case 'connections.list': {
+        // The built-ins first (stored, or their template until saved), then any other stored connection.
         const stored = await c.manager.defs();
-        const github = builtinConnectionDefs().github;
-        const defs = (stored.some((d) => d.id === github.id) ? stored : [github, ...stored]).map(publicDef);
+        const builtins = Object.values(builtinConnectionDefs()).map((b) => stored.find((d) => d.id === b.id) ?? b);
+        const defs = [...builtins, ...stored.filter((d) => !builtins.includes(d))].map(publicDef);
         const status = (await Promise.all(defs.map((d) => c.manager.status(d.id)))).flat();
         return ok({ defs, status });
       }
@@ -948,8 +976,13 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
         return ok({ state: r.state, ...(r.interval !== undefined && { interval: r.interval }), ...(r.message !== undefined && { message: r.message }) });
       }
       case 'connections.setToken': {
-        if (req.id !== 'github') return fail('Jira connections are not available yet');
-        const r = await c.setGitHubToken(req.token);
+        const r = req.id === 'jira'
+          ? (req.jira ? await c.setJiraToken({ ...pickJira(req.jira), token: req.token }) : { ok: false as const, error: 'Missing the Jira site and email' })
+          : await c.setGitHubToken(req.token);
+        return r.ok ? ok(r.status) : fail(r.error);
+      }
+      case 'connections.setSession': {
+        const r = await c.setJiraSession(req.site);
         return r.ok ? ok(r.status) : fail(r.error);
       }
       case 'connections.test': {
@@ -958,7 +991,12 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
         if (!path) return fail(`Testing ${req.id} is not supported`);
         const r = await c.manager.fetch(req.id, { method: 'GET', path });
         if (!r.ok) return fail(r.message);
-        const login = typeof r.data === 'object' && r.data !== null ? (r.data as Record<string, unknown>).login : undefined;
+        const body = typeof r.data === 'object' && r.data !== null ? (r.data as Record<string, unknown>) : {};
+        if (def.kind === 'jira') {
+          const name = typeof body.displayName === 'string' ? body.displayName.trim().slice(0, MAX_DISPLAY_NAME) : '';
+          return ok(name ? { displayName: name } : {});
+        }
+        const login = body.login;
         return ok(typeof login === 'string' && GITHUB_LOGIN.test(login) ? { login } : {});
       }
       case 'connections.disconnect':
@@ -983,7 +1021,7 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
   async function run(req: Request): Promise<Response> {
     switch (req.type) {
       case 'connections.list': case 'connections.github.start': case 'connections.github.poll': case 'connections.setToken':
-      case 'connections.test': case 'connections.disconnect': {
+      case 'connections.setSession': case 'connections.test': case 'connections.disconnect': {
         const c = deps.connections;
         if (!c) return fail('connections unavailable');
         let r: Response;
@@ -994,8 +1032,12 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
         }
         // The candidate token of a setToken is not stored yet when it fails: redact it too, unless it is too short to
         // be a token (a 1-character needle would mangle the error text; token shapes are redacted anyway).
+        // A Jira candidate is also redacted as `email:token` (and so its Basic header value).
         const candidate = req.type === 'connections.setToken' ? req.token.trim() : '';
-        return scrub(r, [...(candidate.length >= MIN_NEEDLE ? [candidate] : []), ...(await c.knownSecrets())]);
+        const needles = candidate.length >= MIN_NEEDLE
+          ? [candidate, ...(req.type === 'connections.setToken' && req.jira ? [`${req.jira.email.trim()}:${candidate}`] : [])]
+          : [];
+        return scrub(r, [...needles, ...(await c.knownSecrets())]);
       }
       case 'projects.list': case 'projects.addTab': case 'projects.removeTab': case 'projects.openLinked': case 'projects.closeGroup':
         return deps.projects ? runProjects(req, deps.projects) : fail('projects unavailable');
