@@ -5,6 +5,7 @@ import {
   config, EXT_PATH, groupOrder, groups, launch, openTab, reset, rule, send, setConfig, tabs, waitLoaded, waitPastStartupGrace,
   type Harness,
 } from './helpers';
+import type { Config } from '../../src/core/types';
 
 test('built manifest: options page opens in a tab, no required host permissions', () => {
   const m = JSON.parse(readFileSync(join(EXT_PATH, 'manifest.json'), 'utf8')) as Record<string, unknown>;
@@ -193,6 +194,30 @@ test.describe('extension in Chromium', () => {
     expect(list.defs.map((d) => d.id)).toEqual(['github', 'jira']);
     expect(list.status.map((x) => x.state)).toEqual(['not-configured', 'not-configured']);
     await expect(page.getByRole('region', { name: 'Jira' }).getByText('Not connected')).toBeVisible();
+    await page.close();
+  });
+
+  test('(k) Rules page: a recipe header drags the whole run, and a section moves as one block and persists (M4 rule sections)', async () => {
+    const A = rule('a', `localhost:${h.port}/a/*`, 'a', 'blue');
+    const B = rule('b', `localhost:${h.port}/b/*`, 'b', 'red');
+    const c = config([A, B]);
+    const finishedOnly = c.recipes.map((r) => ({ ...r, enabled: r.id === 'finished' }));
+    await setConfig(h, { ...c, recipes: finishedOnly, order: ['finished/oauth-callback', 'finished/meet-ended', 'finished/redirect', 'user/a', 'user/b'],
+      sections: [{ id: 'work', name: 'Work', rules: ['a', 'b'] }] });
+    const page = await h.context.newPage();
+    await page.goto(`chrome-extension://${h.extensionId}/options.html#/rules`);
+    const finished = page.locator('.run', { has: page.getByRole('button', { name: /Finished · 3 rules/ }) });
+    const work = page.locator('.run', { has: page.getByRole('button', { name: /Work \(2 rules\)/ }) });
+    // Real HTML5 drag: the Finished header's handle onto the Work header (from above: lands after the section).
+    await finished.getByRole('img', { name: 'Drag to move these rules' }).dragTo(work);
+    await page.getByRole('button', { name: 'Save' }).click();
+    const order = async () => (await send<{ config: Config }>(h, { type: 'config.get' })).config.order;
+    await expect.poll(order, { timeout: 5000 }).toEqual(['user/a', 'user/b', 'finished/oauth-callback', 'finished/meet-ended', 'finished/redirect']);
+    await page.getByRole('button', { name: 'Move section down' }).click();
+    await page.getByRole('button', { name: 'Save' }).click();
+    await expect.poll(order, { timeout: 5000 }).toEqual(['finished/oauth-callback', 'finished/meet-ended', 'finished/redirect', 'user/a', 'user/b']);
+    await page.reload();
+    await expect(page.getByRole('button', { name: /Work \(2 rules\)/ })).toHaveAttribute('aria-expanded', 'false');
     await page.close();
   });
 });
