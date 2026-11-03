@@ -454,3 +454,59 @@ describe('rules-model: moving a run as one block (M4 rule sections T2)', () => {
     expect(neighborUnit(rows, runs, 0, 'up')).toBe('user/u1'); // already first: its own key (moveBlock: no change)
   });
 });
+
+describe('rules-model: sections (M4 rule sections T3)', () => {
+  it('sectionOf maps rule ids to their section', async () => {
+    const { sectionOf } = await import('../../src/ui/rules-model');
+    const of = sectionOf({ ...cfg('a', 'b'), sections: [{ id: 'work', name: 'Work', rules: ['a'] }] });
+    expect(of('a')).toBe('work');
+    expect(of('b')).toBeUndefined();
+    expect(sectionOf(cfg('a'))('a')).toBeUndefined();
+  });
+
+  it('addSection makes an id from the name, suffixed like sanitizeRuleId; renameSection only renames', async () => {
+    const { addSection, renameSection } = await import('../../src/ui/rules-model');
+    const one = addSection(cfg('a'), 'Work');
+    expect(one.sections).toEqual([{ id: 'work', name: 'Work', rules: [] }]);
+    const two = addSection(one, 'Work');
+    expect(two.sections!.map((s) => s.id)).toEqual(['work', 'work-2']);
+    expect(validateConfig(two).ok).toBe(true);
+    expect(renameSection(two, 'work-2', 'Home').sections![1]).toEqual({ id: 'work-2', name: 'Home', rules: [] });
+    expect(renameSection(two, 'nope', 'X')).toBe(two);
+  });
+
+  it('assignSection joins a rule and moves it to the end of the section block; null leaves it in place', async () => {
+    const { assignSection, ruleRows } = await import('../../src/ui/rules-model');
+    const { builtinRecipes } = await import('../../src/recipes/load');
+    const c = { ...cfg('a', 'x', 'b', 'c'), order: ['user/a', 'user/x', 'user/b', 'user/c'], sections: [{ id: 'work', name: 'Work', rules: ['a', 'b'] }] };
+    const keys = (k: Config) => ruleRows(k, builtinRecipes()).map((r) => r.key).filter((r) => r.startsWith('user/'));
+    const joined = assignSection(c, 'c', 'work', builtinRecipes());
+    expect(keys(joined)).toEqual(['user/a', 'user/b', 'user/c', 'user/x']);
+    expect(joined.sections).toEqual([{ id: 'work', name: 'Work', rules: ['a', 'b', 'c'] }]);
+    const left = assignSection(joined, 'b', null, builtinRecipes());
+    expect(left.sections).toEqual([{ id: 'work', name: 'Work', rules: ['a', 'c'] }]);
+    expect(left.order).toBe(joined.order);
+    const moved = assignSection(joined, 'x', 'home', builtinRecipes());
+    expect(moved).toBe(joined); // unknown section
+  });
+
+  it('deleteSection keeps order byte-identical; removeRule and replaceRule keep membership in step', async () => {
+    const { deleteSection, removeRule, replaceRule } = await import('../../src/ui/rules-model');
+    const c = { ...cfg('a', 'b'), sections: [{ id: 'work', name: 'Work', rules: ['a', 'b'] }] };
+    const d = deleteSection(c, 'work');
+    expect(d.order).toBe(c.order);
+    expect(d.sections).toEqual([]);
+    expect(removeRule(c, 'a').sections).toEqual([{ id: 'work', name: 'Work', rules: ['b'] }]);
+    const res = replaceRule(c, 'b', { ...c.rules[1]!, id: 'b2' });
+    expect(res.ok && res.config.sections).toEqual([{ id: 'work', name: 'Work', rules: ['a', 'b2'] }]);
+  });
+
+  it('customizeRule leaves the new copy without a section', async () => {
+    const { customizeRule, sectionOf } = await import('../../src/ui/rules-model');
+    const { builtinRecipes } = await import('../../src/recipes/load');
+    const base = { ...cfg('a'), recipes: defaultConfig().recipes.map((r) => ({ ...r, enabled: r.id === 'finished' })), sections: [{ id: 'work', name: 'Work', rules: ['a'] }] };
+    const out = customizeRule(base, 'finished/oauth-callback', builtinRecipes());
+    expect(out.rules).toHaveLength(2);
+    expect(sectionOf(out)(out.rules[1]!.id)).toBeUndefined();
+  });
+});

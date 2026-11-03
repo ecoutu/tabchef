@@ -40,8 +40,12 @@ export interface ConfigV2 {
   version: 2; rules: Rule[]; recipes: RecipeRef[];
   /** Rule keys ('user/<id>' | '<recipeId>/<id>'); priority = tab-bar order. Missing keys are appended at compile time. */
   order: string[];
+  /** M4: named sections of user rules (by rule id), display only; priority stays `order`. Absent = none. */
+  sections?: Section[];
   tables: Record<string, Record<string, string>>; dedupe: DedupeSettings; dryRun: boolean;
 }
+/** A named section on the Rules page: user rule ids (R38 pattern); a rule is in at most one section. */
+export interface Section { id: string; name: string; rules: string[] }
 export type Config = ConfigV2;
 export interface TabSnap { id: number; windowId: number; index: number; url: string; pendingUrl?: string;
   title: string; pinned: boolean; groupId: number; incognito: boolean; discarded: boolean; frozen?: boolean;

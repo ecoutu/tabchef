@@ -65,15 +65,51 @@ export function repairConfig(input: unknown): { config: unknown; warnings: strin
   });
   const recipes = repairRecipes(input.recipes);
   const dedupe = repairDedupe(input.dedupe);
+  const sections = repairSections(input.sections, input.rules);
   const warnings: string[] = [];
   if (names.length) warnings.push(`${names.length} rule(s) disabled: ${names.join(', ')} — fix them on the Rules page.`);
   if (recipes.disabled.length) warnings.push(`${recipes.disabled.length} recipe(s) disabled: ${recipes.disabled.join(', ')} — fix them, then re-enable.`);
   if (dedupe.removed.length) warnings.push(`${dedupe.removed.length} dedupe setting(s) removed: ${dedupe.removed.join(', ')} — restore the previous version from Backups to recover them.`);
+  if (sections.fixed.length) warnings.push(`Rule sections repaired: ${sections.fixed.join('; ')}.`);
   if (!warnings.length) return { config: input, warnings };
   return {
-    config: { ...input, rules, ...(recipes.disabled.length ? { recipes: recipes.recipes } : {}), ...(dedupe.removed.length ? { dedupe: dedupe.dedupe } : {}) },
+    config: {
+      ...input, rules, ...(recipes.disabled.length ? { recipes: recipes.recipes } : {}), ...(dedupe.removed.length ? { dedupe: dedupe.dedupe } : {}),
+      ...(sections.fixed.length ? { sections: sections.sections } : {}),
+    },
     warnings,
   };
+}
+
+/**
+ * M4 rule sections in stored data (sync merges, imports, a rule renamed or deleted elsewhere): a rule id no rule has
+ * is dropped, a rule claimed by two sections stays in the first, and a section with no name or a repeated id is
+ * dropped, so stale membership never fails the whole config. Entries of the wrong shape are left to validation.
+ */
+function repairSections(input: unknown, rules: unknown[]): { sections: unknown; fixed: string[] } {
+  if (!Array.isArray(input)) return { sections: input, fixed: [] };
+  const known = new Set(rules.map((r) => (isObj(r) ? r.id : undefined)));
+  const claimed = new Map<string, string>();
+  const ids = new Set<unknown>();
+  const fixed: string[] = [];
+  const sections: unknown[] = [];
+  for (const sec of input) {
+    if (!isObj(sec) || !Array.isArray(sec.rules)) { sections.push(sec); continue; }
+    if (sec.name === '') { fixed.push(`section ${String(sec.id)} dropped (no name)`); continue; }
+    if (ids.has(sec.id)) { fixed.push(`duplicate section ${String(sec.id)} dropped`); continue; }
+    ids.add(sec.id);
+    const name = String(sec.name);
+    const kept = sec.rules.filter((id: unknown) => {
+      if (typeof id !== 'string') return true;
+      if (!known.has(id)) { fixed.push(`unknown rule ${id} dropped from ${name}`); return false; }
+      const first = claimed.get(id);
+      if (first !== undefined) { fixed.push(`rule ${id} kept only in ${first}`); return false; }
+      claimed.set(id, name);
+      return true;
+    });
+    sections.push(kept.length === sec.rules.length ? sec : { ...sec, rules: kept });
+  }
+  return { sections, fixed };
 }
 
 /** Problems of a stored recipe entry's body, as config-relative "<path> <message>" strings (none when it has no body). */
@@ -118,6 +154,17 @@ export function validateConfig(input: unknown): ValidationResult {
   });
   config.recipes.forEach((r, i) => { if (r.enabled) errors.push(...recipeBodyErrors(r.body, i)); });
   config.order.forEach((k, i) => { if (config.order.indexOf(k) !== i) errors.push(`/order/${i} duplicate key: ${k}`); });
+  const sectionIds = new Set<string>();
+  const sectionOfRule = new Map<string, string>();
+  (config.sections ?? []).forEach((s, i) => {
+    if (sectionIds.has(s.id)) errors.push(`/sections/${i}/id duplicate section id: ${s.id}`);
+    sectionIds.add(s.id);
+    s.rules.forEach((id, j) => {
+      const first = sectionOfRule.get(id);
+      if (first !== undefined) errors.push(`/sections/${i}/rules/${j} rule ${id} is already in section ${first}`);
+      else sectionOfRule.set(id, s.id);
+    });
+  });
   for (const p of dedupeProblems(config.dedupe)) errors.push(dedupeError(p, config.dedupe));
   return errors.length ? { ok: false, errors } : { ok: true, config };
 }

@@ -1,5 +1,5 @@
 import { isMap, isScalar, isSeq, LineCounter, parseDocument, stringify, type Node as YamlNode } from 'yaml';
-import type { Config, DedupeMode, GroupColor, GroupRule, TabSnap } from '../core/types';
+import type { Config, DedupeMode, GroupColor, GroupRule, Section, TabSnap } from '../core/types';
 import type { CloseMode, Cond, GroupAction, Recipe, RecipeRef, Rule } from '../core/lang/types';
 import { compilePattern, compileTextPattern } from '../core/match/pattern';
 import { asGroupRule, orderedUserRules } from '../core/config/group-view';
@@ -67,7 +67,8 @@ export function updateRule(c: Config, id: string, patch: Partial<GroupRule>): Co
 }
 
 export function removeRule(c: Config, id: string): Config {
-  return { ...c, rules: c.rules.filter((r) => r.id !== id), order: c.order.filter((k) => k !== userKey(id)) };
+  const out = { ...c, rules: c.rules.filter((r) => r.id !== id), order: c.order.filter((k) => k !== userKey(id)) };
+  return c.sections ? { ...out, sections: c.sections.map((s) => (s.rules.includes(id) ? { ...s, rules: s.rules.filter((x) => x !== id) } : s)) } : out;
 }
 
 const patterns = (rule: GroupRule): string[] => (Array.isArray(rule.match.url) ? rule.match.url : [rule.match.url]);
@@ -316,6 +317,70 @@ export function neighborUnit(rows: readonly RuleRow[], runs: Map<number, RuleRun
   return rows[next + unitLength(next)]?.key ?? null;
 }
 
+// ---- M4: rule sections (display only; priority stays `order`) ----
+
+/** The section id of each user rule id, or undefined (no section). */
+export function sectionOf(c: Config): (ruleId: string) => string | undefined {
+  const of = new Map<string, string>();
+  for (const s of c.sections ?? []) for (const id of s.rules) if (!of.has(id)) of.set(id, s.id);
+  return (ruleId) => of.get(ruleId);
+}
+
+/** A new empty section named `name` (trimmed, max 80); its id comes from the name, suffixed like rule ids. */
+export function addSection(c: Config, name: string): Config {
+  const n = name.trim().slice(0, 80);
+  if (n === '') return c;
+  const id = sanitizeRuleId(n, new Set((c.sections ?? []).map((s) => s.id)));
+  return { ...c, sections: [...(c.sections ?? []), { id, name: n, rules: [] }] };
+}
+
+const withSection = (c: Config, id: string, f: (s: Section) => Section): Config =>
+  (c.sections?.some((s) => s.id === id) ? { ...c, sections: c.sections.map((s) => (s.id === id ? f(s) : s)) } : c);
+
+/** Renames section `id` (trimmed, max 80). Unknown id or an empty name → `c`. */
+export function renameSection(c: Config, id: string, name: string): Config {
+  const n = name.trim().slice(0, 80);
+  return n === '' ? c : withSection(c, id, (s) => ({ ...s, name: n }));
+}
+
+/** Deletes section `id`; its rules stay where they are, without a section (`order` is untouched). */
+export function deleteSection(c: Config, id: string): Config {
+  return c.sections?.some((s) => s.id === id) ? { ...c, sections: c.sections.filter((s) => s.id !== id) } : c;
+}
+
+/**
+ * Puts user rule `ruleId` into section `sectionId` (leaving any other): the section's rules are gathered into one
+ * block at its first rule's place (gatherBlock) and the rule moves to the block's end. A section with no rules yet
+ * leaves it in place. `null` only
+ * removes membership. Unknown rule or section → `c`.
+ */
+export function assignSection(c: Config, ruleId: string, sectionId: string | null, builtins: Record<string, Recipe> = builtinRecipes()): Config {
+  if (!c.rules.some((r) => r.id === ruleId) || (sectionId !== null && !c.sections?.some((s) => s.id === sectionId))) return c;
+  if (sectionOf(c)(ruleId) === (sectionId ?? undefined)) return c;
+  const sections = (c.sections ?? []).map((s) => {
+    const rules = s.rules.filter((x) => x !== ruleId);
+    return s.id === sectionId ? { ...s, rules: [...rules, ruleId] } : rules.length === s.rules.length ? s : { ...s, rules };
+  });
+  const out = { ...c, sections };
+  if (sectionId === null) return out;
+  const key = userKey(ruleId);
+  const members = sections.find((s) => s.id === sectionId)!.rules.filter((x) => x !== ruleId).map(userKey);
+  const gathered = gatherBlock(out, members, builtins);
+  const shown = ruleRows(gathered, builtins).map((r) => r.key);
+  const last = shown.reduce((at, k, i) => (members.includes(k) ? i : at), -1);
+  if (last < 0) return gathered;
+  return moveBlock(gathered, [key], shown.slice(last + 1).find((k) => k !== key) ?? null, builtins);
+}
+
+/** moveBlock of `keys` to the place of the first of them that is shown: a split block becomes one, where it starts. */
+export function gatherBlock(c: Config, keys: string[], builtins: Record<string, Recipe> = builtinRecipes()): Config {
+  const set = new Set(keys);
+  const shown = ruleRows(c, builtins).map((r) => r.key);
+  const first = shown.findIndex((k) => set.has(k));
+  if (first < 0) return c;
+  return moveBlock(c, keys, shown.slice(first).find((k) => !set.has(k)) ?? null, builtins);
+}
+
 /**
  * Drops the keys `order` gained when they still sit at its end in their default sequence: compileProgram appends
  * missing keys in that same sequence, so the result means the same and `order` only grows when it must.
@@ -393,7 +458,9 @@ export function replaceRule(c: Config, id: string, rule: Rule): { ok: true; conf
   if (rule.id !== id && c.rules.some((r) => r.id === rule.id)) return { ok: false, error: `Another rule already has id "${rule.id}"` };
   const rules = c.rules.map((r) => (r.id === id ? rule : r));
   const order = c.order.map((k) => (k === userKey(id) ? userKey(rule.id) : k));
-  return { ok: true, config: { ...c, rules, order } };
+  const out = { ...c, rules, order };
+  if (rule.id !== id && c.sections) out.sections = c.sections.map((s) => (s.rules.includes(id) ? { ...s, rules: s.rules.map((x) => (x === id ? rule.id : x)) } : s));
+  return { ok: true, config: out };
 }
 
 // ---- M2 T15: the rule form ----

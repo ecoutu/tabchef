@@ -67,9 +67,38 @@
     },
     "order": {
       "type": "array",
-            "items": {
+      "items": {
         "type": "string",
         "pattern": "^[a-z0-9][a-z0-9_-]{0,63}/[a-z0-9][a-z0-9_-]{0,63}$"
+      }
+    },
+    "sections": {
+      "$comment": "M4 rule sections: display-only groups of user rules on the Rules page; priority stays `order`. Older builds reject this key (additionalProperties), so every synced device needs this build first. Unknown ids and second claims are repaired on load (repairConfig).",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "rules"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "$ref": "rule.json#/$defs/id"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "rules": {
+            "type": "array",
+            "items": {
+              "$ref": "rule.json#/$defs/id"
+            }
+          }
+        }
       }
     },
     "tables": {

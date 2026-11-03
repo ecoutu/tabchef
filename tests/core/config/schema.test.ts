@@ -136,7 +136,7 @@ describe('config schema', () => {
     c.dedupe.urlTransforms = [{ pattern: '^http:', replacement: 'https:', flags: 'i' }];
     expect(validateConfig(c).ok).toBe(true);
   });
-  it('caps dedupe urlTransforms regexes at MAX_REGEX_LEN (Task 1 minor, T18)', () => {
+  it('caps dedupe urlTransforms regexes at MAX_REGEX_LEN (T18)', () => {
     const c = defaultConfig();
     c.dedupe.urlTransforms = [{ pattern: 'a'.repeat(500), replacement: '' }];
     expect(validateConfig(c).ok).toBe(true);
@@ -374,11 +374,53 @@ describe('pageText needles and extract names are capped in TS (I2)', () => {
 });
 
 
-// Regression guard (M3-R33): passes before M3 Task 3. Connection metadata and tokens must never fit in Config, so
+// Regression guard (M3-R33): held before connections existed. Connection metadata and tokens must never fit in Config, so
 // they cannot reach storage.sync; config.schema.json's top-level additionalProperties:false enforces it.
 describe('connections stay out of Config (regression guard)', () => {
   it('rejects a top-level connections key', () => {
     const c = { ...defaultConfig(), connections: [{ id: 'github', token: 'ghu_ABCDEFGHIJKLMN' }] };
     expect(validateConfig(c).ok).toBe(false);
+  });
+});
+
+describe('config schema: rule sections (M4 rule sections T3)', () => {
+  const three = () => ({ ...defaultConfig(), rules: ['a', 'b', 'c'].map((id) => v2({ id })), order: ['user/a', 'user/b', 'user/c'] });
+
+  it('a config without sections validates and round-trips unchanged (older synced configs)', () => {
+    const c = three();
+    const r = validateConfig(c);
+    expect(r.ok).toBe(true);
+    expect(r.ok && r.config).toEqual(c);
+    expect('sections' in (repairConfig(c).config as object)).toBe(false);
+    expect(repairConfig(c).warnings).toEqual([]);
+  });
+
+  it('accepts sections of rule ids; rejects unknown fields, bad ids, an empty name, a duplicate section id or a rule claimed twice', () => {
+    const c = (sections: unknown) => ({ ...three(), sections });
+    expect(validateConfig(c([{ id: 'work', name: 'Work', rules: ['a', 'b'] }])).ok).toBe(true);
+    expect(validateConfig(c([{ id: 'work', name: 'Work', rules: [], extra: 1 }])).ok).toBe(false);
+    expect(validateConfig(c([{ id: 'Work!', name: 'Work', rules: [] }])).ok).toBe(false);
+    expect(validateConfig(c([{ id: 'work', name: '', rules: [] }])).ok).toBe(false);
+    expect(validateConfig(c([{ id: 'work', name: 'x'.repeat(81), rules: [] }])).ok).toBe(false);
+    const dupId = validateConfig(c([{ id: 'work', name: 'A', rules: [] }, { id: 'work', name: 'B', rules: [] }]));
+    expect(!dupId.ok && dupId.errors).toEqual(['/sections/1/id duplicate section id: work']);
+    const twice = validateConfig(c([{ id: 'work', name: 'A', rules: ['a'] }, { id: 'home', name: 'B', rules: ['a'] }]));
+    expect(!twice.ok && twice.errors).toEqual(['/sections/1/rules/0 rule a is already in section work']);
+  });
+
+  it('repairConfig drops unknown rule ids, keeps the first claim, drops empty-named sections, and warns', () => {
+    const input = {
+      ...three(),
+      sections: [
+        { id: 'work', name: 'Work', rules: ['a', 'ghost', 'b'] },
+        { id: 'home', name: 'Home', rules: ['a', 'c'] },
+        { id: 'blank', name: '', rules: [] },
+        { id: 'work', name: 'Again', rules: [] },
+      ],
+    };
+    const r = repairConfig(input);
+    expect((r.config as Config).sections).toEqual([{ id: 'work', name: 'Work', rules: ['a', 'b'] }, { id: 'home', name: 'Home', rules: ['c'] }]);
+    expect(r.warnings).toEqual(['Rule sections repaired: unknown rule ghost dropped from Work; rule a kept only in Work; section blank dropped (no name); duplicate section work dropped.']);
+    expect(validateConfig(r.config).ok).toBe(true);
   });
 });
