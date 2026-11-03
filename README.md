@@ -28,6 +28,8 @@ on `chrome://extensions` (Developer mode on).
 - **See what changes and why:** a preview before a change moves or closes tabs, a History of what happened and which
   rule did it, and "Why is this tab here?" for any open tab.
 
+To change what a recipe does or write rules of your own, see the [guide to recipes and rules](docs/recipes.md).
+
 ## Privacy
 
 Rules and tab data stay in your browser; settings sync through your Chrome account. Tabchef has no servers and no
@@ -57,7 +59,7 @@ npm run e2e:m3           # end-to-end tests of the GitHub and Jira flows against
 npm run check:secrets    # the build holds no tokens and no test-only localhost access
 npm run check:csp        # no eval or new Function in the build
 npm run check:cycles     # no import cycles across the source layers
-npm run check:terms      # the store listing and the UI use the same words
+npm run check:terms      # the store listing, the guides and the UI use the same words
 npm run validate:recipes # the built-in recipes match the recipe schema
 ```
 

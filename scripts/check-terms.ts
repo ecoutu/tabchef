@@ -1,9 +1,12 @@
-// Wording guard: the store listing and the extension's own text must use the same words. Checks docs/store/*.md and
-// the markup of every .svelte file (script and style blocks, {expressions} and component names are skipped) for: the
-// product name spelled any other way, a reference to a page or view that doesn't exist ("under Dedupe" when the page
-// is called Duplicates), the banned words in docs/store/terms.json, and store sections headed "(max N characters)"
-// that run over. Page names come from OPTIONS_ROUTES; view names from the built-in recipes.
+// Wording guard: the store listing, the user guides and the extension's own text must use the same words. Checks
+// docs/store/*.md, every other tracked docs/**/*.md guide (as store text, with inline code and fenced code blocks
+// skipped: rule syntax such as a `dedupe:` action is not wording) and the markup of every .svelte file (script and
+// style blocks, {expressions} and component names are skipped) for: the product name spelled any other way, a
+// reference to a page or view that doesn't exist ("under Dedupe" when the page is called Duplicates), the banned words
+// in docs/store/terms.json, and store sections headed "(max N characters)" that run over. Page names come from
+// OPTIONS_ROUTES; view names from the built-in recipes.
 // Usage: npm run check:terms. Prints `file:line: message` per problem and exits 1 on any.
+import { execFileSync } from 'node:child_process';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { parse } from 'yaml';
@@ -11,6 +14,14 @@ import { OPTIONS_ROUTES } from '../src/ui/routes';
 
 interface Terms { name: string; banned: { pattern: string; flags?: string; use: string; why?: string; where: 'store' | 'ui' | 'all' }[] }
 interface Source { f: string; kind: 'store' | 'ui'; text: string }
+
+/** Public guides for users: every tracked Markdown file under docs/ outside docs/store, checked like the store listing
+ * apart from their code. Tracked only, so local notes (docs/superpowers/**, never committed) are skipped. */
+const guides = (): string[] => execFileSync('git', ['ls-files', '-z', '--', 'docs/*.md', 'docs/**/*.md'], { encoding: 'utf8' })
+  .split('\0').filter((f) => f !== '' && !f.startsWith('docs/store/'));
+/** Blank out fenced code blocks and inline code spans, keeping line breaks so reported lines stay right. */
+const withoutCode = (md: string): string =>
+  md.replace(/^(`{3,}|~{3,})[^\n]*\n[\s\S]*?^\1[^\n]*$/gm, (s) => s.replace(/[^\n]/g, ' ')).replace(/`[^`\n]+`/g, (s) => ' '.repeat(s.length));
 
 const walk = (d: string, ext: string): string[] => readdirSync(d).flatMap((n) => {
   const p = join(d, n);
@@ -58,6 +69,7 @@ export default function main(): number {
 
   const sources: Source[] = [
     ...walk('docs/store', '.md').map((f) => ({ f, kind: 'store' as const, text: readFileSync(f, 'utf8') })),
+    ...guides().map((f) => ({ f, kind: 'store' as const, text: withoutCode(readFileSync(f, 'utf8')) })),
     ...walk('src/entrypoints', '.svelte').map((f) => ({ f, kind: 'ui' as const, text: markup(readFileSync(f, 'utf8')) })),
   ];
 
