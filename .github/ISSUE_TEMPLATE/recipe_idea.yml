@@ -1,0 +1,36 @@
+name: Recipe idea
+description: Tabs Tabchef could group, de-duplicate or close for you.
+labels: [idea]
+body:
+  - type: textarea
+    id: tabs
+    attributes:
+      label: Which tabs
+      description: The sites or pages, with example URLs and titles (anything private replaced).
+      placeholder: |
+        https://ci.example.com/acme/web/builds/1234 (title: "Build #1234 passed · acme/web")
+    validations:
+      required: true
+  - type: textarea
+    id: should
+    attributes:
+      label: What Tabchef should do with them
+      description: Group them (by what, with what name), close them (when), treat some as duplicates of others, or
+        assign them to a project.
+    validations:
+      required: true
+  - type: dropdown
+    id: needs
+    attributes:
+      label: What it needs to know
+      description: Can the URL and title tell, or does it need the page's text or a service's API?
+      options:
+        - The URL and title are enough
+        - It needs text on the page
+        - It needs a service's state (like a pull request or ticket status)
+        - Not sure
+  - type: textarea
+    id: today
+    attributes:
+      label: How you handle it today
+      description: Another extension, a rule of your own (paste the YAML), or by hand.

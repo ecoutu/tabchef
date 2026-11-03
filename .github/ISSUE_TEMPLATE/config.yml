@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Guide to recipes and rules
+    url: https://github.com/ecoutu/tabchef/blob/main/docs/recipes.md
+    about: How to change what a recipe does, or write rules of your own.
+  - name: Report a security problem
+    url: https://github.com/ecoutu/tabchef/security/advisories/new
+    about: Report a vulnerability privately, not in a public issue.

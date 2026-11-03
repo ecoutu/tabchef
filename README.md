@@ -121,6 +121,8 @@ account key exists. Until it is configured the step skips, and the release is on
 
 ## Contributing
 
+Bug reports, recipe ideas and pull requests are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md).
+
 Commits follow [Conventional Commits](https://www.conventionalcommits.org/); a commit hook runs commitlint, and
 semantic-release builds the version and `CHANGELOG.md` from the commits on `main`. History stays linear: rebase, never
 merge. Comments cite design decisions by short ids (for example `R19`, `M3-R57`); the surrounding text says what each

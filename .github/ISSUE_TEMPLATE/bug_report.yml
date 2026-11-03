@@ -1,0 +1,64 @@
+name: Bug report
+description: Something Tabchef did, or didn't do, that it should have.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for reporting. Please don't paste tokens, private URLs or ticket contents you can't share.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you saw, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The tabs you had open (URLs and titles, with anything private replaced) and what you did.
+      placeholder: |
+        1. Turn on the GitHub pull requests recipe
+        2. Open https://github.com/acme/web/pull/7 and then its Files changed tab
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Tabchef version
+      description: On chrome://extensions, under Tabchef.
+      placeholder: "1.2.0"
+    validations:
+      required: true
+  - type: input
+    id: chrome
+    attributes:
+      label: Chrome version and OS
+      description: From chrome://version.
+      placeholder: "Chrome 142, macOS 15"
+    validations:
+      required: true
+  - type: textarea
+    id: rules
+    attributes:
+      label: Recipes and rules involved
+      description: |
+        Which recipes are on, and any rules of your own that might apply. "Why is this tab here?" (right-click a tab's
+        page) names the rule behind a tab. You can attach your settings from the Backups page (Export); exports never
+        include connection tokens.
+  - type: dropdown
+    id: connections
+    attributes:
+      label: Connections
+      description: Which services are connected on the Connections page.
+      multiple: true
+      options:
+        - None
+        - GitHub
+        - Jira
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Screenshots, History entries, console errors (from the service worker on chrome://extensions).
