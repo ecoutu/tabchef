@@ -240,7 +240,7 @@
 
 <style>
   /* Color tokens and the page base: src/ui/tokens.css (main.ts). */
-  main { width: 380px; }
+  main { width: 520px; } /* Chrome caps popups at 800px; 380px overflowed the tab strip and project cards */
   header { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
   h1 { font-size: 15px; margin: 0; flex: 1; }
   .total { color: var(--muted); }
