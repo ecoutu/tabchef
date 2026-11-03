@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import page1 from '../../../fixtures/m3/jira-projects-page1.synthetic.json?raw';
 import page2 from '../../../fixtures/m3/jira-projects-page2.synthetic.json?raw';
+import workflow from '../../../fixtures/m3/jira-issue-search-workflow.synthetic.json?raw';
 import search from '../../../fixtures/m3/jira-search.synthetic.json?raw';
 import { buildIssueSearch, buildProjectKeysRequest, parseIssueSearch, parseProjectKeys, resolveInHalves, splitOnBadRequest, type IssueExec } from '../../../src/core/sources/jira';
 import { SOURCE_QUERIES } from '../../../src/core/sources/registry';
@@ -40,6 +41,21 @@ describe('parseIssueSearch', () => {
   it('tolerates garbage', () => {
     expect(parseIssueSearch(null, 'x').size).toBe(0);
     expect(parseIssueSearch({ issues: [null, { key: 5 }, { fields: {} }] }, 'x').size).toBe(0);
+  });
+});
+
+describe('parseIssueSearch with statuses sharing a category', () => {
+  const m = parseIssueSearch(JSON.parse(workflow), 'acme.atlassian.net');
+  it('keeps In Progress and In Review distinct while both are indeterminate', () => {
+    expect(m.get('SCRUM-2')).toMatchObject({ status: 'In Progress', statusCategory: 'indeterminate' });
+    expect(m.get('SCRUM-5')).toMatchObject({ status: 'In Review', statusCategory: 'indeterminate' });
+  });
+  it('maps the other categories, summaries and urls', () => {
+    expect(m.get('SCRUM-1')).toMatchObject({ summary: 'Login fails on Safari', status: 'To Do', statusCategory: 'new' });
+    expect(m.get('SCRUM-3')).toMatchObject({ summary: 'Fix CSV export encoding', status: 'Done', statusCategory: 'done' });
+    expect(m.get('SCRUM-2')?.summary).toBe('Add dark mode to settings');
+    expect(m.get('SCRUM-5')?.summary).toBe('Review CSV export fix');
+    for (const k of ['SCRUM-1', 'SCRUM-2', 'SCRUM-3', 'SCRUM-5']) expect(m.get(k)?.url).toBe(`https://acme.atlassian.net/browse/${k}`);
   });
 });
 

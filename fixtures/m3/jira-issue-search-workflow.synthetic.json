@@ -1,0 +1,73 @@
+{
+  "_comment": "Hand-written (M3-R26) from Atlassian's documented GET /rest/api/3/search/jql shape. In Progress and In Review share the indeterminate status category.",
+  "issues": [
+    {
+      "id": "10101",
+      "key": "SCRUM-1",
+      "fields": {
+        "summary": "Login fails on Safari",
+        "status": {
+          "name": "To Do",
+          "id": "10000",
+          "statusCategory": {
+            "id": 2,
+            "key": "new",
+            "name": "To Do",
+            "colorName": "blue-gray"
+          }
+        }
+      }
+    },
+    {
+      "id": "10102",
+      "key": "SCRUM-2",
+      "fields": {
+        "summary": "Add dark mode to settings",
+        "status": {
+          "name": "In Progress",
+          "id": "3",
+          "statusCategory": {
+            "id": 4,
+            "key": "indeterminate",
+            "name": "In Progress",
+            "colorName": "yellow"
+          }
+        }
+      }
+    },
+    {
+      "id": "10105",
+      "key": "SCRUM-5",
+      "fields": {
+        "summary": "Review CSV export fix",
+        "status": {
+          "name": "In Review",
+          "id": "10001",
+          "statusCategory": {
+            "id": 4,
+            "key": "indeterminate",
+            "name": "In Progress",
+            "colorName": "yellow"
+          }
+        }
+      }
+    },
+    {
+      "id": "10103",
+      "key": "SCRUM-3",
+      "fields": {
+        "summary": "Fix CSV export encoding",
+        "status": {
+          "name": "Done",
+          "id": "10002",
+          "statusCategory": {
+            "id": 3,
+            "key": "done",
+            "name": "Done",
+            "colorName": "green"
+          }
+        }
+      }
+    }
+  ]
+}
