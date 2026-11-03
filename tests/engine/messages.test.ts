@@ -969,6 +969,17 @@ describe('connections.* (M3 T7)', () => {
     deepScan(r, await all());
   });
 
+  it('connections.list: the repos of open PR tabs GitHub cannot read (SourceService.unreadableRepos), only when there are some', async () => {
+    const s = await connRig();
+    const unreadable = [{ repo: 'acme/api', error: 'not-found' as const }];
+    const withSources = (repos: typeof unreadable) => createHandler({ ...s.deps, sources: { refresh: vi.fn(async () => {}), unreadableRepos: () => repos } });
+    expect(await withSources(unreadable)({ type: 'connections.list' }, ui)).toMatchObject({ ok: true, data: { unreadable } });
+    const none = await withSources([])({ type: 'connections.list' }, ui);
+    expect(none.ok && 'unreadable' in (none.data as object)).toBe(false);
+    const old = await s.handle({ type: 'connections.list' }, ui); // a SourceService without it (older wiring): none
+    expect(old.ok && 'unreadable' in (old.data as object)).toBe(false);
+  });
+
   it('every connections.* request from a content script (or another extension) is forbidden; nothing runs', async () => {
     const s = await connRig();
     const spies = [vi.spyOn(s.connections, 'setGitHubToken'), vi.spyOn(s.manager, 'disconnect'), vi.spyOn(s.device, 'start'), vi.spyOn(s.device, 'poll')];
