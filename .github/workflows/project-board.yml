@@ -1,0 +1,63 @@
+name: Project board
+
+# Adds new issues and pull requests to the Tabchef project board and sets their Status: issues start in Backlog,
+# draft PRs in In progress, ready PRs in In review (the board's built-in workflows move closed items to Done).
+# A PR without a milestone takes the milestone of the first issue it closes ("Closes #n").
+#
+# Setup: a classic personal access token with the `project` and `repo` scopes in the secret PROJECT_TOKEN (user-owned
+# projects are not reachable with GITHUB_TOKEN or a GitHub App), and the board's number in the variable
+# PROJECT_NUMBER. Optional: PROJECT_STATUS_FIELD when the field is not named "Status".
+on:
+  issues:
+    types: [opened, reopened, transferred]
+  # pull_request_target: no checkout, so code from the PR never runs; it only reads PR metadata.
+  pull_request_target:
+    types: [opened, reopened, ready_for_review, converted_to_draft, edited]
+
+permissions:
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: project-board-${{ github.event.issue.number || github.event.pull_request.number }}
+
+jobs:
+  board:
+    if: ${{ vars.PROJECT_NUMBER != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Milestone from the closed issue
+        if: ${{ github.event.pull_request && !github.event.pull_request.milestone }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          owner="${REPO%/*}"; name="${REPO#*/}"
+          m=$(gh api graphql -f query='query($o:String!,$n:String!,$p:Int!){repository(owner:$o,name:$n){pullRequest(number:$p){closingIssuesReferences(first:5){nodes{milestone{number}}}}}}' \
+            -F o="$owner" -F n="$name" -F p="$NUMBER" \
+            --jq '[.data.repository.pullRequest.closingIssuesReferences.nodes[].milestone.number | select(. != null)][0] // empty')
+          if [ -n "$m" ]; then gh api -X PATCH "repos/$REPO/issues/$NUMBER" -F milestone="$m" >/dev/null; echo "milestone $m"; fi
+
+      - name: Add to the board and set Status
+        env:
+          GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+          PROJECT: ${{ vars.PROJECT_NUMBER }}
+          FIELD: ${{ vars.PROJECT_STATUS_FIELD || 'Status' }}
+          URL: ${{ github.event.issue.html_url || github.event.pull_request.html_url }}
+          EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+          DRAFT: ${{ github.event.pull_request.draft }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then echo "::warning::PROJECT_TOKEN is not set; skipping the board"; exit 0; fi
+          # An edited PR (e.g. a new "Closes #n") only needed the milestone step.
+          if [ "$ACTION" = edited ]; then exit 0; fi
+          if [ "$EVENT" = issues ]; then status=Backlog; elif [ "$DRAFT" = true ]; then status="In progress"; else status="In review"; fi
+          item=$(gh project item-add "$PROJECT" --owner "$OWNER" --url "$URL" --format json --jq .id)
+          pid=$(gh project view "$PROJECT" --owner "$OWNER" --format json --jq .id)
+          read -r fid oid < <(gh project field-list "$PROJECT" --owner "$OWNER" --format json \
+            --jq ".fields[] | select(.name == \"$FIELD\") | [.id, (.options[] | select(.name == \"$status\") | .id)] | @tsv")
+          if [ -z "${oid:-}" ]; then echo "::warning::no option \"$status\" in field \"$FIELD\""; exit 0; fi
+          gh project item-edit --id "$item" --project-id "$pid" --field-id "$fid" --single-select-option-id "$oid" >/dev/null
+          echo "added $URL as $status"
