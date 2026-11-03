@@ -24,18 +24,34 @@ export interface Captures {
 
 const SCALE = 2;
 const POPUP = { width: 520, height: 640 };
+const WAIT_MS = 15_000;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** The scene being captured, named in every timeout. */
+let sceneName = 'setup';
 
-/** Polls `fn` until it returns a truthy value; throws `what` after `ms`. */
-async function until<T>(what: string, fn: () => Promise<T | undefined | false>, ms = 15_000): Promise<T> {
+/**
+ * Polls `fn` (every 50 ms) until it returns a truthy value. Every wait in a scene goes through here, so each has a
+ * bound: after `ms` it fails with the scene and what it waited for.
+ */
+async function until<T>(what: string, fn: () => Promise<T | undefined | false>, ms = WAIT_MS): Promise<T> {
   const end = Date.now() + ms;
   for (;;) {
     const v = await fn();
     if (v) return v;
-    if (Date.now() > end) throw new Error(`store:assets: timed out waiting for ${what}`);
-    await sleep(200);
+    if (Date.now() > end) throw new Error(`store:assets: scene "${sceneName}": timed out after ${ms / 1000} s waiting for ${what}`);
+    await sleep(50);
   }
 }
+
+/** Waits until `n` elements match `selector` on `p` (exactly, or at least with `atLeast`). */
+const count = (p: Page, what: string, selector: string, n: number) =>
+  until(`${n} × ${what}`, async () => (await p.locator(selector).count()) === n);
+/** Waits until `p` shows `text` (exact, whole element text) `n` times. */
+const texts = (p: Page, text: string, n: number) =>
+  until(`${n} × "${text}"`, async () => (await p.getByText(text, { exact: true }).count()) === n);
+/** Waits until the page's fonts and images (the tabs' favicons) have loaded, so the capture is final. */
+const painted = (p: Page) => until('the fonts and favicons to load', () => p.evaluate(() =>
+  document.fonts.status === 'loaded' && [...document.images].every((i) => i.complete && i.naturalWidth > 0)));
 
 // A neutral favicon per site (not the services' logos): a dark disc for github.com, a blue tile for Jira.
 const FAVICONS: Record<string, string> = {
@@ -119,12 +135,12 @@ const webTabs = (h: Session) => h.sw.evaluate(async () => (await chrome.tabs.que
   .map((t) => ({ id: t.id!, windowId: t.windowId, url: t.url ?? '', title: t.title ?? '', status: t.status, groupId: t.groupId, index: t.index, favIconUrl: t.favIconUrl })));
 
 /** Waits until every web tab has loaded, has its title and (where the site has one) its favicon. */
-async function settle(h: Session, count: number): Promise<void> {
-  await until(`${count} demo tabs to load`, async () => {
+async function settle(h: Session, n: number): Promise<void> {
+  await until(`${n} demo tabs to load with their titles and favicons`, async () => {
     const ts = await webTabs(h);
-    return ts.length === count && ts.every((t) => t.status === 'complete' && t.title !== '' && !t.title.startsWith('http'));
+    return ts.length === n && ts.every((t) => t.status === 'complete' && t.title !== '' && !t.title.startsWith('http')
+      && (!(new URL(t.url).host in FAVICONS) || !!t.favIconUrl));
   });
-  await sleep(600);
 }
 
 /** The github and jira connections on the mock, stored the way the e2e:m3 tests store them (setToken validates against the real hosts). */
@@ -160,12 +176,33 @@ async function scene(h: Session): Promise<void> {
     && (await h.sw.evaluate(() => chrome.tabGroups.query({}))).length === 0);
 }
 
+/** The web tabs in tab-bar order, as runs of their groups: what the tab strip shows. */
+const tabStrip = (h: Session) => h.sw.evaluate(async () => {
+  const tabs = (await chrome.tabs.query({})).filter((t) => !/^(chrome-extension:|about:)/.test(t.url ?? '')).sort((a, b) => a.index - b.index);
+  const gs = new Map((await chrome.tabGroups.query({})).map((g) => [g.id, g]));
+  const strip: { title: string; color: string; tabs: string[] }[] = [];
+  for (const t of tabs) {
+    const g = gs.get(t.groupId);
+    const title = g?.title ?? '';
+    const last = strip[strip.length - 1];
+    if (last && last.title === title && g) last.tabs.push(t.title ?? '');
+    else strip.push({ title, color: g?.color ?? '', tabs: [t.title ?? ''] });
+  }
+  return strip;
+});
+
+/** Waits until the Projects view shows every card with its ticket status and its pull requests' state pills. */
+async function projectsShown(p: Page, demo: typeof import('./demo')): Promise<void> {
+  await count(p, 'project card', 'article.card', demo.PROJECT_COUNT);
+  for (const [text, n] of demo.PROJECT_PILLS) await texts(p, text, n);
+}
+
 /** A popup capture: popup.html with `view` open, as tall as its content. */
 async function popup(h: Session, view: string, ready: (p: Page) => Promise<unknown>): Promise<Shot> {
   await h.sw.evaluate(async (v) => { await chrome.storage.local.set({ 'popup.lastTab': v }); }, view);
   const p = await h.page('popup.html');
   await ready(p);
-  await sleep(400);
+  await painted(p);
   const shot = await p.locator('main').screenshot({ animations: 'disabled' });
   await p.close();
   return shot;
@@ -183,44 +220,47 @@ export async function capture(extPath: string, demo: typeof import('./demo'), ke
   });
   // One browser for all scenes; each scene starts from a clean slate (scene()). The duplicates scene goes first:
   // it needs the startup grace of a freshly started worker.
+  const launched = Date.now();
   const h = await session(extPath);
-  const run = async (fn: (h: Session) => Promise<void>) => {
+  console.log(`store:assets:   browser and mock services: ${((Date.now() - launched) / 1000).toFixed(1)} s`);
+  const run = async (name: string, fn: (h: Session) => Promise<void>) => {
+    sceneName = name;
+    const started = Date.now();
     await fn(h);
+    sceneName = `${name} (cleanup)`;
     await scene(h);
+    console.log(`store:assets:   ${name}: ${((Date.now() - started) / 1000).toFixed(1)} s`);
   };
   try {
     // 1. Duplicates: tabs opened during the startup grace stay open as duplicates; the popup lists each set once.
-    await run(async (h) => {
+    await run('duplicates', async (h) => {
       for (const p of demo.DUPLICATE_TABS) await open(h, p);
       await settle(h, demo.DUPLICATE_TABS.length);
-      out.duplicates = await popup(h, 'duplicates', (p) => p.getByRole('button', { name: 'Close all duplicates' }).waitFor());
+      out.duplicates = await popup(h, 'duplicates', async (p) => {
+        await count(p, 'duplicate set with a close button', 'li.row button.close', demo.DUPLICATE_SETS);
+        await count(p, '"Close all duplicates" button', 'button.all', 1);
+      });
     });
 
     // 2. Groups by repo: the user's own group rules, then the tab strip they produced, read from chrome.tabGroups.
-    await run(async (h) => {
+    await run('groups', async (h) => {
       await setConfig(h, config(demo.GROUP_RULES.map((g) => rule(g.id, g.url, g.title, g.color))));
       for (const p of demo.GROUP_TABS) await open(h, p);
       await settle(h, demo.GROUP_TABS.length);
-      await until('the tab groups', async () => (await h.sw.evaluate(() => chrome.tabGroups.query({}))).length === demo.GROUP_RULES.length);
-      await sleep(800);
-      out.strip = await h.sw.evaluate(async () => {
-        const tabs = (await chrome.tabs.query({})).filter((t) => !(t.url ?? '').startsWith('chrome-extension://')).sort((a, b) => a.index - b.index);
-        const gs = new Map((await chrome.tabGroups.query({})).map((g) => [g.id, g]));
-        const strip: { title: string; color: string; tabs: string[] }[] = [];
-        for (const t of tabs) {
-          const g = gs.get(t.groupId);
-          const title = g?.title ?? '';
-          const last = strip[strip.length - 1];
-          if (last && last.title === title && g) last.tabs.push(t.title ?? '');
-          else strip.push({ title, color: g?.color ?? '', tabs: [t.title ?? ''] });
-        }
-        return strip;
+      const order = demo.GROUP_RULES.map((g) => g.title).join(',');
+      out.strip = await until(`every tab grouped, groups in the order ${order}`, async () => {
+        const strip = await tabStrip(h);
+        const grouped = strip.every((g) => g.title !== '') && strip.reduce((n, g) => n + g.tabs.length, 0) === demo.GROUP_TABS.length;
+        return grouped && strip.map((g) => g.title).join(',') === order && strip;
       });
       const p = await h.page('options.html#/rules', { width: 760, height: 900 });
       const yaml = p.getByRole('button', { name: 'YAML', exact: true });
       await until('the rule cards', async () => (await yaml.count()) === demo.GROUP_RULES.length);
       for (let i = demo.GROUP_RULES.length - 1; i >= 0; i--) await yaml.nth(i).click();
-      await sleep(800);
+      await count(p, 'rule shown as YAML', 'div.rule textarea', demo.GROUP_RULES.length);
+      await until('the YAML of each rule', () => p.evaluate((n) =>
+        [...document.querySelectorAll('div.rule textarea')].slice(0, n).every((t) => (t as HTMLTextAreaElement).value.includes('color:')), demo.GROUP_RULES.length));
+      await painted(p);
       // The first two rules, each shown as YAML; the third is more of the same.
       const box = await p.locator('div.rule').nth(0).evaluate((e, next) => {
         const a = e.getBoundingClientRect();
@@ -232,7 +272,7 @@ export async function capture(extPath: string, demo: typeof import('./demo'), ke
     });
 
     // 3 and 4. Merged PRs and the Jira ticket projects, on the mock GitHub and Jira connections.
-    await run(async (h) => {
+    await run('merged and projects', async (h) => {
       await connect(h);
       await setConfig(h, recipes(config([]), {
         'merged-prs': { enabled: true },
@@ -242,23 +282,21 @@ export async function capture(extPath: string, demo: typeof import('./demo'), ke
       await settle(h, demo.PROJECT_TABS.length);
       await until('the merged pull requests', async () =>
         (await send<{ rows: unknown[] }>(h, { type: 'view.data', viewId: 'merged' })).rows.length === demo.MERGED_COUNT);
-      await until('the projects', async () => {
-        const cards = await send<{ status?: unknown; tabs: unknown[] }[]>(h, { type: 'projects.list' });
-        return cards.length === demo.PROJECT_COUNT && cards.every((c) => c.status);
+      out.merged = await popup(h, 'merged', async (p) => {
+        await texts(p, 'merged', demo.MERGED_COUNT);
+        await count(p, '"Close all" button', 'button:text-is("Close all")', 1);
       });
-      await sleep(800);
-      out.merged = await popup(h, 'merged', (p) => p.getByRole('button', { name: /close all/i }).first().waitFor());
-      out.popupProjects = await popup(h, 'projects', (p) => p.locator('article.card').first().waitFor());
+      out.popupProjects = await popup(h, 'projects', (p) => projectsShown(p, demo));
       const panel = await h.page('panel.html', { width: 400, height: 760 });
-      await panel.locator('article.card').nth(demo.PROJECT_COUNT - 1).waitFor();
-      await sleep(600);
+      await projectsShown(panel, demo);
+      await painted(panel);
       const end = await panel.locator('article.card').last().evaluate((e) => e.getBoundingClientRect().bottom);
       out.projects = await panel.screenshot({ clip: { x: 0, y: 0, width: 400, height: Math.ceil(end) + 8 } });
       await panel.close();
     });
 
     // 5. Preview before apply: the group rules are there but off; turning them on and saving opens the preview.
-    await run(async (h) => {
+    await run('preview', async (h) => {
       const off = demo.GROUP_RULES.map((g) => ({ ...rule(g.id, g.url, g.title, g.color), enabled: false }));
       await setConfig(h, config(off));
       for (const p of demo.PREVIEW_TABS) await open(h, p);
@@ -268,12 +306,14 @@ export async function capture(extPath: string, demo: typeof import('./demo'), ke
       await until('the rule cards', async () => (await boxes.count()) === demo.GROUP_RULES.length);
       for (let i = 0; i < demo.GROUP_RULES.length; i++) await boxes.nth(i).check();
       await p.getByRole('button', { name: 'Save', exact: true }).click();
-      await p.getByRole('dialog').waitFor();
-      await sleep(600);
+      await count(p, 'move listed in the Preview dialog', '.dialog li', demo.PREVIEW_MOVES);
+      await until('the Preview dialog to show its Apply button', () => p.getByRole('button', { name: 'Apply' }).isVisible());
       // The crop is the dialog's box, whose edges fall between device pixels: make the backdrop opaque white (the
       // card the image sits on), so no sliver of the page behind it shows at the edges or rounded corners.
       await p.addStyleTag({ content: '.backdrop { background: #fff !important; }' });
-      await sleep(100);
+      await until('the white backdrop', () => p.evaluate(() =>
+        getComputedStyle(document.querySelector('.backdrop')!).backgroundColor === 'rgb(255, 255, 255)'));
+      await painted(p);
       out.preview = await p.locator('.dialog').screenshot();
       await p.close();
     });

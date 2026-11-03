@@ -54,6 +54,9 @@ export const DUPLICATE_TABS: DemoPage[] = [
   gh('acme/api/pull/412/commits'),
 ];
 
+/** The sets the popup lists: the pull request (4 copies), acme/web and the issues page (2 each). */
+export const DUPLICATE_SETS = 3;
+
 /** Screenshot 2: the user's own group rules, in their order, and the tabs they group. */
 export const GROUP_RULES: { id: string; url: string; title: string; color: GroupColor }[] = [
   { id: 'api', url: 'github.com/acme/api*', title: 'api', color: 'blue' },
@@ -82,6 +85,8 @@ export const PROJECT_TABS: DemoPage[] = [
 ];
 export const MERGED_COUNT = 4;
 export const PROJECT_COUNT = 2;
+/** What the Projects view shows once every lookup has answered: the tickets' status and the pull requests' state. */
+export const PROJECT_PILLS: [text: string, count: number][] = [['Done', 1], ['In Progress', 1], ['merged', 1], ['open', 2]];
 
 /** Screenshot 5: the tabs the preview reports on. */
 export const PREVIEW_TABS: DemoPage[] = [
@@ -91,3 +96,5 @@ export const PREVIEW_TABS: DemoPage[] = [
   { url: 'http://localhost:3000/callback?code=demo' },
   gh('acme/web'),
 ];
+/** The preview's moves: every tab but the callback page joins a group. */
+export const PREVIEW_MOVES = 4;
