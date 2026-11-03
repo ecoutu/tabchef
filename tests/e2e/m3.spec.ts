@@ -2,7 +2,7 @@
 // Needs the e2e build (`npm run e2e:m3`: WXT_E2E_LOCALHOST=1 adds host_permissions http://localhost/* and lets the
 // connection layer use a localhost apiBaseUrl, M3-R35 / M3-R86). Under plain `npm run e2e` the mocked tests skip; the
 // production-build guard (e) runs in both.
-// (b), Jira ticket grouping, lands with Task 16's recipe and Task 6's Jira connection (M3-R85).
+// (b) Jira ticket grouping at the Titles level (no connection), (b2) the Done prompt with a Jira token connection on the mock.
 import { expect, test } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
@@ -14,14 +14,15 @@ import type { ConnectionDef, ConnectionStatus } from '../../src/core/connections
 import type { Recipe, RecipeRef } from '../../src/core/lang/types';
 import { RATE_KEY } from '../../src/engine/connections/rate-limiter';
 import { CONNECTIONS_KEY, secretKey } from '../../src/engine/connections/secret-store';
-import { config, EXT_PATH, launch, openTab, reset, send, setConfig, tabs, type Harness } from './helpers';
-import { MOCK_TOKEN, startMockServices, type MockServices } from './mock-services';
+import { config, EXT_PATH, groups, launch, openTab, reset, send, setConfig, tabs, type Harness } from './helpers';
+import { MOCK_JIRA_EMAIL, MOCK_JIRA_TOKEN, MOCK_TOKEN, startMockServices, type MockServices } from './mock-services';
 
 interface ViewRow { tabId: number; url: string; source?: { state?: string; mergedAt?: string }; stale?: true }
 interface WhyEntry { tabId?: number; ruleId?: string; action: string; detail: string }
 
 const ROOT = resolve(import.meta.dirname, '../..');
 const RECIPE_ID = 'merged-prs-e2e';
+const JIRA_RECIPE_ID = 'jira-ticket-e2e';
 const manifestOf = (dir: string) => JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')) as { host_permissions?: string[] };
 const isE2eBuild = (() => {
   try {
@@ -41,6 +42,19 @@ function mergedPrsRecipe(origin: string, over: Pick<RecipeRef, 'params' | 'ruleE
   const body = JSON.parse(JSON.stringify(shipped).replaceAll('github.com/:owner/:repo/pull/', `${host}/:owner/:repo/pull/`)) as Recipe;
   body.recipe = RECIPE_ID;
   return { id: RECIPE_ID, enabled: true, source: 'user', body, ...over };
+}
+
+/**
+ * The shipped jira-ticket-either recipe as a user recipe for the mock: only its PR URL pattern changes, to the mock origin
+ * (a user rule cannot assign a project, M3-R15, so the recipe's own rule is repointed, as for Merged PRs). The Jira side
+ * is the shipped rule with `jiraSite` set to the mock host.
+ */
+function jiraRecipe(origin: string): RecipeRef {
+  const shipped = parseYaml(readFileSync(join(ROOT, 'src/recipes/builtin/jira-ticket-either.yaml'), 'utf8')) as Recipe;
+  const host = new URL(origin).host;
+  const body = JSON.parse(JSON.stringify(shipped).replaceAll('github.com/:owner/:repo/pull/', `${host}/:owner/:repo/pull/`)) as Recipe;
+  body.recipe = JIRA_RECIPE_ID;
+  return { id: JIRA_RECIPE_ID, enabled: true, source: 'user', body, params: { jiraSite: host } };
 }
 
 test.describe('M3 with mocked services', () => {
@@ -107,6 +121,63 @@ test.describe('M3 with mocked services', () => {
       .toEqual({ closed: 1, skipped: 0 });
     await expect.poll(() => tabById(id), { timeout: 5000 }).toBeUndefined();
     expect(await recentUrls()).toContain(prUrl(1));
+  });
+
+  test('(b) Titles level, no connection: a Jira ticket tab and a PR tab naming its key share one ABC-1 group', async () => {
+    mock.jira.setIssue('ABC-1', { summary: 'Login', status: 'In Progress', category: 'indeterminate' });
+    mock.github.setPr('acme/api#1', { state: 'OPEN', title: 'ABC-1 fix' });
+    // No connections: an earlier test's github connection would lift the PR rule above the Titles level.
+    await send(h, { type: 'connections.disconnect', id: 'github' });
+    await send(h, { type: 'connections.disconnect', id: 'jira' });
+    await setConfig(h, withRecipe(jiraRecipe(mock.origin)));
+    const jiraRequests = mock.jira.requests;
+    const githubRequests = mock.github.requests;
+    const ticket = await openTab(h, `${mock.origin}/browse/ABC-1`);
+    const pr = await openTab(h, prUrl(1));
+
+    const state = async () => {
+      const gs = await groups(h);
+      const ts = (await tabs(h)).filter((t) => t.id === ticket || t.id === pr);
+      return { groups: gs.map((g) => g.title), members: ts.map((t) => gs.find((g) => g.id === t.groupId)?.title ?? null) };
+    };
+    await expect.poll(state, { timeout: 10_000 }).toEqual({ groups: ['ABC-1'], members: ['ABC-1', 'ABC-1'] });
+    const groupIds = (await tabs(h)).filter((t) => t.id === ticket || t.id === pr).map((t) => t.groupId);
+    expect(new Set(groupIds).size).toBe(1);
+
+    const cards = await send<{ id: string; title: string; tabs: { tabId: number }[] }[]>(h, { type: 'projects.list' });
+    expect(cards.map((c) => ({ id: c.id, title: c.title, tabs: c.tabs.map((t) => t.tabId).sort() })))
+      .toEqual([{ id: `${JIRA_RECIPE_ID}:ABC-1`, title: 'ABC-1', tabs: [ticket, pr].sort() }]);
+    // Titles level: neither a Jira nor a GitHub request went out.
+    expect(mock.jira.requests).toBe(jiraRequests);
+    expect(mock.github.requests).toBe(githubRequests);
+  });
+
+  test('(b2) with a Jira token connection on the mock, a Done ticket shows the close prompt data', async () => {
+    // The source cache keeps an issue for 5 minutes, so each status is set before its ticket tab opens.
+    mock.jira.setIssue('ABC-2', { summary: 'Logout', status: 'Done', category: 'done' });
+    mock.jira.setIssue('ABC-3', { summary: 'Signup', status: 'In Progress', category: 'indeterminate' });
+    // Same shape setJiraToken stores (classic token: apiBaseUrl is the site); setJiraToken validates against Atlassian hosts.
+    const host = new URL(mock.origin).host;
+    const def: ConnectionDef = {
+      ...builtinConnectionDefs().jira, baseUrl: mock.origin, apiBaseUrl: mock.origin, hosts: ['http://localhost/*'],
+      jira: { site: host, email: MOCK_JIRA_EMAIL, tokenKind: 'classic' },
+    };
+    await send(h, { type: 'connections.disconnect', id: 'jira' });
+    await h.sw.evaluate(async ([items, rateKey]) => {
+      await chrome.storage.session.remove(rateKey);
+      await chrome.storage.local.set(items);
+    }, [{ [CONNECTIONS_KEY]: [def], [secretKey('jira')]: { token: MOCK_JIRA_TOKEN } }, RATE_KEY] as const);
+    await setConfig(h, withRecipe(jiraRecipe(mock.origin)));
+
+    const id = await openTab(h, `${mock.origin}/browse/ABC-2`);
+    await openTab(h, `${mock.origin}/browse/ABC-3`);
+    const cards = async () => new Map((await send<{ id: string; done: boolean; status?: { name: string; via: string } }[]>(h, { type: 'projects.list' }))
+      .map((c) => [c.id.slice(JIRA_RECIPE_ID.length + 1), { name: c.status?.name, via: c.status?.via, done: c.done }]));
+    await expect.poll(async () => [...(await cards())].sort(), { timeout: 10_000 }).toEqual([
+      ['ABC-2', { name: 'Done', via: 'api', done: true }],
+      ['ABC-3', { name: 'In Progress', via: 'api', done: false }],
+    ]);
+    expect(await tabById(id)).toBeDefined(); // prompting only: nothing is closed
   });
 
   test('(c) a 401 marks the connection needs-reauth; the merged row stays, stale, and its due auto-close is skipped', async () => {

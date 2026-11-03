@@ -1,11 +1,20 @@
-// Mock GitHub API for the M3 end-to-end tests (Task 18): one local HTTP server that is both the GitHub API
-// (`apiBaseUrl` http://localhost:<port>) and the pull request pages the tabs open. Jira endpoints land with the Jira
-// grouping test (M3-R85). The token is a dummy; nothing here logs request headers.
+// Mock GitHub API for the M3 end-to-end tests: one local HTTP server that is both the GitHub API
+// (`apiBaseUrl` http://localhost:<port>), the Jira REST API (a classic-token style site at the same origin), and the
+// pull request / Jira issue pages the tabs open. The tokens are dummies; nothing here logs request headers.
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
 /** The dummy token the tests store for the github connection. The mock answers 401 to anything else. */
 export const MOCK_TOKEN = 'ghp_e2eDummyToken0000000000000000000000';
+
+/** The dummy Jira credentials the tests store (Basic email:token). The mock answers 401 to anything else. */
+export const MOCK_JIRA_EMAIL = 'e2e@example.test';
+export const MOCK_JIRA_TOKEN = 'e2e-dummy-jira-token-0000';
+const JIRA_BASIC = `Basic ${Buffer.from(`${MOCK_JIRA_EMAIL}:${MOCK_JIRA_TOKEN}`).toString('base64')}`;
+/** Answered by /_edge/tenant_info. */
+export const MOCK_CLOUD_ID = '11111111-2222-3333-4444-555555555555';
+
+export interface MockIssue { summary: string; status: string; category: 'new' | 'indeterminate' | 'done' }
 
 export interface MockPr { state: 'OPEN' | 'CLOSED' | 'MERGED'; title: string; mergedAt?: string }
 
@@ -19,6 +28,12 @@ export interface MockServices {
     /** The next API request (any endpoint) answers `status` with `headers` instead. One-shot. */
     failNext(status: number, headers?: Record<string, string>): void;
     /** API requests received so far (/graphql and /user; page loads are not counted). */
+    readonly requests: number;
+  };
+  jira: {
+    /** Defines issue `key` (e.g. 'ABC-1'): the search answers it and /browse/<key> is titled `[KEY] <summary> - Jira`. */
+    setIssue(key: string, issue: MockIssue): void;
+    /** Jira API requests received so far (/rest/* and /_edge/*). */
     readonly requests: number;
   };
   close(): Promise<void>;
@@ -57,6 +72,8 @@ export async function startMockServices(): Promise<MockServices> {
   const prs = new Map<string, MockPr>();
   const failures: { status: number; headers: Record<string, string> }[] = [];
   let requests = 0;
+  const issues = new Map<string, MockIssue>();
+  let jiraRequests = 0;
 
   const server = createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
@@ -96,6 +113,47 @@ export async function startMockServices(): Promise<MockServices> {
       });
       return;
     }
+    if (url.pathname === '/_edge/tenant_info') {
+      jiraRequests++;
+      json(200, { cloudId: MOCK_CLOUD_ID });
+      return;
+    }
+    if (url.pathname.startsWith('/rest/api/3/')) {
+      jiraRequests++;
+      if (req.headers.authorization !== JIRA_BASIC) {
+        res.writeHead(401, { 'content-type': 'text/html; charset=utf-8' });
+        res.end('Client must be authenticated to access this resource.');
+        return;
+      }
+      if (url.pathname === '/rest/api/3/myself') {
+        json(200, { accountId: 'e2e-account', displayName: 'E2E User' });
+        return;
+      }
+      if (url.pathname === '/rest/api/3/search/jql') {
+        // `key in (A-1,B-2)`; keys not set with setIssue are simply absent (200), like the real API.
+        const wanted = /key in \(([^)]*)\)/.exec(url.searchParams.get('jql') ?? '')?.[1]?.split(',') ?? [];
+        json(200, {
+          issues: wanted.filter((k) => issues.has(k)).map((k) => {
+            const i = issues.get(k)!;
+            return {
+              id: String(10_000 + Number(k.split('-')[1])), key: k, self: `/rest/api/3/issue/${k}`,
+              fields: { summary: i.summary, status: { name: i.status, statusCategory: { key: i.category, name: i.status } } },
+            };
+          }),
+          isLast: true,
+        });
+        return;
+      }
+      json(404, { errorMessages: ['Not found'] });
+      return;
+    }
+    // Jira issue pages: /browse/<KEY> is titled like a real one.
+    const b = /^\/browse\/([A-Z][A-Z0-9]*-\d+)/.exec(url.pathname);
+    if (b) {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      res.end(`<!doctype html><title>${esc(`[${b[1]}] ${issues.get(b[1]!)?.summary ?? 'Issue'} - Jira`)}</title><p>tabchef e2e mock</p>`);
+      return;
+    }
     // Pages: /<owner>/<repo>/pull/<n> is titled like a real PR page; anything else after its path.
     const m = /^\/([^/]+)\/([^/]+)\/pull\/(\d+)/.exec(url.pathname);
     const pr = m ? prs.get(`${m[1]}/${m[2]}#${m[3]}`) : undefined;
@@ -106,6 +164,10 @@ export async function startMockServices(): Promise<MockServices> {
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   const port = (server.address() as AddressInfo).port;
   return {
+    jira: {
+      setIssue: (key, info) => { issues.set(key, info); },
+      get requests() { return jiraRequests; },
+    },
     port,
     origin: `http://localhost:${port}`,
     github: {
