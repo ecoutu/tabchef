@@ -10,10 +10,8 @@
       "$comment": "= manifestConfig.optional_permissions in wxt.config.ts (pinned by a test)",
       "enum": [
         "notifications",
-        "identity",
         "scripting",
-        "sidePanel",
-        "bookmarks"
+        "sidePanel"
       ]
     },
     "paramDef": {

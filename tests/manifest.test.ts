@@ -17,10 +17,8 @@ describe('manifest permissions', () => {
   it('declares exactly the optional permissions', () => {
     expect(manifestConfig.optional_permissions).toEqual([
       'notifications',
-      'identity',
       'scripting',
       'sidePanel',
-      'bookmarks',
     ]);
   });
 
