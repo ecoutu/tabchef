@@ -2,6 +2,12 @@
 
 Recipes for your tabs: a Chrome extension that groups, de-duplicates and closes tabs with rules you can read and change.
 
+## Install
+
+Coming soon to the Chrome Web Store. Until then, download `tabchef-<version>-chrome.zip` from the
+[latest release](https://github.com/ecoutu/tabchef/releases/latest), unzip it, and load the folder with **Load unpacked**
+on `chrome://extensions` (Developer mode on).
+
 ## What it does
 
 - **Group** tabs into Chrome tab groups by URL, title or GitHub repo, with the names, colors and order you choose.
@@ -27,6 +33,7 @@ Recipes for your tabs: a Chrome extension that groups, de-duplicates and closes 
 Rules and tab data stay in your browser; settings sync through your Chrome account. Tabchef has no servers and no
 analytics. With GitHub or Jira connected, Tabchef asks those services directly from your browser for the state of the
 pull requests and tickets in your open tabs. Tokens are stored only in this browser and never synced or exported.
+The full policy is in [PRIVACY.md](PRIVACY.md).
 
 ## Development
 
@@ -53,6 +60,8 @@ npm run check:cycles     # no import cycles across the source layers
 npm run check:terms      # the store listing and the UI use the same words
 npm run validate:recipes # the built-in recipes match the recipe schema
 ```
+
+The Chrome Web Store listing, the launch copy and the step-by-step submission guide are in [docs/store/](docs/store/).
 
 After changing `src/core/config/config.schema.json` or `src/core/lang/*.schema.json`, regenerate the validators with
 `npm run gen:validator`.
