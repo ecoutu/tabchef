@@ -1,7 +1,8 @@
 name: Project board
 
 # Adds new issues and pull requests to the Tabchef project board and sets their Status: issues start in Backlog,
-# draft PRs in In progress, ready PRs in In review (the board's built-in workflows move closed items to Done).
+# draft PRs in In progress, ready PRs in In review, and closed or merged items move to Done (the board's own
+# "Item closed" / "Pull request merged" workflows are off).
 # A PR without a milestone takes the milestone of the first issue it closes ("Closes #n").
 #
 # Setup: a classic personal access token with the `project` and `repo` scopes in the secret PROJECT_TOKEN (user-owned
@@ -9,10 +10,10 @@ name: Project board
 # PROJECT_NUMBER. Optional: PROJECT_STATUS_FIELD when the field is not named "Status".
 on:
   issues:
-    types: [opened, reopened, transferred]
+    types: [opened, reopened, transferred, closed]
   # pull_request_target: no checkout, so code from the PR never runs; it only reads PR metadata.
   pull_request_target:
-    types: [opened, reopened, ready_for_review, converted_to_draft, edited]
+    types: [opened, reopened, ready_for_review, converted_to_draft, edited, closed]
 
 permissions:
   issues: write
@@ -27,7 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Milestone from the closed issue
-        if: ${{ github.event.pull_request && !github.event.pull_request.milestone }}
+        if: ${{ github.event.pull_request && !github.event.pull_request.milestone && github.event.action != 'closed' }}
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -53,7 +54,10 @@ jobs:
           if [ -z "$GH_TOKEN" ]; then echo "::warning::PROJECT_TOKEN is not set; skipping the board"; exit 0; fi
           # An edited PR (e.g. a new "Closes #n") only needed the milestone step.
           if [ "$ACTION" = edited ]; then exit 0; fi
-          if [ "$EVENT" = issues ]; then status=Backlog; elif [ "$DRAFT" = true ]; then status="In progress"; else status="In review"; fi
+          if [ "$ACTION" = closed ]; then status=Done
+          elif [ "$EVENT" = issues ]; then status=Backlog
+          elif [ "$DRAFT" = true ]; then status="In progress"
+          else status="In review"; fi
           item=$(gh project item-add "$PROJECT" --owner "$OWNER" --url "$URL" --format json --jq .id)
           pid=$(gh project view "$PROJECT" --owner "$OWNER" --format json --jq .id)
           read -r fid oid < <(gh project field-list "$PROJECT" --owner "$OWNER" --format json \
