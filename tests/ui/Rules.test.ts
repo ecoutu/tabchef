@@ -8,6 +8,7 @@ import Rules from '../../src/entrypoints/options/Rules.svelte';
 import { defaultConfig } from '../../src/core/config/defaults';
 import type { Config, GroupRule, TabSnap } from '../../src/core/types';
 import { withGroupRules } from '../helpers/config';
+import { RECIPES_GUIDE_URL } from '../../src/ui/routes';
 
 afterEach(cleanup);
 
@@ -125,6 +126,14 @@ describe('Rules', () => {
   it('help text states order is priority', () => {
     render(Rules, props(cfg()));
     expect(screen.getByText(/Order is priority and tab-bar order/)).toBeTruthy();
+  });
+
+  it('help text links to the guide to recipes and rules, in a new tab', () => {
+    render(Rules, props(cfg()));
+    const a = screen.getByRole('link', { name: 'Guide to recipes and rules' }) as HTMLAnchorElement;
+    expect(a.href).toBe(RECIPES_GUIDE_URL);
+    expect(a.target).toBe('_blank');
+    expect(a.rel).toBe('noopener noreferrer');
   });
 });
 

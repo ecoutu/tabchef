@@ -1,6 +1,7 @@
 // Options page hash routing (ruling R28): longest-prefix match with params. A route path is `/`-separated segments;
 // a `:name` segment captures one non-empty segment. The route whose segments are a prefix of the hash's and that has
 // the most segments wins; query parameters (`?a=1&b=2`) are params too. Nothing matches → `/rules`.
+import { repoFileUrl } from '../core/project';
 
 export interface RouteMatch { path: string; params: Record<string, string> }
 
@@ -26,6 +27,9 @@ export const OPTIONS_ROUTES: readonly { path: string; label: string; page: Optio
   { path: '/connections', label: 'Connections', page: 'connections' },
   // ROUTE-INSERT-POINT
 ];
+
+/** The public guide to recipes and rules (docs/recipes.md), linked from the Rules and Recipes pages' intro text. */
+export const RECIPES_GUIDE_URL = repoFileUrl('docs/recipes.md');
 
 const FALLBACK = '/rules';
 const segments = (p: string): string[] => p.split('/').filter((s) => s !== '');

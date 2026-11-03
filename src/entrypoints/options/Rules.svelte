@@ -19,6 +19,7 @@
   import { withRecipe } from '../../ui/recipes-model';
   import { builtinRecipes } from '../../recipes/load';
   import { send } from '../../ui/send';
+  import { RECIPES_GUIDE_URL } from '../../ui/routes';
   import { previewCounts } from '../../core/lang/preview';
   import { shadowText } from '../../core/lang/explain';
   import type { ShadowedRule } from '../../engine/messages';
@@ -195,7 +196,7 @@
 </script>
 
 <section>
-  <p class="help">Order is priority and tab-bar order: the first rule that matches a tab wins, and groups appear in the tab bar in this order. Drag the handle or use Move up / Move down; a recipe's or section's header moves all its rules together. Recipe rules are read-only: move them, turn them on or off, or Customize to edit a copy.</p>
+  <p class="help">Order is priority and tab-bar order: the first rule that matches a tab wins, and groups appear in the tab bar in this order. Drag the handle or use Move up / Move down; a recipe's or section's header moves all its rules together. Recipe rules are read-only: move them, turn them on or off, or Customize to edit a copy. <a href={RECIPES_GUIDE_URL} target="_blank" rel="noopener noreferrer">Guide to recipes and rules</a></p>
 
   <div class="sections">
     <button type="button" onclick={newSection}>New section</button>

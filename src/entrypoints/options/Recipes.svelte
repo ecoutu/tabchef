@@ -21,6 +21,7 @@
   import type { LevelStatus, NeedStatus } from '../../engine/permissions';
   import type { PreviewResult } from '../../core/lang/preview';
   import { send } from '../../ui/send';
+  import { RECIPES_GUIDE_URL } from '../../ui/routes';
   import { onPermissionsChanged, requestNeeds } from '../../ui/permissions';
   import { previewThenApply } from '../../ui/preview-flow';
   import { completeParams, hostParams, paramErrors, requestedNeeds, withRecipe } from '../../ui/recipes-model';
@@ -179,7 +180,7 @@
 </script>
 
 <section class="page">
-  <p class="help">Recipes are ready-made rules. Enabling one shows what it would do to your open tabs first.</p>
+  <p class="help">Recipes are ready-made rules. Enabling one shows what it would do to your open tabs first. <a href={RECIPES_GUIDE_URL} target="_blank" rel="noopener noreferrer">Guide to recipes and rules</a></p>
   {#if loadError}<p class="err" role="alert">{loadError}</p>{/if}
   {#if dirty}<p class="warn" role="note">You have unsaved rule edits. Save or discard your rule edits first.</p>{/if}
   {#if preview}

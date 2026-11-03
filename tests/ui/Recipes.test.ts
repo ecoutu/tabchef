@@ -19,6 +19,7 @@ vi.mock('../../src/ui/permissions', async (orig) => ({
   onPermissionsChanged: (cb: () => void) => { permListeners.list.push(cb); return () => { permListeners.list = permListeners.list.filter((x) => x !== cb); }; },
 }));
 import Recipes from '../../src/entrypoints/options/Recipes.svelte';
+import { RECIPES_GUIDE_URL } from '../../src/ui/routes';
 
 const MEET = 'https://meet.google.com/*';
 const PAUSED = 'Paused: needs access to meet.google.com';
@@ -82,6 +83,13 @@ const card = async (name: string) => (await screen.findByRole('region', { name }
 const sent = (type: string) => send.mock.calls.map((c) => c[0]).filter((r) => r.type === type);
 
 describe('Recipes: cards', () => {
+  it('the intro links to the guide to recipes and rules, in a new tab', () => {
+    render(Recipes, props());
+    const a = screen.getByRole('link', { name: 'Guide to recipes and rules' }) as HTMLAnchorElement;
+    expect(a.href).toBe(RECIPES_GUIDE_URL);
+    expect(a.target).toBe('_blank');
+  });
+
   it('a rule that can never match (redirect patterns left empty) reads Inactive, not Active', async () => {
     items = [finishedItem({ enabled: true }, true)];
     const saved = { ...defaultConfig(), recipes: defaultConfig().recipes.map((r) => (r.id === 'finished' ? { ...r, enabled: true } : r)) };
