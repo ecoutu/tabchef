@@ -1,0 +1,15 @@
+# gitleaks (the "secrets" workflow) with its default rules. The allowlist names exact fake values used by tests,
+# never whole files, so a real token added next to them is still caught.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Fake credentials in tests and synthetic fixtures"
+regexTarget = "secret"
+regexes = [
+  # GitHub's documented example user-to-server and refresh tokens (device flow docs).
+  '''^ghu_16C7e42F292c6912E7710c838347Ae178B4a$''',
+  '''^ghr_1B4a2e77838347a7E420ce178F2E7c6912E1$''',
+  # A made-up key in the redaction tests.
+  '''^key-123456-long$''',
+]
