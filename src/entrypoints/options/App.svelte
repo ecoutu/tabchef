@@ -248,7 +248,7 @@
   :global(button.danger) { color: var(--danger); }
   :global(input:not([type='checkbox']):not([type='file'])), :global(select) { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 3px 6px; }
   :global(button:focus-visible), :global(a:focus-visible), :global(input:focus-visible), :global(select:focus-visible), :global(textarea:focus-visible) { outline: 2px solid var(--accent); outline-offset: 1px; }
-  main { max-width: 860px; margin: 0 auto; padding: 16px; }
+  main { max-width: 1200px; margin: 0 auto; padding: 16px; } /* 860px wrapped the rule rows' control bars */
   header { display: flex; align-items: center; gap: 12px; }
   h1 { font-size: 20px; margin: 0; }
   .dirty { color: var(--accent); font-size: 12px; border: 1px solid var(--accent); border-radius: 10px; padding: 0 8px; }
