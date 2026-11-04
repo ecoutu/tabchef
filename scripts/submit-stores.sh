@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Upload the zip built by `npm run zip` to the Chrome Web Store and submit it for review (semantic-release's publish
-# step; spec §11.1). Pass --dry-run to only check the credentials.
+# step; spec §11.1). A previous version still pending review is cancelled first. Pass --dry-run to only check the
+# credentials.
 #
 # Keyless: CI federates into the cws-publisher service account (through the tabchef GCP project's `github` workload identity pool) and passes a
 # short-lived access token as CHROME_SERVICE_ACCOUNT_ACCESS_TOKEN; no service account key exists. Chrome Web Store
@@ -22,4 +23,7 @@ if [[ ${#missing[@]} -gt 0 ]]; then
   exit 1
 fi
 
-npx wxt submit "$@" --chrome-api-version v2 --chrome-zip .output/*-chrome.zip
+# A version still in review locks the item's draft ("Cancel review ... letting you make changes to your draft"), so the
+# upload would fail after the GitHub release is out. --chrome-cancel-pending cancels that review first and this version
+# starts a new one (releases in quick succession each restart the review: space them out).
+npx wxt submit "$@" --chrome-api-version v2 --chrome-cancel-pending --chrome-zip .output/*-chrome.zip

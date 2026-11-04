@@ -69,7 +69,8 @@ jobs:
           # The token is enough; no credentials file is written into the workspace.
           create_credentials_file: false
       # After the GitHub release, scripts/submit-stores.sh uploads the zip to the Chrome Web Store and submits it for
-      # review. Without the access token it skips, and the release is on GitHub only.
+      # review, cancelling the review of a previous version still pending. Without the access token it skips, and the
+      # release is on GitHub only.
       - run: npx semantic-release
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token || secrets.PROJECT_TOKEN }}
