@@ -23,6 +23,13 @@ jobs:
   release:
     needs: ci
     runs-on: ubuntu-latest
+    # Replaces the workflow's permissions for this job only, so the reusable ci job never gets id-token.
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      # The keyless Chrome Web Store credentials (google-github-actions/auth).
+      id-token: write
     steps:
       # main is protected by the `protect-main` ruleset, so the CHANGELOG.md / version commit and the tag need a
       # token that may bypass it. With RELEASE_APP_ID set, a GitHub App on the bypass list mints one; otherwise the
@@ -48,12 +55,24 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      # Keyless store credentials: GitHub's OIDC token for this run (main only) is exchanged through the
+      # github-tabchef pool for a one-hour Chrome Web Store access token as cws-publisher (ecoutu-infra). Skipped until
+      # the CHROME_WIF_PROVIDER variable is set.
+      - uses: google-github-actions/auth@v3
+        id: cws
+        if: ${{ vars.CHROME_WIF_PROVIDER != '' }}
+        with:
+          workload_identity_provider: ${{ vars.CHROME_WIF_PROVIDER }}
+          service_account: ${{ vars.CHROME_SERVICE_ACCOUNT }}
+          token_format: access_token
+          access_token_scopes: https://www.googleapis.com/auth/chromewebstore
+          # The token is enough; no credentials file is written into the workspace.
+          create_credentials_file: false
       # After the GitHub release, scripts/submit-stores.sh uploads the zip to the Chrome Web Store and submits it for
-      # review. Without the CHROME_* secrets it skips, and the release is on GitHub only.
+      # review. Without the access token it skips, and the release is on GitHub only.
       - run: npx semantic-release
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token || secrets.PROJECT_TOKEN }}
-          CHROME_EXTENSION_ID: ${{ secrets.CHROME_EXTENSION_ID }}
-          CHROME_PUBLISHER_ID: ${{ secrets.CHROME_PUBLISHER_ID }}
-          CHROME_SERVICE_ACCOUNT_CLIENT_EMAIL: ${{ secrets.CHROME_SERVICE_ACCOUNT_CLIENT_EMAIL }}
-          CHROME_SERVICE_ACCOUNT_PRIVATE_KEY: ${{ secrets.CHROME_SERVICE_ACCOUNT_PRIVATE_KEY }}
+          CHROME_EXTENSION_ID: ${{ vars.CHROME_EXTENSION_ID }}
+          CHROME_PUBLISHER_ID: ${{ vars.CHROME_PUBLISHER_ID }}
+          CHROME_SERVICE_ACCOUNT_ACCESS_TOKEN: ${{ steps.cws.outputs.access_token }}

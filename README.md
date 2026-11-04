@@ -99,19 +99,25 @@ Merging to `main` releases. semantic-release picks the version from the commits,
 release and attaches `tabchef-<version>-chrome.zip` to a GitHub release. Then `scripts/submit-stores.sh` uploads the
 zip to the Chrome Web Store and submits it for review.
 
-The store step needs four repository secrets for the Chrome Web Store API v2: `CHROME_EXTENSION_ID`,
-`CHROME_PUBLISHER_ID`, `CHROME_SERVICE_ACCOUNT_CLIENT_EMAIL` and `CHROME_SERVICE_ACCOUNT_PRIVATE_KEY`. Without them it
-skips, and the release is on GitHub only. To set them up:
+The store step is keyless: the release job's GitHub token is exchanged through Workload Identity Federation for a
+one-hour Chrome Web Store access token as the `cws-publisher` service account (created in
+[ecoutu-infra](https://github.com/ecoutu/ecoutu-infra), which admits only this repository's `main`). No service
+account key exists. Until it is configured the step skips, and the release is on GitHub only. To set it up:
 
-1. Submit the first version by hand. The item ID is in the item's dashboard URL, and the publisher ID is in the
-   dashboard URL after `devconsole/`.
-2. Create a service account for the Chrome Web Store API
-   ([guide](https://developer.chrome.com/docs/webstore/service-accounts)) and download its JSON key. The key's
-   `client_email` and `private_key` fields are the last two secrets. `npx wxt submit init` (choose API v2) walks through
-   the same steps.
-3. Add the four secrets under Settings → Secrets and variables → Actions.
-4. Run the **Validate store credentials** workflow (Actions tab). It builds the zip and checks the secrets against the
-   store with `--dry-run`, without uploading anything.
+1. Submit the first version by hand (`docs/store/submitting.md`).
+2. Apply the `tabchef` project, the `cws-publisher` service account and the `github-tabchef` pool in ecoutu-infra.
+3. In the Developer Dashboard, add `cws-publisher`'s email under **Account → Service accounts**.
+4. Add four repository **variables** (Settings → Secrets and variables → Actions → Variables; none is secret):
+
+   | Variable | Value |
+   |---|---|
+   | `CHROME_EXTENSION_ID` | the item ID, from the item's dashboard URL |
+   | `CHROME_PUBLISHER_ID` | the publisher ID, from the dashboard URL after `devconsole/` |
+   | `CHROME_SERVICE_ACCOUNT` | `cws-publisher`'s email (ecoutu-infra output `tabchef_cws_publisher_email`) |
+   | `CHROME_WIF_PROVIDER` | the provider's full name (ecoutu-infra bootstrap output `tabchef_wif_provider_name`) |
+
+5. Run the **Validate store credentials** workflow from `main` (Actions tab). It builds the zip and checks the
+   credentials against the store with `--dry-run`, without uploading anything.
 
 ## Contributing
 
