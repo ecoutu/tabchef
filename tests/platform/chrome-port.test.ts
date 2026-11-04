@@ -33,6 +33,17 @@ describe('ChromePort', () => {
     expect(s.tabs.map((t) => t.favIconUrl)).toEqual(['https://a/f.ico', undefined, 'data:image/png;base64,AA', undefined]);
   });
 
+  it('snapshot maps the tab status (the planner holds loading tabs)', async () => {
+    const api = {
+      windows: { getAll: async () => [{ id: 1, type: 'normal', focused: true }] },
+      tabs: { query: async () => [{ ...base, id: 1, windowId: 1, url: 'https://a', status: 'loading' }, { ...base, id: 2, windowId: 1, url: 'https://b' }] },
+      tabGroups: { query: async () => [] },
+    } as unknown as ConstructorParameters<typeof ChromePort>[0];
+    const s = await new ChromePort(api).snapshot();
+    expect(s.tabs.map((t) => t.status)).toEqual(['loading', undefined]);
+    expect('status' in s.tabs[1]!).toBe(false);
+  });
+
   it('snapshot maps openerTabId (D5)', async () => {
     const api = {
       windows: { getAll: async () => [{ id: 1, type: 'normal', focused: true }] },

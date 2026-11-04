@@ -83,6 +83,17 @@ describe('Reconciler', () => {
     expect(count(f, 'snapshot')).toBe(0);
   });
 
+  it('a tab the loading hold holds is grouped only once it has loaded', async () => {
+    const f = world();
+    f.addTab(tab(1, A, { status: 'loading' }));
+    const r = new Reconciler(f, async () => programOf(config), { loading: (t) => t.status === 'loading' });
+    await r.flush();
+    expect(mutations(f)).toEqual([]);
+    f.state.tabs[0]!.status = 'complete';
+    await r.flush();
+    expect(groupOf(f, 1)).toBe('A');
+  });
+
   it('debounces: 5 schedule calls within 100 ms → a single snapshot', async () => {
     const f = world();
     f.addTab(tab(1, OTHER));

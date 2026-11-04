@@ -662,6 +662,27 @@ describe('planGroups: compiled-program inputs (M2 T6)', () => {
     expect(planGroups(snap(f), strict, ctx({ managedTitles: new Set(['repo-x']) }))).toEqual([{ kind: 'ungroup', tabIds: [1], ruleId: 'user/r' }]);
   });
 
+  it('holds a tab whose page is still loading: neither grouped, moved nor strict-ungrouped until it loads', () => {
+    const f = world();
+    f.addTab(tab(1, A, { status: 'loading' }));
+    f.addTab(tab(2, B, { status: 'loading', groupId: 10 }));
+    f.addTab(tab(3, A, { status: 'complete' }));
+    f.addGroup({ id: 10, windowId: 1, title: 'A', color: 'red', collapsed: false });
+    const p = cfg(rule('a', 'https://a.com/**', 'A', {}, 'red'));
+    const c = ctx({ managedTitles: new Set(['A']) });
+    const loading = (t: TabSnap) => t.status === 'loading';
+    const page = { get: () => undefined, awaiting: () => false, loading };
+    // Tab 3 has loaded: it joins A. Tab 1 is held ungrouped; tab 2 (B in A) is held where it is.
+    expect(planGroups(snap(f), p, c, planTargets(snap(f), p, c, 0, page))).toEqual([
+      { kind: 'group', tabIds: [3], windowId: 1, title: 'A', color: 'red', existingGroupId: 10, ruleId: 'user/a' },
+    ]);
+    // Loaded: both are planned as before.
+    for (const t of f.state.tabs) t.status = 'complete';
+    const ops = planGroups(snap(f), p, c, planTargets(snap(f), p, c, 0, page));
+    expect(ops).toContainEqual({ kind: 'ungroup', tabIds: [2], ruleId: 'user/a' });
+    expect(ops.find((o) => o.kind === 'group')).toMatchObject({ tabIds: [1, 3], existingGroupId: 10 });
+  });
+
   it('opener conditions see the opener tab from the snapshot', () => {
     const f = world();
     f.addTab(tab(1, A));

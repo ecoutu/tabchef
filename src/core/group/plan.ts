@@ -92,11 +92,13 @@ type ManagedCtx = Pick<PlanContext, 'leaveAlone' | 'managedTitles' | 'overrides'
 /**
  * Page facts per tab (M2 T7, background PageFacts). `awaiting`: no facts yet but the tab's watch script should report
  * soon. `source` (M3 T11): the tab's source data per rule key at `url` (background SourceService.factsFor).
+ * `loading`: the tab's page has not finished loading (background LoadHold), so its title may still change.
  */
 export interface PageLookup {
   get(tabId: number): TabFacts['page'] | undefined;
   awaiting(tabId: number): boolean;
   source?(tabId: number, url: string): TabFacts['source'];
+  loading?(tab: TabSnap): boolean;
 }
 
 /** Per-pass rule evaluation shared by managedGroupIds and planGroups (compute once with planTargets). */
@@ -116,7 +118,9 @@ export interface Targets {
  * title) and `page` (page facts); creation times are not known here yet.
  *
  * A tab whose group outcome waits on page facts that are on their way (`page.awaiting`) is held, so a
- * selector-extract title is not grouped half-rendered and a pageText group is not strict-ungrouped meanwhile.
+ * selector-extract title is not grouped half-rendered and a pageText group is not strict-ungrouped meanwhile. So is a
+ * tab whose page is still loading (`page.loading`): its final title can name a project or match another rule, so it
+ * is not grouped by its URL alone and moved again once it loads.
  *
  * The planner treats every rule of `p` as live. The engine plans live ops with liveProgram(p) (dry-run rules fall
  * through, R48) and plans what dry-run rules would do in a separate pass over the full Program (R10, M2 T12).
@@ -140,6 +144,7 @@ export function planTargets(snap: Snapshot, p: Program, ctx: ManagedCtx, now: nu
     if (override === null) continue;
     let m: GroupMatch | null | undefined = override;
     if (!override || override.ruleIndex >= firstGroupRule) {
+      if (page?.loading?.(t)) { held.add(t.id); continue; }
       const opener = t.openerTabId !== undefined ? byId.get(t.openerTabId) : undefined;
       const groupTitle = t.groupId !== -1 ? groupTitles.get(t.groupId) : undefined;
       const pf = page?.get(t.id);

@@ -19,6 +19,7 @@ import { PermissionsManager } from '../engine/permissions';
 import { builtinRecipes } from '../recipes/load';
 import { ProgramCache } from '../engine/program-cache';
 import { Reconciler } from '../engine/reconciler';
+import { LoadHold } from '../engine/load-hold';
 import { SafetyService } from '../engine/safety';
 import { ChromePort } from '../platform/chrome-port';
 import { ConfigStore } from '../storage/config-store';
@@ -89,6 +90,8 @@ export default defineBackground(() => {
     // A report that beat its document's commit, adopted by that commit: applied like an accepted one (contentDeps).
     onAdopt: (id, r) => { adoptReport(contentDeps, id, r); },
   });
+  // Tabs still loading are held by the planner until they load (their final title may assign a project), at most LOAD_HOLD_MS.
+  const loadHold = new LoadHold({ onExpired: () => reconciler.schedule('load-hold') });
   // `safety` is used lazily by the closures below (it needs the reconciler and dedupe handler, which need it).
   const reconciler: Reconciler = new Reconciler(port, getProgram, {
     log: whyLog,
@@ -96,6 +99,7 @@ export default defineBackground(() => {
     beforeRun: async () => { await Promise.all([safety.ready, pageFacts.ready, permissions.ready, sources.ready]); },
     extraLeaveAlone: () => safety.lockedTabIds(),
     pageFacts,
+    loading: (t) => loadHold.held(t),
     // `sources` is declared below (it needs the connection manager); only called once a run starts.
     sources: { factsFor: (id, url) => sources.factsFor(id, url) },
     anchors: { onGroupCreated: (...a) => anchors.onGroupCreated(...a) },
@@ -350,6 +354,7 @@ export default defineBackground(() => {
       safety.onTabSeen({ id: tab.id, url: tab.url || tab.pendingUrl || '', windowId: tab.windowId });
       dedupe.recordCreated(tab.id, { discarded: tab.discarded, status: tab.status });
       tabAges.onCreated(tab);
+      if (tab.status === 'loading') loadHold.onLoading(tab.id);
       const url = tab.pendingUrl || tab.url;
       if (url) candidate(tab.id, url, 'pending');
     }
@@ -369,6 +374,11 @@ export default defineBackground(() => {
     browser.tabs.get(info.tabId).then(refreshMenu, warn('menu refresh'));
   });
   browser.tabs.onUpdated.addListener((tabId, info, tab) => {
+    if (info.status === 'loading') loadHold.onLoading(tabId);
+    if (info.status === 'complete') {
+      loadHold.onDone(tabId);
+      reconciler.schedule('tab-loaded'); // the planner held it while it loaded
+    }
     const dedupeUrl = info.url ?? (info.status === 'loading' ? tab.pendingUrl : undefined);
     if (dedupeUrl) candidate(tabId, dedupeUrl, 'pending');
     // Title-aware dedupe (R18): a candidate awaiting its title re-enters here, outside the serialized chain.
@@ -401,6 +411,7 @@ export default defineBackground(() => {
     void closeExecutor.onTabRemoved(tabId);
     dedupe.onRemoved(tabId);
     tabAges.onRemoved(tabId);
+    loadHold.onDone(tabId);
     anchors.onTabRemoved(tabId, info.isWindowClosing).catch(warn('anchor cleanup'));
     askController.onTabRemoved(tabId).catch((e: unknown) => console.warn('[tabchef] pending ask cleanup failed', e));
     reconciler.schedule('tab-removed');
@@ -410,6 +421,7 @@ export default defineBackground(() => {
     void closeExecutor.onTabRemoved(removed);
     dedupe.onReplaced(added, removed);
     tabAges.onReplaced(added, removed);
+    loadHold.onDone(removed);
     anchors.onTabReplaced(added, removed).catch(warn('anchor replace'));
     projects.onReplaced(added, removed).catch(warn('project replace')); // a discarded tab keeps its project (Review Focus #4)
   });

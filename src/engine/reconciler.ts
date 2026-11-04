@@ -1,6 +1,6 @@
 import { dryRunGroupTabs, planGroups, planTargets, syncCreationOrder, type PageLookup, type PlanContext, type Targets } from '../core/group/plan';
 import type { GroupTarget } from '../core/group/evaluate';
-import type { Op, Snapshot } from '../core/types';
+import type { Op, Snapshot, TabSnap } from '../core/types';
 import type { Program, TabFacts } from '../core/lang/types';
 import type { PreviewContext } from '../core/lang/preview';
 import { hasDryRun, isDryRunRule, liveProgram } from '../core/lang/dry-run';
@@ -26,6 +26,8 @@ export interface ReconcilerOptions {
   pageFacts?: PageLookup;
   /** Source data per tab (background SourceService, M3 T11): `TabFacts.source` for the planner. */
   sources?: { factsFor(tabId: number, url?: string): TabFacts['source'] };
+  /** Whether the planner holds a tab whose page is still loading (background LoadHold.held). */
+  loading?: (tab: TabSnap) => boolean;
   now?: () => number;
   /** Anchor tabs (M2 T11): told about every group this reconciler creates (never adopted ones, ruling R9). */
   anchors?: Pick<AnchorService, 'onGroupCreated'>;
@@ -85,11 +87,12 @@ export class Reconciler {
   ) {
     this.debounceMs = opts.debounceMs ?? 150;
     this.now = opts.now ?? Date.now;
-    const { pageFacts, sources } = opts;
-    this.facts = !sources ? pageFacts : {
+    const { pageFacts, sources, loading } = opts;
+    this.facts = !sources && !loading ? pageFacts : {
       get: (id) => pageFacts?.get(id),
       awaiting: (id) => pageFacts?.awaiting(id) ?? false,
-      source: (id, url) => sources.factsFor(id, url),
+      ...(sources && { source: (id: number, url: string) => sources.factsFor(id, url) }),
+      ...(loading && { loading }),
     };
   }
 
