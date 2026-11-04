@@ -6,6 +6,7 @@ import { adapterKey, adapterOf, type AdapterId } from '../core/adapters';
 import { isPageExtract } from '../core/lang/evaluate';
 import type { Cond, Program, Rule, TabFacts } from '../core/lang/types';
 import type { PageLookup } from '../core/group/plan';
+import { TabHolds } from './tab-holds';
 
 export type PageFactsData = NonNullable<TabFacts['page']>;
 export interface WatchSelector { key: string; selector: string; attr?: string }
@@ -112,9 +113,8 @@ export class PageFacts implements PageLookup {
   private readonly facts = new Map<number, PageFactsData>();
   /** Tabs set or cleared before the stored mirror loaded: their live value wins over the stored one. */
   private readonly touched = new Set<number>();
-  /** Top-frame commit time per tab, while its facts are outstanding (this worker's lifetime only). */
-  private readonly committedAt = new Map<number, number>();
-  private readonly holdTimers = new Map<number, ReturnType<typeof setTimeout>>();
+  /** Held from a top-frame commit while the tab's facts are outstanding (this worker's lifetime only). */
+  private readonly holds: TabHolds;
   /** The tab's current top-frame document (webNavigation / sender documentId), where known. */
   private readonly docs = new Map<number, string>();
   /**
@@ -131,6 +131,7 @@ export class PageFacts implements PageLookup {
 
   constructor(private readonly deps: PageFactsDeps) {
     this.now = deps.now ?? Date.now;
+    this.holds = new TabHolds(PAGE_HOLD_MS, () => this.deps.onHoldExpired?.(), this.now);
     this.ready = this.load();
   }
 
@@ -157,7 +158,7 @@ export class PageFacts implements PageLookup {
 
   set(tabId: number, facts: PageFactsData): void {
     this.facts.set(tabId, facts);
-    this.endHold(tabId);
+    this.holds.end(tabId);
     this.save(tabId);
   }
 
@@ -170,7 +171,7 @@ export class PageFacts implements PageLookup {
   }
 
   private clearFacts(tabId: number): void {
-    this.endHold(tabId);
+    this.holds.end(tabId);
     if (this.facts.delete(tabId) || !this.loaded) this.save(tabId);
   }
 
@@ -193,7 +194,7 @@ export class PageFacts implements PageLookup {
       this.docs.set(tabId, documentId);
     }
     const adopted = documentId !== undefined ? this.takeEarly(tabId, documentId) : undefined;
-    if (!(url !== undefined && this.deps.covers && !this.deps.covers(url))) this.committedAt.set(tabId, this.now());
+    if (!(url !== undefined && this.deps.covers && !this.deps.covers(url))) this.holds.start(tabId);
     // Its hello or report arrived before this commit (e.g. a back/forward-cache restore): not lost, applied now.
     if (adopted) {
       if (adopted.facts) this.set(tabId, adopted.facts);
@@ -229,7 +230,7 @@ export class PageFacts implements PageLookup {
    */
   onHello(tabId: number): void {
     this.clearFacts(tabId);
-    this.committedAt.set(tabId, this.now());
+    this.holds.start(tabId);
   }
 
   /** False only when both ids are known and differ: a report from a document the tab has since navigated away from. */
@@ -245,22 +246,7 @@ export class PageFacts implements PageLookup {
 
   /** No facts yet for the tab's current document, which committed less than PAGE_HOLD_MS ago (PageLookup). */
   awaiting(tabId: number): boolean {
-    const at = this.committedAt.get(tabId);
-    if (at === undefined || this.facts.has(tabId)) return false;
-    const left = at + PAGE_HOLD_MS - this.now();
-    if (left <= 0) {
-      this.endHold(tabId);
-      return false;
-    }
-    // Armed lazily, only for tabs the planner actually holds: on expiry the planner must look again.
-    if (!this.holdTimers.has(tabId)) {
-      this.holdTimers.set(tabId, setTimeout(() => {
-        this.holdTimers.delete(tabId);
-        this.committedAt.delete(tabId);
-        this.deps.onHoldExpired?.();
-      }, left));
-    }
-    return true;
+    return !this.facts.has(tabId) && this.holds.held(tabId);
   }
 
   /**
@@ -300,13 +286,6 @@ export class PageFacts implements PageLookup {
   /** Resolves when queued storage writes have landed (tests). */
   idle(): Promise<void> {
     return this.chain;
-  }
-
-  private endHold(tabId: number): void {
-    this.committedAt.delete(tabId);
-    const t = this.holdTimers.get(tabId);
-    if (t !== undefined) clearTimeout(t);
-    this.holdTimers.delete(tabId);
   }
 
   private save(tabId: number): void {
