@@ -1,3 +1,10 @@
+## [1.2.1](https://github.com/ecoutu/tabchef/compare/v1.2.0...v1.2.1) (2026-11-04)
+
+
+### Bug Fixes
+
+* **engine:** wait for a tab to finish loading before grouping it ([32278cb](https://github.com/ecoutu/tabchef/commit/32278cbff3b21857959f36da92f2ae005295cc5c))
+
 # [1.2.0](https://github.com/ecoutu/tabchef/compare/v1.1.1...v1.2.0) (2026-11-03)
 
 
