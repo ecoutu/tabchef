@@ -2,7 +2,7 @@
 # Upload the zip built by `npm run zip` to the Chrome Web Store and submit it for review (semantic-release's publish
 # step; spec §11.1). Pass --dry-run to only check the credentials.
 #
-# Keyless: CI federates into the cws-publisher service account (ecoutu-infra, github-tabchef pool) and passes a
+# Keyless: CI federates into the cws-publisher service account (through the tabchef GCP project's `github` workload identity pool) and passes a
 # short-lived access token as CHROME_SERVICE_ACCOUNT_ACCESS_TOKEN; no service account key exists. Chrome Web Store
 # API v2 (v1.1, with OAuth refresh tokens, was shut down on 2026-10-15).
 set -euo pipefail

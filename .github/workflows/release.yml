@@ -56,7 +56,7 @@ jobs:
           cache: npm
       - run: npm ci
       # Keyless store credentials: GitHub's OIDC token for this run (main only) is exchanged through the
-      # github-tabchef pool for a one-hour Chrome Web Store access token as cws-publisher (ecoutu-infra). Skipped until
+      # tabchef project's `github` pool for a one-hour Chrome Web Store access token as cws-publisher. Skipped until
       # the CHROME_WIF_PROVIDER variable is set.
       - uses: google-github-actions/auth@v3
         id: cws

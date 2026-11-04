@@ -112,12 +112,16 @@ release and attaches `tabchef-<version>-chrome.zip` to a GitHub release. Then `s
 zip to the Chrome Web Store and submits it for review.
 
 The store step is keyless: the release job's GitHub token is exchanged through Workload Identity Federation for a
-one-hour Chrome Web Store access token as the `cws-publisher` service account (created in
-[ecoutu-infra](https://github.com/ecoutu/ecoutu-infra), which admits only this repository's `main`). No service
-account key exists. Until it is configured the step skips, and the release is on GitHub only. To set it up:
+one-hour Chrome Web Store access token as the `cws-publisher` service account. The workload identity pool admits only
+this repository's `main`. No service account key exists. Until it is configured the step skips, and the release is on
+GitHub only. To set it up:
 
 1. Submit the first version by hand (`docs/store/submitting.md`).
-2. Apply the `tabchef` project, the `cws-publisher` service account and the `github-tabchef` pool in ecoutu-infra.
+2. In a Google Cloud project (`tabchef`), enable the Chrome Web Store and IAM Credentials APIs, create the
+   `cws-publisher` service account with no project roles, and create a workload identity pool (`github`) whose GitHub
+   OIDC provider admits only `assertion.repository == 'ecoutu/tabchef' && assertion.ref == 'refs/heads/main'`. Grant
+   the pool's `attribute.repository/ecoutu/tabchef` principal set `roles/iam.workloadIdentityUser` on the service
+   account.
 3. In the Developer Dashboard, add `cws-publisher`'s email under **Account → Service accounts**.
 4. Add four repository **variables** (Settings → Secrets and variables → Actions → Variables; none is secret):
 
@@ -125,8 +129,8 @@ account key exists. Until it is configured the step skips, and the release is on
    |---|---|
    | `CHROME_EXTENSION_ID` | the item ID, from the item's dashboard URL |
    | `CHROME_PUBLISHER_ID` | the publisher ID, from the dashboard URL after `devconsole/` |
-   | `CHROME_SERVICE_ACCOUNT` | `cws-publisher`'s email (ecoutu-infra output `tabchef_cws_publisher_email`) |
-   | `CHROME_WIF_PROVIDER` | the provider's full name (ecoutu-infra bootstrap output `tabchef_wif_provider_name`) |
+   | `CHROME_SERVICE_ACCOUNT` | `cws-publisher@tabchef.iam.gserviceaccount.com` |
+   | `CHROME_WIF_PROVIDER` | `projects/159741528756/locations/global/workloadIdentityPools/github/providers/github-oidc` |
 
 5. Run the **Validate store credentials** workflow from `main` (Actions tab). It builds the zip and checks the
    credentials against the store with `--dry-run`, without uploading anything.
