@@ -165,6 +165,23 @@ describe('Reconciler', () => {
     expect(groupOf(f, 1)).toBe('A');
   });
 
+  it('closing a grouped tab is not logged as the user moving it out (Chrome ungroups it just before onRemoved)', async () => {
+    const f = world();
+    f.addTab(tab(1, A));
+    f.addTab(tab(2, A));
+    const entries: { tabId?: number; action: string; detail?: string }[] = [];
+    const r = new Reconciler(f, async () => programOf(config), { log: { add: (e) => { entries.push(e); } } });
+    emitGroupEvents(f, r);
+    await r.flush();
+    expect(groupOf(f, 1)).toBe('A');
+    entries.length = 0;
+    // Any close (the user's or Tabchef's): by the time the groupId -1 update is handled, the tab is already gone.
+    f.state.tabs = f.state.tabs.filter((t) => t.id !== 1);
+    await r.onTabGroupChanged(1, -1);
+    expect(entries.filter((e) => e.action === 'leave-alone')).toEqual([]);
+    expect((await r.liveState()).leaveAlone.has(1)).toBe(false);
+  });
+
   it('ungrouping done by Tabchef itself is not treated as a user drag', async () => {
     const f = world();
     f.addTab(tab(1, A));

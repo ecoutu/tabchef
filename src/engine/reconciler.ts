@@ -125,9 +125,11 @@ export class Reconciler {
 
   /**
    * tabs.onUpdated with a groupId change. A tab leaving a managed group that Tabchef didn't move was dragged out.
-   * `url` (the tab's current URL) lets a later fragment-only change keep it left alone.
+   * `url` (the tab's current URL) lets a later fragment-only change keep it left alone. Closing a grouped tab also
+   * fires groupId -1, just before onRemoved, and the tab is already gone by then: that one was not dragged out.
    */
   async onTabGroupChanged(tabId: number, newGroupId: number, url?: string): Promise<void> {
+    const gone = newGroupId === -1 && !(await this.port.snapshot()).tabs.some((t) => t.id === tabId);
     const st = await this.load();
     const prev = st.managedTabs.get(tabId);
     if (newGroupId !== -1 && new Set(st.managedTabs.values()).has(newGroupId)) st.managedTabs.set(tabId, newGroupId);
@@ -137,7 +139,7 @@ export class Reconciler {
     if (i >= 0) {
       const [hit] = st.expectedGroupChanges.splice(i, 1) as [[number, number]];
       hit[1] = CONSUMED; // a pending refresh-at-resolve must not resurrect it
-    } else if (newGroupId === -1 && prev !== undefined) {
+    } else if (newGroupId === -1 && prev !== undefined && !gone) {
       st.leaveAlone.add(tabId);
       if (url !== undefined) st.leaveAloneUrls.set(tabId, withoutFragment(url));
       this.log({ tabId, action: 'leave-alone', detail: `user moved tab out of group ${prev}` });
