@@ -1,1 +1,18 @@
-npm run lint && npm run check && npm run check:cycles && npm test
+# git passes "<local ref> <local sha> <remote ref> <remote sha>" per pushed ref: read it before npm can consume stdin.
+refs=$(cat)
+
+npm run lint && npm run check && npm run check:cycles && npm test || exit 1
+
+# e2e is slow: run it only when the push changes the manifest config or the e2e suite, which unit tests don't cover.
+zero=0000000000000000000000000000000000000000
+changed=$(printf '%s\n' "$refs" | while read -r _lref lsha _rref rsha; do
+  [ -z "$lsha" ] || [ "$lsha" = "$zero" ] && continue # a branch delete
+  if [ "$rsha" = "$zero" ] || ! git cat-file -e "$rsha^{commit}" 2>/dev/null; then
+    rsha=$(git merge-base origin/main "$lsha") || continue # a new branch: what it adds to main
+  fi
+  git diff --name-only "$rsha" "$lsha"
+done)
+if printf '%s\n' "$changed" | grep -qE '^(wxt\.config\.ts|playwright\.config\.ts|tests/e2e/)'; then
+  echo "pre-push: the manifest config or e2e suite changed, running npm run e2e"
+  npm run e2e || exit 1
+fi
