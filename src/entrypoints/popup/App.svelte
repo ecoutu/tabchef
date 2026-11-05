@@ -2,7 +2,6 @@
   import { onDestroy, onMount } from 'svelte';
   import { browser } from 'wxt/browser';
   import { send } from '../../ui/send';
-  import { requestPermissions } from '../../ui/permissions';
   import { buildPopupModel, parsePopupPrefs, POPUP_PREFS_KEY, type PopupPrefs } from '../../ui/popup-model';
   import type { ViewData, ViewSummary } from '../../engine/views';
   import { CLOSE_SUGGESTIONS_KEY } from '../../engine/close-executor';
@@ -21,10 +20,6 @@
   let locked = $state<number[]>([]);
   let currentTabId = $state<number | undefined>(undefined);
   let currentWindowId = $state<number | undefined>(undefined);
-  /** sidePanel already granted: the side panel button opens without a permission request (M3-R82). */
-  let panelGranted = $state(false);
-  /** The panel did not open (the user gesture was lost to the permission prompt): the next click opens it directly. */
-  let panelRetry = $state(false);
   let syncWarning = $state('');
   /** Global dry run (config.dryRun, M2 T12): the engine only logs. T17's popup rewrite keeps this header chip. */
   let dryRun = $state(false);
@@ -79,9 +74,6 @@
       currentTabId = tab?.id;
       currentWindowId = tab?.windowId;
     } catch { /* no current tab (e.g. devtools): no lock or side panel button */ }
-    try {
-      panelGranted = await browser.permissions.contains({ permissions: ['sidePanel'] });
-    } catch { /* unknown: the click requests it */ }
     await refresh();
   });
   onDestroy(() => { browser.storage.onChanged.removeListener(onStorage); });
@@ -121,31 +113,16 @@
   const hasProjects = $derived(views.some((v) => v.kind === 'projects'));
 
   /**
-   * "Open in side panel" (M3-R82). Not granted yet: the permission request is the handler's first statement (user
-   * gesture), then the panel opens. If that open fails (the gesture did not survive the prompt) the label becomes
-   * "Open side panel", and that click opens it with no request in between.
+   * "Open in side panel" (M3-R82). sidePanel is a required permission, so there is no request: setOptions and open
+   * are both called before any await, and the click's user gesture reaches open.
    */
-  function openPanel(): void {
+  async function openPanel(): Promise<void> {
     const windowId = currentWindowId;
     if (windowId === undefined) return;
-    if (panelGranted || panelRetry) { void showPanel(windowId); return; }
-    requestPermissions({ permissions: ['sidePanel'] }).then(async (granted) => {
-      if (!granted) return;
-      panelGranted = true;
-      await showPanel(windowId);
-    }, (e: unknown) => { error = e instanceof Error ? e.message : String(e); });
-  }
-
-  /** setOptions and open are both called before any await, so a click's user gesture reaches open. */
-  async function showPanel(windowId: number): Promise<void> {
     try {
       await Promise.all([browser.sidePanel.setOptions({ path: 'panel.html', enabled: true }), browser.sidePanel.open({ windowId })]);
-      panelRetry = false;
     } catch (e) {
-      const m = e instanceof Error ? e.message : String(e);
-      // Only a lost user gesture is worth a second click; anything else (no sidePanel API, ...) is an error.
-      if (!panelRetry && /user gesture/i.test(m)) panelRetry = true;
-      else error = m;
+      error = e instanceof Error ? e.message : String(e);
     }
   }
 
@@ -165,7 +142,7 @@
     {#if dryRun}<span class="chip" role="status" title="Dry run: Tabchef only logs what it would do">Dry run</span>{/if}
     <span class="total" aria-label="{model.header.total} items">{model.header.total}</span>
     {#if hasProjects && currentWindowId !== undefined}
-      <button type="button" class="panel" onclick={openPanel}>{panelRetry ? 'Open side panel' : 'Open in side panel'}</button>
+      <button type="button" class="panel" onclick={openPanel}>Open in side panel</button>
     {/if}
     {#if currentTabId !== undefined}
       <button type="button" class="lock" aria-pressed={currentLocked} onclick={toggleCurrentLock}>

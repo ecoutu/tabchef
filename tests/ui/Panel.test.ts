@@ -68,12 +68,10 @@ describe('side panel page (M3 T17)', () => {
 });
 
 describe('popup "Open in side panel" (M3-R82)', () => {
-  const gestureLost = () => Promise.reject(new Error('sidePanel.open() may only be called in response to a user gesture.'));
-  const setup = (granted: boolean, opened: () => Promise<void> = () => Promise.resolve()) => {
+  const setup = (opened: () => Promise<void> = () => Promise.resolve()) => {
     (vi.spyOn(browser.tabs, 'query') as unknown as { mockResolvedValue: (v: unknown) => void }).mockResolvedValue([{ id: 5, windowId: 3 }]);
-    // The promise overloads (the callback ones confuse vi.spyOn's types).
-    const perms = browser.permissions as unknown as Record<'contains' | 'request', (p: unknown) => Promise<boolean>>;
-    vi.spyOn(perms, 'contains').mockResolvedValue(granted);
+    // The promise overload (the callback one confuses vi.spyOn's types).
+    const perms = browser.permissions as unknown as Record<'request', (p: unknown) => Promise<boolean>>;
     const request = vi.spyOn(perms, 'request').mockResolvedValue(true);
     const setOptions = vi.spyOn(browser.sidePanel, 'setOptions').mockResolvedValue(undefined);
     const open = vi.fn((o: unknown) => { void o; return opened(); });
@@ -81,59 +79,26 @@ describe('popup "Open in side panel" (M3-R82)', () => {
     return { request, setOptions, open };
   };
 
-  it('requests sidePanel synchronously in the click handler, then sets panel.html and opens it in the window', async () => {
-    const s = setup(false);
+  it('sets panel.html and opens it in the window within the click, with no permission request (sidePanel is required)', async () => {
+    const s = setup();
     render(Popup);
     const btn = await screen.findByRole('button', { name: 'Open in side panel' });
-    await waitFor(() => expect(browser.permissions.contains).toHaveBeenCalled());
-    btn.click(); // no await: the request must already have happened
-    expect(s.request).toHaveBeenCalledWith({ permissions: ['sidePanel'] });
-    await waitFor(() => expect(s.open).toHaveBeenCalledWith({ windowId: 3 }));
+    btn.click(); // no await: open must run inside the click's user gesture
     expect(s.setOptions).toHaveBeenCalledWith({ path: 'panel.html', enabled: true });
-  });
-
-  it('when open rejects (gesture lost), the label becomes "Open side panel" and the second click opens it directly', async () => {
-    const s = setup(false, gestureLost);
-    render(Popup);
-    await fireEvent.click(await screen.findByRole('button', { name: 'Open in side panel' }));
-    const again = await screen.findByRole('button', { name: 'Open side panel' });
-    s.open.mockImplementation(() => Promise.resolve());
-    s.request.mockClear();
-    again.click();
-    expect(s.open).toHaveBeenLastCalledWith({ windowId: 3 }); // synchronously: no permission prompt in between
+    expect(s.open).toHaveBeenCalledWith({ windowId: 3 });
+    // A runtime grant of an optional sidePanel makes a later sidePanel.open() crash Chrome 156.
     expect(s.request).not.toHaveBeenCalled();
   });
 
-  it('an open failure other than the lost gesture (granted already) shows the error', async () => {
-    setup(true, () => Promise.reject(new Error('No active side panel for windowId: 3')));
+  it('an open failure shows the error', async () => {
+    setup(() => Promise.reject(new Error('No active side panel for windowId: 3')));
     render(Popup);
     await fireEvent.click(await screen.findByRole('button', { name: 'Open in side panel' }));
     expect((await screen.findByRole('alert')).textContent).toBe('No active side panel for windowId: 3');
   });
 
-  it('already granted: the click opens without a permission request', async () => {
-    const s = setup(true);
-    render(Popup);
-    const btn = await screen.findByRole('button', { name: 'Open in side panel' });
-    await waitFor(() => expect(browser.permissions.contains).toHaveBeenCalledWith({ permissions: ['sidePanel'] }));
-    await Promise.resolve();
-    btn.click();
-    expect(s.open).toHaveBeenCalledWith({ windowId: 3 });
-    expect(s.request).not.toHaveBeenCalled();
-  });
-
-  it('a declined request opens nothing', async () => {
-    const s = setup(false);
-    s.request.mockResolvedValue(false);
-    render(Popup);
-    await fireEvent.click(await screen.findByRole('button', { name: 'Open in side panel' }));
-    await Promise.resolve();
-    expect(s.open).not.toHaveBeenCalled();
-    expect(screen.getByRole('button', { name: 'Open in side panel' })).toBeTruthy();
-  });
-
   it('no button without a projects view; the projects view renders the Projects tab', async () => {
-    setup(false);
+    setup();
     render(Popup);
     expect(await screen.findByText('No projects yet. Turn on a Jira ticket recipe, then open a Jira ticket.')).toBeTruthy();
     cleanup();

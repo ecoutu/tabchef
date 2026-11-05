@@ -6,8 +6,10 @@ export const manifestConfig: UserManifest = {
   name: 'Tabchef',
   // The store listing's summary (docs/store/listing.md), so the extensions page and the store say the same thing.
   description: 'Group, de-duplicate and auto-close tabs with rules. Recipes for GitHub PRs, OAuth callbacks and Meet calls, or write your own.',
-  permissions: ['tabs', 'tabGroups', 'storage', 'contextMenus', 'alarms', 'webNavigation'],
-  optional_permissions: ['notifications', 'scripting', 'sidePanel'],
+  // sidePanel is required (it has no install warning): granted at runtime as an optional permission, any later
+  // sidePanel.open() crashes the whole browser (Chrome 156).
+  permissions: ['tabs', 'tabGroups', 'storage', 'contextMenus', 'alarms', 'webNavigation', 'sidePanel'],
+  optional_permissions: ['notifications', 'scripting'],
   optional_host_permissions: ['https://*/*', 'http://localhost/*'],
   options_ui: { page: 'options.html', open_in_tab: true },
   // storage.session, sidePanel.open and the tab group APIs Tabchef relies on.

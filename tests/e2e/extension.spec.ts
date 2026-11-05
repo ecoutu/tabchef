@@ -11,7 +11,7 @@ test('built manifest: options page opens in a tab, no required host permissions'
   const m = JSON.parse(readFileSync(join(EXT_PATH, 'manifest.json'), 'utf8')) as Record<string, unknown>;
   expect((m.options_ui as { open_in_tab?: boolean }).open_in_tab).toBe(true);
   expect(m.host_permissions).toBeUndefined();
-  expect(m.permissions).toEqual(['tabs', 'tabGroups', 'storage', 'contextMenus', 'alarms', 'webNavigation']);
+  expect(m.permissions).toEqual(['tabs', 'tabGroups', 'storage', 'contextMenus', 'alarms', 'webNavigation', 'sidePanel']);
 });
 
 test.describe('extension in Chromium', () => {

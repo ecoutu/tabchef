@@ -125,9 +125,9 @@ Asked for only when the user turns on notifications for duplicates. Shows a noti
 
 Asked for only when the user turns on a rule or recipe that reads pages. Injects Tabchef's own bundled scripts into tabs on sites the user granted: a banner that asks before closing a duplicate or a tab with unsaved form edits, and a page watcher for rules that match on page text, read a value from the page (for example a pull request's branch) or protect unsaved form edits. The watcher reports only whether the phrases a rule names appear on the page, the values a rule reads, and whether a form field was edited; it never sends the page text.
 
-### sidePanel (optional)
+### sidePanel
 
-Asked for only when the user opens the side panel. Shows the user's projects (a Jira ticket with its pull requests) in Chrome's side panel.
+Shows the user's projects (a Jira ticket with its pull requests) in Chrome's side panel.
 
 ### Host permissions (optional)
 

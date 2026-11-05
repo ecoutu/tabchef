@@ -69,7 +69,7 @@ other data with them. Your tokens are sent only to the service they belong to.
 | `webNavigation` | Notice navigations early, so duplicates close before the page loads. |
 | `notifications` (optional) | Ask before closing a duplicate or a tab with unsaved input, if you turn notifications on. |
 | `scripting` (optional) | Run Tabchef's own page script on sites you allow, as described above. |
-| `sidePanel` (optional) | Show your projects in Chrome's side panel. |
+| `sidePanel` | Show your projects in Chrome's side panel. |
 | Site access (optional) | Asked for one site at a time, only for features that read pages or use a connection. |
 
 ## Children

@@ -11,6 +11,7 @@ describe('manifest permissions', () => {
       'contextMenus',
       'alarms',
       'webNavigation',
+      'sidePanel',
     ]);
   });
 
@@ -18,7 +19,6 @@ describe('manifest permissions', () => {
     expect(manifestConfig.optional_permissions).toEqual([
       'notifications',
       'scripting',
-      'sidePanel',
     ]);
   });
 
@@ -36,11 +36,12 @@ describe('manifest permissions', () => {
   it('requires Chrome 116+ (storage.session, sidePanel.open, tab group APIs)', () => {
     expect(manifestConfig.minimum_chrome_version).toBe('116');
   });
-  it('M3 T17: the side panel is an unlisted page; sidePanel stays optional (no side_panel key)', () => {
+  it('M3 T17: the side panel is an unlisted page (no side_panel key); sidePanel is required, not optional', () => {
     expect(manifestConfig).not.toHaveProperty('side_panel');
-    expect(manifestConfig.permissions).not.toContain('sidePanel');
-    expect(manifestConfig.optional_permissions).toContain('sidePanel');
-    // WXT adds `side_panel` and a required `sidePanel` for an entrypoint named sidepanel; the panel page is `panel`.
+    // Granted at runtime as an optional permission, any later sidePanel.open() crashes Chrome 156 (whole browser).
+    expect(manifestConfig.permissions).toContain('sidePanel');
+    expect(manifestConfig.optional_permissions).not.toContain('sidePanel');
+    // WXT adds a `side_panel` key for an entrypoint named sidepanel (opened on every action click); the page is `panel`.
     const entries = readdirSync(new URL('../src/entrypoints/', import.meta.url));
     expect(entries.filter((e) => /^sidepanel/i.test(e) || /\.sidepanel\./i.test(e))).toEqual([]);
     expect(entries).toContain('panel');
