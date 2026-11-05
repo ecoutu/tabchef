@@ -6,12 +6,15 @@ import {
   type Harness,
 } from './helpers';
 import type { Config } from '../../src/core/types';
+import { manifestConfig } from '../../wxt.config';
 
 test('built manifest: options page opens in a tab, no required host permissions', () => {
   const m = JSON.parse(readFileSync(join(EXT_PATH, 'manifest.json'), 'utf8')) as Record<string, unknown>;
   expect((m.options_ui as { open_in_tab?: boolean }).open_in_tab).toBe(true);
   expect(m.host_permissions).toBeUndefined();
-  expect(m.permissions).toEqual(['tabs', 'tabGroups', 'storage', 'contextMenus', 'alarms', 'webNavigation', 'sidePanel']);
+  // The lists themselves are pinned in tests/manifest.test.ts: here the build must not add any (WXT adds some per entrypoint).
+  expect(m.permissions).toEqual(manifestConfig.permissions);
+  expect(m.optional_permissions).toEqual(manifestConfig.optional_permissions);
 });
 
 test.describe('extension in Chromium', () => {
