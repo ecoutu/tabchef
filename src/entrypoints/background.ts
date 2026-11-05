@@ -376,9 +376,11 @@ export default defineBackground(() => {
   browser.tabs.onUpdated.addListener((tabId, info, tab) => {
     if (info.status === 'loading') loadHold.onLoading(tabId);
     if (info.status === 'complete') {
-      loadHold.onDone(tabId);
+      loadHold.onComplete(tabId);
       reconciler.schedule('tab-loaded'); // the planner held it while it loaded
     }
+    // The title an in-page navigation sets after complete ends its hold: re-plan now, not after the title debounce.
+    if (info.title !== undefined && loadHold.onTitle(tabId, info.title, tab.url)) reconciler.schedule('tab-titled');
     const dedupeUrl = info.url ?? (info.status === 'loading' ? tab.pendingUrl : undefined);
     if (dedupeUrl) candidate(tabId, dedupeUrl, 'pending');
     // Title-aware dedupe (R18): a candidate awaiting its title re-enters here, outside the serialized chain.
