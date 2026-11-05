@@ -199,7 +199,7 @@
 
   <div class="body" role="tabpanel">
     {#if activeView?.kind === 'projects'}
-      <Projects />
+      <Projects onChange={refresh} />
     {:else if activeView && data?.viewId === activeView.id}
       {#if data.data.kind === 'duplicates'}
         <Duplicates data={{ sets: data.data.sets, pending: data.data.pending, locked }} onChange={refresh} />

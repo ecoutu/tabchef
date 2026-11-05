@@ -11,7 +11,7 @@ import Popup from '../../src/entrypoints/popup/App.svelte';
 let locked: number[];
 let warning: string | undefined;
 let dryRun: boolean;
-type V = { id: string; tab: string; kind: 'list' | 'duplicates'; actions: string[]; count: number; paused?: string; notice?: string };
+type V = { id: string; tab: string; kind: 'list' | 'duplicates' | 'projects'; actions: string[]; count: number; paused?: string; notice?: string };
 let views: V[];
 const dupView: V = { id: 'duplicates', tab: 'Duplicates', kind: 'duplicates', actions: ['focus', 'close', 'close-all'], count: 0 };
 const finView: V = { id: 'finished', tab: 'Finished', kind: 'list', actions: ['focus', 'close', 'keep'], count: 1 };
@@ -130,6 +130,30 @@ describe('Popup', () => {
     const tab = await screen.findByRole('tab', { name: /Finished/ });
     expect(tab.classList.contains('faded')).toBe(true);
     expect(tab.getAttribute('title')).toBe('Paused: needs access to meet.google.com');
+  });
+
+  it('Close group and Undo on a project card refresh the other tabs\' counts (views.list)', async () => {
+    const projView: V = { id: 'projects', tab: 'Projects', kind: 'projects', actions: [], count: 1 };
+    views = [projView, { ...dupView, count: 2 }];
+    const card = { id: 'jira:ABC-1', key: 'ABC-1', title: 'ABC-1 · Login fails', status: { name: 'Done', category: 'done', via: 'api' }, done: true,
+      tabs: [{ tabId: 1, windowId: 1, title: 'ABC-1 ticket', url: 'https://acme.atlassian.net/browse/ABC-1' }], linked: [] };
+    const base = send.getMockImplementation()!;
+    send.mockImplementation(async (req: { type: string }) => {
+      switch (req.type) {
+        case 'projects.list': return { ok: true, data: [card] };
+        case 'projects.closeGroup': views = [projView, { ...dupView, count: 0 }]; return { ok: true, data: { closed: 1, skipped: 0, ids: ['rc-1'] } };
+        case 'recent.undo': views = [projView, { ...dupView, count: 2 }]; return { ok: true, data: null };
+        default: return base(req);
+      }
+    });
+    await browser.storage.local.set({ 'popup.lastTab': 'projects' });
+    render(Popup);
+    const dup = await screen.findByRole('tab', { name: /Duplicates/ });
+    await waitFor(() => expect(dup.textContent).toContain('2'));
+    await fireEvent.click(await screen.findByRole('button', { name: 'Close group' }));
+    await waitFor(() => expect(screen.getByRole('tab', { name: /Duplicates/ }).textContent).toContain('0'));
+    await fireEvent.click(await screen.findByRole('button', { name: 'Undo' }));
+    await waitFor(() => expect(screen.getByRole('tab', { name: /Duplicates/ }).textContent).toContain('2'));
   });
 
   it('refreshes when the Finished suggestions change (storage.session closeSuggestions)', async () => {

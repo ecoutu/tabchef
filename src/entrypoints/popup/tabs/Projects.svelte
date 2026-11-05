@@ -2,6 +2,7 @@
   // The Projects tab (M3 T17): one card per open project (projects.list), in the popup and, full height, in the side
   // panel. Opening it sends sources.refresh (SourceService refresh('popup'), throttled; M3-R83), then lists again.
   // `live` (the side panel): also re-fetch on config.changed and every LIVE_MS while the page is visible.
+  // `onChange` (the popup): called after Close group, Undo or Open, so the other tabs' counts are re-read.
   import { onDestroy, onMount } from 'svelte';
   import { browser } from 'wxt/browser';
   import { send } from '../../../ui/send';
@@ -10,7 +11,7 @@
   import ProjectCard from './ProjectCard.svelte';
 
   const LIVE_MS = 5000;
-  let { live = false }: { live?: boolean } = $props();
+  let { live = false, onChange }: { live?: boolean; onChange?: () => void } = $props();
   let cards = $state<Card[] | undefined>(undefined);
   let error = $state('');
   /** Done prompts the user answered Keep to (this page only). */
@@ -18,6 +19,12 @@
   /** After Close group: the closed tabs' recently-closed entries, which Undo reopens (M1 undo, recent.undo). */
   let toast = $state<{ text: string; ids: string[] } | undefined>(undefined);
   let seq = 0;
+
+  /** After an action: re-list, and let the popup refresh its counts. */
+  async function reload(): Promise<void> {
+    onChange?.();
+    await load();
+  }
 
   async function load(): Promise<void> {
     const n = ++seq;
@@ -35,7 +42,7 @@
 
   const focus = (tabId: number) => void act(() => send({ type: 'tab.focus', tabId }));
   async function openLinked(projectId: string, url: string): Promise<void> {
-    if (await act(() => send({ type: 'projects.openLinked', projectId, url }))) await load();
+    if (await act(() => send({ type: 'projects.openLinked', projectId, url }))) await reload();
   }
   async function closeGroup(projectId: string): Promise<void> {
     const r = await send({ type: 'projects.closeGroup', projectId });
@@ -44,16 +51,16 @@
     const { closed, skipped, ids } = r.data;
     const text = `Closed ${closed} ${closed === 1 ? 'tab' : 'tabs'}${skipped > 0 ? ` · ${skipped} skipped` : ''}`;
     toast = closed > 0 || skipped > 0 ? { text, ids } : undefined;
-    await load();
+    await reload();
   }
   /** Restores the entries in turn; on a failure the ones not restored stay behind Undo. */
   async function undo(ids: string[]): Promise<void> {
     const text = toast?.text ?? '';
     for (const [i, id] of ids.entries()) {
-      if (!(await act(() => send({ type: 'recent.undo', id })))) { toast = { text, ids: ids.slice(i) }; await load(); return; }
+      if (!(await act(() => send({ type: 'recent.undo', id })))) { toast = { text, ids: ids.slice(i) }; await reload(); return; }
     }
     toast = undefined;
-    await load();
+    await reload();
   }
 
   const onMessage = (m: unknown) => { if (isConfigChangedMessage(m)) void load(); };
