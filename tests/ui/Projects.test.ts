@@ -123,6 +123,44 @@ describe('Projects tab (M3 T17)', () => {
     expect(types().indexOf('sources.refresh')).toBeLessThan(types().lastIndexOf('projects.list'));
   });
 
+  it('while the first list is pending: a loading status, replaced by the cards', async () => {
+    let answer!: (r: unknown) => void;
+    send.mockImplementation((req: { type: string }) =>
+      req.type === 'projects.list' ? new Promise((r) => { answer = r; }) : Promise.resolve({ ok: false, error: 'skip' }));
+    render(Projects);
+    const status = await screen.findByRole('status');
+    expect(status.textContent).toContain('Loading projects…');
+    answer({ ok: true, data: cards });
+    expect(await screen.findByRole('heading', { name: 'ABC-1 · Login fails' })).toBeTruthy();
+    expect(screen.queryByText('Loading projects…')).toBeNull();
+  });
+
+  it('no loading status on a later refresh', async () => {
+    const answers: ((r: unknown) => void)[] = [];
+    let refreshed!: (r: unknown) => void;
+    send.mockImplementation((req: { type: string }) =>
+      req.type === 'projects.list' ? new Promise((r) => { answers.push(r); })
+        : req.type === 'sources.refresh' ? new Promise((r) => { refreshed = r; }) : Promise.resolve({ ok: true, data: null }));
+    render(Projects);
+    await waitFor(() => expect(answers).toHaveLength(1));
+    answers[0]!({ ok: true, data: cards });
+    await screen.findByRole('heading', { name: 'ABC-1 · Login fails' });
+    refreshed({ ok: true, data: null });
+    await waitFor(() => expect(answers).toHaveLength(2)); // after sources.refresh: still pending
+    expect(screen.queryByText('Loading projects…')).toBeNull();
+  });
+
+  it('a failed first list: the error replaces the loading status', async () => {
+    let answer!: (r: unknown) => void;
+    send.mockImplementation((req: { type: string }) =>
+      req.type === 'projects.list' ? new Promise((r) => { answer = r; }) : Promise.resolve({ ok: false, error: 'skip' }));
+    render(Projects);
+    await screen.findByText('Loading projects…');
+    answer({ ok: false, error: 'projects unavailable' });
+    expect((await screen.findByRole('alert')).textContent).toBe('projects unavailable');
+    expect(screen.queryByText('Loading projects…')).toBeNull();
+  });
+
   it('a failed list shows the error', async () => {
     send.mockImplementation(async (req: { type: string }) => (req.type === 'projects.list' ? { ok: false, error: 'projects unavailable' } : { ok: true, data: null }));
     render(Projects);

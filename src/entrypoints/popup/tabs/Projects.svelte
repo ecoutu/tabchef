@@ -94,6 +94,10 @@
       {#if t.ids.length > 0}<button type="button" class="act" onclick={() => undo(t.ids)}>Undo</button>{/if}
     </p>
   {/if}
+  <!-- The first list can take seconds (it waits on the queues and the Jira / GitHub fetches); later refreshes keep the cards. -->
+  {#if cards === undefined && !error}
+    <p class="loading" role="status"><span class="spinner" aria-hidden="true"></span>Loading projects…</p>
+  {/if}
   {#if cards && cards.length === 0}
     <p class="empty">No projects yet. Turn on a Jira ticket recipe, then open a Jira ticket.</p>
   {/if}
@@ -107,6 +111,10 @@
 <style>
   .error { color: var(--danger); margin: 6px 12px; font-size: 12px; }
   .empty { color: var(--muted); padding: 12px; margin: 0; }
+  .loading { display: flex; align-items: center; gap: 8px; color: var(--muted); padding: 12px; margin: 0; }
+  .spinner { width: 12px; height: 12px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
   /* Undo on the --surface toast: the page background, so it stands out (overrides .act's --surface). */
   .toast .act { background: var(--bg); }
   .toast { display: flex; align-items: center; gap: 8px; margin: 6px 12px; padding: 6px 8px; border-radius: 6px; background: var(--surface); }
