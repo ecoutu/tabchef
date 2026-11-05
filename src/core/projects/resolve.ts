@@ -67,15 +67,17 @@ export function resolveProjects(input: ResolveInput): ResolveResult {
     if (url !== undefined) tabs.push({ t, url });
   }
 
-  // Manual: an entry holds its own tab while that tab is at the entry's URL; once that tab is gone (restart) or has
-  // navigated away, any tab at that URL. The first project listing a tab wins.
-  for (const p of input.projects) {
-    for (const m of p.manual) {
-      const url = norm(m.url);
-      if (url === undefined) continue;
-      const own = m.tabId !== undefined && tabs.some((x) => x.t.id === m.tabId && x.url === url);
+  // Manual: an entry first holds its own tab while that tab is at the entry's URL, then every other tab at that URL
+  // (a second copy of the page, or any copy once its own tab is gone or has navigated away). The first project
+  // listing a tab wins.
+  const entries = input.projects.flatMap((p) => p.manual.flatMap((m) => {
+    const url = norm(m.url);
+    return url === undefined ? [] : [{ p, tabId: m.tabId, url }];
+  }));
+  for (const ownOnly of [true, false]) {
+    for (const { p, tabId, url } of entries) {
       for (const { t, url: u } of tabs) {
-        if (u !== url || (own && t.id !== m.tabId) || assignments.has(t.id)) continue;
+        if (u !== url || (ownOnly && t.id !== tabId) || assignments.has(t.id)) continue;
         assignments.set(t.id, { projectId: p.id, key: p.key, via: 'manual', index: -1 });
       }
     }

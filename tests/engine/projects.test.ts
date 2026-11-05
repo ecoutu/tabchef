@@ -249,6 +249,19 @@ describe('ProjectService actions', () => {
     await expect(h.svc.addTab(1, PID)).rejects.toThrow(); // gone from the UI: no manual adds either
   });
 
+  it('closeGroup also closes a second copy of a manually added page (same PR open twice): the project closes', async () => {
+    const h = await withPair();
+    h.f.addTab(tab(3, PR2, 'Saved carts page')); // no key in the title: it joins only by hand
+    h.f.addTab(tab(4, PR2, 'Saved carts page'));
+    await h.r.flush();
+    await h.svc.addTab(3, PID);
+    await h.r.flush();
+    expect([1, 2, 3, 4].map(h.groupOf)).toEqual(['ABC-1', 'ABC-1', 'ABC-1', 'ABC-1']);
+    expect(await h.svc.closeGroup(PID)).toEqual({ closed: 4, skipped: 0, ids: ['rc1', 'rc2', 'rc3', 'rc4'] });
+    expect(h.f.state.tabs).toEqual([]);
+    expect(await h.store.list()).toEqual([expect.objectContaining({ id: PID, closedAt: NOW })]);
+  });
+
   it('closeGroup closes the active tab last and offers M1 undo for the whole group in the newly focused tab (M3-R84)', async () => {
     const h = harness();
     await h.store.put(stored());

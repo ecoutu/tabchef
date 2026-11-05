@@ -156,10 +156,16 @@ describe('resolveProjects: manual and excluded', () => {
     expect(r.assignments.has(2)).toBe(false);
     expect(r.assignments.get(3)?.via).toBe('manual');
   });
-  it('a manual entry whose own tab is still at its URL holds only that tab', () => {
+  it('a second copy of a manually added page joins with it (same PR open twice)', () => {
     const r = resolve(snapOf(tab(2, PR, 'x'), tab(3, PR, 'y')), { projects: [project('ABC-1', { manual: [{ url: PR, windowId: 1, tabId: 2 }] })] });
     expect(r.assignments.get(2)?.via).toBe('manual');
-    expect(r.assignments.has(3)).toBe(false);
+    expect(r.assignments.get(3)).toEqual({ projectId: `${RID}:ABC-1`, key: 'ABC-1', via: 'manual', index: -1 });
+  });
+  it('two projects listing the same URL each keep their own tab; a further copy goes to the first', () => {
+    const r = resolve(snapOf(tab(2, PR, 'x'), tab(3, PR, 'y'), tab(4, PR, 'z')), {
+      projects: [project('ABC-1', { manual: [{ url: PR, windowId: 1, tabId: 2 }] }), project('DEF-2', { manual: [{ url: PR, windowId: 1, tabId: 3 }] })],
+    });
+    expect([2, 3, 4].map((id) => r.assignments.get(id)?.key)).toEqual(['ABC-1', 'DEF-2', 'ABC-1']);
   });
   it('a manual entry whose tab navigated away no longer holds that tab', () => {
     const r = resolve(snapOf(tab(2, 'https://github.com/acme/api/pull/6', 'x')), { projects: [project('ABC-1', { manual: [{ url: PR, windowId: 1, tabId: 2 }] })] });
