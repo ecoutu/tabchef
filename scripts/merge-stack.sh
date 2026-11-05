@@ -50,6 +50,16 @@ done
 
 run() { if [ "$dry" = 1 ]; then echo "+ $*"; else "$@"; fi; }
 
+# Deletes remote branch $1. One already gone is fine: the repo's delete_branch_on_merge removes a merged PR's head.
+delete_branch() {
+  [ "$dry" = 1 ] && { echo "+ git push origin --delete $1"; return 0; }
+  local out
+  if ! out=$(git push origin --delete "$1" 2>&1); then
+    grep -q 'remote ref does not exist' <<<"$out" || { echo "$out" >&2; return 1; }
+    echo "Branch $1 was already deleted."
+  fi
+}
+
 # Did GitHub close PR $1 itself because its base branch was force-pushed? It then logs base_ref_force_pushed
 # within seconds of the close, and refuses to reopen the PR.
 closed_by_base_push() {
@@ -127,7 +137,7 @@ if [ "$mode" = fast-forward ]; then
         || { echo "#$pr is not marked merged yet; delete its branch by hand once it is" >&2; exit 1; }
     done
   fi
-  for h in "${heads[@]}"; do run git push origin --delete "$h"; done
+  for h in "${heads[@]}"; do delete_branch "$h"; done
 elif [ "$mode" = single-release ]; then
   body="Squashed stack:"
   for i in "${!prs[@]}"; do body+=$'\n'"- ${titles[$i]} (#${prs[$i]})"; done
@@ -172,7 +182,7 @@ MSG
     run git checkout --quiet "$orig_ref"
     run git branch -D "$tmp"
     # Nothing bases on the previous PR's branch any more, so it is safe to delete.
-    run git push origin --delete "${heads[$(($1-1))]}"
+    delete_branch "${heads[$(($1-1))]}"
   }
 
   for i in "${!prs[@]}"; do
