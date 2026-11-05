@@ -1,3 +1,19 @@
+# [1.3.0](https://github.com/ecoutu/tabchef/compare/v1.2.1...v1.3.0) (2026-11-05)
+
+
+### Bug Fixes
+
+* **engine:** hold a tab opened inside github until its new title arrives ([ca70e44](https://github.com/ecoutu/tabchef/commit/ca70e44a82740bd52200ff2ffcf1a95c58794ff9))
+* **engine:** stop logging closed grouped tabs as moved out of their group ([5161e55](https://github.com/ecoutu/tabchef/commit/5161e5554b1e0fc8043f4abd4476545b5aebb439))
+* **panel:** stop chrome crashing when the side panel opens ([5582b35](https://github.com/ecoutu/tabchef/commit/5582b35656ebe22eeb7fae18834d5b3afbf5aedb))
+* **popup:** refresh tab counts after closing or restoring a project group ([84860f5](https://github.com/ecoutu/tabchef/commit/84860f53fbd43cdec52f015d9ea11f3d16ca850d))
+* **projects:** close a project's duplicate tabs with its group ([d3ed381](https://github.com/ecoutu/tabchef/commit/d3ed3814cf13fc8ae7c1e738bf50306cf2cd51e2))
+
+
+### Features
+
+* **popup:** show a loading status while the projects tab first loads ([3892ed7](https://github.com/ecoutu/tabchef/commit/3892ed7a95ec415613ea1dc0563c14071bd2fa8d))
+
 ## [1.2.1](https://github.com/ecoutu/tabchef/compare/v1.2.0...v1.2.1) (2026-11-04)
 
 
