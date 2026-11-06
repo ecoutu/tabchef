@@ -207,7 +207,7 @@ function m3Problems(r: Rule, recipe: Pick<Recipe, 'project'> | undefined): strin
   if (!recipe) {
     if (own(r, 'source')) out.push('source: only recipe rules can read a source');
     if (assigns) out.push('assignProject: only recipe rules can assign projects');
-  } else if (assigns && recipe.project === undefined) out.push('assignProject: the recipe declares no project');
+  } else if (assigns && !isObj(recipe.project)) out.push('assignProject: the recipe declares no project');
   if (usesProjectField(r.match)) out.push('project fields are not supported yet');
   const n = nestedNeeds(r.needs);
   if (n) out.push(n);

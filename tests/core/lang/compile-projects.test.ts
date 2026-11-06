@@ -42,6 +42,14 @@ describe('compileProgram: M4 T1 project v2', () => {
     const { program } = compile({ p: r }, 'p');
     expect(program).not.toHaveProperty('projects');
   });
+  it.each([['null', null], ['a string', 'x'], ['a number', 3], ['an array', []]])('rejects an assignProject rule when project is malformed (%s)', (_n, bad) => {
+    const r = { ...recipe({}), project: bad } as unknown as Recipe;
+    const { program, errors } = compile({ p: r }, 'p');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({ key: 'p/s' });
+    expect(errors[0]!.error).toContain('assignProject: the recipe declares no project');
+    expect(program.rules).toEqual([]);
+  });
   it('gives each compiled project its own placement array', () => {
     const { program } = compile(builtinRecipes(), 'jira-ticket-either');
     const a = program.projects![0]!;
