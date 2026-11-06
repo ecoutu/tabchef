@@ -638,3 +638,30 @@ describe('ProjectService fixes (round 2)', () => {
     expect(p.linkedFetchedAt).toBe(NOW + 1000);
   });
 });
+
+describe('ProjectService: project status fixes (#30)', () => {
+  beforeEach(() => { fakeBrowser.reset(); });
+  /** The recipe with a jira.issue source on its ticket rule: its ticket tabs give the project's site (M3-R110). */
+  const sourced = (): Program => {
+    const r: Recipe = { ...recipe, rules: recipe.rules.map((x) => (x.id === 'ticket'
+      ? { ...x, source: { connection: 'jira', query: 'jira.issue' as const, args: { key: '{key}' }, fields: { status: 'status', statusCategory: 'statusCategory' } } } : x)) };
+    const c: Config = { ...defaultConfig(), recipes: [{ id: RID, enabled: true, params: {}, source: 'builtin' }] };
+    const { program: p, errors } = compileProgram(c, { [RID]: r });
+    expect(errors).toEqual([]);
+    return p;
+  };
+
+  it('on-site check needs a ticket tab: a Jira dashboard on the connected site does not ask the connection for status', async () => {
+    const h = harness({ program: sourced() });
+    h.f.addTab(tab(1, 'https://other.atlassian.net/browse/ABC-1', '[ABC-1] Their ticket - Jira'));
+    await h.r.flush();
+    h.f.addTab(tab(2, 'https://acme.atlassian.net/jira/dashboards', 'Dashboards - Jira'));
+    await h.svc.addTab(2, PID);
+    await h.r.flush();
+    const cards = await h.svc.cards();
+    expect(cards[0]!.tabs.map((t) => t.tabId)).toEqual([1, 2]);
+    expect(h.sources.issues.mock.calls.flatMap(([ks]) => ks)).not.toContain('ABC-1');
+    expect((await h.store.list())[0]!.site).toBe('other.atlassian.net');
+  });
+
+});

@@ -31,14 +31,24 @@ const CATEGORIES = new Set(['new', 'indeterminate', 'done']);
 const PR_OWNER = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/[A-Za-z0-9_.-]+\/pull\/\d+/;
 const urlOf = (t: TabSnap): string => (t.pendingUrl ? t.pendingUrl : t.url);
 const hostOf = (url: string): string | undefined => { try { return new URL(url).host; } catch { return undefined; } };
-/** projectId → the host of its first tab joined by a `jira.issue` rule (its ticket tab, M3-R110). */
+/** Whether `url` is the ticket page of `key` (path `/browse/<key>`): a ticket tab, unlike any other page of its site. */
+function isTicketOf(url: string, key: string): boolean {
+  try {
+    return decodeURIComponent(new URL(url).pathname).replace(/\/$/, '') === `/browse/${key}`;
+  } catch {
+    return false;
+  }
+}
+/**
+ * projectId → the host of its first ticket tab (M3-R110): a tab joined by a `jira.issue` rule at `/browse/<key>`.
+ */
 function ticketSites(program: Program, snap: Snapshot, assignments: Map<number, ProjectAssignment>): Map<string, string> {
   const jira = new Set(program.rules.filter((r) => r.rule.source?.query === 'jira.issue').map((r) => r.key));
   const tabs = new Map(snap.tabs.map((t) => [t.id, t]));
   const out = new Map<string, string>();
   for (const [id, a] of assignments) {
     const t = tabs.get(id);
-    const host = t && a.ruleKey !== undefined && jira.has(a.ruleKey) ? hostOf(urlOf(t)) : undefined;
+    const host = t && a.ruleKey !== undefined && jira.has(a.ruleKey) && isTicketOf(urlOf(t), a.key) ? hostOf(urlOf(t)) : undefined;
     if (host !== undefined && !out.has(a.projectId)) out.set(a.projectId, host);
   }
   return out;
@@ -409,13 +419,14 @@ export class ProjectService {
   }
 
   /**
-   * Ticket status through SourceService.issues for the projects on the Jira connection's site only (M3-R110): a tab
-   * on that site, else the project's ticket site (stored, else its ticket tab's now) is it, or none is known (a
-   * PR-only project). A same-key ticket on another site is another issue: its status comes from its own tab's page.
+   * Ticket status through SourceService.issues for the projects on the Jira connection's site only (M3-R110): a ticket
+   * tab (`/browse/<key>`) on that site, else the project's ticket site (stored, else its ticket tab's now) is it, or
+   * none is known (a PR-only project). Any other page of that site (a dashboard) says nothing about the ticket. A
+   * same-key ticket on another site is another issue: its status comes from its own tab's page.
    */
   private async fetchIssues(open: Project[], tabsOf: Map<string, TabSnap[]>, sites: Map<string, string>): Promise<{ issues: Map<string, SourceEntry<JiraIssue>>; asked: Set<string> }> {
     const site = await this.deps.sources.jiraSite();
-    const on = site === undefined ? [] : open.filter((p) => tabsOf.get(p.id)!.some((t) => hostOf(urlOf(t)) === site) || (p.site ?? sites.get(p.id) ?? site) === site);
+    const on = site === undefined ? [] : open.filter((p) => tabsOf.get(p.id)!.some((t) => hostOf(urlOf(t)) === site && isTicketOf(urlOf(t), p.key)) || (p.site ?? sites.get(p.id) ?? site) === site);
     const issues = on.length ? await this.deps.sources.issues(on.map((p) => p.key)) : new Map<string, SourceEntry<JiraIssue>>();
     return { issues, asked: new Set(on.map((p) => p.id)) };
   }
