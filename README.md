@@ -18,8 +18,9 @@ on `chrome://extensions` (Developer mode on).
 - **Close finished tabs** (the Finished recipe): OAuth callback pages, redirect pages you list, and Google Meet tabs
   after the call ends. Pinned and locked tabs are never closed, and a tab with unsaved form edits is never closed
   without asking.
-- **Recipes** bundle rules you turn on with one switch: Duplicates, Finished, GitHub pull requests, Merged PRs and the
-  Jira ticket projects. Recipe rules are read-only; Customize copies one into your own rules.
+- **Recipes** bundle rules you turn on with one switch: Duplicates, Finished, GitHub pull requests, Merged PRs, the
+  Jira ticket projects and Manual projects (a named project you add tabs to by hand). Recipe rules are read-only;
+  Customize copies one into your own rules.
 - **Your own rules** are edited in a form or as YAML, ordered by priority, and can be kept in named sections that
   collapse and move as one block.
 - **Connections** to GitHub (device flow or a personal access token) and Jira (scoped or classic API token, or the

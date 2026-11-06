@@ -41,6 +41,10 @@ export interface Project {
   id: string;
   recipeId: string;
   key: string;
+  /** The name the user gave a project they created (M4 T6, the `{name}` of its recipe's templates). */
+  name?: string;
+  /** Saved by the user (M4 T6: every Manual project; T7: close-and-save, Keep): never pruned, synced (D2). */
+  keep?: boolean;
   summary?: string;
   status?: { name: string; category: 'new' | 'indeterminate' | 'done'; via: 'api' | 'page' | 'title' };
   createdAt: number;

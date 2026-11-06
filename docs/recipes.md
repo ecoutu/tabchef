@@ -169,7 +169,9 @@ did. For any open tab, **Why is this tab here?** in its right-click menu shows w
 ## Recipes
 
 A recipe is a set of rules you turn on with one switch. The built-in recipes are Duplicates, GitHub pull requests,
-Finished, Merged PRs, and three Jira ticket projects variants (PR title, PR branch, or PR title or branch).
+Finished, Merged PRs, three Jira ticket projects variants (PR title, PR branch, or PR title or branch), and Manual
+projects, which has no rules: it lets you create a named project ("Add to project › New project…" on a tab, or New
+project on the Projects page) and add tabs to it by hand.
 
 ### Turning one on
 

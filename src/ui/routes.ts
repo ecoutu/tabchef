@@ -66,4 +66,4 @@ export function matchRoute(routes: readonly { path: string }[], hash: string): R
   return { path: best.path, params: { ...query, ...best.params } };
 }
 
-export { explainHash, newRuleHash, projectHomeHash, type NewRuleKind } from '../core/links';
+export { explainHash, newProjectHash, newRuleHash, projectHomeHash, type NewRuleKind } from '../core/links';

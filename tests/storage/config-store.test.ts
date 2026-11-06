@@ -146,7 +146,7 @@ describe('ConfigStore', () => {
     };
     await putSync(JSON.stringify(old));
     const c = await mk().get();
-    expect(c.recipes).toEqual([...old.recipes, ...['finished', 'merged-prs', 'jira-ticket-title', 'jira-ticket-branch', 'jira-ticket-either'].map((id) => ({ id, enabled: false, params: {}, source: 'builtin' }))]);
+    expect(c.recipes).toEqual([...old.recipes, ...['finished', 'merged-prs', 'jira-ticket-title', 'jira-ticket-branch', 'jira-ticket-either', 'manual-project'].map((id) => ({ id, enabled: false, params: {}, source: 'builtin' }))]);
     expect(await sync().get('cfg:0')).toEqual({ 'cfg:0': JSON.stringify(old) }); // loading never writes (R2)
   });
 

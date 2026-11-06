@@ -1,0 +1,14 @@
+# Manual projects (M4 T6, spec §6.11): a project the user names and fills by hand, e.g. from "Add to project › New
+# project…". No rules: a tab joins only when the user adds it. The key is the name's slug (ProjectService.create).
+recipe: manual-project
+version: 1
+name: Manual projects
+description: Lets you create a named project and add tabs to it by hand.
+project:
+  key: '{name}'
+  title: '{name}'
+  color: grey
+  container: group
+  join: [manual]
+  start: on-request
+rules: []

@@ -1,5 +1,5 @@
 import { isExemptUrl } from '../core/url/normalize';
-import { explainHash, newRuleHash, type NewRuleKind } from '../core/links';
+import { explainHash, newProjectHash, newRuleHash, type NewRuleKind } from '../core/links';
 import type { ProjectService } from './projects';
 import type { SafetyService } from './safety';
 
@@ -8,10 +8,12 @@ import type { SafetyService } from './safety';
 // enabled state on tab activation, URL changes of the active tab and lock changes.
 // M3 T15: "Add to project" (`tc-project`) has one child per open project (`tc-project:<projectId>`), rebuilt by
 // createProjectMenu when the open projects change; "Remove from project" (`tc-project-remove`) follows it.
+// M4 T6: the last child, "New project…" (`tc-project-new`), opens the Projects page's New project form for the tab.
 
 export const MENU_IDS = { group: 'tc-group', close: 'tc-close', allowDup: 'tc-allowdup', lock: 'tc-lock', why: 'tc-why' } as const;
 export const PROJECT_MENU_ID = 'tc-project';
 export const PROJECT_REMOVE_MENU_ID = 'tc-project-remove';
+export const PROJECT_NEW_MENU_ID = 'tc-project-new';
 const PROJECT_CHILD_PREFIX = `${PROJECT_MENU_ID}:`;
 export const MENU_CONTEXTS = ['page', 'link', 'action'] as const;
 type MenuContext = (typeof MENU_CONTEXTS)[number];
@@ -36,10 +38,11 @@ export interface MenuApi {
 }
 const CONTEXTS: [MenuContext, ...MenuContext[]] = [MENU_CONTEXTS[0], ...MENU_CONTEXTS.slice(1)];
 
-/** The project items: the parent (disabled while no project is open) with one child per project, then Remove. */
+/** The project items: the parent with one child per open project and New project…, then Remove. */
 function createProjectItems(api: MenuApi, projects: { id: string; title: string }[]): void {
-  api.create({ id: PROJECT_MENU_ID, title: 'Add to project', contexts: CONTEXTS, enabled: projects.length > 0 });
+  api.create({ id: PROJECT_MENU_ID, title: 'Add to project', contexts: CONTEXTS, enabled: true });
   for (const p of projects) api.create({ id: `${PROJECT_CHILD_PREFIX}${p.id}`, parentId: PROJECT_MENU_ID, title: p.title, contexts: CONTEXTS });
+  api.create({ id: PROJECT_NEW_MENU_ID, parentId: PROJECT_MENU_ID, title: 'New project…', contexts: CONTEXTS });
   api.create({ id: PROJECT_REMOVE_MENU_ID, title: 'Remove from project', contexts: CONTEXTS });
 }
 
@@ -108,7 +111,8 @@ export interface MenuClickDeps {
 /**
  * contextMenus.onClicked: the rule items open NewRule with the link URL (on a link) or the page URL; tc-lock toggles
  * the tab's lock directly; tc-why opens the tab's explain view (R54); the project items add the tab to a project or
- * remove it (M3 T15). Exempt pages and unknown items do nothing.
+ * remove it (M3 T15); New project… opens the Projects page's form for the tab (M4 T6). Exempt pages and unknown items
+ * do nothing.
  */
 export async function onMenuClick(
   info: { menuItemId: string | number; linkUrl?: string; pageUrl?: string }, tab: MenuTab | undefined, deps: MenuClickDeps,
@@ -129,6 +133,8 @@ export async function onMenuClick(
     await deps.openPage(explainHash(tab.id));
   } else if (id.startsWith(PROJECT_CHILD_PREFIX)) {
     await deps.projects?.addTab(tab.id, id.slice(PROJECT_CHILD_PREFIX.length));
+  } else if (id === PROJECT_NEW_MENU_ID) {
+    await deps.openPage(newProjectHash(tab.id));
   } else if (id === PROJECT_REMOVE_MENU_ID) {
     await deps.projects?.removeTab(tab.id);
   }

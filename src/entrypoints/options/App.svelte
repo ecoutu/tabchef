@@ -194,7 +194,7 @@
     {:else if current.page === 'explain'}
       {#key matched.params.tabId}<Explain tabId={Number(matched.params.tabId)} />{/key}
     {:else if current.page === 'projects'}
-      <Projects />
+      {#key matched.params.new}<Projects newTab={matched.params.new} />{/key}
     {:else if current.page === 'projectHome'}
       {#key matched.params.id}<ProjectHome id={matched.params.id ?? ''} />{/key}
     {:else if current.page === 'connections'}

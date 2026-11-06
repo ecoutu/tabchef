@@ -17,3 +17,8 @@ export function newRuleHash(url: string, kind: NewRuleKind): string {
 export function projectHomeHash(id: string): string {
   return `#/project/${encodeURIComponent(id)}`;
 }
+
+/** The Projects page with its New project form open for this tab (`#/projects?new=<tabId>`, M4 T6). */
+export function newProjectHash(tabId: number): string {
+  return `#/projects?new=${tabId}`;
+}

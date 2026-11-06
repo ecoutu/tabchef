@@ -175,9 +175,14 @@ export function resolveProjects(input: ResolveInput): ResolveResult {
   return { assignments, created, summaries, sticky };
 }
 
-/** The project's group title: `def.title` rendered with `{key, summary}`; with no summary, just the key. */
+/** The project's group title: `def.title` rendered with `{key, summary, name}`; with no summary or name, just the key. */
 export function projectGroupTitle(def: ProjectDef, p: Project): string {
-  return p.summary ? renderTemplate(def.title, { key: p.key, summary: p.summary }) : p.key;
+  return p.summary || p.name ? renderTemplate(def.title, templateVars(p)) : p.key;
+}
+
+/** A project's values for its recipe's title and color templates: `{key}`, `{summary}` and (M4 T6) `{name}`. */
+function templateVars(p: Project): Record<string, string> {
+  return { key: p.key, summary: p.summary ?? '', name: p.name ?? '' };
 }
 
 /** True when a group titled `title` is the project `key`'s: exactly the key, or `<key> · …`. */
@@ -197,7 +202,7 @@ export function projectTargets(assignments: Map<number, ProjectAssignment>, proj
     const p = byId.get(a.projectId);
     const def = p && defOf.get(p.recipeId);
     if (!p || !def) continue;
-    const rendered = renderTemplate(def.color, { key: p.key, summary: p.summary ?? '' });
+    const rendered = renderTemplate(def.color, templateVars(p));
     const valid = COLORS.has(rendered);
     const ruleId = a.ruleKey ?? `${p.recipeId}/project`;
     out.set(tabId, {

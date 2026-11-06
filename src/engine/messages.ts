@@ -228,6 +228,10 @@ export type Request =
   | { type: 'projects.closeGroup'; projectId: string }
   /** One open project's home page (M4 T4): ProjectHomeData, or null when it is unknown, closed or has no tab. */
   | { type: 'projects.home'; id: string }
+  /** M4 T6: a new named project of an on-request recipe (Manual projects), with these tabs; answers `{ id }`. */
+  | { type: 'projects.create'; recipeId: string; name: string; tabIds?: number[] }
+  /** M4 T6: starts the project `key` of an on-request recipe; answers `{ id }`. */
+  | { type: 'projects.start'; recipeId: string; key: string }
   // ---- Sources (M3 T17) ----
   /** The Projects tab opened: SourceService.refresh('popup') (throttled, M3-R83); answers once it is done. */
   | { type: 'sources.refresh' };
@@ -346,6 +350,8 @@ export interface ResponseData {
   'projects.openLinked': { tabId: number };
   'projects.closeGroup': { closed: number; skipped: number; ids: string[] };
   'projects.home': ProjectHomeData | null;
+  'projects.create': { id: string };
+  'projects.start': { id: string };
   'sources.refresh': null;
 }
 export type ResponseFor<R extends Request> = Response<ResponseData[R['type']]>;
@@ -464,6 +470,8 @@ export function isRequest(m: unknown): m is Request {
     case 'projects.openLinked': return str(x.projectId) && str(x.url);
     case 'projects.closeGroup': return str(x.projectId);
     case 'projects.home': return str(x.id);
+    case 'projects.create': return str(x.recipeId) && str(x.name) && (x.tabIds === undefined || (Array.isArray(x.tabIds) && x.tabIds.every(num)));
+    case 'projects.start': return str(x.recipeId) && str(x.key);
     default: return false;
   }
 }
@@ -530,7 +538,7 @@ export interface HandlerDeps {
   /** connections.* (M3 T7, the Connections page). Without it they fail. */
   connections?: ConnectionsDeps;
   /** projects.* (M3 T15). Without it they fail. */
-  projects?: Pick<ProjectService, 'cards' | 'addTab' | 'removeTab' | 'openLinked' | 'closeGroup' | 'home'>;
+  projects?: Pick<ProjectService, 'cards' | 'addTab' | 'removeTab' | 'openLinked' | 'closeGroup' | 'home' | 'create' | 'start'>;
   /** sources.refresh (M3 T17). Without it the request fails. */
   sources?: Pick<SourceService, 'refresh'> & Partial<Pick<SourceService, 'unreadableRepos'>>;
   now?: () => number;
@@ -1030,6 +1038,8 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
       case 'projects.openLinked': return ok({ tabId: await p.openLinked(req.projectId, req.url) });
       case 'projects.closeGroup': return ok(await p.closeGroup(req.projectId));
       case 'projects.home': return ok((await p.home(req.id)) ?? null);
+      case 'projects.create': return ok({ id: await p.create(req.recipeId, req.name, req.tabIds) });
+      case 'projects.start': return ok({ id: await p.start(req.recipeId, req.key) });
     }
   }
 
@@ -1055,7 +1065,7 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
         return scrub(r, [...needles, ...(await c.knownSecrets())]);
       }
       case 'projects.list': case 'projects.addTab': case 'projects.removeTab': case 'projects.openLinked': case 'projects.closeGroup':
-      case 'projects.home':
+      case 'projects.home': case 'projects.create': case 'projects.start':
         return deps.projects ? runProjects(req, deps.projects) : fail('projects unavailable');
       case 'sources.refresh': {
         if (!deps.sources) return fail('sources unavailable');

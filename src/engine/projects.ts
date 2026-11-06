@@ -55,6 +55,29 @@ function ticketSites(program: Program, snap: Snapshot, assignments: Map<number, 
   return out;
 }
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null;
+/** The longest Manual project key: the R38 id pattern `^[a-z0-9][a-z0-9_-]{0,63}$`. */
+const KEY_MAX = 64;
+/**
+ * A Manual project's key (M4 T6): the name's slug under the R38 id pattern. Accents are dropped, every other run of
+ * characters becomes `-`; a name with no letter or digit left is `project`.
+ */
+function nameSlug(name: string): string {
+  const s = name.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+/, '');
+  return s.slice(0, KEY_MAX).replace(/-+$/, '') || 'project';
+}
+/** `name`, else `name (2)`, `name (3)`, …, the first not in `taken` (M4-R12). */
+function freeName(name: string, taken: Set<string>): string {
+  if (!taken.has(name)) return name;
+  for (let n = 2; ; n++) if (!taken.has(`${name} (${n})`)) return `${name} (${n})`;
+}
+/** `base`, else `base-2`, `base-3`, …, the first not in `taken`, shortened to fit KEY_MAX. */
+function freeKey(base: string, taken: Set<string>): string {
+  if (!taken.has(base)) return base;
+  for (let n = 2; ; n++) {
+    const k = `${base.slice(0, KEY_MAX - `-${n}`.length).replace(/-+$/, '')}-${n}`;
+    if (!taken.has(k)) return k;
+  }
+}
 /** Closed by Close group (M3-R84): kept for undo, out of membership and the UI. */
 const isTomb = (p: Project): boolean => p.closedAt !== undefined;
 const revive = (p: Project): void => { delete p.closedAt; delete p.closedIds; };
@@ -238,6 +261,77 @@ export class ProjectService {
     const p = projects.find((x) => x.id === id && !isTomb(x));
     if (!p) throw new Error('unknown project');
     return { program, projects, p };
+  }
+
+  /**
+   * The def of a recipe whose projects start on request (M4 T6). Throws when the recipe is off (or unknown), naming it
+   * as the Recipes page does, or when its projects start by themselves.
+   */
+  private async onRequest(program: Program, recipeId: string): Promise<ProjectDef> {
+    const def = program.projects?.find((d) => d.recipeId === recipeId);
+    if (!def) throw new Error(`turn on the recipe ${(await this.deps.recipeName?.(recipeId)) ?? recipeId} first`);
+    if (def.start !== 'on-request') throw new Error('this project starts by itself');
+    return def;
+  }
+
+  /**
+   * A new named project of an on-request recipe (M4 T6: Manual projects, `manual-project`), kept (`keep`), with
+   * `tabIds` as its manual members (each leaves its previous project). The name is made unique (M4-R12): one equal to
+   * another stored project's name (closed ones too) or an open project's title becomes `Name (2)`, `Name (3)`, …, so
+   * its group title never merges it with another project's group. The key is the unique name's slug (`-2`, `-3`, …
+   * when taken, by a closed project too). User-initiated, so it applies under global dry run too (R50), like addTab; the
+   * dry-run reconciler then groups nothing. Returns the project id.
+   */
+  create(recipeId: string, name: string, tabIds: number[] = []): Promise<string> {
+    return this.serial(async () => {
+      const title = name.trim();
+      if (!title) throw new Error('a project needs a name');
+      const program = await this.deps.getProgram();
+      await this.onRequest(program, recipeId);
+      const snap = await this.deps.port.snapshot();
+      const tabs = tabIds.map((id) => {
+        const t = snap.tabs.find((x) => x.id === id);
+        if (!t) throw new Error('tab not found');
+        return t;
+      });
+      // The open projects' titles, as their groups show them (this pass's membership).
+      const open = await this.resolve(snap);
+      const defOf = new Map(open.defs.map((d) => [d.recipeId, d]));
+      const openIds = new Set([...open.assignments.values()].map((a) => a.projectId));
+      const titles = open.projects.flatMap((q) => {
+        const def = defOf.get(q.recipeId);
+        return def && openIds.has(q.id) ? [projectGroupTitle(def, q)] : [];
+      });
+      const projects = await this.deps.store.list();
+      const unique = freeName(title, new Set([...projects.flatMap((q) => q.name ?? []), ...titles]));
+      const key = freeKey(nameSlug(unique), new Set(projects.filter((q) => q.recipeId === recipeId).map((q) => q.key)));
+      const p: Project = { id: `${recipeId}:${key}`, recipeId, key, name: unique, keep: true, createdAt: this.now(), manual: [], excluded: [], linked: [] };
+      projects.push(p);
+      if (tabs.length === 0) await this.deps.store.put(p);
+      for (const t of tabs) await this.join(program, projects, p, t.id, t.windowId, urlOf(t));
+      return p.id;
+    });
+  }
+
+  /**
+   * Starts the project `key` of a recipe with `start: 'on-request'` (M4 T6; the repo recipe, T17): stores it, so its
+   * rules (`assignProject` without `create`) bring its tabs in; a closed one is revived. Already started: nothing
+   * changes. User-initiated, so it applies under global dry run too (R50). Returns the project id.
+   */
+  start(recipeId: string, key: string): Promise<string> {
+    return this.serial(async () => {
+      const k = key.trim();
+      if (!k) throw new Error('a project needs a key');
+      const [program, projects] = await Promise.all([this.deps.getProgram(), this.deps.store.list()]);
+      await this.onRequest(program, recipeId);
+      const id = `${recipeId}:${k}`;
+      const p = projects.find((x) => x.id === id);
+      if (p && !isTomb(p)) return id;
+      if (p) revive(p);
+      await this.deps.store.put(p ?? { id, recipeId, key: k, createdAt: this.now(), manual: [], excluded: [], linked: [] });
+      this.deps.schedule?.('project');
+      return id;
+    });
   }
 
   /** Manual membership: wins over rules and clears the tab's exclusion. */

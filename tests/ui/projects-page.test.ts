@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup, waitFor } from '@testing-library/svelte';
+import { render, screen, cleanup, waitFor, fireEvent } from '@testing-library/svelte';
 import { fakeBrowser } from 'wxt/testing/fake-browser';
 import type { ProjectCardData, ProjectHomeData } from '../../src/core/projects/types';
 
@@ -49,6 +49,70 @@ describe('Projects page (M4 T3)', () => {
     send.mockImplementation(async () => ({ ok: true, data: [] }));
     render(Projects);
     expect(await screen.findByText(/No projects yet/)).toBeTruthy();
+  });
+});
+
+describe('Projects page: New project (M4 T6, M4-R8)', () => {
+  const created = 'manual-project:tax-2026';
+  const withCreate = (result: { ok: boolean; data?: unknown; error?: string } = { ok: true, data: { id: created } }) => {
+    send.mockImplementation(async (req: { type: string }) => (req.type === 'projects.create' ? result : reply(req)));
+  };
+
+  it('?new=<tabId>: the name form is open; Create makes a Manual project with that tab, then opens its home', async () => {
+    withCreate();
+    render(Projects, { newTab: '5' });
+    const name = await screen.findByLabelText('Project name');
+    await fireEvent.input(name, { target: { value: '  Tax 2026 ' } });
+    await fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+    await waitFor(() => expect(window.location.hash).toBe(projectHomeHash(created)));
+    expect(send).toHaveBeenCalledWith({ type: 'projects.create', recipeId: 'manual-project', name: 'Tax 2026', tabIds: [5] });
+  });
+
+  it('otherwise a New project button opens the same form, without a tab', async () => {
+    withCreate();
+    render(Projects);
+    expect(screen.queryByLabelText('Project name')).toBeNull();
+    await fireEvent.click(await screen.findByRole('button', { name: 'New project' }));
+    await fireEvent.input(screen.getByLabelText('Project name'), { target: { value: 'Taxes' } });
+    await fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+    await waitFor(() => expect(window.location.hash).toBe(projectHomeHash(created)));
+    expect(send).toHaveBeenCalledWith({ type: 'projects.create', recipeId: 'manual-project', name: 'Taxes' });
+  });
+
+  it('M4-R10: with the Manual projects recipe off, the page says so and links to Recipes instead of offering the form', async () => {
+    send.mockImplementation(async (req: { type: string }) => (req.type === 'config.get'
+      ? { ok: true, data: { config: { recipes: [{ id: 'manual-project', enabled: false, params: {}, source: 'builtin' }] }, rev: 'r1' } }
+      : reply(req)));
+    for (const props of [{ newTab: '5' }, {}]) {
+      render(Projects, props);
+      expect((await screen.findByText(/Manual projects are turned off\./)).textContent).toContain('Manual projects are turned off.');
+      expect((screen.getByRole('link', { name: 'Recipes' }) as HTMLAnchorElement).getAttribute('href')).toBe('#/recipes');
+      expect(screen.queryByLabelText('Project name')).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Create' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'New project' })).toBeNull();
+      cleanup();
+    }
+    expect(send).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'projects.create' }));
+  });
+
+  it('with the recipe on (config.get), the form is offered as usual', async () => {
+    send.mockImplementation(async (req: { type: string }) => (req.type === 'config.get'
+      ? { ok: true, data: { config: { recipes: [{ id: 'manual-project', enabled: true, params: {}, source: 'builtin' }] }, rev: 'r1' } }
+      : reply(req)));
+    render(Projects, { newTab: '5' });
+    expect(await screen.findByLabelText('Project name')).toBeTruthy();
+    expect(screen.queryByText(/turned off/)).toBeNull();
+  });
+
+  it('Create is off until a name is typed; a failure is shown and the page stays', async () => {
+    withCreate({ ok: false, error: 'turn on the recipe manual-project first' });
+    render(Projects, { newTab: '5' });
+    const create = (await screen.findByRole('button', { name: 'Create' })) as HTMLButtonElement;
+    expect(create.disabled).toBe(true);
+    await fireEvent.input(screen.getByLabelText('Project name'), { target: { value: 'Taxes' } });
+    await fireEvent.click(create);
+    expect((await screen.findByRole('alert')).textContent).toContain('turn on the recipe manual-project first');
+    expect(window.location.hash).toBe('');
   });
 });
 

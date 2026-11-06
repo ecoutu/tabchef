@@ -38,6 +38,7 @@ const EXCLUDED: Record<string, string> = {
   Backups: 'a file picker for restoring a backup, not a setting',
   NewRule: 'a quick-create wizard; the rule it makes is then edited in the rule form (RuleFields), which is covered',
   RuleYaml: 'the YAML editor of a whole rule, not one setting',
+  Projects: 'the New project form (one name, M4 T6), not settings',
 };
 
 /** The "About …" button that belongs to label `l`: beside it in its Field, or in the head of its LinesField. */

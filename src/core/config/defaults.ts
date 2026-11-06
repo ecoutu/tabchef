@@ -1,11 +1,13 @@
 import type { Config, RecipeRef } from '../types';
 
 /** Built-in recipe ids, in their default order. */
-export const BUILTIN_RECIPES = ['duplicates', 'github-prs', 'finished', 'merged-prs', 'jira-ticket-title', 'jira-ticket-branch', 'jira-ticket-either'] as const;
+export const BUILTIN_RECIPES = ['duplicates', 'github-prs', 'finished', 'merged-prs', 'jira-ticket-title', 'jira-ticket-branch', 'jira-ticket-either', 'manual-project'] as const;
 /** The jira-ticket variants conflict with each other (M3-R17); all three start disabled (user decision, 2026-11-03). */
 const DEFAULT_ENABLED: Record<(typeof BUILTIN_RECIPES)[number], boolean> = {
   duplicates: true, 'github-prs': true, finished: false, 'merged-prs': false,
   'jira-ticket-title': false, 'jira-ticket-branch': false, 'jira-ticket-either': false,
+  // No rules: nothing happens until the user creates a project (M4 T6).
+  'manual-project': true,
 };
 
 export function builtinRecipeRefs(enabled: Partial<Record<(typeof BUILTIN_RECIPES)[number], boolean>> = {}): RecipeRef[] {

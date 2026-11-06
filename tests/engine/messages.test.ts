@@ -1234,6 +1234,8 @@ describe('projects.* (M3 T15)', () => {
     removeTab: vi.fn(async () => {}),
     openLinked: vi.fn(async () => 77),
     closeGroup: vi.fn(async () => ({ closed: 2, skipped: 1, ids: ['rc-1', 'rc-2'] })),
+    create: vi.fn(async () => 'manual-project:tax-2026'),
+    start: vi.fn(async (recipeId: string, key: string) => `${recipeId}:${key}`),
     home: vi.fn(async (id: string) => (id === 'r:ABC-1' ? {
       id, key: 'ABC-1', title: 'ABC-1', done: false, tabs: [], linked: [], groups: [], recipeName: 'r',
       settings: { container: 'group' as const, placement: ['existing' as const], join: ['rules' as const], onOpenElsewhere: 'leave' as const, onSwitchAway: 'unload' as const },
@@ -1253,6 +1255,31 @@ describe('projects.* (M3 T15)', () => {
     expect(isRequest({ type: 'projects.closeGroup', projectId: 3 })).toBe(false);
     expect(isRequest({ type: 'projects.home', id: 'r:ABC-1' })).toBe(true);
     expect(isRequest({ type: 'projects.home' })).toBe(false);
+    expect(isRequest({ type: 'projects.create', recipeId: 'manual-project', name: 'Tax 2026' })).toBe(true);
+    expect(isRequest({ type: 'projects.create', recipeId: 'manual-project', name: 'Tax 2026', tabIds: [1, 2] })).toBe(true);
+    expect(isRequest({ type: 'projects.create', recipeId: 'manual-project', name: 'Tax 2026', tabIds: ['1'] })).toBe(false);
+    expect(isRequest({ type: 'projects.create', recipeId: 'manual-project', name: 'Tax 2026', tabIds: 1 })).toBe(false);
+    expect(isRequest({ type: 'projects.create', recipeId: 'manual-project' })).toBe(false);
+    expect(isRequest({ type: 'projects.create', name: 'Tax 2026' })).toBe(false);
+    expect(isRequest({ type: 'projects.start', recipeId: 'repo', key: 'acme/web' })).toBe(true);
+    expect(isRequest({ type: 'projects.start', recipeId: 'repo' })).toBe(false);
+    expect(isRequest({ type: 'projects.start', key: 'acme/web' })).toBe(false);
+  });
+
+  it('M4 T6: projects.create answers the new project id, projects.start the started one; both refused from content scripts', async () => {
+    const p = projects();
+    const s = setup({ projects: p });
+    expect(await s.handle({ type: 'projects.create', recipeId: 'manual-project', name: 'Tax 2026', tabIds: [5] }, ui)).toEqual({ ok: true, data: { id: 'manual-project:tax-2026' } });
+    expect(p.create).toHaveBeenCalledWith('manual-project', 'Tax 2026', [5]);
+    expect(await s.handle({ type: 'projects.create', recipeId: 'manual-project', name: 'Empty' }, ui)).toEqual({ ok: true, data: { id: 'manual-project:tax-2026' } });
+    expect(p.create).toHaveBeenLastCalledWith('manual-project', 'Empty', undefined);
+    expect(await s.handle({ type: 'projects.start', recipeId: 'repo', key: 'acme/web' }, ui)).toEqual({ ok: true, data: { id: 'repo:acme/web' } });
+    expect(p.start).toHaveBeenCalledWith('repo', 'acme/web');
+    p.start.mockRejectedValue(new Error('this project starts by itself'));
+    expect(await s.handle({ type: 'projects.start', recipeId: 'repo', key: 'acme/web' }, ui)).toEqual({ ok: false, error: 'this project starts by itself' });
+    expect(await s.handle({ type: 'projects.create', recipeId: 'manual-project', name: 'X', tabIds: [5] }, content)).toEqual({ ok: false, error: 'forbidden' });
+    expect(await s.handle({ type: 'projects.start', recipeId: 'repo', key: 'acme/web' }, content)).toEqual({ ok: false, error: 'forbidden' });
+    expect(p.create).toHaveBeenCalledTimes(2);
   });
 
   it('reach the ProjectService; its errors are error responses', async () => {
