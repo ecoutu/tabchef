@@ -8,6 +8,17 @@
 - Breaking changes: add `!` after the type/scope (`feat(config)!: ...`) or a `BREAKING CHANGE:` footer.
 - Keep each commit to one logical change, so its type describes all of it.
 
+## Commits: write them for the changelog
+- Write each summary as the change a user sees, not the code that moved: `fix(popup): refresh tab counts after closing a project group`, not `fix: update state handling`.
+- Every commit that reaches `main` must read well as a changelog line. No `wip`, `address review`, `fix lint`, `fix typo` or `fix tests` commits.
+- Clean up a branch's history before opening or updating a PR, and again before landing. Rebase as needed:
+  - fold follow-up fixes into the commit they fix (`git commit --fixup=<sha>`, then `git rebase -i --autosquash origin/main`);
+  - split a commit that does two things, and reorder commits so each one builds and passes on its own;
+  - reword a summary that is vague or has the wrong type.
+- A fix of code that was never released is folded into that code's commit, never a separate `fix`.
+- Add a body when the why isn't obvious from the summary.
+- After rebasing a branch that is already pushed, update it with `--force-with-lease`. Ask first if another PR uses it as its base.
+
 ## Releases: semantic-release
 - Merging to `main` triggers semantic-release (config in `.releaserc*`). It reads the commits on `main` since the last tag:
   - `feat` → minor
