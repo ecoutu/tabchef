@@ -4,21 +4,19 @@
   // "Open into project" → the project's settings, collapsed and read-only (edited inline from T20). Kept current like the
   // side panel: re-fetched on config.changed and every LIVE_MS while visible.
   import { onDestroy, onMount } from 'svelte';
-  import { browser } from 'wxt/browser';
   import { send } from '../../ui/send';
-  import { isConfigChangedMessage } from '../../engine/messages';
+  import { createProjectActions, startLiveRefresh, type Toast } from '../../ui/project-actions';
   import { buildProjectHome, type ProjectHomeView } from '../../ui/project-home-model';
   import PrPill from '../../ui/PrPill.svelte';
   import Help from './Help.svelte';
 
-  const LIVE_MS = 5000;
   let { id }: { id: string } = $props();
   const uid = $props.id();
   /** undefined: loading; null: the project is unknown, closed or has no tab. */
   let view = $state<ProjectHomeView | null | undefined>(undefined);
   let error = $state('');
   /** After Close group: the closed tabs' recently-closed entries, which Undo reopens (recent.undo). */
-  let toast = $state<{ text: string; ids: string[] } | undefined>(undefined);
+  let toast = $state<Toast | undefined>(undefined);
   let seq = 0;
 
   async function load(): Promise<void> {
@@ -28,52 +26,24 @@
     if (r.ok) { view = r.data ? buildProjectHome(r.data) : null; error = ''; } else error = r.error;
   }
 
-  async function act(run: () => Promise<{ ok: boolean; error?: string }>): Promise<boolean> {
-    const r = await run();
-    if (!r.ok) { error = r.error ?? 'Something went wrong'; return false; }
-    error = '';
-    return true;
-  }
+  const actions = createProjectActions({
+    reload: load,
+    setError: (e) => { error = e; },
+    getToast: () => toast,
+    setToast: (t) => { toast = t; },
+  });
+  const { focus, undo } = actions;
+  const openLinked = (url: string) => actions.openLinked(id, url);
+  const closeGroup = () => actions.closeGroup(id);
 
-  const focus = (tabId: number) => void act(() => send({ type: 'tab.focus', tabId }));
-  async function openLinked(url: string): Promise<void> {
-    if (await act(() => send({ type: 'projects.openLinked', projectId: id, url }))) await load();
-  }
-  async function closeGroup(): Promise<void> {
-    const r = await send({ type: 'projects.closeGroup', projectId: id });
-    if (!r.ok) { error = r.error; return; }
-    error = '';
-    const { closed, skipped, ids } = r.data;
-    const text = `Closed ${closed} ${closed === 1 ? 'tab' : 'tabs'}${skipped > 0 ? ` · ${skipped} skipped` : ''}`;
-    toast = closed > 0 || skipped > 0 ? { text, ids } : undefined;
-    await load();
-  }
-  /** Restores the entries in turn; on a failure the ones not restored stay behind Undo. */
-  async function undo(ids: string[]): Promise<void> {
-    const text = toast?.text ?? '';
-    for (const [i, entry] of ids.entries()) {
-      if (!(await act(() => send({ type: 'recent.undo', id: entry })))) { toast = { text, ids: ids.slice(i) }; await load(); return; }
-    }
-    toast = undefined;
-    await load();
-  }
-
-  const onMessage = (m: unknown) => { if (isConfigChangedMessage(m)) void load(); };
-  const onVisible = () => { if (document.visibilityState === 'visible') void load(); };
-  let timer: ReturnType<typeof setInterval> | undefined;
+  let stopLive: (() => void) | undefined;
 
   onMount(() => {
-    browser.runtime.onMessage.addListener(onMessage);
-    timer = setInterval(onVisible, LIVE_MS);
-    document.addEventListener('visibilitychange', onVisible);
+    stopLive = startLiveRefresh(load);
     void load();
     void send({ type: 'sources.refresh' }).then((r) => (r.ok ? load() : undefined));
   });
-  onDestroy(() => {
-    if (timer !== undefined) clearInterval(timer);
-    browser.runtime.onMessage.removeListener(onMessage);
-    document.removeEventListener('visibilitychange', onVisible);
-  });
+  onDestroy(() => stopLive?.());
 </script>
 
 <section class="home">
