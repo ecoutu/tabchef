@@ -664,4 +664,13 @@ describe('ProjectService: project status fixes (#30)', () => {
     expect((await h.store.list())[0]!.site).toBe('other.atlassian.net');
   });
 
+  it('site does not depend on assignment order: the lowest tab id\'s ticket host, whichever tab comes first', async () => {
+    for (const order of [[5, 3], [3, 5]]) {
+      const h = harness({ program: sourced() });
+      const url = (id: number) => (id === 3 ? TICKET : 'https://other.atlassian.net/browse/ABC-1');
+      for (const id of order) h.f.addTab(tab(id, url(id), '[ABC-1] Login fails - Jira'));
+      await h.r.flush();
+      expect((await h.store.list()).map((p) => p.site)).toEqual(['acme.atlassian.net']);
+    }
+  });
 });

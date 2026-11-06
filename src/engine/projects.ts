@@ -40,13 +40,14 @@ function isTicketOf(url: string, key: string): boolean {
   }
 }
 /**
- * projectId → the host of its first ticket tab (M3-R110): a tab joined by a `jira.issue` rule at `/browse/<key>`.
+ * projectId → the host of its ticket tab (M3-R110): a tab joined by a `jira.issue` rule at `/browse/<key>`, the lowest
+ * tab id first, so the site never depends on the order of the assignments.
  */
 function ticketSites(program: Program, snap: Snapshot, assignments: Map<number, ProjectAssignment>): Map<string, string> {
   const jira = new Set(program.rules.filter((r) => r.rule.source?.query === 'jira.issue').map((r) => r.key));
   const tabs = new Map(snap.tabs.map((t) => [t.id, t]));
   const out = new Map<string, string>();
-  for (const [id, a] of assignments) {
+  for (const [id, a] of [...assignments].sort(([x], [y]) => x - y)) {
     const t = tabs.get(id);
     const host = t && a.ruleKey !== undefined && jira.has(a.ruleKey) && isTicketOf(urlOf(t), a.key) ? hostOf(urlOf(t)) : undefined;
     if (host !== undefined && !out.has(a.projectId)) out.set(a.projectId, host);
