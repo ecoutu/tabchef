@@ -356,7 +356,7 @@ describe('M3 T1: sources, fields, keys and projects', () => {
     expect(errorsOf(validateRecipe(ok))).toEqual([]);
     expect(at(validateRecipe(recipe({ levels: [{ id: 'full', label: 'Full', rules: ['nope'] }] })), '/levels/0/rules/0').length).toBe(1);
     expect(at(validateRecipe(recipe({ conflicts: ['demo'] })), '/conflicts/0').length).toBe(1);
-    expect(validateRecipe(recipe({ project: { ...project, container: 'window' } })).ok).toBe(false);
+    expect(validateRecipe(recipe({ project: { ...project, container: 'tab' } })).ok).toBe(false); // 'window' is accepted by the schema; compileProgram rejects it
     expect(at(validateRecipe(recipe({ project: { ...project, color: 'mauve' } })), '/project/color').length).toBe(1);
   });
   it('T16: a project color from a param is checked with the default substituted', () => {

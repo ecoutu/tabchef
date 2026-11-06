@@ -302,7 +302,7 @@
       }
     },
     "project": {
-      "$comment": "M3: the project assignProject rules feed (src/core/projects/types.ts ProjectDef without recipeId). key and title are templates; color a group color or a template.",
+      "$comment": "M3/M4: the project assignProject rules feed (src/core/projects/types.ts ProjectDef without recipeId). Unknown fields are tolerated (compileProgram warns), so newer configs load. key and title are templates; color a group color or a template.",
       "type": "object",
       "required": [
         "key",
@@ -311,7 +311,6 @@
         "container",
         "join"
       ],
-      "additionalProperties": false,
       "properties": {
         "key": {
           "type": "string",
@@ -330,7 +329,8 @@
         },
         "container": {
           "enum": [
-            "group"
+            "group",
+            "window"
           ]
         },
         "join": {
@@ -339,9 +339,51 @@
           "items": {
             "enum": [
               "rules",
+              "opener",
+              "window",
               "manual"
             ]
           }
+        },
+        "placement": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "anyOf": [
+              {
+                "enum": [
+                  "existing",
+                  "current",
+                  "new"
+                ]
+              },
+              {
+                "type": "string",
+                "pattern": "^home:.+$",
+                "maxLength": 2048
+              }
+            ]
+          }
+        },
+        "onOpenElsewhere": {
+          "enum": [
+            "move-and-follow",
+            "move-silently",
+            "leave"
+          ]
+        },
+        "onSwitchAway": {
+          "enum": [
+            "unload",
+            "minimize",
+            "close-and-save"
+          ]
+        },
+        "start": {
+          "enum": [
+            "auto",
+            "on-request"
+          ]
         }
       }
     },

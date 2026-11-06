@@ -14,7 +14,8 @@ const RID = 'jira-ticket-title';
 const TICKET = 'https://acme.atlassian.net/browse/ABC-1';
 const PR = 'https://github.com/acme/api/pull/5';
 
-const def: ProjectDef = { recipeId: RID, key: '{key}', title: '{key} · {summary}', color: 'blue', container: 'group', join: ['rules', 'manual'] };
+const def: ProjectDef = { recipeId: RID, key: '{key}', title: '{key} · {summary}', color: 'blue', container: 'group', join: ['rules', 'manual'],
+  placement: ['existing', 'current'], onOpenElsewhere: 'move-and-follow', onSwitchAway: 'unload', start: 'auto' };
 const recipe: Recipe = {
   recipe: RID, version: 1, name: 'Jira ticket (title)', description: 'x',
   project: { key: def.key, title: def.title, color: def.color, container: 'group', join: def.join },

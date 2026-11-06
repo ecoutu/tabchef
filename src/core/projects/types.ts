@@ -2,6 +2,10 @@
 // ProjectAssignment.
 import type { PrState } from '../sources/types';
 
+export type Container = 'group' | 'window';
+export type Placement = 'existing' | 'current' | 'new' | `home:${string}`;
+export type JoinMode = 'rules' | 'opener' | 'window' | 'manual';
+
 /** A recipe's project definition: how tabs it assigns (`assignProject`) are grouped into one project per key. */
 export interface ProjectDef {
   recipeId: string;
@@ -11,9 +15,24 @@ export interface ProjectDef {
   title: string;
   /** A Chrome group color or a template. */
   color: string;
-  container: 'group';
-  join: ('rules' | 'manual')[];
+  /** 'window' is declared (M4) but compileProgram rejects it until windows are implemented. */
+  container: Container;
+  join: JoinMode[];
+  /** Where a new project's tabs go, first applicable wins. Default ['existing', 'current']. */
+  placement: Placement[];
+  /** A project tab opened outside its container. Default 'move-and-follow'. */
+  onOpenElsewhere: 'move-and-follow' | 'move-silently' | 'leave';
+  /** What happens to a project's tabs when the user leaves it. Default 'unload'. */
+  onSwitchAway: 'unload' | 'minimize' | 'close-and-save';
+  /** Default 'auto'. */
+  start: 'auto' | 'on-request';
 }
+
+/** What a recipe's `project` may omit: compileProgram fills these defaults in. */
+export type ProjectDefaults = Pick<ProjectDef, 'placement' | 'onOpenElsewhere' | 'onSwitchAway' | 'start'>;
+export const PROJECT_DEFAULTS: ProjectDefaults = {
+  placement: ['existing', 'current'], onOpenElsewhere: 'move-and-follow', onSwitchAway: 'unload', start: 'auto',
+};
 
 /** One open project: tabs sharing a key (e.g. a Jira issue key) under one group. Stored by T15's ProjectStore. */
 export interface Project {

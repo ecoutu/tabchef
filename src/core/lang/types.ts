@@ -1,7 +1,7 @@
 // The M2 declarative rule language. Schema: rule.schema.json (precompiled, see scripts/gen-validator.mjs).
 // `discard` and `notify` actions are deliberately absent until the milestone that implements them (ruling R26).
 import type { DedupeMode, DedupeSettings, TabSnap } from '../types';
-import type { ProjectDef } from '../projects/types';
+import type { ProjectDef, ProjectDefaults } from '../projects/types';
 import type { AdapterId } from '../adapters/types';
 
 export type Pattern = string;                         // glob | /regex/flags | :param, as M1 compilePattern
@@ -92,7 +92,7 @@ export interface Recipe {
   dedupe?: { urlTransforms?: DedupeSettings['urlTransforms'] };
   rules: Rule[]; views?: View[];
   /** M3: the project tabs of `assignProject` rules join (one per rendered key). */
-  project?: Omit<ProjectDef, 'recipeId'>;
+  project?: Omit<ProjectDef, 'recipeId' | keyof ProjectDefaults> & Partial<ProjectDefaults>;
   /** M3: recipe ids that cannot be enabled together with this one (M3-R17). */
   conflicts?: string[];
   /**

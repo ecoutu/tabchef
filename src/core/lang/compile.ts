@@ -41,7 +41,7 @@ import { validateRule } from '../config/validate-config.generated.js';
 import { DURATION, parseDuration } from './duration';
 import type { Config, DedupeSettings } from '../types';
 import type { CompiledRule, Cond, NeedsAlt, NeedsEntry, ParamDef, Program, Recipe, RecipeLevel, RecipeNeeds, RecipeRef, Rule } from './types';
-import type { ProjectDef } from '../projects/types';
+import { PROJECT_DEFAULTS, type ProjectDef } from '../projects/types';
 
 export interface CompileError { key: string; error: string }
 export interface CompileOptions {
@@ -50,6 +50,7 @@ export interface CompileOptions {
 }
 
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x);
+const PROJECT_FIELDS = new Set(['key', 'title', 'color', 'container', 'join', ...Object.keys(PROJECT_DEFAULTS)]);
 const own = (o: object, k: string): boolean => Object.prototype.hasOwnProperty.call(o, k);
 
 /** A param problem found while substituting placeholders. Exported for validateRecipe (src/core/lang/schema.ts). */
@@ -231,8 +232,8 @@ export function ruleOn(ref: Pick<RecipeRef, 'ruleEnabled'>, rule: Pick<Rule, 'id
   return typeof o === 'boolean' ? o : rule.enabled !== false;
 }
 
-/** Enabled recipes with their params substituted; failures go to `errors`. */
-function resolveRecipes(config: Config, builtins: Record<string, Recipe>, errors: CompileError[]): Candidate[] {
+/** Enabled recipes with their params substituted; failures go to `errors`, tolerated-but-ignored input to `warnings`. */
+function resolveRecipes(config: Config, builtins: Record<string, Recipe>, errors: CompileError[], warnings: CompileError[]): Candidate[] {
   const out: Candidate[] = [];
   const seen = new Set<string>();
   for (const ref of Array.isArray(config.recipes) ? config.recipes : []) {
@@ -277,6 +278,12 @@ function resolveRecipes(config: Config, builtins: Record<string, Recipe>, errors
       continue;
     }
     if (body.views !== undefined && !(Array.isArray(body.views) && body.views.every(isObj))) { errors.push({ key: id, error: 'malformed views' }); continue; }
+    if (isObj(body.project)) {
+      if (body.project.container === 'window') { errors.push({ key: id, error: 'window projects are not supported yet' }); continue; } // until M4 T15
+      for (const name of Object.keys(body.project)) {
+        if (!PROJECT_FIELDS.has(name)) warnings.push({ key: id, error: `project field ${name} is not supported by this version` });
+      }
+    }
     out.push({ id, source: ref.source, body, ref, values, defs: isObj(raw.params) ? (raw.params as Record<string, ParamDef>) : {} });
   }
   return withoutConflicts(out, errors);
@@ -336,10 +343,11 @@ export function indexByKey<E extends { key: string }>(entries: E[], errors: Comp
 /** Compile `config` (+ built-in recipe bodies) into a prioritized Program. Pure; never throws on bad data. */
 export function compileProgram(
   config: Config, builtins: Record<string, Recipe>, opts: CompileOptions = {},
-): { program: Program; errors: CompileError[] } {
+): { program: Program; errors: CompileError[]; warnings: CompileError[] } {
   const errors: CompileError[] = [];
+  const warnings: CompileError[] = []; // input this version ignores (e.g. unknown project fields); the recipe still compiles
   const paused = opts.paused ?? new Set<string>();
-  const candidates = resolveRecipes(config, builtins, errors);
+  const candidates = resolveRecipes(config, builtins, errors, warnings);
   const checkTables = mergeTables(candidates, config);
 
   // Recipe rules: any invalid enabled rule (or a duplicate id) skips the whole recipe.
@@ -419,7 +427,11 @@ export function compileProgram(
   }
   // M3 T15: what the ProjectService needs of a project recipe (its def). Params (T13): the resolved values of every
   // recipe that declares any, read by the ProjectService, view `params.*` fields and the sources.refresh period.
-  const projects = survivors.filter((c) => c.body.project !== undefined).map((c): ProjectDef => ({ ...c.body.project!, recipeId: c.id }));
+  const projects = survivors.filter((c) => isObj(c.body.project)).map((c): ProjectDef => {
+    const p = c.body.project!; // an object: a non-object `project` is ignored like any malformed optional field
+    const given = Object.fromEntries(Object.keys(PROJECT_DEFAULTS).filter((k) => own(p, k)).map((k) => [k, p[k as keyof typeof PROJECT_DEFAULTS]]));
+    return { ...PROJECT_DEFAULTS, placement: [...PROJECT_DEFAULTS.placement], ...given, key: p.key, title: p.title, color: p.color, container: p.container, join: p.join, recipeId: c.id }; // unknown fields dropped
+  });
   const params = Object.fromEntries(survivors.filter((c) => Object.keys(c.values).length > 0).map((c) => [c.id, c.values]));
   // M3-R75 / M3-R78: the sources.refresh period, only from recipes that declare `refreshEvery` as a duration param.
   const refreshEvery = Object.fromEntries(survivors
@@ -440,5 +452,6 @@ export function compileProgram(
       dryRun: config.dryRun === true,
     },
     errors,
+    warnings,
   };
 }

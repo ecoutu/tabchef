@@ -450,7 +450,7 @@ describe('compileProgram: M3 T1 (sources, needs, conflicts, projects)', () => {
     };
     const { program, errors } = compileProgram(config({ recipes: [ref('p', { params: { color: 'red', githubOrgs: ['acme'] } }), ref('q')] }), b);
     expect(errors).toEqual([]);
-    expect(program.projects).toEqual([{ ...project, color: 'red', recipeId: 'p' }]);
+    expect(program.projects).toEqual([{ ...project, color: 'red', recipeId: 'p', placement: ['existing', 'current'], onOpenElsewhere: 'move-and-follow', onSwitchAway: 'unload', start: 'auto' }]);
     expect(program.params).toEqual({ p: { color: 'red', githubOrgs: ['acme'] } });
     expect(compileProgram(config({ recipes: [ref('q')] }), b).program).not.toHaveProperty('projects');
   });
