@@ -315,6 +315,11 @@ export default defineBackground(() => {
     schedule: (r) => reconciler.schedule(r),
     onProjectsChanged: (ps) => { openProjects = ps.length; projectMenu.sync(ps).catch(warn('project menu')); },
     toast: (ids, text, focused) => { safety.toastGroup(ids, text, focused).catch(warn('undo toast')); },
+    // The Project home names the recipe a project comes from: a built-in's name, else a user recipe body's.
+    recipeName: async (id) => {
+      const r = (await store.get()).recipes.find((x) => x.id === id);
+      return (r?.source === 'builtin' ? builtinRecipes()[id] : r?.body)?.name;
+    },
   });
   // Tabs and page facts changed: look up what new or navigated tabs need (cache first; at most every few seconds).
   const scheduleSources = createDebounce(() => { sources.refresh('tabs').catch(warn('source refresh')); }, 1000, 5000);

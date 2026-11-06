@@ -8,7 +8,7 @@ import { projectGroupTitle, projectTargets, resolveProjects, type ResolveResult,
 import type { RecentlyClosed } from '../core/safety/recently-closed';
 import type { GroupTarget } from '../core/group/evaluate';
 import type { Program, TabFacts } from '../core/lang/types';
-import type { Project, ProjectAssignment, ProjectCardData, ProjectDef } from '../core/projects/types';
+import type { Project, ProjectAssignment, ProjectCardData, ProjectDef, ProjectHomeData } from '../core/projects/types';
 import type { JiraIssue, PrInfo, PrState, SourceEntry } from '../core/sources/types';
 import type { Snapshot, TabSnap } from '../core/types';
 import { normalizeUrl } from '../core/url/normalize';
@@ -94,6 +94,8 @@ export interface ProjectServiceDeps {
    * time accrues across MV3 worker lifetimes. Without it the clock lives in memory.
    */
   session?: { get(k: string): Promise<unknown>; set(k: string, v: unknown): Promise<void> };
+  /** A recipe's display name, for the Project home (`home`). Default (or undefined): the recipe id. */
+  recipeName?: (recipeId: string) => Promise<string | undefined>;
   now?: () => number;
 }
 
@@ -360,6 +362,41 @@ export class ProjectService {
    * linked PRs are fetched outside it (a reconcile never waits on the network), then written under it again.
    */
   async cards(): Promise<ProjectCardData[]> {
+    return (await this.collect()).cards;
+  }
+
+  /**
+   * One open project's home page (`projects.home`, M4 T4): its card, through cards()' path for that project alone, plus
+   * its groups in tab-bar order, its settings and its recipe's name. Undefined when it is unknown, closed or has no tab.
+   */
+  async home(id: string): Promise<ProjectHomeData | undefined> {
+    const { cards, snap, open, defOf } = await this.collect(id);
+    const card = cards[0];
+    const def = defOf.get(open[0]?.recipeId ?? '');
+    if (!card || !def) return undefined;
+    const members = new Set(card.tabs.map((t) => t.tabId));
+    const winOrder = new Map(snap.windows.map((w, i) => [w.id, i]));
+    const rank = (w: number): number => winOrder.get(w) ?? snap.windows.length;
+    // Tabs in tab-bar order, so each group (window + Chrome group; -1: not in one) is first seen at its lowest index.
+    const byGroup = new Map<string, TabSnap[]>();
+    for (const t of snap.tabs.filter((x) => members.has(x.id)).sort((a, b) => rank(a.windowId) - rank(b.windowId) || a.windowId - b.windowId || a.index - b.index)) {
+      const k = `${t.windowId}:${t.groupId}`;
+      byGroup.set(k, [...(byGroup.get(k) ?? []), t]);
+    }
+    const groups = [...byGroup.values()].map((ts): ProjectHomeData['groups'][number] => {
+      const g = ts[0]!.groupId === -1 ? undefined : snap.groups.find((x) => x.id === ts[0]!.groupId);
+      return { title: g?.title ?? '', color: g?.color ?? 'grey', windowId: ts[0]!.windowId, tabIds: ts.map((t) => t.id) };
+    });
+    const { container, placement, join, onOpenElsewhere, onSwitchAway } = def;
+    const recipeName = (await this.deps.recipeName?.(def.recipeId)) ?? def.recipeId;
+    return { ...card, groups, settings: { container, placement, join, onOpenElsewhere, onSwitchAway }, recipeName };
+  }
+
+  /**
+   * The cards of the open projects (`only`: of that project alone, so only its ticket and linked PRs are fetched), with
+   * the snapshot and the plan they were built from.
+   */
+  private async collect(only?: string): Promise<{ cards: ProjectCardData[]; snap: Snapshot; open: Project[]; defOf: Map<string, ProjectDef> }> {
     const plan = await this.serial(async () => {
       const snap = await this.deps.port.snapshot();
       const { program, defs, projects, assignments } = await this.resolve(snap);
@@ -369,10 +406,11 @@ export class ProjectService {
         if (id !== undefined) tabsOf.set(id, [...(tabsOf.get(id) ?? []), t]);
       }
       const defOf = new Map(defs.map((d) => [d.recipeId, d]));
-      return { program, defOf, tabsOf, sites: ticketSites(program, snap, assignments), open: projects.filter((p) => tabsOf.has(p.id) && defOf.has(p.recipeId)) };
+      const open = projects.filter((p) => (only === undefined || p.id === only) && tabsOf.has(p.id) && defOf.has(p.recipeId));
+      return { snap, program, defOf, tabsOf, sites: ticketSites(program, snap, assignments), open };
     });
-    const { program, defOf, tabsOf, sites, open } = plan;
-    if (open.length === 0) return [];
+    const { snap, program, defOf, tabsOf, sites, open } = plan;
+    if (open.length === 0) return { cards: [], snap, open, defOf };
     const now = this.now();
     const [linked, { issues, asked }] = await Promise.all([this.fetchLinked(program, open, tabsOf, now), this.fetchIssues(open, tabsOf, sites)]);
     return this.serial(async () => {
@@ -415,7 +453,7 @@ export class ProjectService {
         }];
       });
       if (changed.length) await this.deps.store.put(...changed);
-      return cards;
+      return { cards, snap, open, defOf };
     });
   }
 

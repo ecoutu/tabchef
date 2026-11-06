@@ -22,7 +22,7 @@ import type { EarlyReport, PageFacts, WatchSelector } from './page-facts';
 import type { PauseDuration, SafetyService } from './safety';
 import type { ProjectService } from './projects';
 import type { SourceService } from './sources';
-import type { ProjectCardData } from '../core/projects/types';
+import type { ProjectCardData, ProjectHomeData } from '../core/projects/types';
 import { dedupeDecision, openerOf } from './dedupe-handler';
 import { readViews, samePage, type ViewData, type ViewsDeps, type ViewSummary } from './views';
 import { builtinConnectionDefs } from '../core/connections/builtin';
@@ -226,6 +226,8 @@ export type Request =
   | { type: 'projects.openLinked'; projectId: string; url: string }
   /** Answers `{ closed, skipped, ids }`: `ids` are the recently-closed entries (the popup's Undo). */
   | { type: 'projects.closeGroup'; projectId: string }
+  /** One open project's home page (M4 T4): ProjectHomeData, or null when it is unknown, closed or has no tab. */
+  | { type: 'projects.home'; id: string }
   // ---- Sources (M3 T17) ----
   /** The Projects tab opened: SourceService.refresh('popup') (throttled, M3-R83); answers once it is done. */
   | { type: 'sources.refresh' };
@@ -343,6 +345,7 @@ export interface ResponseData {
   'projects.removeTab': null;
   'projects.openLinked': { tabId: number };
   'projects.closeGroup': { closed: number; skipped: number; ids: string[] };
+  'projects.home': ProjectHomeData | null;
   'sources.refresh': null;
 }
 export type ResponseFor<R extends Request> = Response<ResponseData[R['type']]>;
@@ -460,6 +463,7 @@ export function isRequest(m: unknown): m is Request {
     case 'projects.removeTab': return num(x.tabId);
     case 'projects.openLinked': return str(x.projectId) && str(x.url);
     case 'projects.closeGroup': return str(x.projectId);
+    case 'projects.home': return str(x.id);
     default: return false;
   }
 }
@@ -526,7 +530,7 @@ export interface HandlerDeps {
   /** connections.* (M3 T7, the Connections page). Without it they fail. */
   connections?: ConnectionsDeps;
   /** projects.* (M3 T15). Without it they fail. */
-  projects?: Pick<ProjectService, 'cards' | 'addTab' | 'removeTab' | 'openLinked' | 'closeGroup'>;
+  projects?: Pick<ProjectService, 'cards' | 'addTab' | 'removeTab' | 'openLinked' | 'closeGroup' | 'home'>;
   /** sources.refresh (M3 T17). Without it the request fails. */
   sources?: Pick<SourceService, 'refresh'> & Partial<Pick<SourceService, 'unreadableRepos'>>;
   now?: () => number;
@@ -1025,6 +1029,7 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
       case 'projects.removeTab': await p.removeTab(req.tabId); return ok(null);
       case 'projects.openLinked': return ok({ tabId: await p.openLinked(req.projectId, req.url) });
       case 'projects.closeGroup': return ok(await p.closeGroup(req.projectId));
+      case 'projects.home': return ok((await p.home(req.id)) ?? null);
     }
   }
 
@@ -1050,6 +1055,7 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
         return scrub(r, [...needles, ...(await c.knownSecrets())]);
       }
       case 'projects.list': case 'projects.addTab': case 'projects.removeTab': case 'projects.openLinked': case 'projects.closeGroup':
+      case 'projects.home':
         return deps.projects ? runProjects(req, deps.projects) : fail('projects unavailable');
       case 'sources.refresh': {
         if (!deps.sources) return fail('sources unavailable');

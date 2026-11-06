@@ -1,6 +1,7 @@
 // Project types (M3). T1 adds only ProjectDef, so `Recipe.project` can reference it (M3-R19); T14 adds Project and
 // ProjectAssignment.
 import type { PrState } from '../sources/types';
+import type { GroupColor } from '../types';
 
 export type Container = 'group' | 'window';
 export type Placement = 'existing' | 'current' | 'new' | `home:${string}`;
@@ -76,6 +77,18 @@ export interface ProjectCardData {
   tabs: { tabId: number; windowId: number; title: string; url: string; favIconUrl?: string; lastAccessed?: number; pill?: PrState; stale?: boolean }[];
   /** Linked PRs not open in the project. */
   linked: Project['linked'];
+}
+
+/** One project's home page (`projects.home`, M4 T4): its card data plus its groups, settings and recipe's name. */
+export interface ProjectHomeData extends ProjectCardData {
+  /**
+   * The project's tabs by Chrome group, in tab-bar order: windows in snapshot order, then the lowest tab index; tabs in
+   * index order. Tabs not in a group form one entry per window with an empty title and grey.
+   */
+  groups: { title: string; color: GroupColor; windowId: number; tabIds: number[] }[];
+  settings: Pick<ProjectDef, 'container' | 'placement' | 'join' | 'onOpenElsewhere' | 'onSwitchAway'>;
+  /** The name of the recipe that defines the project (its id when unknown). */
+  recipeName: string;
 }
 
 /** Why a tab is in a project. `index` is the assigning rule's priority (-1 for manual: it wins over every rule). */

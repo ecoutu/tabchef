@@ -1234,6 +1234,10 @@ describe('projects.* (M3 T15)', () => {
     removeTab: vi.fn(async () => {}),
     openLinked: vi.fn(async () => 77),
     closeGroup: vi.fn(async () => ({ closed: 2, skipped: 1, ids: ['rc-1', 'rc-2'] })),
+    home: vi.fn(async (id: string) => (id === 'r:ABC-1' ? {
+      id, key: 'ABC-1', title: 'ABC-1', done: false, tabs: [], linked: [], groups: [], recipeName: 'r',
+      settings: { container: 'group' as const, placement: ['existing' as const], join: ['rules' as const], onOpenElsewhere: 'leave' as const, onSwitchAway: 'unload' as const },
+    } : undefined)),
   });
 
   it('validates the requests', () => {
@@ -1247,6 +1251,8 @@ describe('projects.* (M3 T15)', () => {
     expect(isRequest({ type: 'projects.openLinked', projectId: 'r:ABC-1' })).toBe(false);
     expect(isRequest({ type: 'projects.closeGroup', projectId: 'r:ABC-1' })).toBe(true);
     expect(isRequest({ type: 'projects.closeGroup', projectId: 3 })).toBe(false);
+    expect(isRequest({ type: 'projects.home', id: 'r:ABC-1' })).toBe(true);
+    expect(isRequest({ type: 'projects.home' })).toBe(false);
   });
 
   it('reach the ProjectService; its errors are error responses', async () => {
@@ -1260,6 +1266,8 @@ describe('projects.* (M3 T15)', () => {
     expect(await s.handle({ type: 'projects.openLinked', projectId: 'r:ABC-1', url: 'https://x/' }, ui)).toEqual({ ok: true, data: { tabId: 77 } });
     expect(p.openLinked).toHaveBeenCalledWith('r:ABC-1', 'https://x/');
     expect(await s.handle({ type: 'projects.closeGroup', projectId: 'r:ABC-1' }, ui)).toEqual({ ok: true, data: { closed: 2, skipped: 1, ids: ['rc-1', 'rc-2'] } });
+    expect(await s.handle({ type: 'projects.home', id: 'r:ABC-1' }, ui)).toEqual({ ok: true, data: await p.home('r:ABC-1') });
+    expect(await s.handle({ type: 'projects.home', id: 'gone' }, ui)).toEqual({ ok: true, data: null });
     p.openLinked.mockRejectedValue(new Error('not a linked PR of this project'));
     expect(await s.handle({ type: 'projects.openLinked', projectId: 'r:ABC-1', url: 'https://evil/' }, ui)).toEqual({ ok: false, error: 'not a linked PR of this project' });
   });
@@ -1267,6 +1275,8 @@ describe('projects.* (M3 T15)', () => {
   it('fail without the ProjectService, and from content scripts', async () => {
     expect(await setup().handle({ type: 'projects.list' }, ui)).toEqual({ ok: false, error: 'projects unavailable' });
     expect(await setup({ projects: projects() }).handle({ type: 'projects.list' }, content)).toEqual({ ok: false, error: 'forbidden' });
+    expect(await setup().handle({ type: 'projects.home', id: 'x' }, ui)).toEqual({ ok: false, error: 'projects unavailable' });
+    expect(await setup({ projects: projects() }).handle({ type: 'projects.home', id: 'x' }, content)).toEqual({ ok: false, error: 'forbidden' });
   });
 });
 

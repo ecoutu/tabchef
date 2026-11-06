@@ -2,7 +2,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, waitFor } from '@testing-library/svelte';
 import { fakeBrowser } from 'wxt/testing/fake-browser';
-import type { ProjectCardData } from '../../src/core/projects/types';
+import type { ProjectCardData, ProjectHomeData } from '../../src/core/projects/types';
 
 const send = vi.fn();
 vi.mock('../../src/ui/send', () => ({ send: (r: unknown) => send(r) }));
@@ -15,12 +15,24 @@ import { projectHomeHash } from '../../src/ui/routes';
 
 const card = (id: string, title: string): ProjectCardData => ({ id, key: id, title, done: false, tabs: [], linked: [] });
 const cards = [card('jira-ticket-either:ABC-1', 'ABC-1 · Login fails'), card('repo:acme/web', 'acme/web')];
+const homeOf = (id: string): ProjectHomeData | null => {
+  const c = cards.find((x) => x.id === id);
+  return c ? {
+    ...c, groups: [], recipeName: 'r',
+    settings: { container: 'group', placement: ['existing'], join: ['rules'], onOpenElsewhere: 'leave', onSwitchAway: 'unload' },
+  } : null;
+};
+const reply = async (req: { type: string; id?: string }) => {
+  if (req.type === 'projects.list') return { ok: true, data: cards };
+  if (req.type === 'projects.home') return { ok: true, data: homeOf(req.id ?? '') };
+  return { ok: true, data: null };
+};
 
 beforeEach(() => {
   fakeBrowser.reset();
   window.location.hash = '';
   send.mockReset();
-  send.mockImplementation(async (req: { type: string }) => (req.type === 'projects.list' ? { ok: true, data: cards } : { ok: true, data: null }));
+  send.mockImplementation(reply);
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
@@ -40,7 +52,7 @@ describe('Projects page (M4 T3)', () => {
   });
 });
 
-describe('Project home stub', () => {
+describe('Project home', () => {
   it('shows the project and links back to the list', async () => {
     render(ProjectHome, { id: 'repo:acme/web' });
     expect(await screen.findByRole('heading', { name: 'acme/web' })).toBeTruthy();
@@ -52,7 +64,7 @@ describe('card title links', () => {
   it('popup App: the title link opens options.html at the project route', async () => {
     send.mockImplementation(async (req: { type: string }) => {
       switch (req.type) {
-        case 'projects.list': return { ok: true, data: cards };
+        case 'projects.list': case 'projects.home': return reply(req);
         case 'views.list': return { ok: true, data: [{ id: 'projects', tab: 'Projects', kind: 'projects', actions: [], count: 0 }] };
         case 'safety.status': return { ok: true, data: { paused: false, locked: [] } };
         case 'recent.list': return { ok: true, data: [] };
