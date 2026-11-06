@@ -27,6 +27,7 @@ export class ProjectClock {
    * tabs (a snapshot before session restore counts nothing), at most MAX_TICK_MS per gap. The clock (last tick and
    * pending time) is kept in storage.session, so it runs across worker restarts and stops with the browser; pending
    * time is added to the store hourly. The first such pass of a worker returns the projects closed for PRUNE_AFTER_MS.
+   * A kept project (`keep`, M4 T7) is never pruned and counts no closed time, like an open one.
    */
   async closedTime(snap: Snapshot, projects: Project[], open: Set<string>, changed: Set<Project>): Promise<string[]> {
     if (snap.tabs.length === 0) return [];
@@ -35,7 +36,7 @@ export class ProjectClock {
     const dt = clock.lastTick === undefined ? 0 : Math.min(Math.max(0, now - clock.lastTick), MAX_TICK_MS);
     const pending: Record<string, number> = {};
     for (const p of projects) {
-      if (open.has(p.id)) {
+      if (open.has(p.id) || p.keep) {
         if (p.closedFor !== undefined) { delete p.closedFor; changed.add(p); }
         continue;
       }
@@ -48,7 +49,7 @@ export class ProjectClock {
     if (JSON.stringify(next) !== JSON.stringify(clock)) await this.writeClock(next); // unchanged: no session write
     if (this.pruned) return [];
     this.pruned = true;
-    return projects.filter((p) => !open.has(p.id) && (p.closedFor ?? 0) + (pending[p.id] ?? 0) >= PRUNE_AFTER_MS).map((p) => p.id);
+    return projects.filter((p) => !open.has(p.id) && !p.keep && (p.closedFor ?? 0) + (pending[p.id] ?? 0) >= PRUNE_AFTER_MS).map((p) => p.id);
   }
 
   private memoryClock: ClosedClock = { pending: {} };

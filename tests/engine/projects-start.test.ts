@@ -84,7 +84,7 @@ describe('ProjectService.create (Manual projects)', () => {
     const id = await h.svc.create(MANUAL, 'Tax 2026', [5]);
     expect(id).toBe(`${MANUAL}:tax-2026`);
     expect(await h.store.list()).toEqual([{
-      id, recipeId: MANUAL, key: 'tax-2026', name: 'Tax 2026', keep: true, createdAt: NOW,
+      id, recipeId: MANUAL, key: 'tax-2026', name: 'Tax 2026', keep: true, createdAt: NOW, updatedAt: NOW,
       manual: [{ url: 'https://irs.example/forms', windowId: 1, tabId: 5 }], excluded: [], linked: [],
     }]);
     expect(h.logs.filter((l) => l.action === 'project-join').map((l) => [l.tabId, l.detail])).toEqual([[5, 'Joined tax-2026 manually']]);
@@ -126,7 +126,7 @@ describe('ProjectService.create (Manual projects)', () => {
     await h.r.flush();
     expect(h.groupOf(1)?.title).toBe('ABC-1');
     expect(await h.svc.create(MANUAL, 'ABC-1', [2])).toBe(`${MANUAL}:abc-1-2`);
-    await h.store.put({ id: `${MANUAL}:old`, recipeId: MANUAL, key: 'old', name: 'Old', createdAt: 1, manual: [], excluded: [], linked: [], closedAt: 2, closedIds: ['rc'] });
+    await h.store.put({ id: `${MANUAL}:old`, recipeId: MANUAL, key: 'old', name: 'Old', createdAt: 1, updatedAt: 1, manual: [], excluded: [], linked: [], closedAt: 2, closedIds: ['rc'] });
     expect(await h.svc.create(MANUAL, 'Old')).toBe(`${MANUAL}:old-2`);
     expect((await h.store.list()).filter((p) => p.recipeId === MANUAL).map((p) => p.name)).toEqual(['ABC-1 (2)', 'Old', 'Old (2)']);
     await h.r.flush();
@@ -150,7 +150,7 @@ describe('ProjectService.create (Manual projects)', () => {
 
   it('a stored project of the same key, closed or not, takes its key', async () => {
     const h = harness();
-    await h.store.put({ id: `${MANUAL}:taxes`, recipeId: MANUAL, key: 'taxes', createdAt: 1, manual: [], excluded: [], linked: [], closedAt: 2, closedIds: ['rc'] });
+    await h.store.put({ id: `${MANUAL}:taxes`, recipeId: MANUAL, key: 'taxes', createdAt: 1, updatedAt: 1, manual: [], excluded: [], linked: [], closedAt: 2, closedIds: ['rc'] });
     expect(await h.svc.create(MANUAL, 'Taxes')).toBe(`${MANUAL}:taxes-2`);
   });
 
@@ -203,16 +203,16 @@ describe('ProjectService.start (on-request projects)', () => {
     expect(await h.store.list()).toEqual([]); // assignProject does not create: nothing starts by itself
     expect(await h.svc.start('repo', 'acme/web')).toBe('repo:acme/web');
     expect(await h.svc.start('repo', 'acme/web')).toBe('repo:acme/web');
-    expect(await h.store.list()).toEqual([{ id: 'repo:acme/web', recipeId: 'repo', key: 'acme/web', createdAt: NOW, manual: [], excluded: [], linked: [] }]);
+    expect(await h.store.list()).toEqual([{ id: 'repo:acme/web', recipeId: 'repo', key: 'acme/web', createdAt: NOW, updatedAt: NOW, manual: [], excluded: [], linked: [] }]);
     await h.r.flush();
     expect(h.groupOf(1)?.title).toBe('acme/web');
   });
 
   it('a closed (tombstoned) project is revived rather than replaced', async () => {
     const h = harness(program({ repo: repo('on-request') }));
-    await h.store.put({ id: 'repo:acme/web', recipeId: 'repo', key: 'acme/web', createdAt: 1, manual: [], excluded: ['x'], linked: [], closedAt: 2, closedIds: ['rc'] });
+    await h.store.put({ id: 'repo:acme/web', recipeId: 'repo', key: 'acme/web', createdAt: 1, updatedAt: 1, manual: [], excluded: ['x'], linked: [], closedAt: 2, closedIds: ['rc'] });
     expect(await h.svc.start('repo', 'acme/web')).toBe('repo:acme/web');
-    expect(await h.store.list()).toEqual([{ id: 'repo:acme/web', recipeId: 'repo', key: 'acme/web', createdAt: 1, manual: [], excluded: ['x'], linked: [] }]);
+    expect(await h.store.list()).toEqual([{ id: 'repo:acme/web', recipeId: 'repo', key: 'acme/web', createdAt: 1, updatedAt: NOW, manual: [], excluded: ['x'], linked: [] }]);
   });
 
   it("start on a recipe with start: 'auto' throws this project starts by itself; a blank key or an unknown recipe throws too", async () => {

@@ -35,6 +35,15 @@ export const PROJECT_DEFAULTS: ProjectDefaults = {
   placement: ['existing', 'current'], onOpenElsewhere: 'move-and-follow', onSwitchAway: 'unload', start: 'auto',
 };
 
+/** One tab of a project's saved tab list (M4 T7): what reopen restores. */
+export interface SavedTab {
+  url: string;
+  title: string;
+  /** The title of the Chrome group it was in (unset: in none, or an untitled one). */
+  group?: string;
+  pinned?: boolean;
+}
+
 /** One open project: tabs sharing a key (e.g. a Jira issue key) under one group. Stored by T15's ProjectStore. */
 export interface Project {
   /** `${recipeId}:${key}`. */
@@ -45,6 +54,17 @@ export interface Project {
   name?: string;
   /** Saved by the user (M4 T6: every Manual project; T7: close-and-save, Keep): never pruned, synced (D2). */
   keep?: boolean;
+  /**
+   * The project's saved tab list (M4 T7), in tab-bar order: set by close-and-save, and refreshed for a kept project by
+   * every pass that sees its tabs, so closing its last tab by hand leaves the list of the last pass that saw tabs.
+   * `closed`: set by close-and-save (M4-R14): while set, passes only grow the list (a new member at its tab-bar place)
+   * and never remove from it. Cleared by reopen, or once the open tabs cover the list. removeTab drops its URL anyway.
+   */
+  saved?: { tabs: SavedTab[]; at: number; closed?: boolean };
+  /** Archived by the user (M4 T9). */
+  archivedAt?: number;
+  /** Bumped on every user-visible change (M4 T7; D1 sync merges by it). A stored project without it reads as createdAt. */
+  updatedAt: number;
   summary?: string;
   status?: { name: string; category: 'new' | 'indeterminate' | 'done'; via: 'api' | 'page' | 'title' };
   createdAt: number;
@@ -93,6 +113,9 @@ export interface ProjectHomeData extends ProjectCardData {
   settings: Pick<ProjectDef, 'container' | 'placement' | 'join' | 'onOpenElsewhere' | 'onSwitchAway'>;
   /** The name of the recipe that defines the project (its id when unknown). */
   recipeName: string;
+  /** M4 T7: kept (never pruned, synced) and its saved tab list. A kept project with no open tab has no groups. */
+  keep?: boolean;
+  saved?: Project['saved'];
 }
 
 /** Why a tab is in a project. `index` is the assigning rule's priority (-1 for manual: it wins over every rule). */

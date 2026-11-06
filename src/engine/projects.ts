@@ -1,14 +1,15 @@
 // Projects (M3 T15): the ProjectService (store: project-store.ts, closed-time clock: project-clock.ts), which resolves
 // project membership each reconcile pass (T14's pure resolveProjects + projectTargets, planned as PlanContext.overrides,
 // M3-R66), persists sticky membership with its rule in RuntimeState.projectTabs, and runs the user's project actions:
-// add / remove a tab, open a linked PR, close the project's tabs. Ticket status and linked PRs come from the
-// SourceService's public API only (M3-R68); linked PRs are refreshed at most every LINKED_REFRESH_MS per project.
+// add / remove a tab, open a linked PR, close the project's tabs, and (M4 T7) close-and-save, reopen and Keep. Ticket
+// status and linked PRs come from the SourceService's public API only (M3-R68); linked PRs are refreshed at most every
+// LINKED_REFRESH_MS per project.
 import { liveProgram } from '../core/lang/dry-run';
 import { projectGroupTitle, projectTargets, resolveProjects, type ResolveResult, type StickyMap } from '../core/projects/resolve';
 import type { RecentlyClosed } from '../core/safety/recently-closed';
 import type { GroupTarget } from '../core/group/evaluate';
 import type { Program, TabFacts } from '../core/lang/types';
-import type { Project, ProjectAssignment, ProjectCardData, ProjectDef, ProjectHomeData } from '../core/projects/types';
+import type { Project, ProjectAssignment, ProjectCardData, ProjectDef, ProjectHomeData, SavedTab } from '../core/projects/types';
 import type { JiraIssue, PrInfo, PrState, SourceEntry } from '../core/sources/types';
 import type { Snapshot, TabSnap } from '../core/types';
 import { normalizeUrl } from '../core/url/normalize';
@@ -78,9 +79,45 @@ function freeKey(base: string, taken: Set<string>): string {
     if (!taken.has(k)) return k;
   }
 }
+/** `tabs` in tab-bar order: windows in snapshot order, then the lowest tab index; tabs in index order. */
+function tabBarOrder(snap: Snapshot, tabs: TabSnap[]): TabSnap[] {
+  const winOrder = new Map(snap.windows.map((w, i) => [w.id, i]));
+  const rank = (w: number): number => winOrder.get(w) ?? snap.windows.length;
+  return [...tabs].sort((a, b) => rank(a.windowId) - rank(b.windowId) || a.windowId - b.windowId || a.index - b.index);
+}
+/** A saved tab list (M4 T7) of the tabs `ids`, in tab-bar order, each with its Chrome group's title. */
+function savedTabs(snap: Snapshot, ids: Set<number>): SavedTab[] {
+  return tabBarOrder(snap, snap.tabs.filter((t) => ids.has(t.id))).map((t) => {
+    const group = t.groupId === -1 ? undefined : snap.groups.find((g) => g.id === t.groupId)?.title;
+    return { url: urlOf(t), title: t.title, ...(group && { group }), ...(t.pinned && { pinned: true }) };
+  });
+}
+/**
+ * M4-R14: a frozen saved list (`saved.closed`) grown by the open members `open` (tab-bar order) not in it, nothing
+ * removed. Each new tab goes right after the open member before it in the tab bar, else right before the first open
+ * member of the list, else (no open member is in the list) at the end.
+ */
+function growFrozen(saved: SavedTab[], open: SavedTab[], key: (url: string) => string): SavedTab[] {
+  const list = [...saved];
+  let after = -1;
+  let lead: SavedTab[] = [];
+  for (const t of open) {
+    const i = list.findIndex((x) => key(x.url) === key(t.url));
+    if (i >= 0) {
+      if (after < 0 && lead.length) { list.splice(i, 0, ...lead); after = i + lead.length; lead = []; } else after = i;
+    } else if (after >= 0) list.splice(++after, 0, t);
+    else if (!lead.some((x) => key(x.url) === key(t.url))) lead.push(t);
+  }
+  return [...list, ...lead];
+}
 /** Closed by Close group (M3-R84): kept for undo, out of membership and the UI. */
 const isTomb = (p: Project): boolean => p.closedAt !== undefined;
 const revive = (p: Project): void => { delete p.closedAt; delete p.closedIds; };
+/**
+ * What makes a saved tab list differ for the user (M4 T7): URLs, order, groups and pinning, never titles (a title that
+ * keeps changing would rewrite the store and bump updatedAt every pass).
+ */
+const savedShape = (tabs: SavedTab[]): string => JSON.stringify(tabs.map((t) => [t.url, t.group, t.pinned]));
 /**
  * The projects of a pass: the stored ones plus those resolveProjects created, where a created project whose key has a
  * tombstone is that stored record (`revived`, not yet revived), never the bare copy (live and preview agree on it).
@@ -99,7 +136,7 @@ export interface ProjectServiceDeps {
   facts: Pick<PageFacts, 'get'>;
   log: WhyLog;
   recentlyClosed: Pick<RecentlyClosed, 'add'>;
-  /** Pinned, locked, form-edited (and audible / exempt) tabs are never closed by closeGroup. */
+  /** Pinned, locked, form-edited (and audible / exempt) tabs are never closed by closeGroup or closeAndSave. */
   safety: Pick<SafetyService, 'isProtected'>;
   /** The reconciler's LiveState (Reconciler.liveState): sticky membership lives in its RuntimeState. */
   state: () => Promise<LiveState>;
@@ -201,7 +238,7 @@ export class ProjectService {
     const open = new Set([...r.assignments.values()].map((a) => a.projectId));
     if (!full.dryRun) {
       const changed = new Set<Project>([...created, ...revived]);
-      for (const p of revived) revive(p);
+      for (const p of revived) { revive(p); p.updatedAt = this.now(); }
       if (revived.length) this.deps.schedule?.('project'); // its manual entries take their tabs on the next pass
       for (const p of projects) {
         const summary = r.summaries.get(p.id);
@@ -211,6 +248,37 @@ export class ProjectService {
       for (const p of projects) {
         const site = sites.get(p.id);
         if (site !== undefined && p.site === undefined) { p.site = site; changed.add(p); }
+      }
+      // A kept project's saved tab list follows its open tabs (M4 T7), so it keeps the list of the last pass that saw
+      // tabs once the user closes them all. A list frozen by close-and-save (`closed`, M4-R14) only grows (a new
+      // member is added at its tab-bar place, nothing is removed) until the open tabs cover it again (reopen, a full
+      // undo, the user reopening them by hand). A title-only change is not written (nor bumps updatedAt).
+      const membersOf = new Map<string, Set<number>>();
+      for (const [tabId, a] of r.assignments) membersOf.set(a.projectId, (membersOf.get(a.projectId) ?? new Set()).add(tabId));
+      for (const p of projects) {
+        const ids = membersOf.get(p.id);
+        if (!p.keep || isTomb(p) || !ids) continue;
+        const tabs = savedTabs(snap, ids);
+        if (p.saved?.closed) {
+          const key = (u: string): string => this.norm(program, u);
+          const open = new Set(tabs.map((t) => key(t.url)));
+          if (p.saved.tabs.some((t) => !open.has(key(t.url)))) {
+            // M4-R14: frozen while the open tabs do not cover the list: it only grows.
+            const grown = growFrozen(p.saved.tabs, tabs, key);
+            if (grown.length > p.saved.tabs.length) {
+              p.saved = { tabs: grown, at: this.now(), closed: true };
+              p.updatedAt = this.now();
+              changed.add(p);
+            }
+            continue;
+          }
+          delete p.saved.closed;
+          changed.add(p);
+        }
+        if (p.saved && savedShape(tabs) === savedShape(p.saved.tabs)) continue;
+        p.saved = { tabs, at: this.now() };
+        p.updatedAt = this.now();
+        changed.add(p);
       }
       const removed = await this.clock.closedTime(snap, projects, open, changed);
       projects = projects.filter((p) => !removed.includes(p.id));
@@ -247,10 +315,11 @@ export class ProjectService {
     const def = program.projects?.find((d) => d.recipeId === p.recipeId);
     if (!def?.join.includes('manual')) throw new Error('this project does not take tabs manually');
     const changed = projects.filter((q) => q !== p && q.manual.some((m) => m.tabId === tabId));
-    for (const q of changed) q.manual = q.manual.filter((m) => m.tabId !== tabId);
+    for (const q of changed) { q.manual = q.manual.filter((m) => m.tabId !== tabId); q.updatedAt = this.now(); }
     const key = this.norm(program, url);
     p.excluded = p.excluded.filter((u) => u !== key);
     p.manual = [...p.manual.filter((m) => m.tabId !== tabId), { url, windowId, tabId }];
+    p.updatedAt = this.now();
     await this.deps.store.put(p, ...changed);
     this.log(tabId, `Joined ${p.key} manually`);
     this.deps.schedule?.('project');
@@ -305,7 +374,7 @@ export class ProjectService {
       const projects = await this.deps.store.list();
       const unique = freeName(title, new Set([...projects.flatMap((q) => q.name ?? []), ...titles]));
       const key = freeKey(nameSlug(unique), new Set(projects.filter((q) => q.recipeId === recipeId).map((q) => q.key)));
-      const p: Project = { id: `${recipeId}:${key}`, recipeId, key, name: unique, keep: true, createdAt: this.now(), manual: [], excluded: [], linked: [] };
+      const p: Project = { id: `${recipeId}:${key}`, recipeId, key, name: unique, keep: true, createdAt: this.now(), updatedAt: this.now(), manual: [], excluded: [], linked: [] };
       projects.push(p);
       if (tabs.length === 0) await this.deps.store.put(p);
       for (const t of tabs) await this.join(program, projects, p, t.id, t.windowId, urlOf(t));
@@ -327,8 +396,8 @@ export class ProjectService {
       const id = `${recipeId}:${k}`;
       const p = projects.find((x) => x.id === id);
       if (p && !isTomb(p)) return id;
-      if (p) revive(p);
-      await this.deps.store.put(p ?? { id, recipeId, key: k, createdAt: this.now(), manual: [], excluded: [], linked: [] });
+      if (p) { revive(p); p.updatedAt = this.now(); }
+      await this.deps.store.put(p ?? { id, recipeId, key: k, createdAt: this.now(), updatedAt: this.now(), manual: [], excluded: [], linked: [] });
       this.deps.schedule?.('project');
       return id;
     });
@@ -355,6 +424,9 @@ export class ProjectService {
       const key = this.norm(program, urlOf(t));
       p.manual = p.manual.filter((m) => m.tabId !== tabId && this.norm(program, m.url) !== key);
       if (!p.excluded.includes(key)) p.excluded.push(key);
+      // The user took this page out of the project: out of its saved list too, frozen or not (M4-R14).
+      if (p.saved) p.saved = { ...p.saved, tabs: p.saved.tabs.filter((s) => this.norm(program, s.url) !== key) };
+      p.updatedAt = this.now();
       (await this.deps.state()).projectTabs.delete(tabId);
       await this.deps.store.put(p);
       this.log(tabId, `Removed from ${p.key} manually`, undefined, 'project-leave');
@@ -382,43 +454,131 @@ export class ProjectService {
    * Closes the project's tabs except protected ones, the active ones last (closing the active tab closes the popup).
    * When none remains the project becomes a tombstone (M3-R84), so undo restores it whole. `ids`: the closed tabs'
    * recently-closed entries, which the popup's Undo reopens (recent.undo); M1's undo (banner / notification) is
-   * offered for all of them at once.
+   * offered for all of them at once. A kept project (`keep`, M4 T7) with nothing open stays stored.
    */
   closeGroup(projectId: string): Promise<{ closed: number; skipped: number; ids: string[] }> {
+    return this.serial(() => this.close(projectId, false));
+  }
+
+  /**
+   * Close and save (M4 T7): records the project's open tabs as its saved tab list (tab-bar order, group titles), keeps
+   * it (`keep`: never pruned) and closes them as closeGroup does: protected tabs stay open and stay in the list, and
+   * undo revives a fully closed project (M3-R84). With no tab open the previous list stays. A user action, so it applies
+   * under global dry run too (R50), as closeGroup does.
+   */
+  closeAndSave(projectId: string): Promise<{ closed: number; skipped: number; ids: string[] }> {
+    return this.serial(() => this.close(projectId, true));
+  }
+
+  private async close(projectId: string, save: boolean): Promise<{ closed: number; skipped: number; ids: string[] }> {
+    const snap = await this.deps.port.snapshot();
+    const { assignments, projects } = await this.resolve(snap);
+    const p = projects.find((x) => x.id === projectId);
+    if (!p) throw new Error('unknown project');
+    const ids: string[] = [];
+    let skipped = 0;
+    const members = snap.tabs.filter((x) => assignments.get(x.id)?.projectId === projectId);
+    if (save) {
+      p.keep = true;
+      // Marked closed: the protected tabs left open never shrink the list until reopen.
+      if (members.length > 0) p.saved = { tabs: savedTabs(snap, new Set(members.map((t) => t.id))), at: this.now(), closed: true };
+      else if (p.saved) p.saved.closed = true;
+      p.updatedAt = this.now();
+      await this.deps.store.put(p); // before closing: a worker restart mid-close keeps the list
+    }
+    for (const t of [...members.filter((x) => !x.active), ...members.filter((x) => x.active)]) {
+      if (this.deps.safety.isProtected(t)) { skipped++; continue; }
+      try {
+        await this.deps.port.closeTab(t.id);
+      } catch {
+        skipped++;
+        continue;
+      }
+      const groupTitle = snap.groups.find((g) => g.id === t.groupId)?.title;
+      ids.push(this.deps.recentlyClosed.add({
+        url: urlOf(t), title: t.title, ...(groupTitle && { groupTitle }), windowId: t.windowId, reason: 'project-closed', at: this.now(),
+      }));
+      this.log(t.id, `Closed with project ${p.key}`, undefined, 'project-close');
+    }
+    if (skipped === 0 && ids.length > 0) {
+      p.closedAt = this.now();
+      p.closedIds = ids;
+      p.updatedAt = this.now();
+      await this.deps.store.put(p);
+    } else if (save) await this.deps.store.put(p);
+    else if (skipped === 0 && !p.keep) await this.deps.store.remove(projectId); // nothing open: nothing to undo
+    this.deps.schedule?.('project');
+    if (ids.length > 0 && this.deps.toast) {
+      const after = await this.deps.port.snapshot();
+      const focused = after.tabs.find((t) => t.active && after.windows.some((w) => w.focused && w.id === t.windowId));
+      this.deps.toast(ids, `Closed ${ids.length} ${ids.length === 1 ? 'tab' : 'tabs'} of ${p.key} (project-closed).`, focused);
+    }
+    return { closed: ids.length, skipped, ids };
+  }
+
+  /**
+   * Reopens the project's saved tab list (M4 T7) in background tabs, in saved order (the reconciler then groups them),
+   * in the window holding its open tabs, else the last window that held it (its newest manual entry's), else the
+   * focused one (placement: T16). A saved URL already open (dedupe's normalization) is not opened again: that tab joins
+   * instead. Each tab joins as a manual member when the recipe takes them (else by its rules). A closed (tombstoned)
+   * project is revived. A user action, so it applies under global dry run too (R50). Returns how many tabs it opened.
+   */
+  reopen(projectId: string): Promise<{ opened: number }> {
     return this.serial(async () => {
       const snap = await this.deps.port.snapshot();
-      const { assignments, projects } = await this.resolve(snap);
+      const { program, projects, assignments } = await this.resolve(snap);
       const p = projects.find((x) => x.id === projectId);
       if (!p) throw new Error('unknown project');
-      const ids: string[] = [];
-      let skipped = 0;
-      const members = snap.tabs.filter((x) => assignments.get(x.id)?.projectId === projectId);
-      for (const t of [...members.filter((x) => !x.active), ...members.filter((x) => x.active)]) {
-        if (this.deps.safety.isProtected(t)) { skipped++; continue; }
-        try {
-          await this.deps.port.closeTab(t.id);
-        } catch {
-          skipped++;
+      const def = program.projects?.find((d) => d.recipeId === p.recipeId);
+      if (!def) throw new Error(`turn on the recipe ${(await this.deps.recipeName?.(p.recipeId)) ?? p.recipeId} first`);
+      const normal = new Set(snap.windows.filter((w) => w.type === 'normal').map((w) => w.id));
+      const windowId = snap.tabs.find((t) => assignments.get(t.id)?.projectId === projectId && normal.has(t.windowId))?.windowId
+        ?? [...p.manual].reverse().find((m) => normal.has(m.windowId))?.windowId
+        ?? snap.windows.find((w) => w.focused && normal.has(w.id))?.id;
+      const saved = p.saved?.tabs ?? [];
+      revive(p);
+      // Frozen until the open tabs cover the list again (the pass then thaws it): a tab that fails to open or
+      // redirects before the next pass (leaving its URL-matched manual entry) never shrinks it.
+      if (p.saved && p.saved.tabs.length > 0) p.saved.closed = true;
+      p.updatedAt = this.now();
+      await this.deps.store.put(p);
+      const manual = def.join.includes('manual');
+      const openAt = new Map<string, TabSnap>();
+      for (const t of snap.tabs) {
+        const k = this.norm(program, urlOf(t));
+        if (normal.has(t.windowId) && !t.incognito && !openAt.has(k)) openAt.set(k, t);
+      }
+      const seen = new Set<string>();
+      let opened = 0;
+      for (const s of saved) {
+        const k = this.norm(program, s.url);
+        if (seen.has(k)) continue;
+        seen.add(k);
+        const t = openAt.get(k);
+        if (t) {
+          if (manual && assignments.get(t.id)?.projectId !== projectId) await this.join(program, projects, p, t.id, t.windowId, urlOf(t));
           continue;
         }
-        const groupTitle = snap.groups.find((g) => g.id === t.groupId)?.title;
-        ids.push(this.deps.recentlyClosed.add({
-          url: urlOf(t), title: t.title, ...(groupTitle && { groupTitle }), windowId: t.windowId, reason: 'project-closed', at: this.now(),
-        }));
-        this.log(t.id, `Closed with project ${p.key}`, undefined, 'project-close');
+        const tabId = await this.deps.port.createTab({ url: s.url, active: false, ...(windowId !== undefined && { windowId }) });
+        opened++;
+        if (!manual) continue;
+        const at = windowId ?? (await this.deps.port.snapshot()).tabs.find((x) => x.id === tabId)?.windowId ?? -1;
+        await this.join(program, projects, p, tabId, at, s.url);
       }
-      if (skipped === 0 && ids.length > 0) {
-        p.closedAt = this.now();
-        p.closedIds = ids;
-        await this.deps.store.put(p);
-      } else if (skipped === 0) await this.deps.store.remove(projectId); // nothing open: nothing to undo
       this.deps.schedule?.('project');
-      if (ids.length > 0 && this.deps.toast) {
-        const after = await this.deps.port.snapshot();
-        const focused = after.tabs.find((t) => t.active && after.windows.some((w) => w.focused && w.id === t.windowId));
-        this.deps.toast(ids, `Closed ${ids.length} ${ids.length === 1 ? 'tab' : 'tabs'} of ${p.key} (project-closed).`, focused);
-      }
-      return { closed: ids.length, skipped, ids };
+      return { opened };
+    });
+  }
+
+  /** Keep (M4 T7): a kept project is never pruned and is synced (D2). A closed project can be kept too. */
+  setKeep(projectId: string, keep: boolean): Promise<void> {
+    return this.serial(async () => {
+      const p = (await this.deps.store.list()).find((x) => x.id === projectId);
+      if (!p) throw new Error('unknown project');
+      if (keep) p.keep = true;
+      else delete p.keep;
+      p.updatedAt = this.now();
+      await this.deps.store.put(p);
     });
   }
 
@@ -431,6 +591,7 @@ export class ProjectService {
       const p = (await this.deps.store.list()).find((x) => isTomb(x) && x.closedIds?.includes(entryId));
       if (!p) return;
       revive(p);
+      p.updatedAt = this.now();
       await this.deps.store.put(p);
     });
   }
@@ -461,19 +622,20 @@ export class ProjectService {
 
   /**
    * One open project's home page (`projects.home`, M4 T4): its card, through cards()' path for that project alone, plus
-   * its groups in tab-bar order, its settings and its recipe's name. Undefined when it is unknown, closed or has no tab.
+   * its groups in tab-bar order, its settings and its recipe's name. A kept or saved project with no open tab (M4 T7)
+   * has its stored card data, no tabs and no groups. Undefined when it is unknown, or closed or without tabs and neither
+   * kept nor saved.
    */
   async home(id: string): Promise<ProjectHomeData | undefined> {
     const { cards, snap, open, defOf } = await this.collect(id);
     const card = cards[0];
+    if (!card) return this.restingHome(id, defOf);
     const def = defOf.get(open[0]?.recipeId ?? '');
-    if (!card || !def) return undefined;
+    if (!def) return undefined;
     const members = new Set(card.tabs.map((t) => t.tabId));
-    const winOrder = new Map(snap.windows.map((w, i) => [w.id, i]));
-    const rank = (w: number): number => winOrder.get(w) ?? snap.windows.length;
     // Tabs in tab-bar order, so each group (window + Chrome group; -1: not in one) is first seen at its lowest index.
     const byGroup = new Map<string, TabSnap[]>();
-    for (const t of snap.tabs.filter((x) => members.has(x.id)).sort((a, b) => rank(a.windowId) - rank(b.windowId) || a.windowId - b.windowId || a.index - b.index)) {
+    for (const t of tabBarOrder(snap, snap.tabs.filter((x) => members.has(x.id)))) {
       const k = `${t.windowId}:${t.groupId}`;
       byGroup.set(k, [...(byGroup.get(k) ?? []), t]);
     }
@@ -481,9 +643,24 @@ export class ProjectService {
       const g = ts[0]!.groupId === -1 ? undefined : snap.groups.find((x) => x.id === ts[0]!.groupId);
       return { title: g?.title ?? '', color: g?.color ?? 'grey', windowId: ts[0]!.windowId, tabIds: ts.map((t) => t.id) };
     });
+    return { ...card, groups, ...(await this.homeOf(def)), ...kept(open[0]!) };
+  }
+
+  /** The Project home of a kept or saved project with no open tab (M4 T7): stored data, no tabs, no groups. */
+  private async restingHome(id: string, defOf: Map<string, ProjectDef>): Promise<ProjectHomeData | undefined> {
+    const p = (await this.deps.store.list()).find((x) => x.id === id);
+    const def = p && defOf.get(p.recipeId);
+    if (!p || !def || !(p.keep || p.saved)) return undefined;
+    return {
+      id: p.id, key: p.key, title: projectGroupTitle(def, p), ...(p.summary !== undefined && { summary: p.summary }),
+      ...(p.status && { status: p.status }), done: false, tabs: [], linked: p.linked, groups: [], ...(await this.homeOf(def)), ...kept(p),
+    };
+  }
+
+  private async homeOf(def: ProjectDef): Promise<Pick<ProjectHomeData, 'settings' | 'recipeName'>> {
     const { container, placement, join, onOpenElsewhere, onSwitchAway } = def;
     const recipeName = (await this.deps.recipeName?.(def.recipeId)) ?? def.recipeId;
-    return { ...card, groups, settings: { container, placement, join, onOpenElsewhere, onSwitchAway }, recipeName };
+    return { settings: { container, placement, join, onOpenElsewhere, onSwitchAway }, recipeName };
   }
 
   /**
@@ -584,6 +761,11 @@ export class ProjectService {
     }
     return out;
   }
+}
+
+/** A project's Keep and saved tab list, as the Project home shows them (M4 T7). */
+function kept(p: Project): Pick<ProjectHomeData, 'keep' | 'saved'> {
+  return { ...(p.keep && { keep: true }), ...(p.saved && { saved: p.saved }) };
 }
 
 /** A Jira status from source data (`status` + `statusCategory`), or undefined when either is missing. */

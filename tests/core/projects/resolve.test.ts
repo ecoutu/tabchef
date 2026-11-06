@@ -46,7 +46,7 @@ const tab = (id: number, url: string, title: string, o: Partial<TabSnap> = {}): 
 });
 const snapOf = (...tabs: TabSnap[]): Snapshot => ({ tabs, groups: [], windows: [{ id: 1, type: 'normal', focused: true }] });
 const project = (key: string, o: Partial<Project> = {}): Project => ({
-  id: `${RID}:${key}`, recipeId: RID, key, createdAt: 1, manual: [], excluded: [], linked: [], ...o,
+  id: `${RID}:${key}`, recipeId: RID, key, createdAt: 1, updatedAt: 1, manual: [], excluded: [], linked: [], ...o,
 });
 function resolve(snap: Snapshot, o: Partial<ResolveInput> = {}) {
   return resolveProjects({
@@ -60,7 +60,7 @@ describe('resolveProjects: rule join', () => {
     const r = resolve(snapOf(tab(1, TICKET, '[ABC-1] Login fails - Jira'), tab(2, PR, 'ABC-1: fix login · Pull Request #5 · acme/api')));
     expect(r.assignments.get(1)).toEqual({ projectId: `${RID}:ABC-1`, key: 'ABC-1', via: 'rule', ruleKey: `${RID}/ticket`, index: 0 });
     expect(r.assignments.get(2)).toEqual({ projectId: `${RID}:ABC-1`, key: 'ABC-1', via: 'rule', ruleKey: `${RID}/pr`, index: 1 });
-    expect(r.created).toEqual([project('ABC-1', { createdAt: NOW })]);
+    expect(r.created).toEqual([project('ABC-1', { createdAt: NOW, updatedAt: NOW })]);
     expect(r.summaries).toEqual(new Map([[`${RID}:ABC-1`, 'Login fails']]));
   });
 

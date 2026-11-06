@@ -88,7 +88,7 @@ export function resolveProjects(input: ResolveInput): ResolveResult {
     const id = projectId(recipeId, key);
     let p = byId.get(id);
     if (!p) {
-      p = { id, recipeId, key, createdAt: now, manual: [], excluded: [], linked: [] };
+      p = { id, recipeId, key, createdAt: now, updatedAt: now, manual: [], excluded: [], linked: [] };
       byId.set(id, p);
       created.push(p);
     }

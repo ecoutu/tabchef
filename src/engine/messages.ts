@@ -226,12 +226,21 @@ export type Request =
   | { type: 'projects.openLinked'; projectId: string; url: string }
   /** Answers `{ closed, skipped, ids }`: `ids` are the recently-closed entries (the popup's Undo). */
   | { type: 'projects.closeGroup'; projectId: string }
-  /** One open project's home page (M4 T4): ProjectHomeData, or null when it is unknown, closed or has no tab. */
+  /**
+   * One project's home page (M4 T4): ProjectHomeData, or null when it is unknown, or closed or without tabs and neither
+   * kept nor saved (M4 T7: a kept or saved one with no open tab has no groups and its saved list).
+   */
   | { type: 'projects.home'; id: string }
   /** M4 T6: a new named project of an on-request recipe (Manual projects), with these tabs; answers `{ id }`. */
   | { type: 'projects.create'; recipeId: string; name: string; tabIds?: number[] }
   /** M4 T6: starts the project `key` of an on-request recipe; answers `{ id }`. */
   | { type: 'projects.start'; recipeId: string; key: string }
+  /** M4 T7: saves the project's tab list, keeps it and closes its tabs (as closeGroup); answers `{ closed, skipped, ids }`. */
+  | { type: 'projects.closeAndSave'; projectId: string }
+  /** M4 T7: reopens the project's saved tabs (an open one joins instead); answers `{ opened }`. */
+  | { type: 'projects.reopen'; projectId: string }
+  /** M4 T7: Keep (never pruned, synced) on or off. */
+  | { type: 'projects.setKeep'; projectId: string; keep: boolean }
   // ---- Sources (M3 T17) ----
   /** The Projects tab opened: SourceService.refresh('popup') (throttled, M3-R83); answers once it is done. */
   | { type: 'sources.refresh' };
@@ -352,6 +361,9 @@ export interface ResponseData {
   'projects.home': ProjectHomeData | null;
   'projects.create': { id: string };
   'projects.start': { id: string };
+  'projects.closeAndSave': { closed: number; skipped: number; ids: string[] };
+  'projects.reopen': { opened: number };
+  'projects.setKeep': null;
   'sources.refresh': null;
 }
 export type ResponseFor<R extends Request> = Response<ResponseData[R['type']]>;
@@ -472,6 +484,8 @@ export function isRequest(m: unknown): m is Request {
     case 'projects.home': return str(x.id);
     case 'projects.create': return str(x.recipeId) && str(x.name) && (x.tabIds === undefined || (Array.isArray(x.tabIds) && x.tabIds.every(num)));
     case 'projects.start': return str(x.recipeId) && str(x.key);
+    case 'projects.closeAndSave': case 'projects.reopen': return str(x.projectId);
+    case 'projects.setKeep': return str(x.projectId) && typeof x.keep === 'boolean';
     default: return false;
   }
 }
@@ -538,7 +552,7 @@ export interface HandlerDeps {
   /** connections.* (M3 T7, the Connections page). Without it they fail. */
   connections?: ConnectionsDeps;
   /** projects.* (M3 T15). Without it they fail. */
-  projects?: Pick<ProjectService, 'cards' | 'addTab' | 'removeTab' | 'openLinked' | 'closeGroup' | 'home' | 'create' | 'start'>;
+  projects?: Pick<ProjectService, 'cards' | 'addTab' | 'removeTab' | 'openLinked' | 'closeGroup' | 'home' | 'create' | 'start' | 'closeAndSave' | 'reopen' | 'setKeep'>;
   /** sources.refresh (M3 T17). Without it the request fails. */
   sources?: Pick<SourceService, 'refresh'> & Partial<Pick<SourceService, 'unreadableRepos'>>;
   now?: () => number;
@@ -1040,6 +1054,9 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
       case 'projects.home': return ok((await p.home(req.id)) ?? null);
       case 'projects.create': return ok({ id: await p.create(req.recipeId, req.name, req.tabIds) });
       case 'projects.start': return ok({ id: await p.start(req.recipeId, req.key) });
+      case 'projects.closeAndSave': return ok(await p.closeAndSave(req.projectId));
+      case 'projects.reopen': return ok(await p.reopen(req.projectId));
+      case 'projects.setKeep': await p.setKeep(req.projectId, req.keep); return ok(null);
     }
   }
 
@@ -1065,7 +1082,8 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
         return scrub(r, [...needles, ...(await c.knownSecrets())]);
       }
       case 'projects.list': case 'projects.addTab': case 'projects.removeTab': case 'projects.openLinked': case 'projects.closeGroup':
-      case 'projects.home': case 'projects.create': case 'projects.start':
+      case 'projects.home': case 'projects.create': case 'projects.start': case 'projects.closeAndSave': case 'projects.reopen':
+      case 'projects.setKeep':
         return deps.projects ? runProjects(req, deps.projects) : fail('projects unavailable');
       case 'sources.refresh': {
         if (!deps.sources) return fail('sources unavailable');

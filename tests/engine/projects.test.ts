@@ -56,7 +56,7 @@ const memoryArea = () => {
     set: vi.fn(async (items: Record<string, unknown>) => { for (const [k, v] of Object.entries(items)) data.set(k, structuredClone(v)); }),
   };
 };
-const stored = (o: Partial<Project> = {}): Project => ({ id: PID, recipeId: RID, key: 'ABC-1', createdAt: NOW, manual: [], excluded: [], linked: [], ...o });
+const stored = (o: Partial<Project> = {}): Project => ({ id: PID, recipeId: RID, key: 'ABC-1', createdAt: NOW, updatedAt: NOW, manual: [], excluded: [], linked: [], ...o });
 
 type Session = { get(k: string): Promise<unknown>; set(k: string, v: unknown): Promise<void> };
 const memorySession = (): Session & { data: Map<string, unknown> } => {

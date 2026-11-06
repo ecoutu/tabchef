@@ -1236,6 +1236,9 @@ describe('projects.* (M3 T15)', () => {
     closeGroup: vi.fn(async () => ({ closed: 2, skipped: 1, ids: ['rc-1', 'rc-2'] })),
     create: vi.fn(async () => 'manual-project:tax-2026'),
     start: vi.fn(async (recipeId: string, key: string) => `${recipeId}:${key}`),
+    closeAndSave: vi.fn(async () => ({ closed: 2, skipped: 1, ids: ['rc-1', 'rc-2'] })),
+    reopen: vi.fn(async () => ({ opened: 2 })),
+    setKeep: vi.fn(async () => {}),
     home: vi.fn(async (id: string) => (id === 'r:ABC-1' ? {
       id, key: 'ABC-1', title: 'ABC-1', done: false, tabs: [], linked: [], groups: [], recipeName: 'r',
       settings: { container: 'group' as const, placement: ['existing' as const], join: ['rules' as const], onOpenElsewhere: 'leave' as const, onSwitchAway: 'unload' as const },
@@ -1264,6 +1267,32 @@ describe('projects.* (M3 T15)', () => {
     expect(isRequest({ type: 'projects.start', recipeId: 'repo', key: 'acme/web' })).toBe(true);
     expect(isRequest({ type: 'projects.start', recipeId: 'repo' })).toBe(false);
     expect(isRequest({ type: 'projects.start', key: 'acme/web' })).toBe(false);
+    expect(isRequest({ type: 'projects.closeAndSave', projectId: 'r:ABC-1' })).toBe(true);
+    expect(isRequest({ type: 'projects.closeAndSave' })).toBe(false);
+    expect(isRequest({ type: 'projects.reopen', projectId: 'r:ABC-1' })).toBe(true);
+    expect(isRequest({ type: 'projects.reopen', projectId: 1 })).toBe(false);
+    expect(isRequest({ type: 'projects.setKeep', projectId: 'r:ABC-1', keep: true })).toBe(true);
+    expect(isRequest({ type: 'projects.setKeep', projectId: 'r:ABC-1', keep: 'yes' })).toBe(false);
+    expect(isRequest({ type: 'projects.setKeep', projectId: 'r:ABC-1' })).toBe(false);
+  });
+
+  it('M4 T7: projects.closeAndSave / reopen / setKeep reach the ProjectService; all refused from content scripts', async () => {
+    const p = projects();
+    const s = setup({ projects: p });
+    expect(await s.handle({ type: 'projects.closeAndSave', projectId: 'r:ABC-1' }, ui)).toEqual({ ok: true, data: { closed: 2, skipped: 1, ids: ['rc-1', 'rc-2'] } });
+    expect(p.closeAndSave).toHaveBeenCalledWith('r:ABC-1');
+    expect(await s.handle({ type: 'projects.reopen', projectId: 'r:ABC-1' }, ui)).toEqual({ ok: true, data: { opened: 2 } });
+    expect(p.reopen).toHaveBeenCalledWith('r:ABC-1');
+    expect(await s.handle({ type: 'projects.setKeep', projectId: 'r:ABC-1', keep: false }, ui)).toEqual({ ok: true, data: null });
+    expect(p.setKeep).toHaveBeenCalledWith('r:ABC-1', false);
+    p.reopen.mockRejectedValue(new Error('unknown project'));
+    expect(await s.handle({ type: 'projects.reopen', projectId: 'gone' }, ui)).toEqual({ ok: false, error: 'unknown project' });
+    expect(await s.handle({ type: 'projects.closeAndSave', projectId: 'r:ABC-1' }, content)).toEqual({ ok: false, error: 'forbidden' });
+    expect(await s.handle({ type: 'projects.reopen', projectId: 'r:ABC-1' }, content)).toEqual({ ok: false, error: 'forbidden' });
+    expect(await s.handle({ type: 'projects.setKeep', projectId: 'r:ABC-1', keep: true }, content)).toEqual({ ok: false, error: 'forbidden' });
+    expect(p.closeAndSave).toHaveBeenCalledTimes(1);
+    expect(p.reopen).toHaveBeenCalledTimes(2);
+    expect(p.setKeep).toHaveBeenCalledTimes(1);
   });
 
   it('M4 T6: projects.create answers the new project id, projects.start the started one; both refused from content scripts', async () => {

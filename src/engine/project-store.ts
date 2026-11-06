@@ -18,7 +18,8 @@ export class ProjectStore {
   private load(): Promise<Map<string, Project>> {
     this.cache ??= this.local.get(PROJECTS_KEY).then((r) => {
       const v = r[PROJECTS_KEY];
-      return new Map((Array.isArray(v) ? v.filter(isProject) : []).map((p) => [p.id, p]));
+      // A project stored before M4 T7 has no updatedAt: it reads as createdAt (nothing is written for it).
+      return new Map((Array.isArray(v) ? v.filter(isProject) : []).map((p) => [p.id, { ...p, updatedAt: typeof p.updatedAt === 'number' ? p.updatedAt : p.createdAt }]));
     }, (e: unknown) => {
       this.cache = undefined;
       throw e;
