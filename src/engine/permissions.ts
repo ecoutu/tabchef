@@ -178,6 +178,8 @@ export class PermissionsManager {
   private pausedSet: ReadonlySet<string> = new Set();
   /** Per needs key, the kind of alternative it runs at (absent: paused), from the last sync. */
   private kinds = new Map<string, NeedsKind | undefined>();
+  /** The effective needs and the grants of the last sync: levelFor without some connections. */
+  private last?: { needs: Record<string, NeedsEntry>; grants: Grants };
   /** Origins the watch is registered for; undefined until the first sync (the persisted registration is unknown). */
   private registered?: string[];
   /** `registered` is what is actually registered now: false before the first sync and after a failed sync (I1). */
@@ -237,11 +239,17 @@ export class PermissionsManager {
   /**
    * The kind of alternative rule `ruleKey` runs at after the last sync (a rule without its own needs runs at its
    * recipe's), or undefined while it or its recipe is paused. Waits for the first sync. SourceService's level (M3-R65).
+   * `without`: connections that cannot serve this lookup (a Jira ticket on another site than the connection's, #30):
+   * the kind of the first granted alternative using none of them (page where its hosts are granted, else titles).
    */
-  async levelFor(ruleKey: string): Promise<NeedsKind | undefined> {
+  async levelFor(ruleKey: string, without: readonly string[] = []): Promise<NeedsKind | undefined> {
     await this.ready;
     if (this.pausedSet.has(recipeOf(ruleKey))) return undefined;
-    return this.kinds.has(ruleKey) ? this.kinds.get(ruleKey) : this.kinds.get(recipeOf(ruleKey));
+    const key = this.kinds.has(ruleKey) ? ruleKey : recipeOf(ruleKey);
+    const e = this.last?.needs[key];
+    if (!without.length || !e || !this.last) return this.kinds.get(key);
+    const g = this.last.grants;
+    return kindOf(e, { ...g, granted: { ...g.granted, connections: g.granted.connections.filter((c) => !without.includes(c)) } });
   }
 
   private effective(program: Program): Record<string, NeedsEntry> {
@@ -272,7 +280,7 @@ export class PermissionsManager {
   }
 
   /** Every needs key's status and kind, plus `origins`: its granted host origins, alternatives included (the watch). */
-  private async evaluateProgram(): Promise<{ program: Program; grants: Grants; all: Evaluated[] }> {
+  private async evaluateProgram(): Promise<{ program: Program; needs: Record<string, NeedsEntry>; grants: Grants; all: Evaluated[] }> {
     const program = await this.getProgram();
     const needs = this.effective(program);
     const grants = await this.grants(Object.values(needs));
@@ -280,7 +288,7 @@ export class PermissionsManager {
       key, kind: kindOf(e, grants), status: statusOf(e, grants),
       origins: [e, ...(e.anyOf ?? [])].flatMap((a) => a.origins).filter((o) => grants.granted.origins.includes(o)),
     }));
-    return { program, grants, all };
+    return { program, needs, grants, all };
   }
 
   /** R44: every granted host origin when an enabled user rule uses page facts (and `scripting` is held); else none. */
@@ -325,9 +333,11 @@ export class PermissionsManager {
   private async sync(): Promise<void> {
     let all: Evaluated[];
     let extra: string[];
+    let last: { needs: Record<string, NeedsEntry>; grants: Grants };
     try {
       const r = await this.evaluateProgram();
       all = r.all;
+      last = { needs: r.needs, grants: r.grants };
       extra = await this.userRuleOrigins(r.program);
     } catch (e) {
       this.registrationKnown = false;
@@ -335,6 +345,7 @@ export class PermissionsManager {
       return;
     }
     this.kinds = new Map(all.map((e) => [e.key, e.kind]));
+    this.last = last;
     const paused = new Set(all.filter((e) => !e.status.ok).map((e) => e.key));
     if (!sameSet(paused, this.pausedSet)) {
       this.pausedSet = paused;

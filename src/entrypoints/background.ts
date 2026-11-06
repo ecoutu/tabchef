@@ -295,7 +295,7 @@ export default defineBackground(() => {
   // the changed tabs and recounts the badge (list views may show source fields).
   const sources: SourceService = new SourceService({
     conn: connections, limiter, getProgram, port, facts: pageFacts, local: localArea,
-    levelFor: (ruleKey) => permissions.levelFor(ruleKey),
+    levelFor: (...a) => permissions.levelFor(...a),
     onUpdated: (tabIds) => {
       reconciler.schedule('sourceUpdated');
       for (const id of tabIds) void closeExecutor.evaluate(id);

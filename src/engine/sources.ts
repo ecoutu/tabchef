@@ -66,8 +66,11 @@ export interface SourceServiceDeps {
   /** The background budget check (RateLimiter.canSend): background batches are skipped while it says no. */
   limiter?: Pick<RateLimiter, 'canSend'>;
   getProgram: () => Program | Promise<Program>;
-  /** The kind of alternative a rule key runs at (PermissionsManager.levelFor); undefined while paused. */
-  levelFor: (ruleKey: string) => Promise<NeedsKind | undefined>;
+  /**
+   * The kind of alternative a rule key runs at (PermissionsManager.levelFor); undefined while paused. `without`:
+   * connections that cannot serve the lookup (an off-site Jira ticket, #30).
+   */
+  levelFor: (ruleKey: string, without?: readonly string[]) => Promise<NeedsKind | undefined>;
   port: Pick<BrowserPort, 'snapshot' | 'hasPermission'>;
   facts: Pick<PageFacts, 'get'>;
   local: Pick<KeyValueArea, 'get' | 'set'>;
@@ -355,10 +358,18 @@ export class SourceService {
         await this.fetchPrs(connection, rs, background, now, (r, kind, d) => this.fallBack(r.key, byKey.get(r.key)!, kinds, kind, d, now));
         continue;
       }
-      // M3-R110: the API answers for its own site only; a same-key issue on another site is another ticket.
+      // M3-R110: the API answers for its own site only; a same-key issue on another site is another ticket. Such a
+      // ticket's rules run at their level without this connection (#30): its page where granted, else titles. Without a
+      // page read it is not-found (M4-R3): the connection cannot see that ticket, as for an unreadable PR repo.
       const site = siteOf((await this.deps.conn.defs()).find((d) => d.id === connection));
       const on = rs.filter((r) => (r.target as { site: string }).site === site);
-      for (const r of rs) if (!on.includes(r)) await this.fallBack(r.key, byKey.get(r.key)!, kinds, 'not-configured', {}, now);
+      const offKinds = new Map<string, NeedsKind | undefined>();
+      for (const r of rs) {
+        if (on.includes(r)) continue;
+        const all = byKey.get(r.key)!;
+        for (const x of all) if (!offKinds.has(x.ruleKey)) offKinds.set(x.ruleKey, await this.deps.levelFor(x.ruleKey, [connection]));
+        await this.fallBack(r.key, all, offKinds, 'not-found', {}, now);
+      }
       if (site && on.length) await this.fetchIssues(connection, site, on.map((r) => (r.target as { issue: string }).issue), background, now);
     }
   }
