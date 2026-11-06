@@ -1,3 +1,20 @@
+# [1.4.0](https://github.com/ecoutu/tabchef/compare/v1.3.0...v1.4.0) (2026-11-06)
+
+
+### Bug Fixes
+
+* **projects:** count only ticket tabs as on the connected jira site ([3555855](https://github.com/ecoutu/tabchef/commit/3555855501ad1d3017e51ad127cd0926c65fd5af))
+* **projects:** refresh sources once when a rule's level kind changes ([3607d36](https://github.com/ecoutu/tabchef/commit/3607d36230b52cdee0e0656ffa1c39a8dc651389))
+* **projects:** run an off-site jira ticket tab at its level without the connection ([772b939](https://github.com/ecoutu/tabchef/commit/772b939cd9631461a5f62e9c7ad3738e1b31481a))
+* **projects:** take a project's site from its lowest-id ticket tab ([cb24498](https://github.com/ecoutu/tabchef/commit/cb24498a6ed87dd4f82c8a93f16b18411353da4c))
+
+
+### Features
+
+* **dashboard:** add projects and project home routes ([9fadd90](https://github.com/ecoutu/tabchef/commit/9fadd9097127b421c3082b3000413faa6f204b34))
+* **dashboard:** add the project home page ([bd7cd5a](https://github.com/ecoutu/tabchef/commit/bd7cd5a8d7cc5af8fc398228f8ae90ce3b86ddac))
+* **projects:** accept newer project fields and fill placement defaults ([bf3551f](https://github.com/ecoutu/tabchef/commit/bf3551f8dde4cbf1bb382fbd764f0c67c6c4abdc))
+
 # [1.3.0](https://github.com/ecoutu/tabchef/compare/v1.2.1...v1.3.0) (2026-11-05)
 
 
