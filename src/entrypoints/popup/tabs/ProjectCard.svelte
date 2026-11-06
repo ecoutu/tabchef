@@ -3,8 +3,10 @@
   // PR state pill, stale dot); the linked PRs not open, greyed with "Open ↗"; and the Done prompt.
   import { staleText, type ProjectCard } from '../../../ui/projects-model';
   import PrPill from '../../../ui/PrPill.svelte';
+  import { projectHomeHash } from '../../../ui/routes';
+  import { browser } from 'wxt/browser';
 
-  let { card, prompt, onFocus, onOpenLinked, onCloseGroup, onKeep }: {
+  let { card, prompt, onFocus, onOpenLinked, onCloseGroup, onKeep, onOpenProject }: {
     card: ProjectCard;
     /** Show "Ticket is done. Close this group?" (the card is done and the prompt was not dismissed). */
     prompt: boolean;
@@ -12,15 +14,22 @@
     onOpenLinked: (url: string) => void;
     onCloseGroup: () => void;
     onKeep: () => void;
+    /** The popup opens the dashboard tab; without it (the side panel) the link navigates the panel's own hash. */
+    onOpenProject?: () => void;
   } = $props();
 
   // PR pills come from GitHub source data only (PrState).
   const STALE = staleText('GitHub');
+  // In the popup the hash alone would resolve against popup.html, so the href is the dashboard page itself; a modified or
+  // middle click then follows it in the browser's own way, and a plain click opens the tab through `onOpenProject`.
+  const homeHref = $derived(onOpenProject ? browser.runtime.getURL('/options.html') + projectHomeHash(card.id) : projectHomeHash(card.id));
+  const modified = (e: MouseEvent): boolean => e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey;
 </script>
 
 <article class="card">
   <header>
-    <h2>{card.title}</h2>
+    <h2><a class="home" href={homeHref}
+      onclick={onOpenProject ? (e) => { if (modified(e)) return; e.preventDefault(); onOpenProject(); } : undefined}>{card.title}</a></h2>
     {#if card.status}<span class={`status tone-${card.status.tone}`}>{card.status.label}</span>{/if}
     <span class="count">{card.tabCount} {card.tabCount === 1 ? 'tab' : 'tabs'}</span>
   </header>
@@ -58,6 +67,8 @@
   .card { border-bottom: 1px solid var(--border); padding: 4px 0 6px; }
   header { display: flex; align-items: center; gap: 8px; padding: 6px 12px 2px; }
   h2 { flex: 1; min-width: 0; margin: 0; font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .home { color: inherit; text-decoration: none; }
+  .home:hover { text-decoration: underline; }
   .count { color: var(--muted); font-size: 11px; flex: none; }
   .status { flex: none; font-size: 11px; border-radius: 999px; padding: 1px 8px; border: 1px solid var(--border); color: var(--muted); }
   .tone-progress { color: var(--accent); border-color: var(--accent); }

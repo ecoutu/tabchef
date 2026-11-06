@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { explainHash, matchRoute } from '../../src/ui/routes';
+import { explainHash, matchRoute, projectHomeHash, OPTIONS_ROUTES } from '../../src/ui/routes';
 
 const ROUTES = [{ path: '/rules' }, { path: '/history' }, { path: '/explain/:tabId' }, { path: '/rules/new' }];
 
@@ -20,5 +20,24 @@ describe('matchRoute (R28: longest prefix, with params)', () => {
   it('explainHash is the route T16 links to', () => {
     expect(explainHash(7)).toBe('#/explain/7');
     expect(matchRoute(ROUTES, explainHash(7)).params).toEqual({ tabId: '7' });
+  });
+});
+
+describe('project routes (M4 T3)', () => {
+  it('#/project/<encoded id> matches projectHome with the decoded id', () => {
+    const m = matchRoute(OPTIONS_ROUTES, '#/project/jira-ticket-either%3AABC-1');
+    expect(OPTIONS_ROUTES.find((r) => r.path === m.path)?.page).toBe('projectHome');
+    expect(m.params).toEqual({ id: 'jira-ticket-either:ABC-1' });
+  });
+  it('projectHomeHash round-trips ids with : and / as one segment', () => {
+    for (const id of ['repo:acme/web', 'jira-ticket-either:ABC-1', 'a b?c#d']) {
+      expect(matchRoute(OPTIONS_ROUTES, projectHomeHash(id)).params).toEqual({ id });
+    }
+    expect(projectHomeHash('repo:acme/web')).toBe('#/project/repo%3Aacme%2Fweb');
+  });
+  it('Projects is in the nav right after Recipes; Project home is not', () => {
+    const nav = OPTIONS_ROUTES.filter((r) => r.nav !== false).map((r) => r.label);
+    expect(nav[nav.indexOf('Recipes') + 1]).toBe('Projects');
+    expect(OPTIONS_ROUTES.find((r) => r.page === 'projectHome')?.nav).toBe(false);
   });
 });

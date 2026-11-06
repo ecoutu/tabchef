@@ -12,3 +12,8 @@ export type NewRuleKind = 'group' | 'close' | 'allowDup';
 export function newRuleHash(url: string, kind: NewRuleKind): string {
   return `#/rules/new?${new URLSearchParams({ url, kind }).toString()}`;
 }
+
+/** A project's home page (`#/project/<id>`, M4 T3). The id (`repo:acme/web`) is one encoded segment. */
+export function projectHomeHash(id: string): string {
+  return `#/project/${encodeURIComponent(id)}`;
+}

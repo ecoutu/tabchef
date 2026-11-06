@@ -2,6 +2,8 @@
   // The Projects tab (M3 T17): one card per open project (projects.list), in the popup and, full height, in the side
   // panel. Opening it sends sources.refresh (SourceService refresh('popup'), throttled; M3-R83), then lists again.
   // `live` (the side panel): also re-fetch on config.changed and every LIVE_MS while the page is visible.
+  // `onOpenProject` (the popup): a card title opens the dashboard at that project; without it the title link is a plain
+  // hash link (the side panel switches on its own hash).
   // `onChange` (the popup): called after Close group, Undo or Open, so the other tabs' counts are re-read.
   import { onDestroy, onMount } from 'svelte';
   import { browser } from 'wxt/browser';
@@ -11,7 +13,7 @@
   import ProjectCard from './ProjectCard.svelte';
 
   const LIVE_MS = 5000;
-  let { live = false, onChange }: { live?: boolean; onChange?: () => void } = $props();
+  let { live = false, onChange, onOpenProject }: { live?: boolean; onChange?: () => void; onOpenProject?: (id: string) => void } = $props();
   let cards = $state<Card[] | undefined>(undefined);
   let error = $state('');
   /** Done prompts the user answered Keep to (this page only). */
@@ -104,7 +106,7 @@
   {#each cards ?? [] as c (c.id)}
     <ProjectCard card={c} prompt={c.showClose && !kept.includes(c.id)}
       onFocus={focus} onOpenLinked={(url) => openLinked(c.id, url)} onCloseGroup={() => closeGroup(c.id)}
-      onKeep={() => { kept = [...kept, c.id]; }} />
+      onKeep={() => { kept = [...kept, c.id]; }} onOpenProject={onOpenProject ? () => onOpenProject(c.id) : undefined} />
   {/each}
 </section>
 

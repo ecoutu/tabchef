@@ -16,6 +16,8 @@
   import Backups from './Backups.svelte';
   import Import from './Import.svelte';
   import Connections from './Connections.svelte';
+  import Projects from './Projects.svelte';
+  import ProjectHome from './ProjectHome.svelte';
   import PreviewDialog from './PreviewDialog.svelte';
   import { previewThenApply } from '../../ui/preview-flow';
   import type { PreviewResult } from '../../core/lang/preview';
@@ -191,6 +193,10 @@
       <History />
     {:else if current.page === 'explain'}
       {#key matched.params.tabId}<Explain tabId={Number(matched.params.tabId)} />{/key}
+    {:else if current.page === 'projects'}
+      <Projects />
+    {:else if current.page === 'projectHome'}
+      {#key matched.params.id}<ProjectHome id={matched.params.id ?? ''} />{/key}
     {:else if current.page === 'connections'}
       <Connections />
     {:else if current.page === 'backups'}

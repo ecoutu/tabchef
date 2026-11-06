@@ -9,6 +9,7 @@
   import Duplicates from './tabs/Duplicates.svelte';
   import ListView from './tabs/ListView.svelte';
   import Projects from './tabs/Projects.svelte';
+  import { projectHomeHash } from '../../ui/routes';
 
   /** Recipe-declared views (M2 T17): one popup tab each, the rest under More ▾. */
   let views = $state<ViewSummary[]>([]);
@@ -199,7 +200,7 @@
 
   <div class="body" role="tabpanel">
     {#if activeView?.kind === 'projects'}
-      <Projects onChange={refresh} />
+      <Projects onChange={refresh} onOpenProject={(id) => openOptions(projectHomeHash(id))} />
     {:else if activeView && data?.viewId === activeView.id}
       {#if data.data.kind === 'duplicates'}
         <Duplicates data={{ sets: data.data.sets, pending: data.data.pending, locked }} onChange={refresh} />

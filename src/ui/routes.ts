@@ -6,7 +6,7 @@ import { repoFileUrl } from '../core/project';
 export interface RouteMatch { path: string; params: Record<string, string> }
 
 /** A page of the options page. */
-export type OptionsPage = 'rules' | 'recipes' | 'dedupe' | 'history' | 'backups' | 'import' | 'explain' | 'newRule' | 'connections';
+export type OptionsPage = 'rules' | 'recipes' | 'dedupe' | 'history' | 'backups' | 'import' | 'explain' | 'newRule' | 'connections' | 'projects' | 'projectHome';
 
 /**
  * The options page's route table. To add a page, add one entry here; the nav and hash routing pick it up, and
@@ -15,6 +15,9 @@ export type OptionsPage = 'rules' | 'recipes' | 'dedupe' | 'history' | 'backups'
 export const OPTIONS_ROUTES: readonly { path: string; label: string; page: OptionsPage; nav?: false }[] = [
   { path: '/rules', label: 'Rules', page: 'rules' },
   { path: '/recipes', label: 'Recipes', page: 'recipes' },
+  // Projects: the list of open projects and, per project, its home (M4, projectHomeHash).
+  { path: '/projects', label: 'Projects', page: 'projects' },
+  { path: '/project/:id', label: 'Project', page: 'projectHome', nav: false },
   { path: '/dedupe', label: 'Duplicates', page: 'dedupe' },
   { path: '/history', label: 'History', page: 'history' },
   { path: '/backups', label: 'Backups', page: 'backups' },
@@ -63,4 +66,4 @@ export function matchRoute(routes: readonly { path: string }[], hash: string): R
   return { path: best.path, params: { ...query, ...best.params } };
 }
 
-export { explainHash, newRuleHash, type NewRuleKind } from '../core/links';
+export { explainHash, newRuleHash, projectHomeHash, type NewRuleKind } from '../core/links';
