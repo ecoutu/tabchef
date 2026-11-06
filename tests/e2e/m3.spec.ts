@@ -171,6 +171,51 @@ test.describe('M3 with mocked services', () => {
     expect(await tabById(id)).toBeDefined(); // prompting only: nothing is closed
   });
 
+  test('(g) the popup project card opens the project home, which shows the ticket and PR tabs and follows a tab closing', async () => {
+    // PR 7, not 1: the source cache keeps (a)'s merged PR 1 for 5 minutes.
+    mock.jira.setIssue('SCRUM-1', issue('Login', 'In Progress'));
+    mock.github.setPr(prKey('acme/api', 7), openPr('SCRUM-1 fix'));
+    // Independent of the Jira connection (b2) leaves: SCRUM-1 is grouped from its URL and the PR title, and only github is read.
+    // The github connection supplies the PR pill (connectAndEnable waits for the Merged view, which this recipe has not).
+    await send(h, { type: 'connections.disconnect', id: 'github' });
+    await h.sw.evaluate(async ([items, rateKey]) => {
+      await chrome.storage.session.remove(rateKey);
+      await chrome.storage.local.set(items);
+    }, [connectionItems([mockGithubDef(mock.origin)]), RATE_KEY] as const);
+    await setConfig(h, withRecipe(jiraRecipe(mock.origin)));
+    const ticket = await openTab(h, `${mock.origin}/browse/SCRUM-1`);
+    const pr = await openTab(h, prUrl(7));
+    await expect.poll(async () => (await send<{ id: string; tabs: unknown[] }[]>(h, { type: 'projects.list' }))
+      .map((c) => [c.id, c.tabs.length]), { timeout: 10_000 }).toEqual([[`${JIRA_RECIPE_ID}:SCRUM-1`, 2]]);
+
+    // The popup, in a page of its own: its project card title opens the dashboard at #/project/<id>.
+    const popup = await h.context.newPage();
+    await popup.goto(`chrome-extension://${h.extensionId}/popup.html`);
+    await popup.getByRole('tab', { name: /^Projects/ }).click();
+    const opened = h.context.waitForEvent('page', { timeout: 10_000 });
+    await popup.getByRole('link', { name: 'SCRUM-1' }).click();
+    const home = await opened;
+    await home.waitForLoadState();
+    try {
+      expect(home.url()).toContain(`/options.html#/project/${encodeURIComponent(`${JIRA_RECIPE_ID}:SCRUM-1`)}`);
+      await expect(home.getByRole('heading', { name: 'SCRUM-1', level: 2 })).toBeVisible();
+      await expect(home.getByText('1 open', { exact: true })).toBeVisible({ timeout: 10_000 });
+      const tabButtons = home.getByRole('region', { name: 'Open tabs' }).getByRole('button');
+      await expect(tabButtons).toHaveCount(2);
+
+      // Closing the PR tab: first wait until the worker no longer reports it, then the page re-fetches (5 s timer) and drops the row.
+      await h.sw.evaluate((id) => chrome.tabs.remove(id), pr);
+      await expect.poll(() => tabById(pr), { timeout: 5000 }).toBeUndefined();
+      // Product target: one 5 s poll plus processing; 10 s leaves CI headroom.
+      await expect(tabButtons).toHaveCount(1, { timeout: 10_000 });
+      await expect(home.getByText('1 open', { exact: true })).toHaveCount(0, { timeout: 10_000 });
+      expect(await tabById(ticket)).toBeDefined();
+    } finally {
+      await home.close();
+      await popup.close().catch(() => undefined);
+    }
+  });
+
   test('(c) a 401 marks the connection needs-reauth; the merged row stays, stale, and its due auto-close is skipped', async () => {
     // Auto-close on, falling due 15 s after the merge: the merge is "now", so the close is not due until after the 401.
     const AFTER_MS = 15_000;
