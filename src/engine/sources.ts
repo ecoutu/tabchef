@@ -301,13 +301,17 @@ export class SourceService {
     return [...this.unreadable].filter(([repo]) => open.has(repo)).sort(([a], [b]) => a.localeCompare(b)).map(([repo, error]) => ({ repo, error }));
   }
 
-  /** Popup refreshes run at most once per POPUP_THROTTLE_MS; refreshes run one at a time. */
-  refresh(reason: RefreshReason): Promise<void> {
+  /**
+   * Popup refreshes run at most once per POPUP_THROTTLE_MS; refreshes run one at a time. `needsKeys`: look up only the
+   * rules of these needs keys (rule keys, or recipe ids for all their rules), e.g. those whose level kind changed
+   * (M3-R107); every other cache entry, stale ones included, is left as it is.
+   */
+  refresh(reason: RefreshReason, needsKeys?: readonly string[]): Promise<void> {
     if (reason === 'popup') {
       if (this.now() - this.lastPopup < POPUP_THROTTLE_MS) return Promise.resolve();
       this.lastPopup = this.now();
     }
-    return this.serial(() => this.run(reason));
+    return this.serial(() => this.run(reason, needsKeys));
   }
 
   private serial<T>(fn: () => Promise<T>): Promise<T> {
@@ -316,11 +320,12 @@ export class SourceService {
     return run;
   }
 
-  private async run(reason: RefreshReason): Promise<void> {
+  private async run(reason: RefreshReason, needsKeys?: readonly string[]): Promise<void> {
     await this.ensureLoaded();
     const [p, snap] = [await this.deps.getProgram(), await this.deps.port.snapshot()];
     const reqs = this.index(snap, p);
-    await this.settling(() => this.resolve(reqs, reason));
+    const only = needsKeys && reqs.filter((r) => needsKeys.some((k) => r.ruleKey === k || r.ruleKey.startsWith(`${k}/`)));
+    await this.settling(() => this.resolve(only ?? reqs, reason));
   }
 
   private async resolve(reqs: SourceRequest[], reason: RefreshReason): Promise<void> {

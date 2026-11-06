@@ -450,6 +450,15 @@ describe('background wiring', () => {
     expect(alarmCallsOf('sources.refresh')).toEqual([['alarms.clear', ['sources.refresh']]]);
   });
 
+  it('M3-R107: a kind-only level change refreshes the sources of those keys once', async () => {
+    await vi.advanceTimersByTimeAsync(0);
+    I('sources').refresh!.mockClear();
+    const { onKindsChanged } = I('permissions').args[3] as { onKindsChanged: (keys: string[]) => void };
+    onKindsChanged(['rec/pr']);
+    expect(I('sources').refresh).toHaveBeenCalledTimes(1);
+    expect(I('sources').refresh).toHaveBeenCalledWith('manual', ['rec/pr']);
+  });
+
   it('changed source data re-plans, re-evaluates closes of the changed tabs and recounts the badge', async () => {
     await vi.advanceTimersByTimeAsync(3000);
     vi.mocked(refreshBadge).mockClear();
