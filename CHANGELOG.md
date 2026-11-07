@@ -1,3 +1,21 @@
+# [1.6.0](https://github.com/ecoutu/tabchef/compare/v1.5.0...v1.6.0) (2026-11-07)
+
+
+### Bug Fixes
+
+* **projects:** keep a project whose saved tab list is unreadable ([63e77eb](https://github.com/ecoutu/tabchef/commit/63e77eb880a4629ca756f0764d71024b5dc52232))
+* **projects:** keep every saved tab when a project is closed and saved again ([ad425dc](https://github.com/ecoutu/tabchef/commit/ad425dcd65b8d334e63f5dde23923fe6e73b1226))
+* **projects:** keep saved tabs that were not reopened after a browser restart ([809fadd](https://github.com/ecoutu/tabchef/commit/809fadd7bc7cd425fd369de468eec9ecf53666fc))
+* **projects:** open the rest of a project's saved tabs when one can't be opened ([2e6a1e2](https://github.com/ecoutu/tabchef/commit/2e6a1e2ddd661990bd48136c27a3d8496c805d4d))
+
+
+### Features
+
+* **projects:** describe projects as bookmark folders ([39fc8ac](https://github.com/ecoutu/tabchef/commit/39fc8ac3db8f4d909912f83a23e38675cd5f93a3))
+* **projects:** merge project changes from two devices ([b4785aa](https://github.com/ecoutu/tabchef/commit/b4785aab49d1d0adfc0b6e99a9ee2da0c98525fd))
+* **projects:** sync kept projects through bookmark folders ([4498001](https://github.com/ecoutu/tabchef/commit/4498001d04f7c47b32c90789cc0f90860e07594d))
+* **projects:** turn on project sync from the projects page ([9aebe42](https://github.com/ecoutu/tabchef/commit/9aebe42e1f5490670406cade540feeb701773e3d))
+
 # [1.5.0](https://github.com/ecoutu/tabchef/compare/v1.4.0...v1.5.0) (2026-11-07)
 
 
