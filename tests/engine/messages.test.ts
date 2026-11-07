@@ -1312,6 +1312,27 @@ describe('projects.* (M3 T15)', () => {
     expect(p.remove).toHaveBeenCalledTimes(1);
   });
 
+  it('M4 T14: projects.sync.status / set validate, reach ProjectSync, fail without it, and are refused from content scripts', async () => {
+    expect(isRequest({ type: 'projects.sync.status' })).toBe(true);
+    expect(isRequest({ type: 'projects.sync.set', enabled: true })).toBe(true);
+    expect(isRequest({ type: 'projects.sync.set', enabled: 'yes' })).toBe(false);
+    expect(isRequest({ type: 'projects.sync.set' })).toBe(false);
+    const projectSync = {
+      status: vi.fn(async () => ({ enabled: true, lastSyncAt: 5, lastResult: { merged: 1, conflicts: [], ignored: [] } })),
+      setEnabled: vi.fn(async (enabled: boolean) => ({ enabled })),
+    };
+    const s = setup({ projectSync });
+    expect(await s.handle({ type: 'projects.sync.status' }, ui)).toEqual({ ok: true, data: { enabled: true, lastSyncAt: 5, lastResult: { merged: 1, conflicts: [], ignored: [] } } });
+    expect(await s.handle({ type: 'projects.sync.set', enabled: false }, ui)).toEqual({ ok: true, data: { enabled: false } });
+    expect(projectSync.setEnabled).toHaveBeenCalledWith(false);
+    projectSync.setEnabled.mockRejectedValueOnce(new Error('Allow Tabchef to use your bookmarks first.'));
+    expect(await s.handle({ type: 'projects.sync.set', enabled: true }, ui)).toEqual({ ok: false, error: 'Allow Tabchef to use your bookmarks first.' });
+    expect(await s.handle({ type: 'projects.sync.set', enabled: true }, content)).toEqual({ ok: false, error: 'forbidden' });
+    expect(await s.handle({ type: 'projects.sync.status' }, content)).toEqual({ ok: false, error: 'forbidden' });
+    expect(projectSync.setEnabled).toHaveBeenCalledTimes(2);
+    expect(await setup().handle({ type: 'projects.sync.status' }, ui)).toEqual({ ok: false, error: 'project sync unavailable' });
+  });
+
   it('M4 T8: projects.groups / saveGroup validate, reach the ProjectService, and are refused from content scripts', async () => {
     expect(isRequest({ type: 'projects.groups' })).toBe(true);
     expect(isRequest({ type: 'projects.saveGroup', groupId: 5 })).toBe(true);

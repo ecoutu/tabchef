@@ -98,7 +98,8 @@ function savedTabs(snap: Snapshot, ids: Set<number>): SavedTab[] {
 /**
  * M4-R14: a frozen saved list (`saved.closed`) grown by the open members `open` (tab-bar order) not in it, nothing
  * removed. Each new tab goes right after the open member before it in the tab bar, else right before the first open
- * member of the list, else (no open member is in the list) at the end.
+ * member of the list, else (no open member is in the list) at the end. M4-R21 uses it the other way round: the open
+ * members grown by the saved URLs that stay, each placed by its neighbours in the saved list.
  */
 function growFrozen(saved: SavedTab[], open: SavedTab[], key: (url: string) => string): SavedTab[] {
   const list = [...saved];
@@ -191,6 +192,8 @@ export class ProjectService {
   private readonly now: () => number;
   private chain: Promise<unknown> = Promise.resolve();
   private readonly clock: ProjectClock;
+  /** M4-R21: projectId → the normalized URLs of its member tabs at this worker's previous live pass. */
+  private lastMembers = new Map<string, Set<string>>();
 
   constructor(private readonly deps: ProjectServiceDeps) {
     this.now = deps.now ?? Date.now;
@@ -279,24 +282,26 @@ export class ProjectService {
         if (site !== undefined && p.site === undefined) { p.site = site; changed.add(p); }
       }
       // A kept project's saved tab list follows its open tabs (M4 T7), so it keeps the list of the last pass that saw
-      // tabs once the user closes them all. A list frozen by close-and-save (`closed`, M4-R14) only grows (a new
-      // member is added at its tab-bar place, nothing is removed) until the open tabs cover it again (reopen, a full
-      // undo, the user reopening them by hand). A title-only change is not written (nor bumps updatedAt).
+      // tabs once the user closes them all. A saved URL leaves the list only when its tab was a member at this
+      // worker's previous pass and is gone now (M4-R21): one not seen open since the worker started (from a synced
+      // copy, M4 T14) stays at its place, and a new member is added at its tab-bar place. A list frozen by
+      // close-and-save (`closed`, M4-R14) only grows until the open tabs cover it again (reopen, a full undo, the user
+      // reopening them by hand). A title-only change is not written. None of this bumps updatedAt (M4-R31): it is no
+      // user change, and sync takes name, color and archivedAt from the newer copy by updatedAt.
+      const key = (u: string): string => this.norm(program, u);
       const membersOf = new Map<string, Set<number>>();
       for (const [tabId, a] of r.assignments) membersOf.set(a.projectId, (membersOf.get(a.projectId) ?? new Set()).add(tabId));
+      const members = new Map([...membersOf].map(([id, tabIds]) => [id, savedTabs(snap, tabIds)]));
       for (const p of projects) {
-        const ids = membersOf.get(p.id);
-        if (!p.keep || isTomb(p) || !ids) continue;
-        const tabs = savedTabs(snap, ids);
+        const tabs = members.get(p.id);
+        if (!p.keep || isTomb(p) || !tabs) continue;
+        const openKeys = new Set(tabs.map((t) => key(t.url)));
         if (p.saved?.closed) {
-          const key = (u: string): string => this.norm(program, u);
-          const open = new Set(tabs.map((t) => key(t.url)));
-          if (p.saved.tabs.some((t) => !open.has(key(t.url)))) {
+          if (p.saved.tabs.some((t) => !openKeys.has(key(t.url)))) {
             // M4-R14: frozen while the open tabs do not cover the list: it only grows.
             const grown = growFrozen(p.saved.tabs, tabs, key);
             if (grown.length > p.saved.tabs.length) {
               p.saved = { tabs: grown, at: this.now(), closed: true };
-              p.updatedAt = this.now();
               changed.add(p);
             }
             continue;
@@ -304,11 +309,14 @@ export class ProjectService {
           delete p.saved.closed;
           changed.add(p);
         }
-        if (p.saved && savedShape(tabs) === savedShape(p.saved.tabs)) continue;
-        p.saved = { tabs, at: this.now() };
-        p.updatedAt = this.now();
+        const before = this.lastMembers.get(p.id);
+        const stays = (p.saved?.tabs ?? []).filter((t) => openKeys.has(key(t.url)) || !before?.has(key(t.url)));
+        const next = growFrozen(tabs, stays, key);
+        if (p.saved && savedShape(next) === savedShape(p.saved.tabs)) continue;
+        p.saved = { tabs: next, at: this.now() };
         changed.add(p);
       }
+      this.lastMembers = new Map([...members].map(([id, tabs]) => [id, new Set(tabs.map((t) => key(t.url)))]));
       const removed = await this.clock.closedTime(snap, projects, open, changed);
       projects = projects.filter((p) => !removed.includes(p.id));
       if (changed.size) await this.deps.store.put(...[...changed].filter((p) => !removed.includes(p.id)));
@@ -668,6 +676,22 @@ export class ProjectService {
       }
       this.deps.schedule?.('project');
       return { opened };
+    });
+  }
+
+  /**
+   * Project sync (M4 T14): `plan` gets the stored projects and the ids of projects with open member tabs (this pass's
+   * membership), inside the queue, and its `put` / `remove` are stored there, so a sync never races a user action or a
+   * pass. Applies under global dry run too (the stored data only). Returns what `plan` returned.
+   */
+  syncApply<T extends { put: Project[]; remove: string[] }>(plan: (stored: Project[], open: Set<string>) => T): Promise<T> {
+    return this.serial(async () => {
+      const { assignments } = await this.resolve(await this.deps.port.snapshot());
+      const r = plan(await this.deps.store.list(), new Set([...assignments.values()].map((a) => a.projectId)));
+      if (r.put.length) await this.deps.store.put(...r.put);
+      if (r.remove.length) await this.deps.store.remove(...r.remove);
+      if (r.put.length || r.remove.length) this.deps.schedule?.('project');
+      return r;
     });
   }
 

@@ -696,3 +696,64 @@ describe('saved group order (M4-R16)', () => {
     expect(ids(h)).toEqual([7, 8, 9, 1, 2]);
   });
 });
+
+describe('M4-R21: the saved list of an open kept project', () => {
+  beforeEach(() => { fakeBrowser.reset(); });
+  const X = 'https://x.example/';
+  /** Puts `urls` as the stored saved list of `id` (as a synced copy from another device would). */
+  async function setSaved(h: ReturnType<typeof harness>, id: string, urls: string[]): Promise<void> {
+    const p = (await h.stored(id))!;
+    p.saved = { tabs: urls.map((url) => ({ url, title: `T ${url}`, group: 'Taxes' })), at: NOW };
+    await h.store.put(p);
+  }
+
+  it('keeps a saved URL this worker never saw open; drops one whose tab was a member at the previous pass and is gone', async () => {
+    const h = harness();
+    const id = await taxes(h, [A, B]);
+    h.f.addTab(tab(9, 'https://other.example/'));
+    await setSaved(h, id, [A, X, B]);
+    h.clock.now += MIN;
+    await h.r.flush();
+    expect((await h.stored(id))?.saved?.tabs.map((t) => t.url)).toEqual([A, X, B]);
+    await h.f.closeTab(2); // B: a member at the previous pass
+    h.clock.now += MIN;
+    await h.r.flush();
+    expect((await h.stored(id))?.saved?.tabs.map((t) => t.url)).toEqual([A, X]);
+  });
+
+  it("the first pass after a worker start only adds: a saved URL whose tab closed while the worker was down stays", async () => {
+    const local = memoryArea();
+    const h = harness({ local });
+    const id = await taxes(h, [A, B]);
+    h.f.addTab(tab(9, 'https://other.example/'));
+    await setSaved(h, id, [A, X, B]);
+    await h.f.closeTab(2);
+    const next = harness({ local, port: h.f });
+    await next.r.flush();
+    expect((await next.stored(id))?.saved?.tabs.map((t) => t.url)).toEqual([A, X, B]);
+  });
+
+  it('M4-R31: a pass that changes only the saved list leaves updatedAt unchanged; a user action still bumps it', async () => {
+    const h = harness();
+    const id = await taxes(h, [A, B]);
+    h.f.addTab(tab(9, 'https://other.example/'));
+    const at = (await h.stored(id))!.updatedAt;
+    h.clock.now += MIN;
+    await h.f.closeTab(2);
+    await h.r.flush();
+    expect(await h.stored(id)).toMatchObject({ updatedAt: at, saved: { tabs: [{ url: A }], at: NOW + MIN } });
+    h.f.addTab(tab(3, C));
+    await h.svc.addTab(3, id); // a user action: bumps
+    expect((await h.stored(id))?.updatedAt).toBe(NOW + MIN);
+  });
+
+  it('a new member is added at its tab-bar place among the kept saved URLs', async () => {
+    const h = harness();
+    const id = await taxes(h, [A, B]);
+    await setSaved(h, id, [A, X, B]);
+    h.f.addTab(tab(3, C));
+    await h.svc.addTab(3, id); // joins the Taxes group: last in it
+    await h.r.flush();
+    expect((await h.stored(id))?.saved?.tabs.map((t) => t.url)).toEqual([A, X, B, C]);
+  });
+});

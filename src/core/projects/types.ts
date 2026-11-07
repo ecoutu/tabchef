@@ -58,7 +58,9 @@ export interface Project {
   keep?: boolean;
   /**
    * The project's saved tab list (M4 T7), in tab-bar order: set by close-and-save, and refreshed for a kept project by
-   * every pass that sees its tabs, so closing its last tab by hand leaves the list of the last pass that saw tabs.
+   * every pass that sees its tabs, so closing its last tab by hand leaves the list of the last pass that saw tabs. A
+   * refresh removes a URL only when its tab was a member at the worker's previous pass and is gone now (M4-R21): a URL
+   * not seen open since the worker started (one synced from another device, M4 T14) stays.
    * `closed`: set by close-and-save (M4-R14): while set, passes only grow the list (a new member at its tab-bar place)
    * and never remove from it. Cleared by reopen, or once the open tabs cover the list. removeTab drops its URL anyway.
    */
@@ -69,7 +71,14 @@ export interface Project {
    * the undo of its Close and archive do.
    */
   archivedAt?: number;
-  /** Bumped on every user-visible change (M4 T7; D1 sync merges by it). A stored project without it reads as createdAt. */
+  /** Project metadata fields from a synced copy this build doesn't know (M4-R22), written back unchanged. */
+  syncExtra?: Record<string, unknown>;
+  /**
+   * Bumped by every user action on the project (M4 T7: create, rename, color, keep, close-and-save, reopen, add or remove
+   * a tab, archive, …), never by a pass refreshing its saved list (M4-R31): D1 sync takes name, color and archivedAt
+   * from the copy with the newer updatedAt, so a device that merely has the project open must not win. The Projects
+   * page's Saved and Archived sections sort by it. A stored project without it reads as createdAt.
+   */
   updatedAt: number;
   summary?: string;
   status?: { name: string; category: 'new' | 'indeterminate' | 'done'; via: 'api' | 'page' | 'title' };

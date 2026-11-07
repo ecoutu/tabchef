@@ -21,6 +21,7 @@ import type { PendingAsk } from './ask';
 import type { EarlyReport, PageFacts, WatchSelector } from './page-facts';
 import type { PauseDuration, SafetyService } from './safety';
 import type { ProjectService } from './projects';
+import type { ProjectSync, SyncStatus } from './project-sync';
 import type { SourceService } from './sources';
 import type { ProjectCardData, ProjectHomeData, SavedProjectData } from '../core/projects/types';
 import { dedupeDecision, openerOf } from './dedupe-handler';
@@ -254,6 +255,10 @@ export type Request =
   | { type: 'projects.delete'; projectId: string }
   /** M4 T9: the Projects page's Saved and Archived sections. */
   | { type: 'projects.savedLists' }
+  /** M4 T14: whether kept projects sync through bookmarks on this device, and the last sync's time and result. */
+  | { type: 'projects.sync.status' }
+  /** M4 T14: the per-device sync toggle; turning it on needs the bookmarks permission. Answers the new status. */
+  | { type: 'projects.sync.set'; enabled: boolean }
   // ---- Sources (M3 T17) ----
   /** The Projects tab opened: SourceService.refresh('popup') (throttled, M3-R83); answers once it is done. */
   | { type: 'sources.refresh' };
@@ -384,6 +389,8 @@ export interface ResponseData {
   'projects.unarchive': null;
   'projects.delete': null;
   'projects.savedLists': { saved: SavedProjectData[]; archived: SavedProjectData[] };
+  'projects.sync.status': SyncStatus;
+  'projects.sync.set': SyncStatus;
   'sources.refresh': null;
 }
 export type ResponseFor<R extends Request> = Response<ResponseData[R['type']]>;
@@ -392,7 +399,7 @@ const num = (v: unknown): v is number => typeof v === 'number' && Number.isFinit
 const str = (v: unknown): v is string => typeof v === 'string';
 const NO_ARGS = new Set(['config.get', 'config.backups', 'config.status', 'tabs.list', 'dupes.list', 'dupes.closeAll', 'recent.list', 'why.all',
   'safety.resume', 'safety.status', 'recipes.list', 'views.list', 'connections.list', 'connections.github.start', 'connections.github.poll',
-  'projects.list', 'projects.groups', 'projects.savedLists', 'sources.refresh']);
+  'projects.list', 'projects.groups', 'projects.savedLists', 'projects.sync.status', 'sources.refresh']);
 const optRev = (x: Record<string, unknown>) => x.baseRev === undefined || str(x.baseRev);
 const isParams = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
@@ -508,6 +515,7 @@ export function isRequest(m: unknown): m is Request {
     case 'projects.unarchive': case 'projects.delete': return str(x.projectId);
     case 'projects.setKeep': return str(x.projectId) && typeof x.keep === 'boolean';
     case 'projects.saveGroup': return num(x.groupId);
+    case 'projects.sync.set': return typeof x.enabled === 'boolean';
     default: return false;
   }
 }
@@ -576,6 +584,8 @@ export interface HandlerDeps {
   /** projects.* (M3 T15). Without it they fail. */
   projects?: Pick<ProjectService, 'cards' | 'addTab' | 'removeTab' | 'openLinked' | 'closeGroup' | 'home' | 'create' | 'start' | 'closeAndSave' | 'reopen' | 'setKeep' | 'saveGroup' | 'unmanagedGroups'
     | 'archive' | 'closeAndArchive' | 'unarchive' | 'remove' | 'savedLists'>;
+  /** projects.sync.* (M4 T14). Without it they fail. */
+  projectSync?: Pick<ProjectSync, 'status' | 'setEnabled'>;
   /** sources.refresh (M3 T17). Without it the request fails. */
   sources?: Pick<SourceService, 'refresh'> & Partial<Pick<SourceService, 'unreadableRepos'>>;
   now?: () => number;
@@ -1067,7 +1077,7 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
     }
   }
 
-  async function runProjects(req: Extract<Request, { type: `projects.${string}` }>, p: NonNullable<HandlerDeps['projects']>): Promise<Response> {
+  async function runProjects(req: Exclude<Extract<Request, { type: `projects.${string}` }>, { type: `projects.sync.${string}` }>, p: NonNullable<HandlerDeps['projects']>): Promise<Response> {
     switch (req.type) {
       case 'projects.list': return ok(await p.cards());
       case 'projects.addTab': await p.addTab(req.tabId, req.projectId); return ok(null);
@@ -1116,6 +1126,8 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
       case 'projects.setKeep': case 'projects.groups': case 'projects.saveGroup': case 'projects.archive': case 'projects.closeAndArchive':
       case 'projects.unarchive': case 'projects.delete': case 'projects.savedLists':
         return deps.projects ? runProjects(req, deps.projects) : fail('projects unavailable');
+      case 'projects.sync.status': return deps.projectSync ? ok(await deps.projectSync.status()) : fail('project sync unavailable');
+      case 'projects.sync.set': return deps.projectSync ? ok(await deps.projectSync.setEnabled(req.enabled)) : fail('project sync unavailable');
       case 'sources.refresh': {
         if (!deps.sources) return fail('sources unavailable');
         try {
