@@ -2,8 +2,7 @@ name: CI
 
 on:
   pull_request:
-  push:
-    branches: [main]
+  # No push trigger: on every push to main, Release runs this workflow as its `ci` job before releasing.
   workflow_call:
 
 jobs:
