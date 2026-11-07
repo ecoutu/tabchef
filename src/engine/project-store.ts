@@ -13,12 +13,15 @@ const isSavedTab = (x: unknown): boolean => isObj(x) && typeof x.url === 'string
 const isSaved = (x: unknown): x is NonNullable<Project['saved']> => isObj(x) && Array.isArray(x.tabs) && x.tabs.every(isSavedTab)
   && typeof x.at === 'number' && (x.closed === undefined || typeof x.closed === 'boolean');
 
-/** A stored project with each malformed optional field (saved, keep, archivedAt) dropped: the project itself is kept. */
+const isPlain = (x: unknown): x is Record<string, unknown> => isObj(x) && !Array.isArray(x);
+
+/** A stored project with each malformed optional field (saved, keep, archivedAt, syncExtra) dropped: the project itself is kept. */
 function sanitize(p: Project): Project {
   const q = { ...p };
   if (q.saved !== undefined && !isSaved(q.saved)) delete q.saved;
   if (q.keep !== undefined && typeof q.keep !== 'boolean') delete q.keep;
   if (q.archivedAt !== undefined && !Number.isFinite(q.archivedAt)) delete q.archivedAt;
+  if (q.syncExtra !== undefined && !isPlain(q.syncExtra)) delete q.syncExtra;
   return q;
 }
 

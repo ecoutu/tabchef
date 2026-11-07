@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { FakeBrowserPort } from '../../src/platform/fake-port';
+import { describe, it, expect, vi } from 'vitest';
+import { FakeBookmarkPort, FakeBrowserPort } from '../../src/platform/fake-port';
 import type { TabSnap } from '../../src/core/types';
 
 const tab = (id: number, windowId = 1, over: Partial<TabSnap> = {}): Omit<TabSnap, 'index' | 'groupId'> & Partial<TabSnap> => ({
@@ -204,5 +204,53 @@ describe('FakeBrowserPort', () => {
     f.granted.add('scripting');
     f.granted.add('https://meet.google.com/*');
     expect(await f.grantedOrigins()).toEqual(['https://meet.google.com/*']);
+  });
+});
+
+describe('FakeBookmarkPort', () => {
+  it('has a Bookmarks bar and Other bookmarks; creates, updates, moves and removes; subtree and children copy', async () => {
+    const b = new FakeBookmarkPort();
+    const other = await b.otherId();
+    expect(other).toBe('2');
+    const f = await b.create({ parentId: other, title: 'F' });
+    const x = await b.create({ parentId: f, title: 'x', url: 'https://x/' });
+    const y = await b.create({ parentId: f, title: 'y', url: 'https://y/', index: 0 });
+    expect((await b.subtree(f)).children?.map((c) => c.title)).toEqual(['y', 'x']);
+    expect((await b.children(other))[0]).toEqual({ id: f, title: 'F' });
+    await b.update(x, { title: 'x2' });
+    await b.move(x, { parentId: f, index: 0 });
+    expect((await b.subtree(f)).children?.map((c) => c.title)).toEqual(['x2', 'y']);
+    await b.remove(y);
+    await expect(b.remove(f)).rejects.toThrow(/non-empty/);
+    await b.removeTree(f);
+    expect(await b.children(other)).toEqual([]);
+    expect(b.writes()).toBe(7); // the refused remove is no write
+  });
+
+  it('moving within a parent to a higher index lands one before it, like Chrome', async () => {
+    const b = new FakeBookmarkPort();
+    const ids = [];
+    for (const t of ['a', 'b', 'c']) ids.push(await b.create({ parentId: '2', title: t, url: `https://${t}/` }));
+    await b.move(ids[0]!, { parentId: '2', index: 2 });
+    expect((await b.children('2')).map((c) => c.title)).toEqual(['b', 'a', 'c']);
+  });
+
+  it('reports each change to every listener after the call resolves; unsubscribe stops it', async () => {
+    vi.useFakeTimers();
+    try {
+      const b = new FakeBookmarkPort();
+      const cb = vi.fn();
+      const off = b.onChanged(cb);
+      await b.create({ parentId: '2', title: 'F' });
+      expect(cb).not.toHaveBeenCalled();
+      await vi.runAllTimersAsync();
+      expect(cb).toHaveBeenCalledTimes(1);
+      off();
+      await b.create({ parentId: '2', title: 'G' });
+      await vi.runAllTimersAsync();
+      expect(cb).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

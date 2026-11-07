@@ -390,6 +390,17 @@ describe('ProjectStore and pruning', () => {
     expect(local.set).not.toHaveBeenCalled();
   });
 
+  it('M4-R22: syncExtra that is not a plain object is dropped; a plain object is kept', async () => {
+    const local = memoryArea();
+    const bad = (id: string, o: Record<string, unknown>) => ({ ...stored({ id: `${RID}:${id}`, key: id }), ...o });
+    local.data.set(PROJECTS_KEY, [
+      bad('E1', { syncExtra: { tint: 'x', n: [1] } }), bad('E2', { syncExtra: 'x' }), bad('E3', { syncExtra: [1] }), bad('E4', { syncExtra: null }),
+    ]);
+    const byKey = new Map((await new ProjectStore(local).list()).map((p) => [p.key, p]));
+    expect(byKey.get('E1')?.syncExtra).toEqual({ tint: 'x', n: [1] });
+    for (const k of ['E2', 'E3', 'E4']) expect(byKey.get(k)).not.toHaveProperty('syncExtra');
+  });
+
   it('on startup, a project closed for 7 days of browser time is pruned; a younger one or one with open tabs is kept', async () => {
     const local = memoryArea();
     local.data.set(PROJECTS_KEY, [
