@@ -55,6 +55,9 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      # semantic-release's prepare step runs npm run store:assets, which re-renders the store images from the release's
+      # extension; @semantic-release/git commits the ones whose pixels changed in the release commit.
+      - run: npx playwright install --with-deps chromium
       # Keyless store credentials: GitHub's OIDC token for this run (main only) is exchanged through the
       # tabchef project's `github` pool for a one-hour Chrome Web Store access token as cws-publisher. Skipped until
       # the CHROME_WIF_PROVIDER variable is set.
