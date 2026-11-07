@@ -128,13 +128,16 @@ export const openTab = (h: Harness, url: string, windowId?: number) =>
 export const openBackgroundTab = (h: Harness, url: string) =>
   h.sw.evaluate(async (u) => (await chrome.tabs.create({ url: u, active: false })).id!, url);
 
-/** Closes every web tab (keeps extension pages) and resets the config, so scenarios don't see each other's tabs. */
+/** Closes every web tab (keeps extension pages), deletes the stored projects and resets the config, so scenarios don't see each other's. */
 export async function reset(h: Harness): Promise<void> {
   await setConfig(h, config([]));
   await send(h, { type: 'safety.resume' });
   const ids = (await tabs(h)).filter((t) => !t.url.startsWith('chrome-extension://')).map((t) => t.id);
   if (ids.length) await h.sw.evaluate((x) => chrome.tabs.remove(x), ids);
   await expect.poll(async () => (await tabs(h)).filter((t) => !t.url.startsWith('chrome-extension://')).length).toBe(0);
+  // Through projects.delete, since the worker's ProjectStore caches: with no tab open, the saved and archived lists are every project.
+  const { saved, archived } = await send<{ saved: { id: string }[]; archived: { id: string }[] }>(h, { type: 'projects.savedLists' });
+  for (const p of [...saved, ...archived]) await send(h, { type: 'projects.delete', projectId: p.id });
 }
 
 /** Waits until a tab has finished loading `url` (its committed URL, so a later duplicate sees an existing tab). */
