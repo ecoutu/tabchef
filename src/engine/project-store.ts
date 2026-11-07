@@ -8,6 +8,20 @@ const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object
 const isProject = (x: unknown): x is Project => isObj(x) && typeof x.id === 'string' && typeof x.recipeId === 'string'
   && typeof x.key === 'string' && Array.isArray(x.manual) && Array.isArray(x.excluded) && Array.isArray(x.linked);
 
+const isSavedTab = (x: unknown): boolean => isObj(x) && typeof x.url === 'string' && typeof x.title === 'string'
+  && (x.group === undefined || typeof x.group === 'string') && (x.pinned === undefined || typeof x.pinned === 'boolean');
+const isSaved = (x: unknown): x is NonNullable<Project['saved']> => isObj(x) && Array.isArray(x.tabs) && x.tabs.every(isSavedTab)
+  && typeof x.at === 'number' && (x.closed === undefined || typeof x.closed === 'boolean');
+
+/** A stored project with each malformed optional field (saved, keep, archivedAt) dropped: the project itself is kept. */
+function sanitize(p: Project): Project {
+  const q = { ...p };
+  if (q.saved !== undefined && !isSaved(q.saved)) delete q.saved;
+  if (q.keep !== undefined && typeof q.keep !== 'boolean') delete q.keep;
+  if (q.archivedAt !== undefined && !Number.isFinite(q.archivedAt)) delete q.archivedAt;
+  return q;
+}
+
 /** Stored projects, cached after the first read. A failed read is retried and never overwritten. */
 export class ProjectStore {
   private cache?: Promise<Map<string, Project>>;
@@ -19,7 +33,7 @@ export class ProjectStore {
     this.cache ??= this.local.get(PROJECTS_KEY).then((r) => {
       const v = r[PROJECTS_KEY];
       // A project stored before M4 T7 has no updatedAt: it reads as createdAt (nothing is written for it).
-      return new Map((Array.isArray(v) ? v.filter(isProject) : []).map((p) => [p.id, { ...p, updatedAt: typeof p.updatedAt === 'number' ? p.updatedAt : p.createdAt }]));
+      return new Map((Array.isArray(v) ? v.filter(isProject).map(sanitize) : []).map((p) => [p.id, { ...p, updatedAt: typeof p.updatedAt === 'number' ? p.updatedAt : p.createdAt }]));
     }, (e: unknown) => {
       this.cache = undefined;
       throw e;
