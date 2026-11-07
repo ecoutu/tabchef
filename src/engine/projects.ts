@@ -569,10 +569,12 @@ export class ProjectService {
 
   private async close(projectId: string, save: boolean): Promise<{ closed: number; skipped: number; ids: string[] }> {
     const snap = await this.deps.port.snapshot();
-    const { assignments, projects } = await this.resolve(snap);
+    const { assignments, projects, defs } = await this.resolve(snap);
     const p = projects.find((x) => x.id === projectId);
     if (!p) throw new Error('unknown project');
     if (isArchived(p)) throw new Error('this project is archived');
+    const def = defs.find((d) => d.recipeId === p.recipeId);
+    const title = def ? projectGroupTitle(def, p) : (p.name ?? p.key); // as its card names it (a Manual one: its name)
     const ids: string[] = [];
     let skipped = 0;
     const members = snap.tabs.filter((x) => assignments.get(x.id)?.projectId === projectId);
@@ -609,7 +611,7 @@ export class ProjectService {
     if (ids.length > 0 && this.deps.toast) {
       const after = await this.deps.port.snapshot();
       const focused = after.tabs.find((t) => t.active && after.windows.some((w) => w.focused && w.id === t.windowId));
-      this.deps.toast(ids, `Closed ${ids.length} ${ids.length === 1 ? 'tab' : 'tabs'} of ${p.key} (project-closed).`, focused);
+      this.deps.toast(ids, `Closed ${ids.length} ${ids.length === 1 ? 'tab' : 'tabs'} with project ${title}.`, focused);
     }
     return { closed: ids.length, skipped, ids };
   }

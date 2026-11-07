@@ -49,6 +49,7 @@ function harness(o: { program?: Program; port?: FakeBrowserPort; local?: ReturnT
   const logs: { tabId?: number; action: string; detail: string }[] = [];
   const store = new ProjectStore(local);
   const schedule = vi.fn();
+  const toast = vi.fn();
   const sources = {
     factsFor: () => undefined, issues: async () => new Map(), linkedFor: async () => new Map(), jiraSite: async () => undefined,
   };
@@ -58,13 +59,13 @@ function harness(o: { program?: Program; port?: FakeBrowserPort; local?: ReturnT
     store, port: f, getProgram: async () => p, sources, facts: { get: () => undefined }, log: { add: (e) => logs.push(e) },
     recentlyClosed: { add: (e) => { closed.push(e); return `rc${closed.length}`; } },
     safety: { isProtected: (t) => t.pinned || formEdited.has(t.id) },
-    state: () => r.liveState(), schedule, now: () => clock.now, ...(o.session && { session: o.session }),
+    state: () => r.liveState(), schedule, toast, now: () => clock.now, ...(o.session && { session: o.session }),
     recipeName: async (id) => builtinRecipes()[id]?.name,
   });
   r = new Reconciler(f, async () => p, { projects: svc, now: () => clock.now, log: { add: (e) => logs.push(e) } });
   const groupOf = (id: number) => f.state.groups.find((g) => g.id === f.state.tabs.find((t) => t.id === id)?.groupId)?.title;
   const stored = async (id: string) => (await store.list()).find((x) => x.id === id);
-  return { f, local, clock, formEdited, closed, logs, store, schedule, svc, r, groupOf, stored };
+  return { f, local, clock, formEdited, closed, logs, store, schedule, toast, svc, r, groupOf, stored };
 }
 
 /** A Manual project "Taxes" holding tabs 1 (A), 2 (B), 3 (C) of window 1, grouped. */
@@ -126,6 +127,14 @@ describe('ProjectService.closeAndSave', () => {
     });
     await h.svc.closeAndSave(id);
     expect(atFirstClose[0]).toMatchObject({ keep: true, saved: { closed: true, tabs: [{ url: A }, { url: B }, { url: C }] } });
+  });
+
+  it("its undo toast names a Manual project by its name, not its key", async () => {
+    const h = harness();
+    const id = await taxes(h, [A, B]);
+    h.f.addTab(tab(9, 'https://other.example/'));
+    await h.svc.closeAndSave(id);
+    expect(h.toast.mock.calls.map((c) => c[1])).toEqual(['Closed 2 tabs with project Taxes.']);
   });
 
   it('keeps a project that was not kept (a rule-made one would be pruned otherwise)', async () => {

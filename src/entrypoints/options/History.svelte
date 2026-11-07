@@ -4,6 +4,7 @@
   import type { WhyEntry } from '../../core/safety/why-log';
   import type { RecentlyClosedItem } from '../../core/safety/recently-closed';
   import { explainHash } from '../../ui/routes';
+  import { actionLabel, reasonLabel } from '../../ui/history-labels';
 
   let why = $state<WhyEntry[]>([]);
   let recent = $state<RecentlyClosedItem[]>([]);
@@ -43,7 +44,7 @@
       <li>
         <div class="main">
           <span class="title">{e.title || e.url}</span>
-          <span class="meta">{e.url} · {e.reason}{e.groupTitle ? ` · ${e.groupTitle}` : ''} · {time(e.at)}</span>
+          <span class="meta">{e.url} · {reasonLabel(e.reason)}{e.groupTitle ? ` · ${e.groupTitle}` : ''} · {time(e.at)}</span>
         </div>
         <button type="button" aria-label={`Undo close of ${e.title || e.url}`} onclick={() => undo(e.id)}>Undo</button>
       </li>
@@ -60,7 +61,7 @@
     {#each shown as e, i (`${e.at}-${i}`)}
       <li>
         <div class="main">
-          <span class="title">{#if e.dryRun}<span class="chip">dry run</span> {/if}{e.action}{e.tabId !== undefined ? ` · tab ${e.tabId}` : ''}{e.ruleId ? ` · rule ${e.ruleId}` : ''}</span>
+          <span class="title">{#if e.dryRun}<span class="chip">dry run</span> {/if}{actionLabel(e.action)}{e.tabId !== undefined ? ` · tab ${e.tabId}` : ''}{e.ruleId ? ` · rule ${e.ruleId}` : ''}</span>
           <span class="meta">{e.detail} · {time(e.at)}</span>
         </div>
         {#if e.tabId !== undefined}

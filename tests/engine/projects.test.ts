@@ -281,7 +281,7 @@ describe('ProjectService actions', () => {
     expect(h.toast).toHaveBeenCalledTimes(1);
     const [ids, text, focused] = h.toast.mock.calls[0]!;
     expect(ids).toEqual(['rc1', 'rc2']);
-    expect(text).toBe('Closed 2 tabs of ABC-1 (project-closed).');
+    expect(text).toBe('Closed 2 tabs with project ABC-1.');
     expect(focused).toMatchObject({ id: 3 });
   });
 
