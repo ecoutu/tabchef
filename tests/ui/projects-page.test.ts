@@ -288,3 +288,109 @@ describe('card title links', () => {
     expect(await screen.findByRole('link', { name: 'acme/web' })).toBeTruthy();
   });
 });
+
+describe('Projects page: project sync (M4 T14b)', () => {
+  let status: { enabled: boolean; lastSyncAt?: number; lastResult?: unknown };
+  let request: ReturnType<typeof vi.fn>;
+  beforeEach(() => {
+    status = { enabled: false };
+    request = vi.fn(async () => true);
+    (fakeBrowser.permissions as unknown as { request: typeof request }).request = request;
+    send.mockImplementation(async (req: { type: string; enabled?: boolean }) => {
+      if (req.type === 'projects.sync.status') return { ok: true, data: status };
+      if (req.type === 'projects.sync.set') { status = { ...status, enabled: !!req.enabled }; return { ok: true, data: status }; }
+      return reply(req);
+    });
+  });
+  const toggle = () => screen.findByRole('checkbox', { name: 'Sync kept projects across your devices' }) as Promise<HTMLInputElement>;
+
+  it('shows the toggle off, with no status, until sync has run', async () => {
+    render(Projects);
+    expect((await toggle()).checked).toBe(false);
+    expect(screen.queryByText(/Last synced/)).toBeNull();
+  });
+  it('turning it on requests the bookmarks permission in the click, then sends projects.sync.set', async () => {
+    render(Projects);
+    const box = await toggle();
+    box.click();
+    expect(request).toHaveBeenCalledTimes(1); // synchronously, inside the gesture
+    expect(request).toHaveBeenCalledWith({ permissions: ['bookmarks'] });
+    await waitFor(() => expect(send).toHaveBeenCalledWith({ type: 'projects.sync.set', enabled: true }));
+    await waitFor(() => expect(box.checked).toBe(true));
+  });
+  it('denied: the toggle stays off, sync.set is not sent, and a plain message says why', async () => {
+    request.mockResolvedValue(false);
+    render(Projects);
+    const box = await toggle();
+    box.click();
+    expect(await screen.findByText('Sync stays off: Chrome did not give Tabchef access to your bookmarks.')).toBeTruthy();
+    expect(box.checked).toBe(false);
+    expect(send).not.toHaveBeenCalledWith({ type: 'projects.sync.set', enabled: true });
+  });
+  it('turning it off sends sync.set false and keeps the permission', async () => {
+    status = { enabled: true };
+    const remove = vi.fn();
+    (fakeBrowser.permissions as unknown as { remove: typeof remove }).remove = remove;
+    render(Projects);
+    const box = await toggle();
+    await waitFor(() => expect(box.checked).toBe(true));
+    box.click();
+    await waitFor(() => expect(send).toHaveBeenCalledWith({ type: 'projects.sync.set', enabled: false }));
+    await waitFor(() => expect(box.checked).toBe(false));
+    expect(request).not.toHaveBeenCalled();
+    expect(remove).not.toHaveBeenCalled();
+  });
+  it('a failed sync.set shows the error and leaves the toggle as it was', async () => {
+    send.mockImplementation(async (req: { type: string }) => {
+      if (req.type === 'projects.sync.status') return { ok: true, data: status };
+      if (req.type === 'projects.sync.set') return { ok: false, error: 'Allow Tabchef to use your bookmarks first.' };
+      return reply(req);
+    });
+    render(Projects);
+    const box = await toggle();
+    box.click();
+    expect(await screen.findByText('Allow Tabchef to use your bookmarks first.')).toBeTruthy();
+    expect(box.checked).toBe(false);
+  });
+  it('status: last synced time, merged count, and conflicts and ignored folders named in plain words', async () => {
+    status = { enabled: true, lastSyncAt: Date.now() - 5 * 60_000, lastResult: {
+      merged: 2,
+      conflicts: ['project jira:ABC-1: deleted on one device but edited on the other; kept the edit'],
+      ignored: ['The Tabchef bookmark folder was missing: no project was removed here, and the kept ones were written again.'],
+    } };
+    render(Projects);
+    expect(await screen.findByText('Last synced 5 min ago. 2 projects merged.')).toBeTruthy();
+    expect(screen.getByText('Kept after a conflict (1)')).toBeTruthy();
+    expect(screen.getByText('project jira:ABC-1: deleted on one device but edited on the other; kept the edit')).toBeTruthy();
+    expect(screen.getByText('Skipped (1)')).toBeTruthy();
+    expect(screen.getByText(/The Tabchef bookmark folder was missing/)).toBeTruthy();
+  });
+  it('status: a failed last sync shows its error; no result yet reads "Not synced yet."', async () => {
+    status = { enabled: true, lastSyncAt: Date.now(), lastResult: { error: 'bookmarks unavailable' } };
+    render(Projects);
+    expect(await screen.findByText('The last sync failed: bookmarks unavailable')).toBeTruthy();
+    cleanup();
+    status = { enabled: true };
+    render(Projects);
+    expect(await screen.findByText('Not synced yet.')).toBeTruthy();
+  });
+  it('a failing sync.status does not break the page', async () => {
+    send.mockImplementation(async (req: { type: string }) => (req.type === 'projects.sync.status' ? { ok: false, error: 'x' } : reply(req)));
+    render(Projects);
+    expect(await screen.findByRole('link', { name: 'acme/web' })).toBeTruthy();
+    expect((await toggle()).checked).toBe(false);
+  });
+});
+
+describe('Projects page: sync help tip (M4 T14b)', () => {
+  it('covers unchanged-only deletes, open projects only no longer kept, and a missing folder deleting nothing', async () => {
+    render(Projects);
+    const btn = await screen.findByRole('button', { name: 'About Sync kept projects across your devices' });
+    const tip = document.getElementById(btn.getAttribute('aria-describedby')!)!.textContent!;
+    expect(tip).toContain('visible Tabchef folder in Other bookmarks');
+    expect(tip).toContain('only if it has not changed there since the last sync; otherwise it stays and is listed here');
+    expect(tip).toContain('A project with tabs open on a device is not removed there, only no longer kept.');
+    expect(tip).toContain('If the Tabchef folder is missing, nothing is deleted and your projects are written again.');
+    expect(tip).toContain('extensions cannot hide them');
+  });
+});
