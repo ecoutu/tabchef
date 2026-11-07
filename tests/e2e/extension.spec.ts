@@ -223,4 +223,39 @@ test.describe('extension in Chromium', () => {
     await expect(page.getByRole('button', { name: /Work \(2 rules\)/ })).toHaveAttribute('aria-expanded', 'false');
     await page.close();
   });
+
+  test('(l) a group saved as a project closes with Close and save and reopens as the same group (M4 slice 4.2)', async () => {
+    const urls = [`${base.a}/taxes/1`, `${base.a}/taxes/2`];
+    const ids = [await openTab(h, urls[0]!), await openTab(h, urls[1]!)];
+    await h.sw.evaluate(async (tabIds) => {
+      const groupId = await chrome.tabs.group({ tabIds: tabIds as [number, ...number[]] });
+      await chrome.tabGroups.update(groupId, { title: 'Taxes', color: 'blue' });
+    }, ids);
+    for (const [i, id] of ids.entries()) await waitLoaded(h, id, urls[i]!);
+    const webTabs = async () => (await tabs(h)).filter((t) => t.url.startsWith('http'));
+    const taxesGroups = async () => (await groups(h)).filter((g) => g.title === 'Taxes');
+
+    const page = await h.context.newPage();
+    try {
+      await page.goto(`chrome-extension://${h.extensionId}/options.html#/projects`);
+      await page.getByRole('button', { name: 'Save Taxes' }).click();
+      await expect(page).toHaveURL(/options\.html#\/project\//, { timeout: 10_000 });
+      await expect(page.getByRole('heading', { name: 'Taxes', level: 2 })).toBeVisible({ timeout: 10_000 });
+
+      await page.getByRole('button', { name: 'Close and save' }).click();
+      await expect.poll(async () => (await webTabs()).length, { timeout: 10_000 }).toBe(0);
+      await expect(page.getByRole('region', { name: 'Saved tabs' })).toBeVisible({ timeout: 10_000 });
+
+      await page.getByRole('button', { name: 'Reopen', exact: true }).click();
+      await expect.poll(async () => (await webTabs()).map((t) => t.url).sort(), { timeout: 10_000 }).toEqual([...urls].sort());
+      await expect.poll(async () => (await taxesGroups()).map((g) => g.color), { timeout: 10_000 }).toEqual(['blue']);
+      const [group] = await taxesGroups();
+      await expect.poll(async () => (await webTabs()).every((t) => t.groupId === group!.id), { timeout: 10_000 }).toBe(true);
+
+      await page.goto(`chrome-extension://${h.extensionId}/options.html#/projects`);
+      await expect(page.getByRole('region', { name: 'Open' }).getByRole('link', { name: 'Taxes' })).toBeVisible({ timeout: 10_000 });
+    } finally {
+      await page.close();
+    }
+  });
 });
