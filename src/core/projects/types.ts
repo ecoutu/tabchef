@@ -63,7 +63,11 @@ export interface Project {
    * and never remove from it. Cleared by reopen, or once the open tabs cover the list. removeTab drops its URL anyway.
    */
   saved?: { tabs: SavedTab[]; at: number; closed?: boolean };
-  /** Archived by the user (M4 T9). */
+  /**
+   * Archived by the user (M4 T9): takes no tab (like a tombstone), is not in the popup and is never pruned. Unlike a
+   * tombstone, a rule assigning its key does not bring it back (its tabs are only counted, `held`); unarchive, reopen or
+   * the undo of its Close and archive do.
+   */
   archivedAt?: number;
   /** Bumped on every user-visible change (M4 T7; D1 sync merges by it). A stored project without it reads as createdAt. */
   updatedAt: number;
@@ -112,12 +116,30 @@ export interface ProjectHomeData extends ProjectCardData {
    * index order. Tabs not in a group form one entry per window with an empty title and grey.
    */
   groups: { title: string; color: GroupColor; windowId: number; tabIds: number[] }[];
-  settings: Pick<ProjectDef, 'container' | 'placement' | 'join' | 'onOpenElsewhere' | 'onSwitchAway'>;
+  /** Unset when its recipe is off (`recipeOff`). */
+  settings?: Pick<ProjectDef, 'container' | 'placement' | 'join' | 'onOpenElsewhere' | 'onSwitchAway'>;
   /** The name of the recipe that defines the project (its id when unknown). */
   recipeName: string;
+  /** M4 T9: its recipe is off (or gone): the stored data only, no settings; it cannot be reopened until it is on. */
+  recipeOff?: true;
   /** M4 T7: kept (never pruned, synced) and its saved tab list. A kept project with no open tab has no groups. */
   keep?: boolean;
   saved?: Project['saved'];
+  /** M4 T9: archived at (no tabs, no groups), and how many open tabs a rule assigns its key to ("Archived: reopen?"). */
+  archivedAt?: number;
+  held?: number;
+}
+
+/** A project with nothing open, as the Projects page's Saved and Archived sections list it (M4 T9, `projects.savedLists`). */
+export interface SavedProjectData {
+  id: string; key: string; title: string; summary?: string;
+  status?: NonNullable<Project['status']>;
+  /** Tabs in its saved tab list (what Reopen opens). */
+  savedCount: number;
+  archivedAt?: number;
+  /** Open tabs a rule assigns an archived project's key to: they stay out of it until it is reopened or unarchived. */
+  held: number;
+  updatedAt: number;
 }
 
 /** Why a tab is in a project. `index` is the assigning rule's priority (-1 for manual: it wins over every rule). */

@@ -3,7 +3,11 @@
   // status, PR counts, Open in tab bar / Close group) → open tabs by group in tab-bar order → linked PRs not open, with
   // "Open into project" → the project's settings, collapsed and read-only (edited inline from T20). Kept current like the
   // side panel: re-fetched on config.changed and every LIVE_MS while visible.
-  import { onDestroy, onMount } from 'svelte';
+  // M4 T9 lifecycle: an open project offers Close group, Close and save, Keep, and Close and archive when its ticket is
+  // Done by fresh data (M3-R90). One with nothing open shows its saved tab list with Reopen, Keep, Archive and Delete; an
+  // archived one says so ("Archived: reopen?" when a rule assigns its key) with Reopen, Unarchive and Delete. Delete asks
+  // in the page first (M4-R9: "Delete for good?"), then goes back to Projects.
+  import { onDestroy, onMount, tick } from 'svelte';
   import { send } from '../../ui/send';
   import { createProjectActions, startLiveRefresh, type Toast } from '../../ui/project-actions';
   import { buildProjectHome, type ProjectHomeView } from '../../ui/project-home-model';
@@ -35,6 +39,26 @@
   const { focus, undo } = actions;
   const openLinked = (url: string) => actions.openLinked(id, url);
   const closeGroup = () => actions.closeGroup(id);
+  /** M4-R9: Delete was clicked; "Delete for good?" waits for the answer. */
+  let confirmDelete = $state(false);
+  let deleteButton = $state<HTMLButtonElement | undefined>(undefined);
+  let cancelButton = $state<HTMLButtonElement | undefined>(undefined);
+  /** Opens "Delete for good?" with focus on Cancel (the Delete button it replaces had it). */
+  async function askDelete(): Promise<void> {
+    confirmDelete = true;
+    await tick();
+    cancelButton?.focus();
+  }
+  /** Closes the question and gives focus back to Delete. */
+  async function cancelDelete(): Promise<void> {
+    confirmDelete = false;
+    await tick();
+    deleteButton?.focus();
+  }
+  async function remove(): Promise<void> {
+    confirmDelete = false;
+    if (await actions.remove(id)) window.location.hash = '#/projects';
+  }
 
   let stopLive: (() => void) | undefined;
 
@@ -67,14 +91,57 @@
       {#if v.status}<span class={`status tone-${v.status.tone}`}>{v.status.label}</span>{/if}
       {#if v.prSummary}<span class="prs">{v.prSummary}</span>{/if}
       <span class="actions">
-        {#if v.firstTabId !== undefined}
-          {@const first = v.firstTabId}
-          <button type="button" class="act" onclick={() => focus(first)}>Open in tab bar</button>
+        {#if v.open}
+          {#if v.firstTabId !== undefined}
+            {@const first = v.firstTabId}
+            <button type="button" class="act" onclick={() => focus(first)}>Open in tab bar</button>
+          {/if}
+          <button type="button" class="act" onclick={closeGroup}>Close group</button>
+          <button type="button" class="act" onclick={() => actions.closeAndSave(id)}>Close and save</button>
+          {#if v.done}<button type="button" class="act" onclick={() => actions.closeAndArchive(id)}>Close and archive</button>{/if}
+        {:else}
+          {#if !v.recipeOff && (v.archived || v.savedTabs.length > 0)}<button type="button" class="act" onclick={() => actions.reopen(id)}>Reopen</button>{/if}
+          {#if v.archived}
+            <button type="button" class="act" onclick={() => actions.unarchive(id)}>Unarchive</button>
+          {:else}
+            <button type="button" class="act" onclick={() => actions.archive(id)}>Archive</button>
+          {/if}
         {/if}
-        <button type="button" class="act" onclick={closeGroup}>Close group</button>
+        {#if !v.archived}
+          <button type="button" class="act" aria-pressed={v.keep} title="A kept project is saved and never forgotten" onclick={() => actions.setKeep(id, !v.keep)}>Keep</button>
+        {/if}
+        {#if !v.open}
+          {#if confirmDelete}
+            <span class="confirm" role="group" aria-label="Delete this project">
+              <span role="alert">Delete for good?</span>
+              <button type="button" class="act danger" onclick={remove}>Delete for good</button>
+              <button type="button" class="act" bind:this={cancelButton} onclick={cancelDelete}>Cancel</button>
+            </span>
+          {:else}
+            <button type="button" class="act" bind:this={deleteButton} onclick={askDelete}>Delete</button>
+          {/if}
+        {/if}
       </span>
     </header>
+    {#if v.archived}<p class="note">{v.held > 0 && !v.recipeOff ? 'Archived: reopen?' : 'Archived.'}</p>{/if}
+    {#if v.recipeOff}
+      <p class="muted">The recipe {v.recipeName} is turned off. Turn it on under <a href="#/recipes">Recipes</a> to reopen this project.</p>
+    {/if}
 
+    {#if !v.open}
+    <section aria-labelledby={`${uid}-saved`}>
+      <h3 id={`${uid}-saved`}>Saved tabs</h3>
+      {#if v.savedTabs.length === 0}
+        <p class="muted">No saved tabs yet.</p>
+      {:else}
+        <ul>
+          {#each v.savedTabs as t, i (`${i}:${t.url}`)}
+            <li class="row"><span class="title" title={t.group ? `${t.url} · ${t.group}` : t.url}>{t.title || t.url}</span></li>
+          {/each}
+        </ul>
+      {/if}
+    </section>
+    {:else}
     <section aria-labelledby={`${uid}-tabs`}>
       <h3 id={`${uid}-tabs`}>Open tabs</h3>
       {#each v.groups as g (`${g.windowId}:${g.title}:${g.tabs[0]?.tabId}`)}
@@ -94,6 +161,7 @@
         </ul>
       {/each}
     </section>
+    {/if}
 
     <section aria-labelledby={`${uid}-linked`}>
       <h3 id={`${uid}-linked`}>Linked, not open</h3>
@@ -112,6 +180,7 @@
       {/if}
     </section>
 
+    {#if !v.recipeOff}
     <details class="settings">
       <summary>Settings</summary>
       <p class="muted">From the recipe {v.recipeName}. Read only for now.</p>
@@ -122,6 +191,7 @@
         {/each}
       </dl>
     </details>
+    {/if}
   {/if}
 </section>
 
@@ -148,6 +218,9 @@
   .linked .title { opacity: 0.55; }
   .act { flex: none; } /* the button itself: .act in src/ui/tokens.css */
   .muted { color: var(--muted); }
+  .note { margin: 0 0 8px; color: var(--accent); }
+  .confirm { display: inline-flex; align-items: center; gap: 6px; }
+  .danger { color: var(--danger); }
   .error { color: var(--danger); font-size: 12px; }
   .toast { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px; background: var(--surface); }
   .toast .act { background: var(--bg); }

@@ -96,11 +96,12 @@ describe('Projects tab (M3 T17)', () => {
     expect(undone).toEqual(['rc-2']); // rc-1 was restored; rc-2 failed and stops the loop, rc-3 is still pending
   });
 
-  it('[Keep] dismisses the prompt without closing', async () => {
+  it('[Keep] dismisses the prompt without closing and keeps the project (never pruned)', async () => {
     render(Projects);
     await fireEvent.click(await screen.findByRole('button', { name: 'Keep' }));
     expect(screen.queryByText('Ticket is done. Close this group?')).toBeNull();
     expect(types()).not.toContain('projects.closeGroup');
+    expect(send).toHaveBeenCalledWith({ type: 'projects.setKeep', projectId: 'jira:ABC-1', keep: true });
   });
 
   it('no prompt for a project that is not done', async () => {

@@ -1,7 +1,8 @@
 // Projects (M3 T15): the ProjectService (store: project-store.ts, closed-time clock: project-clock.ts), which resolves
 // project membership each reconcile pass (T14's pure resolveProjects + projectTargets, planned as PlanContext.overrides,
 // M3-R66), persists sticky membership with its rule in RuntimeState.projectTabs, and runs the user's project actions:
-// add / remove a tab, open a linked PR, close the project's tabs, and (M4 T7) close-and-save, reopen and Keep. Ticket
+// add / remove a tab, open a linked PR, close the project's tabs, (M4 T7) close-and-save, reopen and Keep, and (M4 T9)
+// archive, unarchive and delete. Ticket
 // status and linked PRs come from the SourceService's public API only (M3-R68); linked PRs are refreshed at most every
 // LINKED_REFRESH_MS per project.
 import { liveProgram } from '../core/lang/dry-run';
@@ -10,7 +11,7 @@ import { projectGroupTitle, projectTargets, resolveProjects, type ResolveResult,
 import type { RecentlyClosed } from '../core/safety/recently-closed';
 import type { GroupTarget } from '../core/group/evaluate';
 import type { Program, TabFacts } from '../core/lang/types';
-import type { Project, ProjectAssignment, ProjectCardData, ProjectDef, ProjectHomeData, SavedTab } from '../core/projects/types';
+import type { Project, ProjectAssignment, ProjectCardData, ProjectDef, ProjectHomeData, SavedProjectData, SavedTab } from '../core/projects/types';
 import type { JiraIssue, PrInfo, PrState, SourceEntry } from '../core/sources/types';
 import type { GroupColor, GroupSnap, Snapshot, TabSnap } from '../core/types';
 import { normalizeUrl } from '../core/url/normalize';
@@ -115,6 +116,28 @@ function growFrozen(saved: SavedTab[], open: SavedTab[], key: (url: string) => s
 /** Closed by Close group (M3-R84): kept for undo, out of membership and the UI. */
 const isTomb = (p: Project): boolean => p.closedAt !== undefined;
 const revive = (p: Project): void => { delete p.closedAt; delete p.closedIds; };
+/** Archived by the user (M4 T9): takes no tab, and a rule assigning its key does not bring it back. */
+const isArchived = (p: Project): boolean => p.archivedAt !== undefined;
+type Run = ResolveResult & { held: Map<string, number[]> };
+/**
+ * `r` without the archived projects `archived` (M4 T9): resolveProjects created a copy of one whose key a rule assigned
+ * (it was not given the archived ones); that copy, its tabs and their sticky entries are dropped, the tabs counted in
+ * `held` (projectId → tab ids, "Archived: reopen?").
+ */
+function holdArchived(r: ResolveResult, archived: Set<string>): Run {
+  const held = new Map<string, number[]>();
+  const assignments = new Map<number, ProjectAssignment>();
+  for (const [tabId, a] of r.assignments) {
+    if (archived.has(a.projectId)) held.set(a.projectId, [...(held.get(a.projectId) ?? []), tabId]);
+    else assignments.set(tabId, a);
+  }
+  return {
+    assignments, held,
+    created: r.created.filter((p) => !archived.has(p.id)),
+    summaries: new Map([...r.summaries].filter(([id]) => !archived.has(id))),
+    sticky: new Map([...r.sticky].filter(([, x]) => !archived.has(x.projectId))),
+  };
+}
 /**
  * What makes a saved tab list differ for the user (M4 T7): URLs, order, groups and pinning, never titles (a title that
  * keeps changing would rewrite the store and bump updatedAt every pass).
@@ -161,7 +184,7 @@ export interface ProjectServiceDeps {
   now?: () => number;
 }
 
-interface Resolved { program: Program; defs: ProjectDef[]; projects: Project[]; assignments: Map<number, ProjectAssignment> }
+interface Resolved { program: Program; defs: ProjectDef[]; projects: Project[]; assignments: Map<number, ProjectAssignment>; held: Map<string, number[]> }
 const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
 
 export class ProjectService {
@@ -201,11 +224,15 @@ export class ProjectService {
     return projectTargets(r.assignments, withCreated(stored, r).projects, defs);
   }
 
-  /** resolveProjects over `program` with this service's facts and prefixes. Pure apart from reading facts. */
-  private run(snap: Snapshot, program: Program, stored: Project[], sticky: StickyMap): ResolveResult {
+  /**
+   * resolveProjects over `program` with this service's facts and prefixes, archived projects held out (holdArchived).
+   * Pure apart from reading facts.
+   */
+  private run(snap: Snapshot, program: Program, stored: Project[], sticky: StickyMap): Run {
     const tabs = new Map(snap.tabs.map((t) => [t.id, t]));
-    return resolveProjects({
-      snap, program, now: this.now(), projects: stored.filter((p) => !isTomb(p)), sticky,
+    const archived = new Set(stored.filter(isArchived).map((p) => p.id));
+    return holdArchived(resolveProjects({
+      snap, program, now: this.now(), projects: stored.filter((p) => !isTomb(p) && !isArchived(p)), sticky,
       facts: (id): Partial<TabFacts> => {
         const t = tabs.get(id);
         const page = this.deps.facts.get(id);
@@ -215,7 +242,7 @@ export class ProjectService {
       allowPrefixes: (program.projects ?? []).flatMap((d) => strings(program.params?.[d.recipeId]?.projectPrefixes)),
       // A key the Jira API answered for confirms its prefix (Review Focus #5).
       knownPrefixes: new Set(stored.filter((p) => p.status?.via === 'api').map((p) => p.key.slice(0, Math.max(0, p.key.lastIndexOf('-'))))),
-    });
+    }), archived);
   }
 
   /**
@@ -229,7 +256,7 @@ export class ProjectService {
     const defs = program.projects ?? [];
     if (defs.length === 0) {
       this.deps.onProjectsChanged?.([]);
-      return { program, defs, projects: [], assignments: new Map() };
+      return { program, defs, projects: [], assignments: new Map(), held: new Map() };
     }
     const [st, stored] = await Promise.all([this.deps.state(), this.deps.store.list()]);
     const r = this.run(snap, program, stored, st.projectTabs);
@@ -301,7 +328,7 @@ export class ProjectService {
       const def = defOf.get(p.recipeId);
       return def && open.has(p.id) ? [{ id: p.id, title: projectGroupTitle(def, p) }] : [];
     }));
-    return { program, defs, projects, assignments: r.assignments };
+    return { program, defs, projects, assignments: r.assignments, held: r.held };
   }
 
   private log(tabId: number, detail: string, ruleId?: string, action = 'project-join'): void {
@@ -331,6 +358,7 @@ export class ProjectService {
     const [program, projects] = await Promise.all([this.deps.getProgram(), this.deps.store.list()]);
     const p = projects.find((x) => x.id === id && !isTomb(x));
     if (!p) throw new Error('unknown project');
+    if (isArchived(p)) throw new Error('this project is archived');
     return { program, projects, p };
   }
 
@@ -509,6 +537,7 @@ export class ProjectService {
       const { program, assignments, projects } = await this.resolve(snap);
       const p = projects.find((x) => x.id === projectId);
       if (!p) throw new Error('unknown project');
+      if (isArchived(p)) throw new Error('this project is archived');
       if (!p.linked.some((l) => l.url === url)) throw new Error('not a linked PR of this project');
       const windowId = snap.tabs.find((t) => assignments.get(t.id)?.projectId === projectId)?.windowId ?? p.manual.at(-1)?.windowId;
       const tabId = await this.deps.port.createTab({ url, active: false, ...(windowId !== undefined && { windowId }) });
@@ -543,6 +572,7 @@ export class ProjectService {
     const { assignments, projects } = await this.resolve(snap);
     const p = projects.find((x) => x.id === projectId);
     if (!p) throw new Error('unknown project');
+    if (isArchived(p)) throw new Error('this project is archived');
     const ids: string[] = [];
     let skipped = 0;
     const members = snap.tabs.filter((x) => assignments.get(x.id)?.projectId === projectId);
@@ -589,7 +619,7 @@ export class ProjectService {
    * in the window holding its open tabs, else the last window that held it (its newest manual entry's), else the
    * focused one (placement: T16). A saved URL already open (dedupe's normalization) is not opened again: that tab joins
    * instead. Each tab joins as a manual member when the recipe takes them (else by its rules). A closed (tombstoned)
-   * project is revived. A user action, so it applies under global dry run too (R50). Returns how many tabs it opened.
+   * project is revived, an archived one unarchived (M4 T9: "Archived: reopen?"). A user action, so it applies under global dry run too (R50). Returns how many tabs it opened.
    */
   reopen(projectId: string): Promise<{ opened: number }> {
     return this.serial(async () => {
@@ -605,6 +635,7 @@ export class ProjectService {
         ?? snap.windows.find((w) => w.focused && normal.has(w.id))?.id;
       const saved = p.saved?.tabs ?? [];
       revive(p);
+      delete p.archivedAt;
       // Frozen until the open tabs cover the list again (the pass then thaws it): a tab that fails to open or
       // redirects before the next pass (leaving its URL-matched manual entry) never shrinks it.
       if (p.saved && p.saved.tabs.length > 0) p.saved.closed = true;
@@ -651,14 +682,110 @@ export class ProjectService {
   }
 
   /**
+   * Archive (M4 T9) a project with nothing open (a saved one, or one closed by Close group): it then takes no tab, is
+   * not in the popup and is never pruned. A closed one loses its undo (archiving is a later, deliberate choice). Refused
+   * while tabs of it are open: Close and archive closes them. A user action, so it applies under global dry run (M4-R11).
+   */
+  archive(projectId: string): Promise<void> {
+    return this.serial(async () => {
+      const snap = await this.deps.port.snapshot();
+      const { assignments } = await this.resolve(snap);
+      const p = (await this.deps.store.list()).find((x) => x.id === projectId);
+      if (!p) throw new Error('unknown project');
+      if ([...assignments.values()].some((a) => a.projectId === projectId)) throw new Error("Close the project's tabs first.");
+      if (isArchived(p)) return;
+      revive(p);
+      p.archivedAt = this.now();
+      p.updatedAt = this.now();
+      await this.deps.store.put(p);
+      this.deps.schedule?.('project');
+    });
+  }
+
+  /**
+   * Close and archive (M4 T9, offered when its Jira ticket is Done by fresh data, M3-R90): Close and save, then archive.
+   * Protected tabs stay open (and in the saved list) but leave the project. The undo of its closes brings it back,
+   * unarchived (onUndo). Applies under global dry run, as closeAndSave does.
+   */
+  closeAndArchive(projectId: string): Promise<{ closed: number; skipped: number; ids: string[] }> {
+    return this.serial(async () => {
+      const r = await this.close(projectId, true);
+      const p = (await this.deps.store.list()).find((x) => x.id === projectId);
+      if (!p) return r;
+      delete p.closedAt; // archived, not a tombstone: kept and listed; closedIds stay for undo
+      if (r.ids.length > 0) p.closedIds = r.ids;
+      p.archivedAt = this.now();
+      p.updatedAt = this.now();
+      await this.deps.store.put(p);
+      this.deps.schedule?.('project');
+      return r;
+    });
+  }
+
+  /** Unarchive (M4 T9): back among the saved projects; tabs a rule assigns its key to join it on the next pass. */
+  unarchive(projectId: string): Promise<void> {
+    return this.serial(async () => {
+      const p = (await this.deps.store.list()).find((x) => x.id === projectId);
+      if (!p) throw new Error('unknown project');
+      if (!isArchived(p)) return;
+      delete p.archivedAt;
+      delete p.closedIds;
+      p.updatedAt = this.now();
+      await this.deps.store.put(p);
+      this.deps.schedule?.('project');
+    });
+  }
+
+  /** Delete (M4 T9): forgets the project for good (the UI asks first, M4-R9). Refused while tabs of it are open. */
+  remove(projectId: string): Promise<void> {
+    return this.serial(async () => {
+      const snap = await this.deps.port.snapshot();
+      const { assignments } = await this.resolve(snap);
+      if (!(await this.deps.store.list()).some((x) => x.id === projectId)) throw new Error('unknown project');
+      if ([...assignments.values()].some((a) => a.projectId === projectId)) throw new Error("Close the project's tabs first.");
+      await this.deps.store.remove(projectId);
+      this.deps.schedule?.('project');
+    });
+  }
+
+  /**
+   * The Projects page's Saved and Archived sections (M4 T9), newest change first. Saved: kept projects with nothing
+   * open (closed by Close and save, or created without tabs), not archived. Archived: every archived project, with the
+   * open tabs a rule assigns its key to (`held`).
+   */
+  savedLists(): Promise<{ saved: SavedProjectData[]; archived: SavedProjectData[] }> {
+    return this.serial(async () => {
+      const snap = await this.deps.port.snapshot();
+      const { defs, assignments, held } = await this.resolve(snap);
+      const open = new Set([...assignments.values()].map((a) => a.projectId));
+      const defOf = new Map(defs.map((d) => [d.recipeId, d]));
+      const data = (p: Project): SavedProjectData => {
+        const def = defOf.get(p.recipeId);
+        return {
+          id: p.id, key: p.key, title: def ? projectGroupTitle(def, p) : (p.name ?? p.key), ...(p.summary !== undefined && { summary: p.summary }),
+          ...(p.status && { status: p.status }), savedCount: p.saved?.tabs.length ?? 0, ...(isArchived(p) && { archivedAt: p.archivedAt }),
+          held: held.get(p.id)?.length ?? 0, updatedAt: p.updatedAt,
+        };
+      };
+      const stored = (await this.deps.store.list()).sort((a, b) => b.updatedAt - a.updatedAt);
+      return {
+        saved: stored.filter((p) => p.keep && !isArchived(p) && !open.has(p.id)).map(data),
+        archived: stored.filter(isArchived).map(data),
+      };
+    });
+  }
+
+  /**
    * SafetyService.beforeUndo: a recently-closed entry of a Close group is about to be reopened. Revives its tombstone
-   * first, so the restored tab rejoins the same project (rules by key, manual entries by URL).
+   * first, so the restored tab rejoins the same project (rules by key, manual entries by URL). The undo of a Close and
+   * archive (M4 T9) unarchives it too.
    */
   onUndo(entryId: string): Promise<void> {
     return this.serial(async () => {
-      const p = (await this.deps.store.list()).find((x) => isTomb(x) && x.closedIds?.includes(entryId));
+      const p = (await this.deps.store.list()).find((x) => (isTomb(x) || isArchived(x)) && x.closedIds?.includes(entryId));
       if (!p) return;
       revive(p);
+      delete p.archivedAt;
       p.updatedAt = this.now();
       await this.deps.store.put(p);
     });
@@ -695,9 +822,9 @@ export class ProjectService {
    * kept nor saved.
    */
   async home(id: string): Promise<ProjectHomeData | undefined> {
-    const { cards, snap, open, defOf } = await this.collect(id);
+    const { cards, snap, open, defOf, held } = await this.collect(id);
     const card = cards[0];
-    if (!card) return this.restingHome(id, defOf);
+    if (!card) return this.restingHome(id, defOf, held.get(id)?.length ?? 0);
     const def = defOf.get(open[0]?.recipeId ?? '');
     if (!def) return undefined;
     const members = new Set(card.tabs.map((t) => t.tabId));
@@ -714,14 +841,22 @@ export class ProjectService {
     return { ...card, groups, ...(await this.homeOf(def)), ...kept(open[0]!) };
   }
 
-  /** The Project home of a kept or saved project with no open tab (M4 T7): stored data, no tabs, no groups. */
-  private async restingHome(id: string, defOf: Map<string, ProjectDef>): Promise<ProjectHomeData | undefined> {
+  /**
+   * The Project home of a kept, saved or archived (M4 T9, with its `held` tabs) project with no open tab (M4 T7):
+   * stored data, no tabs, no groups. With its recipe off (or gone) it still has one, from what is stored: titled by its
+   * name else its key, no settings, `recipeOff` (it can be deleted or unarchived, not reopened).
+   */
+  private async restingHome(id: string, defOf: Map<string, ProjectDef>, held: number): Promise<ProjectHomeData | undefined> {
     const p = (await this.deps.store.list()).find((x) => x.id === id);
-    const def = p && defOf.get(p.recipeId);
-    if (!p || !def || !(p.keep || p.saved)) return undefined;
+    if (!p || !(p.keep || p.saved || isArchived(p))) return undefined;
+    const def = defOf.get(p.recipeId);
+    const recipe = def
+      ? await this.homeOf(def)
+      : { recipeName: (await this.deps.recipeName?.(p.recipeId)) ?? p.recipeId, recipeOff: true as const };
     return {
-      id: p.id, key: p.key, title: projectGroupTitle(def, p), ...(p.summary !== undefined && { summary: p.summary }),
-      ...(p.status && { status: p.status }), done: false, tabs: [], linked: p.linked, groups: [], ...(await this.homeOf(def)), ...kept(p),
+      id: p.id, key: p.key, title: def ? projectGroupTitle(def, p) : (p.name ?? p.key), ...(p.summary !== undefined && { summary: p.summary }),
+      ...(p.status && { status: p.status }), done: false, tabs: [], linked: p.linked, groups: [], ...recipe, ...kept(p),
+      ...(isArchived(p) && { archivedAt: p.archivedAt, held }),
     };
   }
 
@@ -735,10 +870,10 @@ export class ProjectService {
    * The cards of the open projects (`only`: of that project alone, so only its ticket and linked PRs are fetched), with
    * the snapshot and the plan they were built from.
    */
-  private async collect(only?: string): Promise<{ cards: ProjectCardData[]; snap: Snapshot; open: Project[]; defOf: Map<string, ProjectDef> }> {
+  private async collect(only?: string): Promise<{ cards: ProjectCardData[]; snap: Snapshot; open: Project[]; defOf: Map<string, ProjectDef>; held: Map<string, number[]> }> {
     const plan = await this.serial(async () => {
       const snap = await this.deps.port.snapshot();
-      const { program, defs, projects, assignments } = await this.resolve(snap);
+      const { program, defs, projects, assignments, held } = await this.resolve(snap);
       const tabsOf = new Map<string, TabSnap[]>();
       for (const t of snap.tabs) {
         const id = assignments.get(t.id)?.projectId;
@@ -746,10 +881,10 @@ export class ProjectService {
       }
       const defOf = new Map(defs.map((d) => [d.recipeId, d]));
       const open = projects.filter((p) => (only === undefined || p.id === only) && tabsOf.has(p.id) && defOf.has(p.recipeId));
-      return { snap, program, defOf, tabsOf, sites: ticketSites(program, snap, assignments), open };
+      return { snap, program, defOf, tabsOf, sites: ticketSites(program, snap, assignments), open, held };
     });
-    const { snap, program, defOf, tabsOf, sites, open } = plan;
-    if (open.length === 0) return { cards: [], snap, open, defOf };
+    const { snap, program, defOf, tabsOf, sites, open, held } = plan;
+    if (open.length === 0) return { cards: [], snap, open, defOf, held };
     const now = this.now();
     const [linked, { issues, asked }] = await Promise.all([this.fetchLinked(program, open, tabsOf, now), this.fetchIssues(open, tabsOf, sites)]);
     return this.serial(async () => {
@@ -792,7 +927,7 @@ export class ProjectService {
         }];
       });
       if (changed.length) await this.deps.store.put(...changed);
-      return { cards, snap, open, defOf };
+      return { cards, snap, open, defOf, held };
     });
   }
 

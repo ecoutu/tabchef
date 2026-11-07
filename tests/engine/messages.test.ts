@@ -1240,6 +1240,11 @@ describe('projects.* (M3 T15)', () => {
     reopen: vi.fn(async () => ({ opened: 2 })),
     setKeep: vi.fn(async () => {}),
     saveGroup: vi.fn(async () => 'manual-project:taxes'),
+    archive: vi.fn(async () => {}),
+    closeAndArchive: vi.fn(async () => ({ closed: 1, skipped: 0, ids: ['rc-1'] })),
+    unarchive: vi.fn(async () => {}),
+    remove: vi.fn(async () => {}),
+    savedLists: vi.fn(async () => ({ saved: [], archived: [{ id: 'r:ABC-1', key: 'ABC-1', title: 'ABC-1', savedCount: 1, archivedAt: 5, held: 1, updatedAt: 5 }] })),
     unmanagedGroups: vi.fn(async () => [{ id: 5, title: 'Taxes', color: 'blue' as const, tabCount: 2 }]),
     home: vi.fn(async (id: string) => (id === 'r:ABC-1' ? {
       id, key: 'ABC-1', title: 'ABC-1', done: false, tabs: [], linked: [], groups: [], recipeName: 'r',
@@ -1276,6 +1281,35 @@ describe('projects.* (M3 T15)', () => {
     expect(isRequest({ type: 'projects.setKeep', projectId: 'r:ABC-1', keep: true })).toBe(true);
     expect(isRequest({ type: 'projects.setKeep', projectId: 'r:ABC-1', keep: 'yes' })).toBe(false);
     expect(isRequest({ type: 'projects.setKeep', projectId: 'r:ABC-1' })).toBe(false);
+  });
+
+  it('M4 T9: archive / closeAndArchive / unarchive / delete / savedLists validate, reach the ProjectService; content scripts are refused', async () => {
+    for (const type of ['projects.archive', 'projects.closeAndArchive', 'projects.unarchive', 'projects.delete']) {
+      expect(isRequest({ type, projectId: 'r:ABC-1' })).toBe(true);
+      expect(isRequest({ type, projectId: 1 })).toBe(false);
+      expect(isRequest({ type })).toBe(false);
+    }
+    expect(isRequest({ type: 'projects.savedLists' })).toBe(true);
+    const p = projects();
+    const s = setup({ projects: p });
+    expect(await s.handle({ type: 'projects.archive', projectId: 'r:ABC-1' }, ui)).toEqual({ ok: true, data: null });
+    expect(p.archive).toHaveBeenCalledWith('r:ABC-1');
+    expect(await s.handle({ type: 'projects.closeAndArchive', projectId: 'r:ABC-1' }, ui)).toEqual({ ok: true, data: { closed: 1, skipped: 0, ids: ['rc-1'] } });
+    expect(await s.handle({ type: 'projects.unarchive', projectId: 'r:ABC-1' }, ui)).toEqual({ ok: true, data: null });
+    expect(p.unarchive).toHaveBeenCalledWith('r:ABC-1');
+    expect(await s.handle({ type: 'projects.delete', projectId: 'r:ABC-1' }, ui)).toEqual({ ok: true, data: null });
+    expect(p.remove).toHaveBeenCalledWith('r:ABC-1');
+    expect(await s.handle({ type: 'projects.savedLists' }, ui)).toMatchObject({ ok: true, data: { saved: [], archived: [{ id: 'r:ABC-1', held: 1 }] } });
+    p.archive.mockRejectedValue(new Error("Close the project's tabs first."));
+    expect(await s.handle({ type: 'projects.archive', projectId: 'r:ABC-1' }, ui)).toEqual({ ok: false, error: "Close the project's tabs first." });
+    for (const type of ['projects.archive', 'projects.closeAndArchive', 'projects.unarchive', 'projects.delete']) {
+      expect(await s.handle({ type, projectId: 'r:ABC-1' }, content)).toEqual({ ok: false, error: 'forbidden' });
+    }
+    expect(await s.handle({ type: 'projects.savedLists' }, content)).toEqual({ ok: false, error: 'forbidden' });
+    expect(p.archive).toHaveBeenCalledTimes(2);
+    expect(p.closeAndArchive).toHaveBeenCalledTimes(1);
+    expect(p.unarchive).toHaveBeenCalledTimes(1);
+    expect(p.remove).toHaveBeenCalledTimes(1);
   });
 
   it('M4 T8: projects.groups / saveGroup validate, reach the ProjectService, and are refused from content scripts', async () => {

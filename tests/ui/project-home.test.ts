@@ -38,7 +38,8 @@ beforeEach(() => {
   send.mockImplementation(async (req: { type: string }) => {
     switch (req.type) {
       case 'projects.home': return { ok: true, data };
-      case 'projects.closeGroup': return { ok: true, data: { closed: 3, skipped: 0, ids: ['rc1', 'rc2', 'rc3'] } };
+      case 'projects.closeGroup': case 'projects.closeAndSave': case 'projects.closeAndArchive':
+        return { ok: true, data: { closed: 3, skipped: 0, ids: ['rc1', 'rc2', 'rc3'] } };
       case 'projects.openLinked': return { ok: true, data: { tabId: 9 } };
       default: return { ok: true, data: null };
     }
@@ -159,5 +160,128 @@ describe('Project home (M4 T4)', () => {
     document.dispatchEvent(new Event('visibilitychange'));
     await vi.advanceTimersByTimeAsync(0);
     expect(calls('projects.home').length).toBe(start + 2);
+  });
+});
+
+describe('Project home lifecycle (M4 T9)', () => {
+  const resting = (o: Partial<ProjectHomeData> = {}): ProjectHomeData => home({
+    tabs: [], groups: [], linked: [], keep: true,
+    saved: { at: 1, closed: true, tabs: [{ url: 'https://acme.atlassian.net/browse/ABC-1', title: 'Login fails - Jira' }, { url: 'https://github.com/acme/api/pull/5', title: 'fix login', group: 'ABC-1' }] },
+    ...o,
+  });
+  const button = (name: string) => screen.queryByRole('button', { name });
+
+  it('an open project: Close group, Close and save, Keep; Close and archive only when the ticket is Done by fresh data', async () => {
+    data = home({ status: { name: 'Done', category: 'done', via: 'api' }, done: false }); // stale or stored Done (M3-R90)
+    render(ProjectHome, { id: ID });
+    await screen.findByRole('heading', { level: 2, name: 'ABC-1 · Login fails' });
+    expect(button('Close group')).toBeTruthy();
+    expect(button('Close and save')).toBeTruthy();
+    expect(button('Keep')?.getAttribute('aria-pressed')).toBe('false');
+    expect(button('Close and archive')).toBeNull();
+    expect(button('Archive')).toBeNull();
+    expect(button('Delete')).toBeNull();
+    cleanup();
+    data = home({ status: { name: 'Done', category: 'done', via: 'api' }, done: true, keep: true });
+    render(ProjectHome, { id: ID });
+    await fireEvent.click(await screen.findByRole('button', { name: 'Close and archive' }));
+    expect(calls('projects.closeAndArchive')).toEqual([{ type: 'projects.closeAndArchive', projectId: ID }]);
+    expect(button('Keep')?.getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('Close and save and Keep send their requests', async () => {
+    render(ProjectHome, { id: ID });
+    await fireEvent.click(await screen.findByRole('button', { name: 'Close and save' }));
+    expect(calls('projects.closeAndSave')).toEqual([{ type: 'projects.closeAndSave', projectId: ID }]);
+    await fireEvent.click(screen.getByRole('button', { name: 'Keep' }));
+    expect(calls('projects.setKeep')).toEqual([{ type: 'projects.setKeep', projectId: ID, keep: true }]);
+  });
+
+  it('nothing open: the saved tab list with Reopen, Archive and Delete; no Close group or Close and save; never "no longer open"', async () => {
+    data = resting();
+    render(ProjectHome, { id: ID });
+    const saved = await screen.findByRole('region', { name: 'Saved tabs' });
+    expect(within(saved).getAllByRole('listitem').map((li) => li.textContent?.trim())).toEqual(['Login fails - Jira', 'fix login']);
+    expect(screen.queryByRole('region', { name: 'Open tabs' })).toBeNull();
+    expect(button('Close group')).toBeNull();
+    expect(button('Close and save')).toBeNull();
+    expect(button('Open in tab bar')).toBeNull();
+    expect(screen.queryByText(/no longer open/)).toBeNull();
+    await fireEvent.click(screen.getByRole('button', { name: 'Reopen' }));
+    expect(calls('projects.reopen')).toEqual([{ type: 'projects.reopen', projectId: ID }]);
+    await fireEvent.click(screen.getByRole('button', { name: 'Archive' }));
+    expect(calls('projects.archive')).toEqual([{ type: 'projects.archive', projectId: ID }]);
+  });
+
+  it('archived: "Archived: reopen?" when a rule assigns its key; Reopen, Unarchive and Delete; no Archive', async () => {
+    data = resting({ archivedAt: 5, held: 1 });
+    render(ProjectHome, { id: ID });
+    expect(await screen.findByText('Archived: reopen?')).toBeTruthy();
+    expect(button('Archive')).toBeNull();
+    await fireEvent.click(screen.getByRole('button', { name: 'Unarchive' }));
+    expect(calls('projects.unarchive')).toEqual([{ type: 'projects.unarchive', projectId: ID }]);
+    await fireEvent.click(screen.getByRole('button', { name: 'Reopen' }));
+    expect(calls('projects.reopen')).toEqual([{ type: 'projects.reopen', projectId: ID }]);
+    cleanup();
+    data = resting({ archivedAt: 5, held: 0 });
+    render(ProjectHome, { id: ID });
+    expect(await screen.findByText('Archived.')).toBeTruthy();
+    expect(screen.queryByText('Archived: reopen?')).toBeNull();
+  });
+
+  it('M4-R9: Delete asks in the page (never window.confirm); Cancel keeps it; confirming deletes and goes to Projects', async () => {
+    const confirm = vi.spyOn(window, 'confirm');
+    window.location.hash = `#/project/${ID}`;
+    data = resting();
+    render(ProjectHome, { id: ID });
+    await fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));
+    expect(screen.getByText('Delete for good?')).toBeTruthy();
+    await fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByText('Delete for good?')).toBeNull();
+    expect(calls('projects.delete')).toEqual([]);
+    await fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Delete for good' }));
+    expect(calls('projects.delete')).toEqual([{ type: 'projects.delete', projectId: ID }]);
+    await waitFor(() => expect(window.location.hash).toBe('#/projects'));
+    expect(confirm).not.toHaveBeenCalled();
+  });
+});
+
+describe('Project home fix round 1 (M4 T9)', () => {
+  const resting = (o: Partial<ProjectHomeData> = {}): ProjectHomeData => {
+    const { settings: _s, ...d } = home({ tabs: [], groups: [], linked: [], keep: true, saved: { at: 1, tabs: [{ url: 'https://a.example/', title: 'A' }] }, ...o });
+    void _s;
+    return d as ProjectHomeData;
+  };
+
+  it('recipe off: the saved list, Delete, a note linking to Recipes; no Reopen; never "no longer open"', async () => {
+    data = resting({ recipeOff: true, recipeName: 'Manual projects' });
+    render(ProjectHome, { id: ID });
+    expect(await screen.findByRole('region', { name: 'Saved tabs' })).toBeTruthy();
+    const note = screen.getByText(/is turned off/);
+    expect(note.textContent).toContain('Manual projects');
+    expect(within(note).getByRole('link', { name: 'Recipes' }).getAttribute('href')).toBe('#/recipes');
+    expect(screen.queryByRole('button', { name: 'Reopen' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Delete' })).toBeTruthy();
+    expect(screen.queryByText('Settings')).toBeNull();
+    expect(screen.queryByText(/no longer open/)).toBeNull();
+    cleanup();
+    data = resting({ recipeOff: true, recipeName: 'Manual projects', archivedAt: 5, held: 0 });
+    render(ProjectHome, { id: ID });
+    await fireEvent.click(await screen.findByRole('button', { name: 'Unarchive' }));
+    expect(calls('projects.unarchive')).toEqual([{ type: 'projects.unarchive', projectId: ID }]);
+    expect(screen.queryByRole('button', { name: 'Reopen' })).toBeNull();
+  });
+
+  it('Delete moves focus to Cancel and announces "Delete for good?"; Cancel returns focus to Delete', async () => {
+    data = resting();
+    render(ProjectHome, { id: ID });
+    const del = await screen.findByRole('button', { name: 'Delete' });
+    del.focus();
+    await fireEvent.click(del);
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Cancel' })));
+    expect(screen.getByRole('alert').textContent).toContain('Delete for good?');
+    await fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Delete' })));
   });
 });

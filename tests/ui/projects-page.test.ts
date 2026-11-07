@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup, waitFor, fireEvent } from '@testing-library/svelte';
+import { render, screen, cleanup, waitFor, fireEvent, within } from '@testing-library/svelte';
 import { fakeBrowser } from 'wxt/testing/fake-browser';
-import type { ProjectCardData, ProjectHomeData } from '../../src/core/projects/types';
+import type { ProjectCardData, ProjectHomeData, SavedProjectData } from '../../src/core/projects/types';
 
 const send = vi.fn();
 vi.mock('../../src/ui/send', () => ({ send: (r: unknown) => send(r) }));
@@ -24,6 +24,7 @@ const homeOf = (id: string): ProjectHomeData | null => {
 };
 const reply = async (req: { type: string; id?: string }) => {
   if (req.type === 'projects.list') return { ok: true, data: cards };
+  if (req.type === 'projects.savedLists') return { ok: true, data: { saved: [], archived: [] } };
   if (req.type === 'projects.home') return { ok: true, data: homeOf(req.id ?? '') };
   return { ok: true, data: null };
 };
@@ -159,6 +160,79 @@ describe('Projects page: Save a group (M4 T8)', () => {
   it('shows an error handed in by the context menu', async () => {
     render(Projects, { initialError: 'This tab is not in a group.' });
     expect((await screen.findByRole('alert')).textContent).toContain('This tab is not in a group.');
+  });
+});
+
+describe('Projects page: Open / Saved / Archived (M4 T9)', () => {
+  const saved = (id: string, title: string, o: Partial<SavedProjectData> = {}): SavedProjectData => ({ id, key: id, title, savedCount: 2, held: 0, updatedAt: 1, ...o });
+  let lists: { saved: SavedProjectData[]; archived: SavedProjectData[] };
+  let open: ProjectCardData[];
+  const calls = (type: string) => send.mock.calls.map((c) => c[0] as { type: string }).filter((r) => r.type === type);
+  beforeEach(() => {
+    open = [
+      { ...card('jira-ticket-either:ABC-1', 'ABC-1'), status: { name: 'Done', category: 'done', via: 'api' }, done: true },
+      { ...card('jira-ticket-either:ABC-2', 'ABC-2'), status: { name: 'Done', category: 'done', via: 'api' }, done: false }, // stale Done
+    ];
+    lists = { saved: [saved('manual-project:taxes', 'Taxes')], archived: [saved('jira-ticket-either:ABC-0', 'ABC-0', { archivedAt: 3, held: 1 }), saved('manual-project:old', 'Old', { archivedAt: 2 })] };
+    send.mockImplementation(async (req: { type: string }) => {
+      if (req.type === 'projects.list') return { ok: true, data: open };
+      if (req.type === 'projects.savedLists') return { ok: true, data: lists };
+      if (req.type === 'projects.closeAndArchive') return { ok: true, data: { closed: 1, skipped: 0, ids: ['rc1'] } };
+      return { ok: true, data: null };
+    });
+  });
+  const section = (name: string) => screen.findByRole('region', { name });
+
+  it('lists each project under its section, linking to its home', async () => {
+    render(Projects);
+    const o = await section('Open');
+    expect(within(o).getAllByRole('link').map((a) => a.textContent)).toEqual(['ABC-1', 'ABC-2']);
+    const s = await section('Saved');
+    await waitFor(() => expect(within(s).getAllByRole('link').map((a) => a.textContent)).toEqual(['Taxes']));
+    expect(within(s).getByRole('link', { name: 'Taxes' }).getAttribute('href')).toBe(projectHomeHash('manual-project:taxes'));
+    expect(s.textContent).toContain('2 saved tabs');
+    const a = await section('Archived');
+    expect(within(a).getAllByRole('link').map((x) => x.textContent)).toEqual(['ABC-0', 'Old']);
+  });
+
+  it('Close and archive only on an open card whose ticket is Done by fresh data (M3-R90)', async () => {
+    render(Projects);
+    const o = await section('Open');
+    expect(within(o).getAllByRole('button', { name: /^Close and archive/ })).toHaveLength(1);
+    await fireEvent.click(within(o).getByRole('button', { name: 'Close and archive ABC-1' }));
+    expect(calls('projects.closeAndArchive')).toEqual([{ type: 'projects.closeAndArchive', projectId: 'jira-ticket-either:ABC-1' }]);
+  });
+
+  it('Saved: Reopen and Archive; Archived: "Archived: reopen?" when a rule assigns its key, Reopen and Unarchive', async () => {
+    render(Projects);
+    const s = await section('Saved');
+    await fireEvent.click(await within(s).findByRole('button', { name: 'Reopen Taxes' }));
+    expect(calls('projects.reopen')).toEqual([{ type: 'projects.reopen', projectId: 'manual-project:taxes' }]);
+    await fireEvent.click(within(s).getByRole('button', { name: 'Archive Taxes' }));
+    expect(calls('projects.archive')).toEqual([{ type: 'projects.archive', projectId: 'manual-project:taxes' }]);
+    const a = await section('Archived');
+    const abc = within(a).getByRole('link', { name: 'ABC-0' }).closest('li')!;
+    expect(abc.textContent).toContain('Archived: reopen?');
+    expect(within(a).getByRole('link', { name: 'Old' }).closest('li')!.textContent).not.toContain('reopen?');
+    await fireEvent.click(within(a).getByRole('button', { name: 'Unarchive Old' }));
+    expect(calls('projects.unarchive')).toEqual([{ type: 'projects.unarchive', projectId: 'manual-project:old' }]);
+    await fireEvent.click(within(a).getByRole('button', { name: 'Reopen ABC-0' }));
+    expect(calls('projects.reopen').at(-1)).toEqual({ type: 'projects.reopen', projectId: 'jira-ticket-either:ABC-0' });
+  });
+
+  it('M4-R6: live, re-read on config.changed', async () => {
+    render(Projects);
+    await section('Saved');
+    lists = { saved: [saved('manual-project:taxes', 'Taxes'), saved('manual-project:new', 'New one')], archived: [] };
+    await (fakeBrowser.runtime.onMessage as unknown as { trigger: (m: unknown) => Promise<unknown> }).trigger({ type: 'config.changed', rev: 'r2' });
+    expect(await screen.findByRole('link', { name: 'New one' })).toBeTruthy();
+    await waitFor(() => expect(screen.queryByRole('link', { name: 'Old' })).toBeNull());
+  });
+
+  it('popup card: a fresh Done ticket offers Close and archive in its Done prompt', async () => {
+    render(PopupProjects);
+    await fireEvent.click(await screen.findByRole('button', { name: 'Close and archive' }));
+    expect(calls('projects.closeAndArchive')).toEqual([{ type: 'projects.closeAndArchive', projectId: 'jira-ticket-either:ABC-1' }]);
   });
 });
 

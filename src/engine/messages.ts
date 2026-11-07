@@ -22,7 +22,7 @@ import type { EarlyReport, PageFacts, WatchSelector } from './page-facts';
 import type { PauseDuration, SafetyService } from './safety';
 import type { ProjectService } from './projects';
 import type { SourceService } from './sources';
-import type { ProjectCardData, ProjectHomeData } from '../core/projects/types';
+import type { ProjectCardData, ProjectHomeData, SavedProjectData } from '../core/projects/types';
 import { dedupeDecision, openerOf } from './dedupe-handler';
 import { readViews, samePage, type ViewData, type ViewsDeps, type ViewSummary } from './views';
 import { builtinConnectionDefs } from '../core/connections/builtin';
@@ -245,6 +245,15 @@ export type Request =
   | { type: 'projects.groups' }
   /** M4 T8: saves a Chrome group as a kept Manual project, unchanged (no regroup, retitle or recolor); answers `{ id }`. */
   | { type: 'projects.saveGroup'; groupId: number }
+  /** M4 T9: archives a project with nothing open (refused while its tabs are open). */
+  | { type: 'projects.archive'; projectId: string }
+  /** M4 T9: Close and save, then archive (a Done ticket); answers `{ closed, skipped, ids }` like closeAndSave. */
+  | { type: 'projects.closeAndArchive'; projectId: string }
+  | { type: 'projects.unarchive'; projectId: string }
+  /** M4 T9: deletes a project with nothing open, for good (the UI asks first, M4-R9). */
+  | { type: 'projects.delete'; projectId: string }
+  /** M4 T9: the Projects page's Saved and Archived sections. */
+  | { type: 'projects.savedLists' }
   // ---- Sources (M3 T17) ----
   /** The Projects tab opened: SourceService.refresh('popup') (throttled, M3-R83); answers once it is done. */
   | { type: 'sources.refresh' };
@@ -370,6 +379,11 @@ export interface ResponseData {
   'projects.setKeep': null;
   'projects.groups': { id: number; title: string; color: GroupColor; tabCount: number }[];
   'projects.saveGroup': { id: string };
+  'projects.archive': null;
+  'projects.closeAndArchive': { closed: number; skipped: number; ids: string[] };
+  'projects.unarchive': null;
+  'projects.delete': null;
+  'projects.savedLists': { saved: SavedProjectData[]; archived: SavedProjectData[] };
   'sources.refresh': null;
 }
 export type ResponseFor<R extends Request> = Response<ResponseData[R['type']]>;
@@ -378,7 +392,7 @@ const num = (v: unknown): v is number => typeof v === 'number' && Number.isFinit
 const str = (v: unknown): v is string => typeof v === 'string';
 const NO_ARGS = new Set(['config.get', 'config.backups', 'config.status', 'tabs.list', 'dupes.list', 'dupes.closeAll', 'recent.list', 'why.all',
   'safety.resume', 'safety.status', 'recipes.list', 'views.list', 'connections.list', 'connections.github.start', 'connections.github.poll',
-  'projects.list', 'projects.groups', 'sources.refresh']);
+  'projects.list', 'projects.groups', 'projects.savedLists', 'sources.refresh']);
 const optRev = (x: Record<string, unknown>) => x.baseRev === undefined || str(x.baseRev);
 const isParams = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
@@ -490,7 +504,8 @@ export function isRequest(m: unknown): m is Request {
     case 'projects.home': return str(x.id);
     case 'projects.create': return str(x.recipeId) && str(x.name) && (x.tabIds === undefined || (Array.isArray(x.tabIds) && x.tabIds.every(num)));
     case 'projects.start': return str(x.recipeId) && str(x.key);
-    case 'projects.closeAndSave': case 'projects.reopen': return str(x.projectId);
+    case 'projects.closeAndSave': case 'projects.reopen': case 'projects.archive': case 'projects.closeAndArchive':
+    case 'projects.unarchive': case 'projects.delete': return str(x.projectId);
     case 'projects.setKeep': return str(x.projectId) && typeof x.keep === 'boolean';
     case 'projects.saveGroup': return num(x.groupId);
     default: return false;
@@ -559,7 +574,8 @@ export interface HandlerDeps {
   /** connections.* (M3 T7, the Connections page). Without it they fail. */
   connections?: ConnectionsDeps;
   /** projects.* (M3 T15). Without it they fail. */
-  projects?: Pick<ProjectService, 'cards' | 'addTab' | 'removeTab' | 'openLinked' | 'closeGroup' | 'home' | 'create' | 'start' | 'closeAndSave' | 'reopen' | 'setKeep' | 'saveGroup' | 'unmanagedGroups'>;
+  projects?: Pick<ProjectService, 'cards' | 'addTab' | 'removeTab' | 'openLinked' | 'closeGroup' | 'home' | 'create' | 'start' | 'closeAndSave' | 'reopen' | 'setKeep' | 'saveGroup' | 'unmanagedGroups'
+    | 'archive' | 'closeAndArchive' | 'unarchive' | 'remove' | 'savedLists'>;
   /** sources.refresh (M3 T17). Without it the request fails. */
   sources?: Pick<SourceService, 'refresh'> & Partial<Pick<SourceService, 'unreadableRepos'>>;
   now?: () => number;
@@ -1066,6 +1082,11 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
       case 'projects.setKeep': await p.setKeep(req.projectId, req.keep); return ok(null);
       case 'projects.groups': return ok(await p.unmanagedGroups());
       case 'projects.saveGroup': return ok({ id: await p.saveGroup(req.groupId) });
+      case 'projects.archive': await p.archive(req.projectId); return ok(null);
+      case 'projects.closeAndArchive': return ok(await p.closeAndArchive(req.projectId));
+      case 'projects.unarchive': await p.unarchive(req.projectId); return ok(null);
+      case 'projects.delete': await p.remove(req.projectId); return ok(null);
+      case 'projects.savedLists': return ok(await p.savedLists());
     }
   }
 
@@ -1092,7 +1113,8 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
       }
       case 'projects.list': case 'projects.addTab': case 'projects.removeTab': case 'projects.openLinked': case 'projects.closeGroup':
       case 'projects.home': case 'projects.create': case 'projects.start': case 'projects.closeAndSave': case 'projects.reopen':
-      case 'projects.setKeep': case 'projects.groups': case 'projects.saveGroup':
+      case 'projects.setKeep': case 'projects.groups': case 'projects.saveGroup': case 'projects.archive': case 'projects.closeAndArchive':
+      case 'projects.unarchive': case 'projects.delete': case 'projects.savedLists':
         return deps.projects ? runProjects(req, deps.projects) : fail('projects unavailable');
       case 'sources.refresh': {
         if (!deps.sources) return fail('sources unavailable');

@@ -1,8 +1,9 @@
-// Project page actions shared by the popup's Projects tab and the dashboard / side panel Project home (M4 P2): send an
-// action and surface its error, Close group's summary toast with its Undo, and the live refresh. Each surface passes
+// Project page actions shared by the popup's Projects tab, the dashboard's Projects page and the dashboard / side panel
+// Project home (M4 P2): send an action and surface its error, the close actions' summary toast with its Undo, the
+// lifecycle actions (M4 T9: reopen, Keep, archive, unarchive, delete) and the live refresh. Each surface passes
 // its own reload and state setters, so nothing here knows about a component.
 import { browser } from 'wxt/browser';
-import { isConfigChangedMessage } from '../engine/messages';
+import { isConfigChangedMessage, type Request } from '../engine/messages';
 import { send } from './send';
 
 export const LIVE_MS = 5000;
@@ -33,8 +34,9 @@ export function createProjectActions(host: ProjectActionsHost) {
     if (await act(() => send({ type: 'projects.openLinked', projectId, url }))) await host.reload();
   }
 
-  async function closeGroup(projectId: string): Promise<void> {
-    const r = await send({ type: 'projects.closeGroup', projectId });
+  /** Close group, Close and save (M4 T7) and Close and archive (M4 T9): the summary toast with its Undo, then reload. */
+  async function closeTabs(type: 'projects.closeGroup' | 'projects.closeAndSave' | 'projects.closeAndArchive', projectId: string): Promise<void> {
+    const r = await send({ type, projectId });
     if (!r.ok) { host.setError(r.error); return; }
     host.setError('');
     const { closed, skipped, ids } = r.data;
@@ -42,6 +44,23 @@ export function createProjectActions(host: ProjectActionsHost) {
     host.setToast(closed > 0 || skipped > 0 ? { text, ids } : undefined);
     await host.reload();
   }
+
+  const closeGroup = (projectId: string) => closeTabs('projects.closeGroup', projectId);
+  const closeAndSave = (projectId: string) => closeTabs('projects.closeAndSave', projectId);
+  const closeAndArchive = (projectId: string) => closeTabs('projects.closeAndArchive', projectId);
+
+  /** Runs a lifecycle request, then reloads when it succeeded. Resolves to whether it did. */
+  async function lifecycle(req: Extract<Request, { type: 'projects.reopen' | 'projects.setKeep' | 'projects.archive' | 'projects.unarchive' | 'projects.delete' }>): Promise<boolean> {
+    if (!(await act(() => send(req)))) return false;
+    await host.reload();
+    return true;
+  }
+  const reopen = (projectId: string) => lifecycle({ type: 'projects.reopen', projectId });
+  const setKeep = (projectId: string, keep: boolean) => lifecycle({ type: 'projects.setKeep', projectId, keep });
+  const archive = (projectId: string) => lifecycle({ type: 'projects.archive', projectId });
+  const unarchive = (projectId: string) => lifecycle({ type: 'projects.unarchive', projectId });
+  /** Delete for good (M4 T9): the caller asks first (M4-R9). */
+  const remove = (projectId: string) => lifecycle({ type: 'projects.delete', projectId });
 
   /** Restores the entries in turn; on a failure the ones not restored stay behind Undo. */
   async function undo(ids: string[]): Promise<void> {
@@ -53,7 +72,7 @@ export function createProjectActions(host: ProjectActionsHost) {
     await host.reload();
   }
 
-  return { act, focus, openLinked, closeGroup, undo };
+  return { act, focus, openLinked, closeGroup, closeAndSave, closeAndArchive, reopen, setKeep, archive, unarchive, remove, undo };
 }
 
 /** Calls `load` on config.changed, on becoming visible and every LIVE_MS while visible. Returns the stop function. */

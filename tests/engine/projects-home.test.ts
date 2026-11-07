@@ -124,7 +124,7 @@ describe('ProjectService.home (M4 T4)', () => {
       settings: { container: 'group', placement: ['existing', 'current'], join: ['rules', 'manual'], onOpenElsewhere: 'move-and-follow', onSwitchAway: 'unload' },
       recipeName: 'Jira ticket (title)',
     });
-    expect(Object.keys(home!.settings).sort()).toEqual(['container', 'join', 'onOpenElsewhere', 'onSwitchAway', 'placement']);
+    expect(Object.keys(home!.settings!).sort()).toEqual(['container', 'join', 'onOpenElsewhere', 'onSwitchAway', 'placement']);
   });
 
   it('without a recipeName dep (or an unknown recipe) the recipe id is the name', async () => {

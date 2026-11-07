@@ -7,10 +7,15 @@
   // M4 T8: a "Save a group" list of the open groups no project holds (projects.groups; self-contained: it loads and
   // saves by itself), each with a Save button (projects.saveGroup, then the new project's home). Not offered when the
   // recipe is off (the engine then lists none).
-  import { onMount } from 'svelte';
+  // M4 T9: three sections, Open (projects.list; Close and archive on a ticket Done by fresh data, M3-R90), Saved (kept,
+  // nothing open: Reopen, Archive) and Archived ("Archived: reopen?" when a rule assigns its key: Reopen, Unarchive), from
+  // projects.savedLists; kept current like Project home (M4-R6: config.changed and every LIVE_MS while visible).
+  import { onDestroy, onMount } from 'svelte';
   import { send } from '../../ui/send';
+  import { createProjectActions, startLiveRefresh, type Toast } from '../../ui/project-actions';
   import { buildProjectCards, type ProjectCard } from '../../ui/projects-model';
   import { projectHomeHash } from '../../ui/routes';
+  import type { SavedProjectData } from '../../core/projects/types';
 
   /** The route's `new` param: the tab to put in the new project. */
   let { newTab, initialError }: { newTab?: string; initialError?: string } = $props();
@@ -27,6 +32,12 @@
   let manualOn = $state<boolean | undefined>(undefined);
   let groups = $state<{ id: number; title: string; color: string; tabCount: number }[]>([]);
   let savingGroup = $state<number | undefined>(undefined);
+  let saved = $state<SavedProjectData[]>([]);
+  let archived = $state<SavedProjectData[]>([]);
+  /** After Close and archive: the closed tabs' recently-closed entries, which Undo reopens (recent.undo). */
+  let toast = $state<Toast | undefined>(undefined);
+  let seq = 0;
+  const empty = $derived(cards !== undefined && cards.length === 0 && saved.length === 0 && archived.length === 0);
   const tabId = $derived(newTab !== undefined && /^\d+$/.test(newTab) ? Number(newTab) : undefined);
 
   async function create(e: SubmitEvent): Promise<void> {
@@ -50,15 +61,40 @@
     window.location.hash = projectHomeHash(r.data.id);
   }
 
+  /** The three sections and the Save a group list. An error stays until an action succeeds (an initial one too). */
+  async function load(): Promise<void> {
+    const n = ++seq;
+    const [r, l, g] = await Promise.all([send({ type: 'projects.list' }), send({ type: 'projects.savedLists' }), send({ type: 'projects.groups' })]);
+    if (n !== seq) return; // a newer read is on its way
+    if (r.ok) cards = buildProjectCards(r.data); else error = r.error;
+    // Read defensively: the Saved / Archived and group lists must never break the page.
+    const lists = l.ok ? (l.data as Partial<Record<'saved' | 'archived', unknown>> | null) : undefined;
+    if (lists) {
+      saved = Array.isArray(lists.saved) ? lists.saved : [];
+      archived = Array.isArray(lists.archived) ? lists.archived : [];
+    }
+    if (g.ok && Array.isArray(g.data)) groups = g.data;
+  }
+
+  const actions = createProjectActions({
+    reload: load,
+    setError: (e) => { error = e; },
+    getToast: () => toast,
+    setToast: (t) => { toast = t; },
+  });
+  const { closeAndArchive, reopen, archive, unarchive, undo } = actions;
+
+  let stopLive: (() => void) | undefined;
+  onDestroy(() => stopLive?.());
+
   onMount(async () => {
-    void send({ type: 'projects.groups' }).then((g) => { if (g.ok && Array.isArray(g.data)) groups = g.data; }, () => {});
+    stopLive = startLiveRefresh(load);
     void send({ type: 'config.get' }).then((c) => {
       // Read defensively: this note must never break the page.
       const refs: unknown = c.ok ? (c.data as { config?: { recipes?: unknown } } | null)?.config?.recipes : undefined;
       if (Array.isArray(refs)) manualOn = refs.some((r: { id?: unknown; enabled?: unknown }) => r?.id === 'manual-project' && r.enabled === true);
     }, () => {});
-    const r = await send({ type: 'projects.list' });
-    if (r.ok) cards = buildProjectCards(r.data); else error = r.error;
+    await load();
   });
 </script>
 
@@ -76,19 +112,66 @@
     <button type="button" onclick={() => { formOpen = true; }}>New project</button>
   {/if}
   {#if error}<p class="err" role="alert">{error}</p>{/if}
+  {#if toast}
+    {@const t = toast}
+    <p class="toast" role="status">
+      {t.text}
+      {#if t.ids.length > 0}<button type="button" onclick={() => undo(t.ids)}>Undo</button>{/if}
+    </p>
+  {/if}
   {#if cards === undefined && !error}<p class="muted" role="status">Loading projects…</p>{/if}
-  {#if cards && cards.length === 0}
+  {#if empty}
     <p class="muted">No projects yet. Create one with New project, or turn on a Jira ticket recipe and open a Jira ticket.</p>
   {/if}
-  <ul>
-    {#each cards ?? [] as c (c.id)}
-      <li>
-        <a href={projectHomeHash(c.id)}>{c.title}</a>
-        {#if c.status}<span class="status">{c.status.label}</span>{/if}
-        <span class="muted">{c.tabCount} {c.tabCount === 1 ? 'tab' : 'tabs'}</span>
-      </li>
-    {/each}
-  </ul>
+  {#if cards && cards.length > 0}
+    <section aria-labelledby="projects-open">
+      <h3 id="projects-open">Open</h3>
+      <ul>
+        {#each cards as c (c.id)}
+          <li>
+            <a href={projectHomeHash(c.id)}>{c.title}</a>
+            {#if c.status}<span class="status">{c.status.label}</span>{/if}
+            <span class="muted">{c.tabCount} {c.tabCount === 1 ? 'tab' : 'tabs'}</span>
+            {#if c.showClose}
+              <button type="button" aria-label={`Close and archive ${c.title}`} onclick={() => closeAndArchive(c.id)}>Close and archive</button>
+            {/if}
+          </li>
+        {/each}
+      </ul>
+    </section>
+  {/if}
+  {#if saved.length > 0}
+    <section aria-labelledby="projects-saved">
+      <h3 id="projects-saved">Saved</h3>
+      <ul>
+        {#each saved as p (p.id)}
+          <li>
+            <a href={projectHomeHash(p.id)}>{p.title}</a>
+            <span class="muted">{p.savedCount} saved {p.savedCount === 1 ? 'tab' : 'tabs'}</span>
+            {#if p.savedCount > 0}
+              <button type="button" aria-label={`Reopen ${p.title}`} onclick={() => reopen(p.id)}>Reopen</button>
+            {/if}
+            <button type="button" aria-label={`Archive ${p.title}`} onclick={() => archive(p.id)}>Archive</button>
+          </li>
+        {/each}
+      </ul>
+    </section>
+  {/if}
+  {#if archived.length > 0}
+    <section aria-labelledby="projects-archived">
+      <h3 id="projects-archived">Archived</h3>
+      <ul>
+        {#each archived as p (p.id)}
+          <li>
+            <a href={projectHomeHash(p.id)}>{p.title}</a>
+            {#if p.held > 0}<span class="note">Archived: reopen?</span>{/if}
+            <button type="button" aria-label={`Reopen ${p.title}`} onclick={() => reopen(p.id)}>Reopen</button>
+            <button type="button" aria-label={`Unarchive ${p.title}`} onclick={() => unarchive(p.id)}>Unarchive</button>
+          </li>
+        {/each}
+      </ul>
+    </section>
+  {/if}
   {#if groups.length > 0 && manualOn !== false}
     <h3>Save a group</h3>
     <ul>
@@ -121,4 +204,6 @@
   .status { font-size: 12px; border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px; color: var(--muted); }
   .muted { color: var(--muted); }
   .err { color: var(--danger); }
+  .note { font-size: 12px; color: var(--accent); }
+  .toast { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px; background: var(--surface); }
 </style>

@@ -23,8 +23,19 @@ export interface ProjectHomeView {
   firstTabId?: number;
   groups: { title: string; color: GroupColor; windowId: number; tabs: HomeTab[] }[];
   linked: ProjectCard['linked'];
+  /** Empty when its recipe is off. */
   settings: { label: string; value: string; help: string }[];
   recipeName: string;
+  /** Its recipe is off: no settings, no Reopen, a note linking to the Recipes page. */
+  recipeOff: boolean;
+  /** M4 T9: tabs of it are open (Close group, Close and save); otherwise its saved tab list is shown, with Reopen. */
+  open: boolean;
+  keep: boolean;
+  /** Its saved tab list (M4 T7): what Reopen opens. */
+  savedTabs: { url: string; title: string; group?: string }[];
+  archived: boolean;
+  /** Open tabs a rule assigns an archived project's key to ("Archived: reopen?"). */
+  held: number;
 }
 
 const PILL_ORDER: ShownPrState[] = ['open', 'draft', 'merged', 'closed'];
@@ -32,25 +43,26 @@ const PILL_ORDER: ShownPrState[] = ['open', 'draft', 'merged', 'closed'];
 const STALE = staleText('GitHub');
 const UNGROUPED = 'Not in a group';
 
-const CONTAINER: Record<ProjectHomeData['settings']['container'], string> = { group: 'A tab group', window: 'Its own window' };
-const JOIN: Record<ProjectHomeData['settings']['join'][number], string> = {
+type Settings = NonNullable<ProjectHomeData['settings']>;
+const CONTAINER: Record<Settings['container'], string> = { group: 'A tab group', window: 'Its own window' };
+const JOIN: Record<Settings['join'][number], string> = {
   rules: 'rules', opener: 'tabs it opens', window: 'new tabs in its window', manual: 'added by hand',
 };
-const ELSEWHERE: Record<ProjectHomeData['settings']['onOpenElsewhere'], string> = {
+const ELSEWHERE: Record<Settings['onOpenElsewhere'], string> = {
   'move-and-follow': 'Move the tab into the project and follow it',
   'move-silently': 'Move the tab into the project and stay where you are',
   leave: 'Leave the tab where it opened',
 };
-const SWITCH: Record<ProjectHomeData['settings']['onSwitchAway'], string> = {
+const SWITCH: Record<Settings['onSwitchAway'], string> = {
   unload: 'Collapse and unload its tabs', minimize: 'Minimize its window', 'close-and-save': 'Close its tabs and save them',
 };
-function placement(p: ProjectHomeData['settings']['placement'][number]): string {
+function placement(p: Settings['placement'][number]): string {
   if (p.startsWith('home:')) return `the shared window "${p.slice('home:'.length)}"`;
   return ({ existing: 'the window it is already in', current: 'the current window', new: 'a new window' } as Record<string, string>)[p] ?? p;
 }
 const capital = (s: string): string => s.charAt(0).toUpperCase() + s.slice(1);
 
-function settings(s: ProjectHomeData['settings']): ProjectHomeView['settings'] {
+function settings(s: Settings): ProjectHomeView['settings'] {
   return [
     { label: 'Container', value: CONTAINER[s.container], help: 'Where the project\'s tabs live: in one tab group, or in a window of their own.' },
     { label: 'Placement', value: capital(s.placement.map(placement).join(', then ')), help: 'Where the tabs of a new project go. The first choice that applies is used.' },
@@ -93,6 +105,10 @@ export function buildProjectHome(d: ProjectHomeData): ProjectHomeView {
     id: card.id, title: card.title, ...(card.status && { status: card.status }), done: d.done,
     prCounts, prSummary: prCounts.map((c) => `${c.count} ${c.state}`).join(' · '),
     ...(firstTabId !== undefined && { firstTabId }),
-    groups, linked: card.linked, settings: settings(d.settings), recipeName: d.recipeName,
+    groups, linked: card.linked, settings: d.settings ? settings(d.settings) : [], recipeName: d.recipeName,
+    recipeOff: d.recipeOff === true,
+    open: d.tabs.length > 0, keep: d.keep === true,
+    savedTabs: (d.saved?.tabs ?? []).map((t) => ({ url: t.url, title: t.title, ...(t.group !== undefined && { group: t.group }) })),
+    archived: d.archivedAt !== undefined, held: d.held ?? 0,
   };
 }

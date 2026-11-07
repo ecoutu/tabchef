@@ -1,18 +1,21 @@
 <script lang="ts">
   // One project card (M3 T17, spec §6.5 mockup): title, status pill and tab count; the open tabs (title focuses the tab,
-  // PR state pill, stale dot); the linked PRs not open, greyed with "Open ↗"; and the Done prompt.
+  // PR state pill, stale dot); the linked PRs not open, greyed with "Open ↗"; and the Done prompt (Close group, M4 T9's
+  // Close and archive, Keep).
   import { staleText, type ProjectCard } from '../../../ui/projects-model';
   import PrPill from '../../../ui/PrPill.svelte';
   import { projectHomeHash } from '../../../ui/routes';
   import { browser } from 'wxt/browser';
 
-  let { card, prompt, onFocus, onOpenLinked, onCloseGroup, onKeep, onOpenProject }: {
+  let { card, prompt, onFocus, onOpenLinked, onCloseGroup, onCloseAndArchive, onKeep, onOpenProject }: {
     card: ProjectCard;
     /** Show "Ticket is done. Close this group?" (the card is done and the prompt was not dismissed). */
     prompt: boolean;
     onFocus: (tabId: number) => void;
     onOpenLinked: (url: string) => void;
     onCloseGroup: () => void;
+    /** M4 T9: Close and save, then archive (the prompt is shown only for a ticket Done by fresh data, M3-R90). */
+    onCloseAndArchive: () => void;
     onKeep: () => void;
     /** The popup opens the dashboard tab; without it (the side panel) the link navigates the panel's own hash. */
     onOpenProject?: () => void;
@@ -37,6 +40,7 @@
     <div class="prompt" role="group" aria-label="Ticket is done">
       <span>Ticket is done. Close this group?</span>
       <button type="button" class="act" onclick={onCloseGroup}>Close group</button>
+      <button type="button" class="act" onclick={onCloseAndArchive}>Close and archive</button>
       <button type="button" class="act" onclick={onKeep}>Keep</button>
     </div>
   {/if}

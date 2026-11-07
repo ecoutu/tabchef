@@ -14,7 +14,7 @@
   let { live = false, onChange, onOpenProject }: { live?: boolean; onChange?: () => void; onOpenProject?: (id: string) => void } = $props();
   let cards = $state<Card[] | undefined>(undefined);
   let error = $state('');
-  /** Done prompts the user answered Keep to (this page only). */
+  /** Done prompts the user answered Keep to (this page only); Keep also keeps the project (projects.setKeep). */
   let kept = $state<string[]>([]);
   /** After Close group: the closed tabs' recently-closed entries, which Undo reopens (M1 undo, recent.undo). */
   let toast = $state<Toast | undefined>(undefined);
@@ -39,7 +39,7 @@
     getToast: () => toast,
     setToast: (t) => { toast = t; },
   });
-  const { focus, openLinked, closeGroup, undo } = actions;
+  const { focus, openLinked, closeGroup, closeAndArchive, setKeep, undo } = actions;
 
   let stopLive: (() => void) | undefined;
 
@@ -70,7 +70,8 @@
   {#each cards ?? [] as c (c.id)}
     <ProjectCard card={c} prompt={c.showClose && !kept.includes(c.id)}
       onFocus={focus} onOpenLinked={(url) => openLinked(c.id, url)} onCloseGroup={() => closeGroup(c.id)}
-      onKeep={() => { kept = [...kept, c.id]; }} onOpenProject={onOpenProject ? () => onOpenProject(c.id) : undefined} />
+      onCloseAndArchive={() => closeAndArchive(c.id)}
+      onKeep={() => { kept = [...kept, c.id]; void setKeep(c.id, true); }} onOpenProject={onOpenProject ? () => onOpenProject(c.id) : undefined} />
   {/each}
 </section>
 
