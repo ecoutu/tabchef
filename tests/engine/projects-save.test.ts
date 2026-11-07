@@ -115,6 +115,20 @@ describe('ProjectService.closeAndSave', () => {
     expect(p?.saved?.tabs.map((t) => t.url)).toEqual([A, B, C]);
   });
 
+  it('Close and save again, after a first one left a protected tab open, keeps the frozen list (M4-R14)', async () => {
+    const h = harness();
+    const id = await taxes(h);
+    h.f.addTab(tab(9, 'https://other.example/'));
+    h.formEdited.add(2);
+    await h.svc.closeAndSave(id); // A and C close, B (form-edited) stays open: frozen [A, B, C]
+    await h.r.flush();
+    expect((await h.stored(id))?.saved?.tabs.map((t) => t.url)).toEqual([A, B, C]);
+    h.formEdited.delete(2); // the user submits the form…
+    h.clock.now += MIN;
+    expect(await h.svc.closeAndSave(id)).toMatchObject({ closed: 1, skipped: 0 }); // …and closes the rest
+    expect((await h.stored(id))?.saved).toMatchObject({ closed: true, tabs: [{ url: A }, { url: B }, { url: C }] });
+  });
+
   it('stores the saved list and keep before closing the first tab (a worker restart mid-close keeps the list)', async () => {
     const h = harness();
     const id = await taxes(h);

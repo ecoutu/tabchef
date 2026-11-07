@@ -569,7 +569,7 @@ export class ProjectService {
 
   private async close(projectId: string, save: boolean): Promise<{ closed: number; skipped: number; ids: string[] }> {
     const snap = await this.deps.port.snapshot();
-    const { assignments, projects, defs } = await this.resolve(snap);
+    const { program, assignments, projects, defs } = await this.resolve(snap);
     const p = projects.find((x) => x.id === projectId);
     if (!p) throw new Error('unknown project');
     if (isArchived(p)) throw new Error('this project is archived');
@@ -580,9 +580,14 @@ export class ProjectService {
     const members = snap.tabs.filter((x) => assignments.get(x.id)?.projectId === projectId);
     if (save) {
       p.keep = true;
-      // Marked closed: the protected tabs left open never shrink the list until reopen.
-      if (members.length > 0) p.saved = { tabs: savedTabs(snap, new Set(members.map((t) => t.id))), at: this.now(), closed: true };
-      else if (p.saved) p.saved.closed = true;
+      // Marked closed: the protected tabs left open never shrink the list until reopen. A list already frozen by an
+      // earlier Close and save (a protected tab stayed open) only grows (M4-R14), or a second one would drop the tabs
+      // the first one closed.
+      if (members.length > 0) {
+        const open = savedTabs(snap, new Set(members.map((t) => t.id)));
+        const tabs = p.saved?.closed ? growFrozen(p.saved.tabs, open, (u) => this.norm(program, u)) : open;
+        p.saved = { tabs, at: this.now(), closed: true };
+      } else if (p.saved) p.saved.closed = true;
       p.updatedAt = this.now();
       await this.deps.store.put(p); // before closing: a worker restart mid-close keeps the list
     }
