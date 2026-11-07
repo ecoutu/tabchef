@@ -52,6 +52,8 @@ export interface Project {
   key: string;
   /** The name the user gave a project they created (M4 T6, the `{name}` of its recipe's templates). */
   name?: string;
+  /** The color of the Chrome group the project was saved from (M4 T8): wins over its recipe's color. */
+  color?: GroupColor;
   /** Saved by the user (M4 T6: every Manual project; T7: close-and-save, Keep): never pruned, synced (D2). */
   keep?: boolean;
   /**

@@ -202,13 +202,17 @@ export function projectTargets(assignments: Map<number, ProjectAssignment>, proj
     const p = byId.get(a.projectId);
     const def = p && defOf.get(p.recipeId);
     if (!p || !def) continue;
-    const rendered = renderTemplate(def.color, templateVars(p));
+    const rendered = p.color ?? renderTemplate(def.color, templateVars(p));
     const valid = COLORS.has(rendered);
     const ruleId = a.ruleKey ?? `${p.recipeId}/project`;
+    // Manual-only (a saved group): its group is the user's, so it is not strict (a tab Chrome or the user puts into it
+    // stays) and has no place in the order pass (M4-R16).
+    const manualOnly = def.join.length === 1 && def.join[0] === 'manual';
     out.set(tabId, {
       key: ruleId, ruleId, index: a.index, ruleIndex: a.index, title: projectGroupTitle(def, p),
-      color: (valid ? rendered : 'grey') as GroupColor, collapsed: false, sortGroups: 'creation', strict: true, merge: false,
+      color: (valid ? rendered : 'grey') as GroupColor, collapsed: false, sortGroups: 'creation', strict: !manualOnly, merge: false,
       dryRun: false, anchors: [], titleMatches: (t) => titleBelongsToProject(t, p.key),
+      ...(manualOnly ? { unordered: true as const } : {}),
       ...(valid ? {} : { invalidColor: true as const }),
     });
   }

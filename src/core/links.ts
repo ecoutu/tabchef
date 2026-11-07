@@ -18,6 +18,11 @@ export function projectHomeHash(id: string): string {
   return `#/project/${encodeURIComponent(id)}`;
 }
 
+/** The Projects page showing this error (`#/projects?error=…`, M4 T8: the context menu's Save group as project failed). */
+export function projectsErrorHash(message: string): string {
+  return `#/projects?error=${encodeURIComponent(message)}`;
+}
+
 /** The Projects page with its New project form open for this tab (`#/projects?new=<tabId>`, M4 T6). */
 export function newProjectHash(tabId: number): string {
   return `#/projects?new=${tabId}`;

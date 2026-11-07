@@ -446,3 +446,244 @@ describe('global dry run (R48/R50): close-and-save and reopen are user actions, 
     expect(h.f.state.groups).toEqual([]); // the dry-run reconciler groups nothing
   });
 });
+
+// M4 T8: save an existing Chrome group as a kept Manual project, without regrouping, retitling or recoloring it.
+describe('ProjectService.saveGroup / unmanagedGroups (M4 T8)', () => {
+  beforeEach(() => { fakeBrowser.reset(); });
+
+  /** Window 1: group 5 "Taxes" (blue) with tabs 1-2, one ungrouped tab 3. */
+  function grouped(h: ReturnType<typeof harness>, title = 'Taxes', color: 'blue' | 'red' = 'blue') {
+    h.f.addGroup({ id: 5, windowId: 1, title, color, collapsed: false });
+    h.f.addTab(tab(1, A, { groupId: 5 }));
+    h.f.addTab(tab(2, B, { groupId: 5 }));
+    h.f.addTab(tab(3, C));
+  }
+  const groupsOf = (h: ReturnType<typeof harness>) => h.f.state.groups.map((g) => [g.id, g.title, g.color]);
+  const mutations = (h: ReturnType<typeof harness>) => h.f.calls.filter((c) => !['snapshot'].includes(c.method)).map((c) => c.method);
+
+  it('makes a kept Manual project of the group: its name, color and tabs; the group is left exactly as it was', async () => {
+    const h = harness();
+    grouped(h);
+    const before = structuredClone(h.f.state.tabs);
+    h.f.calls.length = 0;
+    const id = await h.svc.saveGroup(5);
+    await h.r.flush();
+    expect(await h.stored(id)).toMatchObject({ recipeId: MANUAL, name: 'Taxes', color: 'blue', keep: true });
+    expect((await h.stored(id))?.manual.map((m) => m.url).sort()).toEqual([A, B]);
+    expect(groupsOf(h)).toEqual([[5, 'Taxes', 'blue']]); // same group, title and color
+    expect(h.f.state.tabs).toEqual(before); // no tab moved or regrouped
+    expect(mutations(h).filter((m) => /group|move|update/i.test(m))).toEqual([]);
+    expect((await h.svc.cards()).map((c) => c.id)).toContain(id);
+  });
+
+  it('M4-R15: an untitled group is refused and left exactly as it is (saving it would retitle it)', async () => {
+    const h = harness();
+    grouped(h, '');
+    const before = structuredClone(h.f.state);
+    await expect(h.svc.saveGroup(5)).rejects.toThrow('Name the group first, then save it.');
+    await h.r.flush();
+    expect(await h.store.list()).toEqual([]);
+    expect(h.f.state).toEqual(before);
+  });
+
+  it('M4-R12 name clash: refuses rather than renaming the project to "Taxes (2)" (which would retitle the group)', async () => {
+    const h = harness();
+    await taxes(h); // an open project "Taxes" in window 1, group "Taxes"
+    h.f.addGroup({ id: 77, windowId: 1, title: 'Taxes', color: 'red', collapsed: false });
+    h.f.addTab(tab(10, 'https://d.example/', { groupId: 77 }));
+    await expect(h.svc.saveGroup(77)).rejects.toThrow(/already (exists|used)/);
+    expect((await h.store.list()).map((p) => p.name)).toEqual(['Taxes']);
+    // a closed/stored project's name clashes too
+    const h2 = harness();
+    grouped(h2, 'Old');
+    const old = await h2.svc.saveGroup(5);
+    await h2.svc.closeAndSave(old);
+    h2.f.addGroup({ id: 6, windowId: 1, title: 'Old', color: 'red', collapsed: false });
+    h2.f.addTab(tab(20, 'https://e.example/', { groupId: 6 }));
+    await expect(h2.svc.saveGroup(6)).rejects.toThrow(/already/);
+  });
+
+  it('refuses a group already in a project, an unknown group and a group with no tabs', async () => {
+    const h = harness();
+    grouped(h);
+    await h.svc.saveGroup(5);
+    await expect(h.svc.saveGroup(5)).rejects.toThrow(/already/);
+    await expect(h.svc.saveGroup(999)).rejects.toThrow(/group not found/);
+  });
+
+  it('the stored color wins over the recipe grey, so later passes keep the group blue', async () => {
+    const h = harness();
+    grouped(h);
+    const id = await h.svc.saveGroup(5);
+    h.f.addTab(tab(4, 'https://d.example/'));
+    await h.svc.addTab(4, id);
+    await h.r.flush();
+    await h.r.flush();
+    expect(groupsOf(h)).toEqual([[5, 'Taxes', 'blue']]);
+    expect(h.f.state.tabs.filter((t) => t.groupId === 5).map((t) => t.id).sort()).toEqual([1, 2, 4]);
+  });
+
+  it('a new tab Chrome puts into the saved group (a link opened from it, a tab dragged in) stays grouped across passes', async () => {
+    const h = harness();
+    grouped(h);
+    const id = await h.svc.saveGroup(5);
+    await h.r.flush();
+    h.f.addTab(tab(4, 'https://d.example/', { groupId: 5, index: 2 }));
+    await h.r.flush();
+    await h.r.flush();
+    expect(h.f.state.tabs.filter((t) => t.groupId === 5).map((t) => t.id).sort()).toEqual([1, 2, 4]);
+    expect(groupsOf(h)).toEqual([[5, 'Taxes', 'blue']]);
+    expect((await h.stored(id))?.manual.map((m) => m.url).sort()).toEqual([A, B]); // not joined (that is slice 4.4)
+  });
+
+  it('a tab the user removes from the saved project is still ungrouped (the group is not strict)', async () => {
+    const h = harness();
+    grouped(h);
+    await h.svc.saveGroup(5);
+    await h.r.flush();
+    await h.svc.removeTab(2);
+    await h.r.flush();
+    await h.r.flush();
+    expect(h.f.state.tabs.filter((t) => t.groupId === 5).map((t) => t.id)).toEqual([1]);
+  });
+
+  it("a rule's group is Tabchef's: not offered by unmanagedGroups, and saveGroup refuses it in plain words", async () => {
+    const rules = [{ id: 'gh', name: 'GitHub', enabled: true, match: { url: 'gh.example/*' }, actions: [{ group: { title: 'GitHub', color: 'green' } }] }];
+    const h = harness({ program: program({ rules: (rules as unknown) as Config['rules'] }) });
+    grouped(h);
+    h.f.addTab(tab(7, 'https://gh.example/a'));
+    h.f.addTab(tab(8, 'https://gh.example/b'));
+    await h.r.flush();
+    const gh = h.f.state.groups.find((g) => g.title === 'GitHub')!;
+    expect(gh).toBeTruthy();
+    expect((await h.svc.unmanagedGroups()).map((g) => g.title)).toEqual(['Taxes']);
+    await expect(h.svc.saveGroup(gh.id)).rejects.toThrow('This group is managed by a rule. Save one of your own groups.');
+    expect(await h.store.list()).toEqual([]);
+  });
+
+  it('refuses when the Manual recipe is off (M4-R10)', async () => {
+    const base = defaultConfig();
+    const h = harness({ program: program({ recipes: base.recipes.map((r) => (r.id === MANUAL ? { ...r, enabled: false } : r)) }) });
+    grouped(h);
+    await expect(h.svc.saveGroup(5)).rejects.toThrow(/turn on the recipe/);
+    expect(await h.svc.unmanagedGroups()).toEqual([]);
+  });
+
+  it('unmanagedGroups lists open groups no project holds: title, color, tab count; saved ones drop out', async () => {
+    const h = harness();
+    grouped(h);
+    h.f.addGroup({ id: 6, windowId: 1, title: '', color: 'red', collapsed: false });
+    h.f.addTab(tab(30, 'https://f.example/', { groupId: 6 }));
+    expect(await h.svc.unmanagedGroups()).toEqual([
+      { id: 5, title: 'Taxes', color: 'blue', tabCount: 2 },
+      { id: 6, title: '', color: 'red', tabCount: 1 },
+    ]);
+    await h.svc.saveGroup(5);
+    expect((await h.svc.unmanagedGroups()).map((g) => g.id)).toEqual([6]);
+  });
+
+  it('global dry run (M4-R11): it stores the project; nothing is grouped or moved', async () => {
+    const h = harness({ program: program({ dryRun: true }) });
+    grouped(h);
+    const before = structuredClone(h.f.state);
+    const id = await h.svc.saveGroup(5);
+    await h.r.flush();
+    expect(await h.stored(id)).toMatchObject({ name: 'Taxes', keep: true, color: 'blue' });
+    expect(h.f.state).toEqual(before);
+  });
+});
+
+// M4-R16: a Manual project's group has no position in the order pass; it stays where the user put it.
+describe('saved group order (M4-R16)', () => {
+  beforeEach(() => { fakeBrowser.reset(); });
+  const rule = (id: string, title: string, host: string) => ({
+    id, name: title, enabled: true, match: { url: `${host}.example/*` }, actions: [{ group: { title, color: 'green' as const } }],
+  });
+  const cfg = () => program({ rules: ([rule('a', 'Alpha', 'alpha'), rule('b', 'Beta', 'beta')] as unknown) as Config['rules'] });
+  const ids = (h: ReturnType<typeof harness>) => h.f.state.tabs.sort((x, y) => x.index - y.index).map((t) => t.id);
+  const savedUntouched = (h: ReturnType<typeof harness>, gid = 5) => {
+    expect(h.f.calls.filter((c) => c.method === 'moveGroup' && c.args[0] === gid)).toEqual([]);
+    expect(h.f.calls.filter((c) => c.method === 'moveTabs' && (c.args[0] as number[]).some((t) => t === 1 || t === 2))).toEqual([]);
+    expect(h.f.state.groups.find((g) => g.id === gid)).toMatchObject({ title: 'Taxes', color: 'blue' });
+  };
+
+  it('after an ungrouped tab: later passes leave it there', async () => {
+    const h = harness({ program: cfg() });
+    h.f.addTab(tab(9, 'https://plain.example/'));
+    h.f.addGroup({ id: 5, windowId: 1, title: 'Taxes', color: 'blue', collapsed: false });
+    h.f.addTab(tab(1, A, { groupId: 5 }));
+    h.f.addTab(tab(2, B, { groupId: 5 }));
+    await h.svc.saveGroup(5);
+    h.f.calls.length = 0;
+    await h.r.flush(); await h.r.flush();
+    savedUntouched(h);
+    expect(ids(h)).toEqual([9, 1, 2]);
+  });
+
+  it('between two rule groups in config order: nothing moves', async () => {
+    const h = harness({ program: cfg() });
+    h.f.addGroup({ id: 3, windowId: 1, title: 'Alpha', color: 'green', collapsed: false });
+    h.f.addTab(tab(7, 'https://alpha.example/x', { groupId: 3 }));
+    h.f.addGroup({ id: 5, windowId: 1, title: 'Taxes', color: 'blue', collapsed: false });
+    h.f.addTab(tab(1, A, { groupId: 5 }));
+    h.f.addTab(tab(2, B, { groupId: 5 }));
+    h.f.addGroup({ id: 4, windowId: 1, title: 'Beta', color: 'green', collapsed: false });
+    h.f.addTab(tab(8, 'https://beta.example/x', { groupId: 4 }));
+    await h.svc.saveGroup(5);
+    h.f.calls.length = 0;
+    await h.r.flush(); await h.r.flush();
+    savedUntouched(h);
+    expect(ids(h)).toEqual([7, 1, 2, 8]);
+    expect(h.f.calls.filter((c) => c.method === 'moveGroup')).toEqual([]);
+  });
+
+  it('rule groups out of config order are still reordered, without moving the saved group', async () => {
+    const h = harness({ program: cfg() });
+    h.f.addGroup({ id: 4, windowId: 1, title: 'Beta', color: 'green', collapsed: false });
+    h.f.addTab(tab(8, 'https://beta.example/x', { groupId: 4 }));
+    h.f.addGroup({ id: 5, windowId: 1, title: 'Taxes', color: 'blue', collapsed: false });
+    h.f.addTab(tab(1, A, { groupId: 5 }));
+    h.f.addTab(tab(2, B, { groupId: 5 }));
+    h.f.addGroup({ id: 3, windowId: 1, title: 'Alpha', color: 'green', collapsed: false });
+    h.f.addTab(tab(7, 'https://alpha.example/x', { groupId: 3 }));
+    await h.svc.saveGroup(5);
+    h.f.calls.length = 0;
+    await h.r.flush(); await h.r.flush();
+    savedUntouched(h);
+    // Alpha has to pass the saved group to get ahead of Beta; the saved group is never named by an op.
+    expect(ids(h)).toEqual([7, 8, 1, 2]);
+  });
+
+  it('saved group first: Beta, Alpha reorder behind it and it stays first', async () => {
+    const h = harness({ program: cfg() });
+    h.f.addGroup({ id: 5, windowId: 1, title: 'Taxes', color: 'blue', collapsed: false });
+    h.f.addTab(tab(1, A, { groupId: 5 }));
+    h.f.addTab(tab(2, B, { groupId: 5 }));
+    h.f.addGroup({ id: 4, windowId: 1, title: 'Beta', color: 'green', collapsed: false });
+    h.f.addTab(tab(8, 'https://beta.example/x', { groupId: 4 }));
+    h.f.addGroup({ id: 3, windowId: 1, title: 'Alpha', color: 'green', collapsed: false });
+    h.f.addTab(tab(7, 'https://alpha.example/x', { groupId: 3 }));
+    await h.svc.saveGroup(5);
+    h.f.calls.length = 0;
+    await h.r.flush(); await h.r.flush();
+    savedUntouched(h);
+    expect(ids(h)).toEqual([1, 2, 7, 8]);
+  });
+
+  it('an ungrouped tab between rule groups still ends right of them, with a saved group in the window', async () => {
+    const h = harness({ program: cfg() });
+    h.f.addGroup({ id: 3, windowId: 1, title: 'Alpha', color: 'green', collapsed: false });
+    h.f.addTab(tab(7, 'https://alpha.example/x', { groupId: 3 }));
+    h.f.addTab(tab(9, 'https://plain.example/'));
+    h.f.addGroup({ id: 4, windowId: 1, title: 'Beta', color: 'green', collapsed: false });
+    h.f.addTab(tab(8, 'https://beta.example/x', { groupId: 4 }));
+    h.f.addGroup({ id: 5, windowId: 1, title: 'Taxes', color: 'blue', collapsed: false });
+    h.f.addTab(tab(1, A, { groupId: 5 }));
+    h.f.addTab(tab(2, B, { groupId: 5 }));
+    await h.svc.saveGroup(5);
+    h.f.calls.length = 0;
+    await h.r.flush(); await h.r.flush();
+    savedUntouched(h);
+    expect(ids(h)).toEqual([7, 8, 9, 1, 2]);
+  });
+});

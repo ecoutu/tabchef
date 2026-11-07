@@ -16,6 +16,11 @@ export interface GroupTarget extends GroupResult {
    * accepts is adopted and renamed (`updateGroup{title}`) instead of creating a second group.
    */
   titleMatches?: (title: string) => boolean;
+  /**
+   * M4-R16: the group has no place in the order pass (planMoves): it is never moved, and where it sits does not count as
+   * out of order. Set for a Manual project (it joins by `manual` only, so no rule position).
+   */
+  unordered?: boolean;
 }
 /** M1 name, kept for the planner. */
 export type GroupMatch = GroupTarget;

@@ -243,6 +243,14 @@ describe('projectTargets', () => {
     expect(t.titleMatches?.('ABC-1')).toBe(true);
     expect(t.titleMatches?.('ABC-2')).toBe(false);
   });
+  it('a Manual-only project (join: [manual]) is not strict and unordered; one rules can assign stays strict', () => {
+    const a = new Map([[2, { projectId: `${RID}:ABC-1`, key: 'ABC-1', via: 'manual' as const, index: -1 }]]);
+    const manualOnly = projectTargets(a, [project('ABC-1')], [{ ...def, join: ['manual'] }]).get(2)!;
+    expect(manualOnly).toMatchObject({ strict: false, unordered: true });
+    const ruled = projectTargets(a, [project('ABC-1')], [def]).get(2)!;
+    expect(ruled.strict).toBe(true);
+    expect(ruled).not.toHaveProperty('unordered');
+  });
   it('an assignment whose project or def is missing gets no target', () => {
     const a = new Map([[2, { projectId: `${RID}:ABC-1`, key: 'ABC-1', via: 'manual' as const, index: -1 }]]);
     expect(projectTargets(a, [], [def]).size).toBe(0);

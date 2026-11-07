@@ -5,13 +5,14 @@
 // status and linked PRs come from the SourceService's public API only (M3-R68); linked PRs are refreshed at most every
 // LINKED_REFRESH_MS per project.
 import { liveProgram } from '../core/lang/dry-run';
+import { managedGroupIds } from '../core/group/plan';
 import { projectGroupTitle, projectTargets, resolveProjects, type ResolveResult, type StickyMap } from '../core/projects/resolve';
 import type { RecentlyClosed } from '../core/safety/recently-closed';
 import type { GroupTarget } from '../core/group/evaluate';
 import type { Program, TabFacts } from '../core/lang/types';
 import type { Project, ProjectAssignment, ProjectCardData, ProjectDef, ProjectHomeData, SavedTab } from '../core/projects/types';
 import type { JiraIssue, PrInfo, PrState, SourceEntry } from '../core/sources/types';
-import type { Snapshot, TabSnap } from '../core/types';
+import type { GroupColor, GroupSnap, Snapshot, TabSnap } from '../core/types';
 import { normalizeUrl } from '../core/url/normalize';
 import type { BrowserPort } from '../platform/browser-port';
 import type { PageFacts } from './page-facts';
@@ -25,6 +26,7 @@ import { saveState, type LiveState } from './state';
 export { PROJECTS_KEY, ProjectStore } from './project-store';
 export { CLOSED_CLOCK_KEY, PRUNE_AFTER_MS } from './project-clock';
 /** Linked-PR searches per project at most this often (spec: 15 min). */
+const MANUAL_RECIPE = 'manual-project';
 export const LINKED_REFRESH_MS = 15 * 60_000;
 
 const PILLS = new Set<PrState>(['open', 'draft', 'merged', 'closed']);
@@ -130,7 +132,7 @@ function withCreated(stored: Project[], r: ResolveResult): { projects: Project[]
 }
 export interface ProjectServiceDeps {
   store: ProjectStore;
-  port: Pick<BrowserPort, 'snapshot' | 'createTab' | 'closeTab'>;
+  port: Pick<BrowserPort, 'snapshot' | 'createTab' | 'closeTab' | 'ungroup'>;
   getProgram: () => Promise<Program>;
   sources: Pick<SourceService, 'factsFor' | 'issues' | 'linkedFor' | 'jiraSite'>;
   facts: Pick<PageFacts, 'get'>;
@@ -352,7 +354,12 @@ export class ProjectService {
    * dry-run reconciler then groups nothing. Returns the project id.
    */
   create(recipeId: string, name: string, tabIds: number[] = []): Promise<string> {
-    return this.serial(async () => {
+    return this.serial(() => this.createLocked(recipeId, name, tabIds));
+  }
+
+  /** `create`'s body, inside the queue. `existing`: a Chrome group the project adopts (M4 T8), see `saveGroup`. */
+  private async createLocked(recipeId: string, name: string, tabIds: number[], existing?: GroupSnap): Promise<string> {
+    {
       const title = name.trim();
       if (!title) throw new Error('a project needs a name');
       const program = await this.deps.getProgram();
@@ -373,12 +380,68 @@ export class ProjectService {
       });
       const projects = await this.deps.store.list();
       const unique = freeName(title, new Set([...projects.flatMap((q) => q.name ?? []), ...titles]));
+      // An adopted group keeps its title: a renamed project ("Taxes (2)") would retitle it (M4-R12), so refuse instead.
+      if (existing && unique !== title) throw new Error(`A project named “${title}” already exists. Rename the group first, then save it.`);
       const key = freeKey(nameSlug(unique), new Set(projects.filter((q) => q.recipeId === recipeId).map((q) => q.key)));
-      const p: Project = { id: `${recipeId}:${key}`, recipeId, key, name: unique, keep: true, createdAt: this.now(), updatedAt: this.now(), manual: [], excluded: [], linked: [] };
+      const p: Project = { id: `${recipeId}:${key}`, recipeId, key, name: unique, keep: true, ...(existing && { color: existing.color }), createdAt: this.now(), updatedAt: this.now(), manual: [], excluded: [], linked: [] };
       projects.push(p);
       if (tabs.length === 0) await this.deps.store.put(p);
       for (const t of tabs) await this.join(program, projects, p, t.id, t.windowId, urlOf(t));
       return p.id;
+    }
+  }
+
+  /**
+   * Saves a Chrome group as a kept Manual project (M4 T8): named after the group (an untitled group is refused, M4-R15), keeping the group's color (`Project.color`), with its tabs as manual members. Not regrouped, retitled or
+   * recolored: when another project already has the name (M4-R12 would make it "Name (2)" and so retitle the group) it
+   * is refused with a clear message. Refused too when a tab of the group already belongs to a project, when Tabchef
+   * manages the group (a rule's, see managedGroups), or the Manual recipe is off. Applies under global dry run like create (M4-R11). Returns the project id.
+   */
+  saveGroup(groupId: number): Promise<string> {
+    return this.serial(async () => {
+      const snap = await this.deps.port.snapshot();
+      const g = snap.groups.find((x) => x.id === groupId);
+      const tabs = snap.tabs.filter((t) => t.groupId === groupId);
+      if (!g || tabs.length === 0) throw new Error('group not found');
+      if (!g.title) throw new Error('Name the group first, then save it.'); // M4-R15: saving would retitle it
+      if (g.title !== g.title.trim()) throw new Error('Remove the spaces around the group name first, then save it.');
+      const open = await this.resolve(snap);
+      if (tabs.some((t) => open.assignments.has(t.id))) throw new Error('This group is already part of a project.');
+      // A group named like an open project is the name clash createLocked reports (M4-R12), not a rule's group.
+      const defOf = new Map(open.defs.map((d) => [d.recipeId, d]));
+      const openIds = new Set([...open.assignments.values()].map((a) => a.projectId));
+      const named = new Set(open.projects.flatMap((q) => { const d = defOf.get(q.recipeId); return d && openIds.has(q.id) ? [projectGroupTitle(d, q)] : []; }));
+      if (!named.has(g.title) && (await this.managedGroups(snap, open)).has(groupId)) throw new Error('This group is managed by a rule. Save one of your own groups.');
+      return this.createLocked(MANUAL_RECIPE, g.title, tabs.map((t) => t.id), g);
+    });
+  }
+
+  /**
+   * The groups Tabchef manages (a rule's or a project's target, or a title it created or adopted), as the planner sees
+   * them this pass: saving one would hand a rule's group to a project.
+   */
+  private async managedGroups(snap: Snapshot, open: Resolved): Promise<Set<number>> {
+    const st = await this.deps.state();
+    return managedGroupIds(snap, open.program, {
+      leaveAlone: st.leaveAlone, managedTitles: st.managedTitles, overrides: projectTargets(open.assignments, open.projects, open.defs),
+    });
+  }
+
+  /**
+   * The open groups no project or rule holds (M4 T8), in snapshot order, for the dashboard's "Save a group" list. Empty when
+   * Manual projects are off (nothing could be saved). An untitled group has title '' (it cannot be saved, M4-R15).
+   */
+  unmanagedGroups(): Promise<{ id: number; title: string; color: GroupColor; tabCount: number }[]> {
+    return this.serial(async () => {
+      if (!(await this.deps.getProgram()).projects?.some((d) => d.recipeId === MANUAL_RECIPE)) return [];
+      const snap = await this.deps.port.snapshot();
+      const open = await this.resolve(snap);
+      const managed = await this.managedGroups(snap, open);
+      return snap.groups.flatMap((g) => {
+        const tabs = snap.tabs.filter((t) => t.groupId === g.id);
+        if (tabs.length === 0 || managed.has(g.id) || tabs.some((t) => open.assignments.has(t.id))) return [];
+        return [{ id: g.id, title: g.title, color: g.color, tabCount: tabs.length }];
+      });
     });
   }
 
@@ -429,6 +492,11 @@ export class ProjectService {
       p.updatedAt = this.now();
       (await this.deps.state()).projectTabs.delete(tabId);
       await this.deps.store.put(p);
+      // A Manual-only project's group is not strict (a tab put into it stays), so the reconciler would leave this tab
+      // there: ungroup it here (not under global dry run, R48).
+      const def = program.projects?.find((d) => d.recipeId === p.recipeId);
+      const manualOnly = def?.join.length === 1 && def.join[0] === 'manual';
+      if (manualOnly && t.groupId !== -1 && !(await this.deps.getProgram()).dryRun) await this.deps.port.ungroup([tabId]).catch(() => undefined);
       this.log(tabId, `Removed from ${p.key} manually`, undefined, 'project-leave');
       this.deps.schedule?.('project');
     });

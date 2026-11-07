@@ -4,16 +4,20 @@
   // to project › New project…", with that tab), else behind a New project button; Create opens the new project's home.
   // M4-R10: with the Manual projects recipe off (R68: off on installs from before it), a note links to the Recipes page,
   // where it is turned on through the preview; no form. Unknown (config.get failed): the form, and Create's error.
+  // M4 T8: a "Save a group" list of the open groups no project holds (projects.groups; self-contained: it loads and
+  // saves by itself), each with a Save button (projects.saveGroup, then the new project's home). Not offered when the
+  // recipe is off (the engine then lists none).
   import { onMount } from 'svelte';
   import { send } from '../../ui/send';
   import { buildProjectCards, type ProjectCard } from '../../ui/projects-model';
   import { projectHomeHash } from '../../ui/routes';
 
   /** The route's `new` param: the tab to put in the new project. */
-  let { newTab }: { newTab?: string } = $props();
+  let { newTab, initialError }: { newTab?: string; initialError?: string } = $props();
 
   let cards = $state<ProjectCard[] | undefined>(undefined);
-  let error = $state('');
+  // svelte-ignore state_referenced_locally
+  let error = $state(initialError ?? ''); // M4 T8: the context menu's failed Save group as project
   // Read once: the route remounts this page ({#key}) when `new` changes.
   // svelte-ignore state_referenced_locally
   let formOpen = $state(newTab !== undefined);
@@ -21,6 +25,8 @@
   let creating = $state(false);
   /** Whether the manual-project recipe is on; undefined until (or unless) config.get answers. */
   let manualOn = $state<boolean | undefined>(undefined);
+  let groups = $state<{ id: number; title: string; color: string; tabCount: number }[]>([]);
+  let savingGroup = $state<number | undefined>(undefined);
   const tabId = $derived(newTab !== undefined && /^\d+$/.test(newTab) ? Number(newTab) : undefined);
 
   async function create(e: SubmitEvent): Promise<void> {
@@ -34,7 +40,18 @@
     window.location.hash = projectHomeHash(r.data.id);
   }
 
+  async function saveGroup(id: number): Promise<void> {
+    if (savingGroup !== undefined) return;
+    savingGroup = id;
+    const r = await send({ type: 'projects.saveGroup', groupId: id });
+    savingGroup = undefined;
+    if (!r.ok) { error = r.error; return; }
+    error = '';
+    window.location.hash = projectHomeHash(r.data.id);
+  }
+
   onMount(async () => {
+    void send({ type: 'projects.groups' }).then((g) => { if (g.ok && Array.isArray(g.data)) groups = g.data; }, () => {});
     void send({ type: 'config.get' }).then((c) => {
       // Read defensively: this note must never break the page.
       const refs: unknown = c.ok ? (c.data as { config?: { recipes?: unknown } } | null)?.config?.recipes : undefined;
@@ -72,9 +89,30 @@
       </li>
     {/each}
   </ul>
+  {#if groups.length > 0 && manualOn !== false}
+    <h3>Save a group</h3>
+    <ul>
+      {#each groups as g (g.id)}
+        <li>
+          <span class={`swatch g-${g.color}`} aria-hidden="true"></span>
+          <span class="grow">{g.title || 'Name the group in Chrome to save it'}</span>
+          <span class="muted">{g.tabCount} {g.tabCount === 1 ? 'tab' : 'tabs'}</span>
+          {#if g.title}
+            <button type="button" aria-label={`Save ${g.title}`} disabled={savingGroup !== undefined} onclick={() => saveGroup(g.id)}>Save</button>
+          {/if}
+        </li>
+      {/each}
+    </ul>
+  {/if}
 </section>
 
 <style>
+  h3 { font-size: 14px; margin: 16px 0 4px; }
+  .grow { flex: 1; min-width: 0; }
+  .swatch { width: 8px; height: 8px; border-radius: 50%; flex: none; background: #5f6368; }
+  .g-blue { background: #1a73e8; } .g-red { background: #d93025; } .g-yellow { background: #f9ab00; }
+  .g-green { background: #188038; } .g-pink { background: #d01884; } .g-purple { background: #a142f4; }
+  .g-cyan { background: #007b83; } .g-orange { background: #fa903e; }
   h2 { font-size: 16px; margin: 0 0 8px; }
   .new { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
   ul { list-style: none; margin: 0; padding: 0; }

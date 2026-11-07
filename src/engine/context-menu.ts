@@ -1,5 +1,5 @@
 import { isExemptUrl } from '../core/url/normalize';
-import { explainHash, newProjectHash, newRuleHash, type NewRuleKind } from '../core/links';
+import { explainHash, newProjectHash, newRuleHash, projectHomeHash, projectsErrorHash, type NewRuleKind } from '../core/links';
 import type { ProjectService } from './projects';
 import type { SafetyService } from './safety';
 
@@ -10,7 +10,7 @@ import type { SafetyService } from './safety';
 // createProjectMenu when the open projects change; "Remove from project" (`tc-project-remove`) follows it.
 // M4 T6: the last child, "New project…" (`tc-project-new`), opens the Projects page's New project form for the tab.
 
-export const MENU_IDS = { group: 'tc-group', close: 'tc-close', allowDup: 'tc-allowdup', lock: 'tc-lock', why: 'tc-why' } as const;
+export const MENU_IDS = { group: 'tc-group', close: 'tc-close', allowDup: 'tc-allowdup', lock: 'tc-lock', why: 'tc-why', saveGroup: 'tc-save-group' } as const;
 export const PROJECT_MENU_ID = 'tc-project';
 export const PROJECT_REMOVE_MENU_ID = 'tc-project-remove';
 export const PROJECT_NEW_MENU_ID = 'tc-project-new';
@@ -26,6 +26,7 @@ const ITEMS: { id: string; title: string }[] = [
   { id: MENU_IDS.allowDup, title: 'Allow duplicates of pages like this' },
   { id: MENU_IDS.lock, title: LOCK_TITLE },
   { id: MENU_IDS.why, title: 'Why is this tab here?' },
+  { id: MENU_IDS.saveGroup, title: 'Save group as project' },
 ];
 const KIND: Record<string, NewRuleKind> = { [MENU_IDS.group]: 'group', [MENU_IDS.close]: 'close', [MENU_IDS.allowDup]: 'allowDup' };
 
@@ -80,7 +81,7 @@ export function createProjectMenu(api: MenuApi): ProjectMenu {
   };
 }
 
-export interface MenuTab { id?: number; url?: string }
+export interface MenuTab { id?: number; url?: string; groupId?: number }
 
 /** runtime.onInstalled: drop items from the previous version (duplicate ids would throw), then create every item. */
 export async function installMenus(api: MenuApi): Promise<void> {
@@ -105,13 +106,13 @@ export interface MenuClickDeps {
   /** Re-read the menu state after a lock change. */
   refresh: () => void | Promise<void>;
   /** tc-project:<id> / tc-project-remove (M3 T15). */
-  projects?: Pick<ProjectService, 'addTab' | 'removeTab'>;
+  projects?: Pick<ProjectService, 'addTab' | 'removeTab' | 'saveGroup'>;
 }
 
 /**
  * contextMenus.onClicked: the rule items open NewRule with the link URL (on a link) or the page URL; tc-lock toggles
  * the tab's lock directly; tc-why opens the tab's explain view (R54); the project items add the tab to a project or
- * remove it (M3 T15); New project… opens the Projects page's form for the tab (M4 T6). Exempt pages and unknown items
+ * remove it (M3 T15); Save group as project (M4 T8) saves the tab's group and opens its home (an error opens the Projects page showing it); New project… opens the Projects page's form for the tab (M4 T6). Exempt pages and unknown items
  * do nothing.
  */
 export async function onMenuClick(
@@ -131,6 +132,14 @@ export async function onMenuClick(
     await deps.refresh();
   } else if (id === MENU_IDS.why) {
     await deps.openPage(explainHash(tab.id));
+  } else if (id === MENU_IDS.saveGroup) {
+    if (tab.groupId === undefined || tab.groupId < 0) { await deps.openPage(projectsErrorHash('This tab is not in a group.')); return; }
+    try {
+      const projectId = await deps.projects?.saveGroup(tab.groupId);
+      if (projectId !== undefined) await deps.openPage(projectHomeHash(projectId));
+    } catch (e) {
+      await deps.openPage(projectsErrorHash(e instanceof Error ? e.message : String(e))); // the Projects page shows it
+    }
   } else if (id.startsWith(PROJECT_CHILD_PREFIX)) {
     await deps.projects?.addTab(tab.id, id.slice(PROJECT_CHILD_PREFIX.length));
   } else if (id === PROJECT_NEW_MENU_ID) {

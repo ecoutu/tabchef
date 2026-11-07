@@ -1,4 +1,4 @@
-import type { Config, DedupeSettings, GroupRule, Snapshot, TabSnap } from '../core/types';
+import type { Config, DedupeSettings, GroupColor, GroupRule, Snapshot, TabSnap } from '../core/types';
 import { neverCloseReason } from '../core/safety/never-close';
 import { ruleTitleProblems, validateConfig } from '../core/config/schema';
 import { groupRuleToRule, sanitizeRuleId, userKey } from '../core/config/migrate';
@@ -241,6 +241,10 @@ export type Request =
   | { type: 'projects.reopen'; projectId: string }
   /** M4 T7: Keep (never pruned, synced) on or off. */
   | { type: 'projects.setKeep'; projectId: string; keep: boolean }
+  /** M4 T8: the open groups no project holds, for the dashboard's "Save a group" list. */
+  | { type: 'projects.groups' }
+  /** M4 T8: saves a Chrome group as a kept Manual project, unchanged (no regroup, retitle or recolor); answers `{ id }`. */
+  | { type: 'projects.saveGroup'; groupId: number }
   // ---- Sources (M3 T17) ----
   /** The Projects tab opened: SourceService.refresh('popup') (throttled, M3-R83); answers once it is done. */
   | { type: 'sources.refresh' };
@@ -364,6 +368,8 @@ export interface ResponseData {
   'projects.closeAndSave': { closed: number; skipped: number; ids: string[] };
   'projects.reopen': { opened: number };
   'projects.setKeep': null;
+  'projects.groups': { id: number; title: string; color: GroupColor; tabCount: number }[];
+  'projects.saveGroup': { id: string };
   'sources.refresh': null;
 }
 export type ResponseFor<R extends Request> = Response<ResponseData[R['type']]>;
@@ -372,7 +378,7 @@ const num = (v: unknown): v is number => typeof v === 'number' && Number.isFinit
 const str = (v: unknown): v is string => typeof v === 'string';
 const NO_ARGS = new Set(['config.get', 'config.backups', 'config.status', 'tabs.list', 'dupes.list', 'dupes.closeAll', 'recent.list', 'why.all',
   'safety.resume', 'safety.status', 'recipes.list', 'views.list', 'connections.list', 'connections.github.start', 'connections.github.poll',
-  'projects.list', 'sources.refresh']);
+  'projects.list', 'projects.groups', 'sources.refresh']);
 const optRev = (x: Record<string, unknown>) => x.baseRev === undefined || str(x.baseRev);
 const isParams = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
@@ -486,6 +492,7 @@ export function isRequest(m: unknown): m is Request {
     case 'projects.start': return str(x.recipeId) && str(x.key);
     case 'projects.closeAndSave': case 'projects.reopen': return str(x.projectId);
     case 'projects.setKeep': return str(x.projectId) && typeof x.keep === 'boolean';
+    case 'projects.saveGroup': return num(x.groupId);
     default: return false;
   }
 }
@@ -552,7 +559,7 @@ export interface HandlerDeps {
   /** connections.* (M3 T7, the Connections page). Without it they fail. */
   connections?: ConnectionsDeps;
   /** projects.* (M3 T15). Without it they fail. */
-  projects?: Pick<ProjectService, 'cards' | 'addTab' | 'removeTab' | 'openLinked' | 'closeGroup' | 'home' | 'create' | 'start' | 'closeAndSave' | 'reopen' | 'setKeep'>;
+  projects?: Pick<ProjectService, 'cards' | 'addTab' | 'removeTab' | 'openLinked' | 'closeGroup' | 'home' | 'create' | 'start' | 'closeAndSave' | 'reopen' | 'setKeep' | 'saveGroup' | 'unmanagedGroups'>;
   /** sources.refresh (M3 T17). Without it the request fails. */
   sources?: Pick<SourceService, 'refresh'> & Partial<Pick<SourceService, 'unreadableRepos'>>;
   now?: () => number;
@@ -1057,6 +1064,8 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
       case 'projects.closeAndSave': return ok(await p.closeAndSave(req.projectId));
       case 'projects.reopen': return ok(await p.reopen(req.projectId));
       case 'projects.setKeep': await p.setKeep(req.projectId, req.keep); return ok(null);
+      case 'projects.groups': return ok(await p.unmanagedGroups());
+      case 'projects.saveGroup': return ok({ id: await p.saveGroup(req.groupId) });
     }
   }
 
@@ -1083,7 +1092,7 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
       }
       case 'projects.list': case 'projects.addTab': case 'projects.removeTab': case 'projects.openLinked': case 'projects.closeGroup':
       case 'projects.home': case 'projects.create': case 'projects.start': case 'projects.closeAndSave': case 'projects.reopen':
-      case 'projects.setKeep':
+      case 'projects.setKeep': case 'projects.groups': case 'projects.saveGroup':
         return deps.projects ? runProjects(req, deps.projects) : fail('projects unavailable');
       case 'sources.refresh': {
         if (!deps.sources) return fail('sources unavailable');

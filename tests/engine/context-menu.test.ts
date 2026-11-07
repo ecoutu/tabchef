@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   createProjectMenu, installMenus, MENU_CONTEXTS, MENU_IDS, onMenuClick, refreshMenus, type MenuApi,
 } from '../../src/engine/context-menu';
-import { explainHash, matchRoute, newRuleHash, OPTIONS_ROUTES } from '../../src/ui/routes';
+import { explainHash, matchRoute, newRuleHash, OPTIONS_ROUTES, projectHomeHash, projectsErrorHash } from '../../src/ui/routes';
 
 const api = (): MenuApi & { calls: string[] } => {
   const calls: string[] = [];
@@ -27,6 +27,7 @@ describe('context menu (M2 T16)', () => {
       ['tc-allowdup', 'Allow duplicates of pages like this'],
       ['tc-lock', 'Lock this tab'],
       ['tc-why', 'Why is this tab here?'],
+      ['tc-save-group', 'Save group as project'],
       ['tc-project', 'Add to project'],
       ['tc-project-new', 'New project…'],
       ['tc-project-remove', 'Remove from project'],
@@ -132,7 +133,7 @@ describe('context menu (M2 T16)', () => {
   });
 
   it('a project child adds the tab to that project; Remove from project removes it', async () => {
-    const d = { ...deps(), projects: { addTab: vi.fn(async () => {}), removeTab: vi.fn(async () => {}) } };
+    const d = { ...deps(), projects: { addTab: vi.fn(async () => {}), removeTab: vi.fn(async () => {}), saveGroup: vi.fn(async () => '') } };
     await onMenuClick({ menuItemId: 'tc-project:jira-ticket-title:ABC-1' }, tab, d);
     expect(d.projects.addTab).toHaveBeenCalledWith(9, 'jira-ticket-title:ABC-1');
     await onMenuClick({ menuItemId: 'tc-project-remove' }, tab, d);
@@ -148,6 +149,29 @@ describe('context menu (M2 T16)', () => {
     expect(matchRoute(OPTIONS_ROUTES, '#/projects?new=9')).toEqual({ path: '/projects', params: { new: '9' } });
     await onMenuClick({ menuItemId: 'tc-project-new' }, { id: 1, url: 'chrome://settings' }, d);
     expect(d.openPage).toHaveBeenCalledTimes(1);
+  });
+
+  it('M4 T8: Save group as project saves the tab\'s group and opens the new project\'s home', async () => {
+    const d = { ...deps(), projects: { addTab: vi.fn(), removeTab: vi.fn(), saveGroup: vi.fn(async () => 'manual-project:taxes') }, };
+    await onMenuClick({ menuItemId: 'tc-save-group' }, { ...tab, groupId: 5 }, d);
+    expect(d.projects.saveGroup).toHaveBeenCalledWith(5);
+    expect(d.openPage).toHaveBeenCalledWith(projectHomeHash('manual-project:taxes'));
+    expect(d.openPage).toHaveBeenCalledTimes(1);
+  });
+
+  it('M4 T8: an engine error is reported, not swallowed; an ungrouped tab says so; exempt pages do nothing', async () => {
+    const saveGroup = vi.fn(async () => { throw new Error('turn on the recipe Manual projects first'); });
+    const d = { ...deps(), projects: { addTab: vi.fn(), removeTab: vi.fn(), saveGroup }, };
+    await onMenuClick({ menuItemId: 'tc-save-group' }, { ...tab, groupId: 5 }, d);
+    expect(d.openPage).toHaveBeenCalledWith(projectsErrorHash('turn on the recipe Manual projects first'));
+    expect(matchRoute(OPTIONS_ROUTES, projectsErrorHash('a b: c')).params).toEqual({ error: 'a b: c' });
+    await onMenuClick({ menuItemId: 'tc-save-group' }, { ...tab, groupId: -1 }, d);
+    await onMenuClick({ menuItemId: 'tc-save-group' }, tab, d);
+    expect(d.openPage).toHaveBeenLastCalledWith(projectsErrorHash('This tab is not in a group.'));
+    expect(d.openPage).toHaveBeenCalledTimes(3);
+    expect(saveGroup).toHaveBeenCalledTimes(1);
+    await onMenuClick({ menuItemId: 'tc-save-group' }, { id: 1, url: 'chrome://settings', groupId: 5 }, d);
+    expect(saveGroup).toHaveBeenCalledTimes(1);
   });
 
   it('M3-R71: overlapping syncs and an install run one at a time; install re-adds the last projects', async () => {
@@ -169,7 +193,7 @@ describe('context menu (M2 T16)', () => {
     expect(a.calls.slice(2)).toEqual([
       'create:tc-project', 'create:tc-project:r:A-1', 'create:tc-project-new', 'create:tc-project-remove',
       'remove:tc-project', 'remove:tc-project-remove', 'create:tc-project', 'create:tc-project:r:B-1', 'create:tc-project-new', 'create:tc-project-remove',
-      'removeAll', 'create:tc-group', 'create:tc-close', 'create:tc-allowdup', 'create:tc-lock', 'create:tc-why', 'create:tc-project', 'create:tc-project-new', 'create:tc-project-remove',
+      'removeAll', 'create:tc-group', 'create:tc-close', 'create:tc-allowdup', 'create:tc-lock', 'create:tc-why', 'create:tc-save-group', 'create:tc-project', 'create:tc-project-new', 'create:tc-project-remove',
       'remove:tc-project', 'remove:tc-project-remove', 'create:tc-project', 'create:tc-project:r:B-1', 'create:tc-project-new', 'create:tc-project-remove',
     ]);
     a.calls.length = 0;

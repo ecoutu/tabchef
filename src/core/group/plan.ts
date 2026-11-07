@@ -64,8 +64,9 @@ function bucketCompare(ctx: PlanContext, groupTitle: (gid: number) => string | u
 /**
  * moveGroup ops that put `desired` (existing group ids, in order) right after the pinned tabs, computed against
  * a simulated tab strip so sequential application yields the desired order. Groups already in place emit nothing.
+ * `fixed` groups are left where they are (see below).
  */
-function planMoves(windowTabs: TabSnap[], desired: number[]): Op[] {
+function planMoves(windowTabs: TabSnap[], desired: number[], fixed: Set<number> = new Set()): Op[] {
   const units: { gid: number; size: number }[] = [];
   let pinned = 0;
   for (const t of windowTabs) {
@@ -74,16 +75,21 @@ function planMoves(windowTabs: TabSnap[], desired: number[]): Op[] {
     if (t.groupId !== -1 && last?.gid === t.groupId) last.size++;
     else units.push({ gid: t.groupId, size: 1 });
   }
+  // `fixed` groups (M4-R16, Manual projects) are immovable obstacles: no op names them. Each desired group goes to the
+  // first slot at or after the previous one that no fixed group holds, so a fixed group keeps its place unless a
+  // desired group has to pass it (and rule groups still precede ungrouped tabs). With no fixed group this is the plain
+  // "pack the desired groups right after the pinned tabs".
   const ops: Op[] = [];
-  let index = pinned;
-  desired.forEach((gid, k) => {
+  let p = 0;
+  for (const gid of desired) {
+    while (units[p] && fixed.has(units[p]!.gid)) p++;
     const at = units.findIndex((u) => u.gid === gid);
-    if (at < 0) return;
+    if (at < 0) continue;
     const [unit] = units.splice(at, 1) as [{ gid: number; size: number }];
-    if (at !== k) ops.push({ kind: 'moveGroup', groupId: gid, index });
-    units.splice(k, 0, unit);
-    index += unit.size;
-  });
+    if (at !== p) ops.push({ kind: 'moveGroup', groupId: gid, index: pinned + units.slice(0, p).reduce((n, u) => n + u.size, 0) });
+    units.splice(p, 0, unit);
+    p++;
+  }
   return ops;
 }
 
@@ -385,8 +391,10 @@ export function planGroups(snap: Snapshot, p: Program, ctx: PlanContext, pre?: T
       });
     }
     if (!dirty.has(w)) {
-      const desired = mine.flatMap((b) => (b.groupId !== undefined ? [b.groupId] : []));
-      ops.push(...planMoves(tabs.filter((t) => t.windowId === w), desired));
+      const ordered = mine.filter((b) => !b.match.unordered);
+      const desired = ordered.flatMap((b) => (b.groupId !== undefined ? [b.groupId] : []));
+      const fixed = new Set(mine.flatMap((b) => (b.match.unordered && b.groupId !== undefined ? [b.groupId] : [])));
+      ops.push(...planMoves(tabs.filter((t) => t.windowId === w), desired, fixed));
     }
   }
   return ops;

@@ -1239,6 +1239,8 @@ describe('projects.* (M3 T15)', () => {
     closeAndSave: vi.fn(async () => ({ closed: 2, skipped: 1, ids: ['rc-1', 'rc-2'] })),
     reopen: vi.fn(async () => ({ opened: 2 })),
     setKeep: vi.fn(async () => {}),
+    saveGroup: vi.fn(async () => 'manual-project:taxes'),
+    unmanagedGroups: vi.fn(async () => [{ id: 5, title: 'Taxes', color: 'blue' as const, tabCount: 2 }]),
     home: vi.fn(async (id: string) => (id === 'r:ABC-1' ? {
       id, key: 'ABC-1', title: 'ABC-1', done: false, tabs: [], linked: [], groups: [], recipeName: 'r',
       settings: { container: 'group' as const, placement: ['existing' as const], join: ['rules' as const], onOpenElsewhere: 'leave' as const, onSwitchAway: 'unload' as const },
@@ -1274,6 +1276,23 @@ describe('projects.* (M3 T15)', () => {
     expect(isRequest({ type: 'projects.setKeep', projectId: 'r:ABC-1', keep: true })).toBe(true);
     expect(isRequest({ type: 'projects.setKeep', projectId: 'r:ABC-1', keep: 'yes' })).toBe(false);
     expect(isRequest({ type: 'projects.setKeep', projectId: 'r:ABC-1' })).toBe(false);
+  });
+
+  it('M4 T8: projects.groups / saveGroup validate, reach the ProjectService, and are refused from content scripts', async () => {
+    expect(isRequest({ type: 'projects.groups' })).toBe(true);
+    expect(isRequest({ type: 'projects.saveGroup', groupId: 5 })).toBe(true);
+    expect(isRequest({ type: 'projects.saveGroup', groupId: '5' })).toBe(false);
+    expect(isRequest({ type: 'projects.saveGroup' })).toBe(false);
+    const p = projects();
+    const s = setup({ projects: p });
+    expect(await s.handle({ type: 'projects.groups' }, ui)).toEqual({ ok: true, data: [{ id: 5, title: 'Taxes', color: 'blue', tabCount: 2 }] });
+    expect(await s.handle({ type: 'projects.saveGroup', groupId: 5 }, ui)).toEqual({ ok: true, data: { id: 'manual-project:taxes' } });
+    expect(p.saveGroup).toHaveBeenCalledWith(5);
+    p.saveGroup.mockRejectedValue(new Error('group not found'));
+    expect(await s.handle({ type: 'projects.saveGroup', groupId: 9 }, ui)).toEqual({ ok: false, error: 'group not found' });
+    expect(await s.handle({ type: 'projects.saveGroup', groupId: 5 }, content)).toEqual({ ok: false, error: 'forbidden' });
+    expect(await s.handle({ type: 'projects.groups' }, content)).toEqual({ ok: false, error: 'forbidden' });
+    expect(p.saveGroup).toHaveBeenCalledTimes(2);
   });
 
   it('M4 T7: projects.closeAndSave / reopen / setKeep reach the ProjectService; all refused from content scripts', async () => {

@@ -116,6 +116,52 @@ describe('Projects page: New project (M4 T6, M4-R8)', () => {
   });
 });
 
+describe('Projects page: Save a group (M4 T8)', () => {
+  const groups = [{ id: 5, title: 'Taxes', color: 'blue', tabCount: 2 }, { id: 6, title: '', color: 'red', tabCount: 1 }];
+  const withGroups = (save: { ok: boolean; data?: unknown; error?: string } = { ok: true, data: { id: 'manual-project:taxes' } }, off = false) => {
+    send.mockImplementation(async (req: { type: string }) => {
+      if (req.type === 'projects.groups') return { ok: true, data: off ? [] : groups };
+      if (req.type === 'projects.saveGroup') return save;
+      if (req.type === 'config.get' && off) return { ok: true, data: { config: { recipes: [{ id: 'manual-project', enabled: false, params: {}, source: 'builtin' }] }, rev: 'r1' } };
+      return reply(req);
+    });
+  };
+
+  it('lists the open unmanaged groups with their tab count; Save makes the project and opens its home', async () => {
+    withGroups();
+    render(Projects);
+    expect((await screen.findByText('Taxes')).closest('li')!.textContent).toContain('2 tabs');
+    const untitled = screen.getByText('Name the group in Chrome to save it').closest('li')!;
+    expect(untitled.textContent).toContain('1 tab');
+    expect(untitled.querySelector('button')).toBeNull(); // M4-R15: no Save for an untitled group
+    expect(screen.getAllByRole('button', { name: /^Save / })).toHaveLength(1);
+    await fireEvent.click(screen.getAllByRole('button', { name: /^Save / })[0]!);
+    await waitFor(() => expect(window.location.hash).toBe(projectHomeHash('manual-project:taxes')));
+    expect(send).toHaveBeenCalledWith({ type: 'projects.saveGroup', groupId: 5 });
+  });
+
+  it('a refused save (e.g. a name clash) shows its message and stays', async () => {
+    withGroups({ ok: false, error: 'A project named “Taxes” already exists. Rename the group first, then save it.' });
+    render(Projects);
+    await fireEvent.click((await screen.findAllByRole('button', { name: /^Save / }))[0]!);
+    expect((await screen.findByRole('alert')).textContent).toContain('already exists');
+    expect(window.location.hash).toBe('');
+  });
+
+  it('with Manual projects off, no list is offered', async () => {
+    withGroups(undefined, true);
+    render(Projects);
+    await screen.findByText(/Manual projects are turned off\./);
+    expect(screen.queryByText('Save a group')).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Save / })).toBeNull();
+  });
+
+  it('shows an error handed in by the context menu', async () => {
+    render(Projects, { initialError: 'This tab is not in a group.' });
+    expect((await screen.findByRole('alert')).textContent).toContain('This tab is not in a group.');
+  });
+});
+
 describe('Project home', () => {
   it('shows the project and links back to the list', async () => {
     render(ProjectHome, { id: 'repo:acme/web' });
