@@ -19,7 +19,13 @@ describe('manifest permissions', () => {
     expect(manifestConfig.optional_permissions).toEqual([
       'notifications',
       'scripting',
+      'bookmarks',
     ]);
+  });
+
+  it('M4 T14b: bookmarks (project sync) is optional only, never required', () => {
+    expect(manifestConfig.permissions).not.toContain('bookmarks');
+    expect(manifestConfig.optional_permissions).toContain('bookmarks');
   });
 
   it('declares optional host permissions only', () => {

@@ -15,6 +15,9 @@
   import { createProjectActions, startLiveRefresh, type Toast } from '../../ui/project-actions';
   import { buildProjectCards, type ProjectCard } from '../../ui/projects-model';
   import { projectHomeHash } from '../../ui/routes';
+  import { requestPermissions } from '../../ui/permissions';
+  import Field from './Field.svelte';
+  import type { SyncStatus } from '../../engine/project-sync';
   import type { SavedProjectData } from '../../core/projects/types';
 
   /** The route's `new` param: the tab to put in the new project. */
@@ -37,6 +40,10 @@
   /** After Close and archive: the closed tabs' recently-closed entries, which Undo reopens (recent.undo). */
   let toast = $state<Toast | undefined>(undefined);
   let seq = 0;
+  let sync = $state<SyncStatus>({ enabled: false });
+  let syncError = $state('');
+  const result = $derived(sync.lastResult && 'error' in sync.lastResult ? undefined : sync.lastResult);
+  const syncFailure = $derived(sync.lastResult && 'error' in sync.lastResult ? sync.lastResult.error : '');
   const empty = $derived(cards !== undefined && cards.length === 0 && saved.length === 0 && archived.length === 0);
   const tabId = $derived(newTab !== undefined && /^\d+$/.test(newTab) ? Number(newTab) : undefined);
 
@@ -59,6 +66,39 @@
     if (!r.ok) { error = r.error; return; }
     error = '';
     window.location.hash = projectHomeHash(r.data.id);
+  }
+
+  function ago(at: number): string {
+    const min = Math.max(0, Math.floor((Date.now() - at) / 60_000));
+    if (min < 1) return 'just now';
+    if (min < 60) return `${min} min ago`;
+    const h = Math.floor(min / 60);
+    if (h < 24) return `${h} h ago`;
+    const d = Math.floor(h / 24);
+    return `${d} ${d === 1 ? 'day' : 'days'} ago`;
+  }
+
+  async function loadSync(): Promise<void> {
+    // Read defensively: the sync block must never break the page.
+    const r = await send({ type: 'projects.sync.status' });
+    if (r.ok && r.data && typeof r.data === 'object') sync = r.data;
+  }
+
+  /** The permission request is the first statement: Chrome needs the click's user gesture, lost after any await. */
+  async function toggleSync(e: Event): Promise<void> {
+    const box = e.currentTarget as HTMLInputElement;
+    const enabled = box.checked;
+    const granted = enabled ? requestPermissions({ permissions: ['bookmarks'] }) : undefined;
+    syncError = '';
+    if (granted && !(await granted.catch(() => false))) {
+      box.checked = false;
+      syncError = 'Sync stays off: Chrome did not give Tabchef access to your bookmarks.';
+      return;
+    }
+    const r = await send({ type: 'projects.sync.set', enabled });
+    if (!r.ok) { box.checked = sync.enabled; syncError = r.error; return; }
+    sync = r.data;
+    box.checked = sync.enabled;
   }
 
   /** The three sections and the Save a group list. An error stays until an action succeeds (an initial one too). */
@@ -94,6 +134,7 @@
       const refs: unknown = c.ok ? (c.data as { config?: { recipes?: unknown } } | null)?.config?.recipes : undefined;
       if (Array.isArray(refs)) manualOn = refs.some((r: { id?: unknown; enabled?: unknown }) => r?.id === 'manual-project' && r.enabled === true);
     }, () => {});
+    void loadSync();
     await load();
   });
 </script>
@@ -112,6 +153,31 @@
     <button type="button" onclick={() => { formOpen = true; }}>New project</button>
   {/if}
   {#if error}<p class="err" role="alert">{error}</p>{/if}
+  <div class="sync">
+    <Field inline label="Sync kept projects across your devices" help="Sync saves your kept projects as folders in a visible Tabchef folder in Other bookmarks, and Chrome Sync carries it to your other devices. Delete a project's folder there and Tabchef removes that project on your other devices only if it has not changed there since the last sync; otherwise it stays and is listed here. A project with tabs open on a device is not removed there, only no longer kept. If the Tabchef folder is missing, nothing is deleted and your projects are written again. Editing the tabs in the bookmark manager is fine. Reordering tabs or groups does not sync. Chrome shows saved groups on the bookmarks bar itself, and extensions cannot hide them.">
+      <input type="checkbox" checked={sync.enabled} onchange={toggleSync} />
+    </Field>
+    {#if syncError}<p class="err" role="alert">{syncError}</p>{/if}
+    {#if sync.enabled}
+      <div class="muted" role="status">
+        {#if syncFailure}
+          <p>The last sync failed: {syncFailure}</p>
+        {:else if sync.lastSyncAt === undefined}
+          <p>Not synced yet.</p>
+        {:else}
+          <p>{`Last synced ${ago(sync.lastSyncAt)}.${result ? ` ${result.merged} ${result.merged === 1 ? 'project' : 'projects'} merged.` : ''}`}</p>
+        {/if}
+        {#if result && result.conflicts.length > 0}
+          <p>Kept after a conflict ({result.conflicts.length})</p>
+          <ul class="plain">{#each result.conflicts as c (c)}<li>{c}</li>{/each}</ul>
+        {/if}
+        {#if result && result.ignored.length > 0}
+          <p>Skipped ({result.ignored.length})</p>
+          <ul class="plain">{#each result.ignored as c (c)}<li>{c}</li>{/each}</ul>
+        {/if}
+      </div>
+    {/if}
+  </div>
   {#if toast}
     {@const t = toast}
     <p class="toast" role="status">
@@ -202,6 +268,9 @@
   li { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); }
   li a { flex: 1; min-width: 0; color: var(--accent); }
   .status { font-size: 12px; border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px; color: var(--muted); }
+  .sync { margin: 8px 0; }
+  .sync p { margin: 2px 0; }
+  ul.plain li { border: 0; padding: 0 0 0 12px; display: list-item; list-style: disc inside; }
   .muted { color: var(--muted); }
   .err { color: var(--danger); }
   .note { font-size: 12px; color: var(--accent); }
