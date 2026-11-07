@@ -9,7 +9,7 @@ export const manifestConfig: UserManifest = {
   // sidePanel is required (it has no install warning): granted at runtime as an optional permission, any later
   // sidePanel.open() crashes the whole browser (Chrome 156).
   permissions: ['tabs', 'tabGroups', 'storage', 'contextMenus', 'alarms', 'webNavigation', 'sidePanel'],
-  optional_permissions: ['notifications', 'scripting'],
+  optional_permissions: ['notifications', 'scripting', 'bookmarks'],
   optional_host_permissions: ['https://*/*', 'http://localhost/*'],
   options_ui: { page: 'options.html', open_in_tab: true },
   // storage.session, sidePanel.open and the tab group APIs Tabchef relies on.

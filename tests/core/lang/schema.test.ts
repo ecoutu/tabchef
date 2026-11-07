@@ -86,9 +86,9 @@ describe('validateRecipe: needs', () => {
     expect(at(r, '/needs/permissions/0').length).toBeGreaterThan(0);
     expect(validateRecipe(recipe({ needs: { permissions: ['scripting', 'notifications'] } })).ok).toBe(true);
   });
-  it('the schema permission enum equals manifestConfig.optional_permissions (D31)', () => {
+  it('the schema permission enum equals manifestConfig.optional_permissions, less bookmarks (D31; project sync only, a recipe never needs it)', () => {
     const items = (recipeJsonSchema as { $defs: { permission: { enum: string[] } } }).$defs.permission.enum;
-    expect(items).toEqual(manifestConfig.optional_permissions);
+    expect(items).toEqual(manifestConfig.optional_permissions?.filter((p) => p !== 'bookmarks'));
   });
   it('needs.hosts must be Chrome match patterns', () => {
     expect(validateRecipe(recipe({ needs: { hosts: ['https://meet.google.com/*', '*://*.example.com/*', 'http://localhost:8080/x'] } })).ok).toBe(true);

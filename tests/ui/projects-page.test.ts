@@ -290,3 +290,234 @@ describe('card title links', () => {
     expect(await screen.findByRole('link', { name: 'acme/web' })).toBeTruthy();
   });
 });
+
+describe('Projects page: project sync (M4 T14b)', () => {
+  let status: { enabled: boolean; wanted: boolean; lastSyncAt?: number; lastResult?: unknown; notices?: { at: number; text: string }[] };
+  let request: ReturnType<typeof vi.fn>;
+  beforeEach(() => {
+    status = { enabled: false, wanted: false };
+    request = vi.fn(async () => true);
+    (fakeBrowser.permissions as unknown as { request: typeof request }).request = request;
+    send.mockImplementation(async (req: { type: string; enabled?: boolean }) => {
+      if (req.type === 'projects.sync.status') return { ok: true, data: status };
+      if (req.type === 'projects.sync.set') { status = { ...status, enabled: !!req.enabled, wanted: !!req.enabled }; return { ok: true, data: status }; }
+      if (req.type === 'projects.sync.dismiss') { status = { ...status, notices: [] }; return { ok: true, data: status }; }
+      return reply(req);
+    });
+  });
+  const toggle = () => screen.findByRole('checkbox', { name: 'Sync kept projects across your devices' }) as Promise<HTMLInputElement>;
+
+  it('shows the toggle off, with no status, until sync has run', async () => {
+    render(Projects);
+    expect((await toggle()).checked).toBe(false);
+    expect(screen.queryByText(/Last synced/)).toBeNull();
+  });
+  it('turning it on requests the bookmarks permission in the click, then sends projects.sync.set', async () => {
+    render(Projects);
+    const box = await toggle();
+    box.click();
+    expect(request).toHaveBeenCalledTimes(1); // synchronously, inside the gesture
+    expect(request).toHaveBeenCalledWith({ permissions: ['bookmarks'] });
+    await waitFor(() => expect(send).toHaveBeenCalledWith({ type: 'projects.sync.set', enabled: true }));
+    await waitFor(() => expect(box.checked).toBe(true));
+  });
+  it('denied: the toggle stays off, sync.set is not sent, and a plain message says why', async () => {
+    request.mockResolvedValue(false);
+    render(Projects);
+    const box = await toggle();
+    box.click();
+    expect(await screen.findByText('Sync stays off: Chrome did not give Tabchef access to your bookmarks.')).toBeTruthy();
+    expect(box.checked).toBe(false);
+    expect(send).not.toHaveBeenCalledWith({ type: 'projects.sync.set', enabled: true });
+  });
+  it('turning it off sends sync.set false and keeps the permission', async () => {
+    status = { enabled: true, wanted: true };
+    const remove = vi.fn();
+    (fakeBrowser.permissions as unknown as { remove: typeof remove }).remove = remove;
+    render(Projects);
+    const box = await toggle();
+    await waitFor(() => expect(box.checked).toBe(true));
+    box.click();
+    await waitFor(() => expect(send).toHaveBeenCalledWith({ type: 'projects.sync.set', enabled: false }));
+    await waitFor(() => expect(box.checked).toBe(false));
+    expect(request).not.toHaveBeenCalled();
+    expect(remove).not.toHaveBeenCalled();
+  });
+  it('a failed sync.set shows the error and leaves the toggle as it was', async () => {
+    send.mockImplementation(async (req: { type: string }) => {
+      if (req.type === 'projects.sync.status') return { ok: true, data: status };
+      if (req.type === 'projects.sync.set') return { ok: false, error: 'Allow Tabchef to use your bookmarks first.' };
+      return reply(req);
+    });
+    render(Projects);
+    const box = await toggle();
+    box.click();
+    expect(await screen.findByText('Allow Tabchef to use your bookmarks first.')).toBeTruthy();
+    expect(box.checked).toBe(false);
+  });
+  it('status: last synced time, merged count, skipped items, and the sync notes named in plain words', async () => {
+    const kept = 'project jira:ABC-1: deleted on one device but edited on the other; kept the edit';
+    const missing = 'The Tabchef bookmark folder was missing: no project was removed here, and the kept ones were written again.';
+    status = { enabled: true, wanted: true, lastSyncAt: Date.now() - 5 * 60_000, lastResult: {
+      merged: 2,
+      conflicts: [kept],
+      ignored: ['A second Tabchef folder in Other bookmarks holds more than projects: it was left as it is.'],
+    }, notices: [{ at: Date.now() - 2 * 3_600_000, text: missing }, { at: Date.now() - 5 * 60_000, text: kept }] };
+    render(Projects);
+    expect(await screen.findByText('Last synced 5 min ago. 2 projects merged.')).toBeTruthy();
+    expect(screen.queryByText(/Kept after a conflict/)).toBeNull();
+    expect(screen.getByText('Skipped (1)')).toBeTruthy();
+    expect(screen.getByText(/A second Tabchef folder in Other bookmarks/)).toBeTruthy();
+    expect(screen.getByText('Sync notes (2)')).toBeTruthy();
+    expect(screen.getByText(`${missing} (2 h ago)`)).toBeTruthy();
+    expect(screen.getByText(`${kept} (5 min ago)`)).toBeTruthy();
+  });
+  it('status: a failed last sync shows its error; no result yet reads "Not synced yet."', async () => {
+    status = { enabled: true, wanted: true, lastSyncAt: Date.now(), lastResult: { error: 'bookmarks unavailable' } };
+    render(Projects);
+    expect(await screen.findByText('The last sync failed: bookmarks unavailable')).toBeTruthy();
+    cleanup();
+    status = { enabled: true, wanted: true };
+    render(Projects);
+    expect(await screen.findByText('Not synced yet.')).toBeTruthy();
+  });
+  it('on, but access to bookmarks taken away: the box stays on, one line says sync is paused, and access can be given again', async () => {
+    status = { enabled: false, wanted: true, lastSyncAt: Date.now() };
+    render(Projects);
+    expect(await screen.findByText('Sync is paused: Tabchef no longer has access to your bookmarks.')).toBeTruthy();
+    expect((await toggle()).checked).toBe(true);
+    expect(screen.queryByText(/Last synced/)).toBeNull();
+    screen.getByRole('button', { name: 'Allow access to bookmarks' }).click();
+    expect(request).toHaveBeenCalledTimes(1); // synchronously, inside the gesture
+    expect(request).toHaveBeenCalledWith({ permissions: ['bookmarks'] });
+    await waitFor(() => expect(send).toHaveBeenCalledWith({ type: 'projects.sync.set', enabled: true }));
+    expect(await screen.findByText(/Last synced/)).toBeTruthy();
+    expect(screen.queryByText(/Sync is paused/)).toBeNull();
+  });
+  it('paused, and access refused again: still paused, sync.set is not sent, and a plain message says why', async () => {
+    status = { enabled: false, wanted: true };
+    request.mockResolvedValue(false);
+    render(Projects);
+    (await screen.findByRole('button', { name: 'Allow access to bookmarks' })).click();
+    expect(await screen.findByText('Sync stays paused: Chrome did not give Tabchef access to your bookmarks.')).toBeTruthy();
+    expect(screen.getByText('Sync is paused: Tabchef no longer has access to your bookmarks.')).toBeTruthy();
+    expect(send).not.toHaveBeenCalledWith({ type: 'projects.sync.set', enabled: true });
+  });
+  it('paused: turning it off sends sync.set false without asking for access', async () => {
+    status = { enabled: false, wanted: true };
+    render(Projects);
+    const box = await toggle();
+    await waitFor(() => expect(box.checked).toBe(true));
+    box.click();
+    await waitFor(() => expect(send).toHaveBeenCalledWith({ type: 'projects.sync.set', enabled: false }));
+    await waitFor(() => expect(box.checked).toBe(false));
+    await waitFor(() => expect(screen.queryByText(/Sync is paused/)).toBeNull());
+    expect(request).not.toHaveBeenCalled();
+  });
+  it('a failing sync.status does not break the page', async () => {
+    send.mockImplementation(async (req: { type: string }) => (req.type === 'projects.sync.status' ? { ok: false, error: 'x' } : reply(req)));
+    render(Projects);
+    expect(await screen.findByRole('link', { name: 'acme/web' })).toBeTruthy();
+    expect((await toggle()).checked).toBe(false);
+  });
+});
+
+describe('Projects page: sync help tip (M4 T14b)', () => {
+  it('covers unchanged-only deletes, open projects only no longer kept, and a missing folder deleting nothing', async () => {
+    render(Projects);
+    const btn = await screen.findByRole('button', { name: 'About Sync kept projects across your devices' });
+    const tip = document.getElementById(btn.getAttribute('aria-describedby')!)!.textContent!;
+    expect(tip).toContain('visible Tabchef folder in Other bookmarks');
+    expect(tip).toContain('only if it has not changed there since the last sync; otherwise it stays and is listed here');
+    expect(tip).toContain('A project with tabs open on a device is not removed there, only no longer kept.');
+    expect(tip).toContain('If the Tabchef folder is missing, nothing is deleted and your projects are written again.');
+    expect(tip).toContain('While a folder inside Tabchef cannot be read, a project that has synced before and whose folder is not found is not updated or removed on this device until that folder is fixed or removed; the sync status names the folder.');
+    expect(tip).toContain('If Chrome starts using a different Tabchef folder (you sign in or out of Chrome, or switch accounts), nothing is removed: your projects and that folder\'s are combined, so projects or saved tabs removed since this device last synced with that folder may come back.');
+    expect(tip).toContain('extensions cannot hide them');
+  });
+});
+
+describe('M4-R46: the Projects page lists the sync notes until dismissed', () => {
+  let status: Record<string, unknown>;
+  beforeEach(() => {
+    send.mockImplementation(async (req: { type: string; upTo?: number }) => {
+      if (req.type === 'projects.sync.status') return { ok: true, data: status };
+      if (req.type === 'projects.sync.dismiss') {
+        const notices = (status.notices as { at: number; text: string }[] | undefined) ?? [];
+        status = { ...status, notices: notices.filter((n) => n.at > req.upTo!) };
+        return { ok: true, data: status };
+      }
+      return reply(req);
+    });
+  });
+  const KEPT = 'project manual-project:taxes: deleted on one device but edited on the other; kept the edit';
+
+  it('notes from an earlier sync stay listed beside an empty last result; Dismiss clears them', async () => {
+    const at = Date.now() - 5 * 60_000;
+    status = { enabled: true, wanted: true, lastSyncAt: Date.now(), lastResult: { merged: 0, conflicts: [], ignored: [] },
+      notices: [{ at: at - 60_000, text: 'The Tabchef bookmark folder was missing.' }, { at, text: KEPT }] };
+    render(Projects);
+    expect(await screen.findByText('Sync notes (2)')).toBeTruthy();
+    expect(screen.getByText(`${KEPT} (5 min ago)`)).toBeTruthy();
+    expect(screen.queryByText(/Skipped/)).toBeNull();
+    const dismiss = screen.getByRole('button', { name: 'Dismiss sync notes' });
+    dismiss.focus();
+    dismiss.click();
+    await waitFor(() => expect(send).toHaveBeenCalledWith({ type: 'projects.sync.dismiss', upTo: at })); // the newest note shown
+    await waitFor(() => expect(screen.queryByText(/Sync notes/)).toBeNull());
+    // M4-R47: the focused button went with the block; focus moves to the sync toggle, not the page body.
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('checkbox', { name: 'Sync kept projects across your devices' })));
+  });
+
+  it('a note a sync added after the page loaded is not dismissed with the ones shown (M4-R47)', async () => {
+    const at = Date.now() - 5 * 60_000;
+    status = { enabled: true, wanted: true, lastSyncAt: Date.now(), notices: [{ at, text: KEPT }] };
+    render(Projects);
+    expect(await screen.findByText('Sync notes (1)')).toBeTruthy();
+    const later = 'The Tabchef bookmark folder was missing: no project was removed here, and the kept ones were written again.';
+    status = { ...status, notices: [{ at, text: KEPT }, { at: Date.now(), text: later }] }; // a sync runs meanwhile
+    screen.getByRole('button', { name: 'Dismiss sync notes' }).click();
+    await waitFor(() => expect(send).toHaveBeenCalledWith({ type: 'projects.sync.dismiss', upTo: at }));
+    expect(await screen.findByText(`${later} (just now)`)).toBeTruthy();
+    expect(screen.getByText('Sync notes (1)')).toBeTruthy();
+    expect(screen.queryByText(`${KEPT} (5 min ago)`)).toBeNull();
+  });
+
+  it('sync off: the notes are still listed', async () => {
+    status = { enabled: false, wanted: false, lastSyncAt: Date.now(), notices: [{ at: Date.now(), text: KEPT }] };
+    render(Projects);
+    expect((await screen.findByRole('checkbox', { name: 'Sync kept projects across your devices' }) as HTMLInputElement).checked).toBe(false);
+    expect(await screen.findByText('Sync notes (1)')).toBeTruthy();
+    expect(screen.getByText(`${KEPT} (just now)`)).toBeTruthy();
+  });
+
+  it('paused (access to bookmarks taken away): the notes are still listed under the paused line', async () => {
+    status = { enabled: false, wanted: true, lastSyncAt: Date.now(), notices: [{ at: Date.now(), text: KEPT }] };
+    render(Projects);
+    expect(await screen.findByText('Sync is paused: Tabchef no longer has access to your bookmarks.')).toBeTruthy();
+    expect(screen.getByText('Sync notes (1)')).toBeTruthy();
+  });
+});
+
+describe('M4-R49: repeated skipped lines and sync notes still render', () => {
+  let status: Record<string, unknown>;
+  beforeEach(() => {
+    send.mockImplementation(async (req: { type: string }) => (req.type === 'projects.sync.status' ? { ok: true, data: status } : reply(req)));
+  });
+  const dup = 'folder "New folder" has no project metadata bookmark';
+
+  it('two identical skipped texts render both lines (M4-R49)', async () => {
+    status = { enabled: true, wanted: true, lastSyncAt: Date.now(), lastResult: { merged: 0, conflicts: [], ignored: [dup, dup] } };
+    render(Projects);
+    expect(await screen.findByText('Skipped (2)')).toBeTruthy();
+    expect(screen.getAllByText(dup)).toHaveLength(2);
+    expect(screen.getByText(/Last synced/)).toBeTruthy();
+  });
+  it('two identical sync notes from a corrupt status render both lines', async () => {
+    status = { enabled: true, wanted: true, lastSyncAt: Date.now(), lastResult: { merged: 0, conflicts: [], ignored: [] },
+      notices: [{ at: Date.now() - 1000, text: 'same' }, { at: Date.now(), text: 'same' }] };
+    render(Projects);
+    expect(await screen.findByText('Sync notes (2)')).toBeTruthy();
+    expect(screen.getAllByText(/^same \(/)).toHaveLength(2);
+  });
+});
