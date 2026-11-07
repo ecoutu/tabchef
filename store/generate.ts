@@ -3,11 +3,13 @@
 // temp dir, which is removed afterwards: .output, which `npm run zip` packs, is never touched. Captures the popup,
 // options page and side panel (capture.ts), then lays them out with the captions (captions.json), the name, tagline
 // and icon (brand.ts) and the launch kit's tile designs (art.ts), in the fonts under store/fonts.
-// Writes docs/store/images/, which is committed: re-run and commit after a UI, name or icon change.
+// Writes docs/store/images/, which is committed. The release job runs it and commits the images in the release commit,
+// so they match the released extension. An image whose pixels didn't change is left alone, so a re-encode by another
+// Chromium never shows up as a change.
 // Options: --keep-captures also writes the raw captures to docs/store/images/captures/.
-import { chromium, type Browser } from '@playwright/test';
+import { chromium, type Browser, type Page } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
 import { FACES, layoutInPage, marquee, page, screenshots, smallTile, type Captions } from './art';
@@ -27,8 +29,30 @@ function buildE2e(outDir: string): string {
   return join(outDir, 'chrome-mv3');
 }
 
-/** Renders `html` at exactly width×height into `file`; fails on a missing font or (tiles) anything off the tile. */
-async function render(browser: Browser, html: string, size: { width: number; height: number }, file: string): Promise<void> {
+/** Whether two PNGs decode to the same pixels (their bytes may differ: encoder, metadata). */
+async function samePixels(p: Page, a: Buffer, b: Buffer): Promise<boolean> {
+  if (a.equals(b)) return true;
+  return p.evaluate(async ([a64, b64]) => {
+    const decode = async (b64: string) => {
+      const img = new Image();
+      img.src = `data:image/png;base64,${b64}`;
+      await img.decode();
+      const c = document.createElement('canvas');
+      [c.width, c.height] = [img.naturalWidth, img.naturalHeight];
+      const ctx = c.getContext('2d')!;
+      ctx.drawImage(img, 0, 0);
+      return ctx.getImageData(0, 0, c.width, c.height);
+    };
+    const [x, y] = [await decode(a64), await decode(b64)];
+    return x.width === y.width && x.height === y.height && x.data.every((v, i) => v === y.data[i]);
+  }, [a.toString('base64'), b.toString('base64')] as const);
+}
+
+/**
+ * Renders `html` at exactly width×height into `file`; fails on a missing font or (tiles) anything off the tile.
+ * Leaves an existing `file` with the same pixels untouched. Returns whether it wrote the file.
+ */
+async function render(browser: Browser, html: string, size: { width: number; height: number }, file: string): Promise<boolean> {
   const p = await browser.newPage({ viewport: size, deviceScaleFactor: 1 });
   try {
     await p.setContent(page(html, size), { waitUntil: 'load' });
@@ -51,10 +75,12 @@ async function render(browser: Browser, html: string, size: { width: number; hei
       return over ? [`${e.className || e.tagName} "${(e.textContent ?? '').slice(0, 40)}" does not fit`] : [];
     })));
     if (problems.length) throw new Error(`store:assets: ${file}: ${problems.join('; ')}`);
-    await p.screenshot({ path: file, type: 'png' });
-    const b = readFileSync(file);
+    const b = await p.screenshot({ type: 'png' });
     const [w, h] = [b.readUInt32BE(16), b.readUInt32BE(20)];
     if (w !== size.width || h !== size.height) throw new Error(`store:assets: ${file} is ${w}×${h}, not ${size.width}×${size.height}`);
+    if (existsSync(file) && await samePixels(p, readFileSync(file), b)) return false;
+    writeFileSync(file, b);
+    return true;
   } finally {
     await p.close();
   }
@@ -77,18 +103,20 @@ export default async function main(args: string[]): Promise<number> {
 
   mkdirSync(OUT, { recursive: true });
   const browser = await chromium.launch({ channel: 'chromium', args: ['--host-resolver-rules=MAP * ~NOTFOUND'] });
+  const images = [
+    ...screenshots(shots, captions, brand).map((s) => ({ file: s.file, html: s.html, size: { width: 1280, height: 800 } })),
+    { file: 'promo-small-440x280.png', html: smallTile(brand, captions), size: { width: 440, height: 280 } },
+    { file: 'promo-marquee-1400x560.png', html: marquee(brand, captions), size: { width: 1400, height: 560 } },
+  ];
   const written: string[] = [];
   try {
-    for (const s of screenshots(shots, captions, brand)) {
-      await render(browser, s.html, { width: 1280, height: 800 }, join(OUT, s.file));
-      written.push(s.file);
-    }
-    await render(browser, smallTile(brand, captions), { width: 440, height: 280 }, join(OUT, 'promo-small-440x280.png'));
-    await render(browser, marquee(brand, captions), { width: 1400, height: 560 }, join(OUT, 'promo-marquee-1400x560.png'));
-    written.push('promo-small-440x280.png', 'promo-marquee-1400x560.png');
+    for (const i of images) if (await render(browser, i.html, i.size, join(OUT, i.file))) written.push(i.file);
   } finally {
     await browser.close();
   }
-  console.log(`store:assets: wrote ${written.length} images to ${relative(ROOT, OUT)}/ (${written.join(', ')})`);
+  const where = relative(ROOT, OUT);
+  console.log(written.length
+    ? `store:assets: wrote ${written.length} of ${images.length} images to ${where}/ (${written.join(', ')}); the rest are unchanged`
+    : `store:assets: all ${images.length} images in ${where}/ are unchanged`);
   return 0;
 }

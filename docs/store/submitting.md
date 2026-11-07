@@ -103,6 +103,9 @@ GitHub release, then uploads the zip to the store and submits it for review. To 
 new zip under **Package** → **Upload new package**, then **Submit for review**. A version must be higher than the
 published one.
 
+The release commit also carries any store screenshots or promo tiles that changed (`docs/store/images/`). The store
+doesn't take them from the upload: when that commit changes one, upload it under **Store listing** → **Graphic assets**.
+
 Re-check [listing.md](listing.md) when a release adds a permission: the dashboard asks for its justification. A
 required permission that adds an install warning also disables the extension for existing users until they accept
 it, so prefer optional permissions asked for at runtime.
