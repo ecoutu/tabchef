@@ -237,7 +237,7 @@ export type Request =
   | { type: 'projects.start'; recipeId: string; key: string }
   /** M4 T7: saves the project's tab list, keeps it and closes its tabs (as closeGroup); answers `{ closed, skipped, ids }`. */
   | { type: 'projects.closeAndSave'; projectId: string }
-  /** M4 T7: reopens the project's saved tabs (an open one joins instead); answers `{ opened }`. */
+  /** M4 T7: reopens the project's saved tabs (an open one joins instead); answers `{ opened, failed? }`. */
   | { type: 'projects.reopen'; projectId: string }
   /** M4 T7: Keep (never pruned, synced) on or off. */
   | { type: 'projects.setKeep'; projectId: string; keep: boolean }
@@ -375,7 +375,7 @@ export interface ResponseData {
   'projects.create': { id: string };
   'projects.start': { id: string };
   'projects.closeAndSave': { closed: number; skipped: number; ids: string[] };
-  'projects.reopen': { opened: number };
+  'projects.reopen': { opened: number; failed?: number };
   'projects.setKeep': null;
   'projects.groups': { id: number; title: string; color: GroupColor; tabCount: number }[];
   'projects.saveGroup': { id: string };

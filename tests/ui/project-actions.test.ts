@@ -64,6 +64,38 @@ describe('closeGroup', () => {
   });
 });
 
+describe('reopen', () => {
+  it('says how many saved tabs could not be opened, without Undo, and reloads', async () => {
+    const { s, actions } = setup();
+    send.mockResolvedValue({ ok: true, data: { opened: 2, failed: 1 } });
+    expect(await actions.reopen('p1')).toBe(true);
+    expect(send).toHaveBeenCalledWith({ type: 'projects.reopen', projectId: 'p1' });
+    expect(s.toast).toEqual({ text: 'Opened 2 tabs · 1 could not be opened', ids: [] });
+    expect(s.error).toBe('');
+    expect(s.reloads).toBe(1);
+  });
+  it('says how many saved tabs could not be opened when none opened', async () => {
+    const { s, actions } = setup();
+    send.mockResolvedValue({ ok: true, data: { opened: 0, failed: 3 } });
+    expect(await actions.reopen('p1')).toBe(true);
+    expect(s.toast).toEqual({ text: '3 saved tabs could not be opened', ids: [] });
+    send.mockResolvedValue({ ok: true, data: { opened: 0, failed: 1 } });
+    await actions.reopen('p1');
+    expect(s.toast).toEqual({ text: '1 saved tab could not be opened', ids: [] });
+  });
+  it('leaves the toast alone when every tab opened, and surfaces a failure without reloading', async () => {
+    const { s, actions } = setup();
+    s.toast = { text: 'Closed 2 tabs', ids: ['a', 'b'] };
+    send.mockResolvedValue({ ok: true, data: { opened: 1 } });
+    await actions.reopen('p1');
+    expect(s.toast).toEqual({ text: 'Closed 2 tabs', ids: ['a', 'b'] });
+    send.mockResolvedValue({ ok: false, error: 'boom' });
+    expect(await actions.reopen('p1')).toBe(false);
+    expect(s.error).toBe('boom');
+    expect(s.reloads).toBe(1);
+  });
+});
+
 describe('undo', () => {
   it('restores each entry, clears the toast and reloads', async () => {
     const { s, actions } = setup();

@@ -50,12 +50,23 @@ export function createProjectActions(host: ProjectActionsHost) {
   const closeAndArchive = (projectId: string) => closeTabs('projects.closeAndArchive', projectId);
 
   /** Runs a lifecycle request, then reloads when it succeeded. Resolves to whether it did. */
-  async function lifecycle(req: Extract<Request, { type: 'projects.reopen' | 'projects.setKeep' | 'projects.archive' | 'projects.unarchive' | 'projects.delete' }>): Promise<boolean> {
+  async function lifecycle(req: Extract<Request, { type: 'projects.setKeep' | 'projects.archive' | 'projects.unarchive' | 'projects.delete' }>): Promise<boolean> {
     if (!(await act(() => send(req)))) return false;
     await host.reload();
     return true;
   }
-  const reopen = (projectId: string) => lifecycle({ type: 'projects.reopen', projectId });
+  /** Reopen (M4 T7): when Chrome refused some saved tabs, a toast (no Undo) says how many could not be opened. */
+  async function reopen(projectId: string): Promise<boolean> {
+    const r = await send({ type: 'projects.reopen', projectId });
+    if (!r.ok) { host.setError(r.error); return false; }
+    host.setError('');
+    const { opened, failed = 0 } = r.data;
+    const text = opened > 0 ? `Opened ${opened} ${opened === 1 ? 'tab' : 'tabs'} · ${failed} could not be opened`
+      : `${failed} saved ${failed === 1 ? 'tab' : 'tabs'} could not be opened`;
+    if (failed > 0) host.setToast({ text, ids: [] });
+    await host.reload();
+    return true;
+  }
   const setKeep = (projectId: string, keep: boolean) => lifecycle({ type: 'projects.setKeep', projectId, keep });
   const archive = (projectId: string) => lifecycle({ type: 'projects.archive', projectId });
   const unarchive = (projectId: string) => lifecycle({ type: 'projects.unarchive', projectId });

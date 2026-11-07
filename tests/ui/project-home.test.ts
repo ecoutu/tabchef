@@ -41,6 +41,7 @@ beforeEach(() => {
       case 'projects.closeGroup': case 'projects.closeAndSave': case 'projects.closeAndArchive':
         return { ok: true, data: { closed: 3, skipped: 0, ids: ['rc1', 'rc2', 'rc3'] } };
       case 'projects.openLinked': return { ok: true, data: { tabId: 9 } };
+      case 'projects.reopen': return { ok: true, data: { opened: 1 } };
       default: return { ok: true, data: null };
     }
   });

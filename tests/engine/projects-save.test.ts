@@ -330,7 +330,7 @@ describe('ProjectService.reopen', () => {
     expect(h.f.state.tabs.find((t) => t.url === A)?.windowId).toBe(1);
   });
 
-  it('a tab that fails to open partway (2nd of 3) never shrinks the saved list on the next pass', async () => {
+  it('a tab that fails to open partway (2nd of 3) never stops the others or shrinks the saved list on the next pass', async () => {
     const h = harness();
     const id = await taxes(h);
     h.f.addTab(tab(9, 'https://other.example/'));
@@ -338,10 +338,13 @@ describe('ProjectService.reopen', () => {
     const create = h.f.createTab.bind(h.f);
     let n = 0;
     vi.spyOn(h.f, 'createTab').mockImplementation(async (p) => {
-      if (++n === 2) throw new Error('No tab created');
+      n++;
+      if (p.url === B) throw new Error('No tab created'); // in its window and on the retry without one
       return create(p);
     });
-    await expect(h.svc.reopen(id)).rejects.toThrow('No tab created');
+    expect(await h.svc.reopen(id)).toEqual({ opened: 2, failed: 1 });
+    expect(n).toBe(4);
+    expect(h.f.state.tabs.map((t) => t.url).sort()).toEqual([A, C, 'https://other.example/']);
     await h.r.flush();
     expect((await h.stored(id))?.saved?.tabs.map((t) => t.url)).toEqual([A, B, C]);
   });
@@ -364,6 +367,56 @@ describe('ProjectService.reopen', () => {
     const id = await h.svc.create(MANUAL, 'Empty');
     expect(await h.svc.reopen(id)).toEqual({ opened: 0 });
     await expect(h.svc.reopen(`${MANUAL}:nope`)).rejects.toThrow('unknown project');
+  });
+
+  it('a window closed meanwhile: each saved tab that cannot open there opens in another window and joins from there', async () => {
+    const h = harness();
+    const id = await taxes(h);
+    h.f.addWindow(2);
+    h.f.addTab(tab(9, 'https://other.example/', { windowId: 2 }));
+    await h.svc.closeAndSave(id);
+    const create = h.f.createTab.bind(h.f);
+    const calls: (number | undefined)[] = [];
+    vi.spyOn(h.f, 'createTab').mockImplementation(async (o) => {
+      calls.push(o.windowId);
+      if (o.windowId === 1) {
+        h.f.state.windows = h.f.state.windows.filter((w) => w.id !== 1);
+        h.f.state.windows[0]!.focused = true;
+        throw new Error('No window with id: 1.');
+      }
+      return create(o);
+    });
+    expect(await h.svc.reopen(id)).toEqual({ opened: 3 });
+    expect(calls).toEqual([1, undefined, 1, undefined, 1, undefined]);
+    expect(h.f.state.tabs.filter((t) => t.windowId === 2).map((t) => t.url)).toEqual(['https://other.example/', A, B, C]);
+    const reopened = new Set(h.f.state.tabs.filter((t) => t.id !== 9).map((t) => t.id));
+    expect((await h.stored(id))?.manual.filter((m) => reopened.has(m.tabId!)).map((m) => m.windowId)).toEqual([2, 2, 2]);
+  });
+
+  it('every saved tab refused: nothing opens and each one is counted once', async () => {
+    const h = harness();
+    const id = await taxes(h);
+    h.f.addTab(tab(9, 'https://other.example/'));
+    await h.svc.closeAndSave(id);
+    const create = vi.spyOn(h.f, 'createTab').mockRejectedValue(new Error('No window with id: 1.'));
+    expect(await h.svc.reopen(id)).toEqual({ opened: 0, failed: 3 });
+    expect(create).toHaveBeenCalledTimes(6);
+  });
+
+  it('a saved tab Chrome refuses (a javascript: URL) is counted, and the tabs after it still open', async () => {
+    const h = harness({ session: memorySession() });
+    const id = await taxes(h);
+    await h.svc.closeAndSave(id);
+    const p = (await h.stored(id))!;
+    p.saved = { tabs: [A, 'javascript:void(0)', B, C].map((url) => ({ url, title: url })), at: NOW };
+    await h.store.put(p);
+    const create = h.f.createTab.bind(h.f);
+    vi.spyOn(h.f, 'createTab').mockImplementation(async (o) => {
+      if (o.url.startsWith('javascript:')) throw new Error('JavaScript URLs are not allowed in API based extension navigations.');
+      return create(o);
+    });
+    expect(await h.svc.reopen(id)).toEqual({ opened: 3, failed: 1 });
+    expect(h.f.state.tabs.map((t) => t.url).sort()).toEqual([A, B, C]);
   });
 });
 

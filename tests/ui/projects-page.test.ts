@@ -26,6 +26,7 @@ const reply = async (req: { type: string; id?: string }) => {
   if (req.type === 'projects.list') return { ok: true, data: cards };
   if (req.type === 'projects.savedLists') return { ok: true, data: { saved: [], archived: [] } };
   if (req.type === 'projects.home') return { ok: true, data: homeOf(req.id ?? '') };
+  if (req.type === 'projects.reopen') return { ok: true, data: { opened: 1 } };
   return { ok: true, data: null };
 };
 
@@ -178,6 +179,7 @@ describe('Projects page: Open / Saved / Archived (M4 T9)', () => {
       if (req.type === 'projects.list') return { ok: true, data: open };
       if (req.type === 'projects.savedLists') return { ok: true, data: lists };
       if (req.type === 'projects.closeAndArchive') return { ok: true, data: { closed: 1, skipped: 0, ids: ['rc1'] } };
+      if (req.type === 'projects.reopen') return { ok: true, data: { opened: 1 } };
       return { ok: true, data: null };
     });
   });

@@ -724,8 +724,11 @@ export class ProjectService {
    * focused one (placement: T16). A saved URL already open (dedupe's normalization) is not opened again: that tab joins
    * instead. Each tab joins as a manual member when the recipe takes them (else by its rules). A closed (tombstoned)
    * project is revived, an archived one unarchived (M4 T9: "Archived: reopen?"). A user action, so it applies under global dry run too (R50). Returns how many tabs it opened.
+   * A saved tab that can't open in that window (closed meanwhile) is tried once more in Chrome's own choice of window. A
+   * saved tab Chrome still refuses (a `javascript:` URL) never stops the others: `failed` counts them (absent when none
+   * failed).
    */
-  reopen(projectId: string): Promise<{ opened: number }> {
+  reopen(projectId: string): Promise<{ opened: number; failed?: number }> {
     return this.serial(async () => {
       const snap = await this.deps.port.snapshot();
       const { program, projects, assignments } = await this.resolve(snap);
@@ -753,6 +756,7 @@ export class ProjectService {
       }
       const seen = new Set<string>();
       let opened = 0;
+      let failed = 0;
       for (const s of saved) {
         const k = this.norm(program, s.url);
         if (seen.has(k)) continue;
@@ -762,14 +766,28 @@ export class ProjectService {
           if (manual && assignments.get(t.id)?.projectId !== projectId) await this.join(program, projects, p, t.id, t.windowId, urlOf(t));
           continue;
         }
-        const tabId = await this.deps.port.createTab({ url: s.url, active: false, ...(windowId !== undefined && { windowId }) });
+        let tabId: number | undefined;
+        let into = windowId;
+        try {
+          tabId = await this.deps.port.createTab({ url: s.url, active: false, ...(into !== undefined && { windowId: into }) });
+        } catch {
+          // The window may have closed meanwhile: one retry in Chrome's own choice of window.
+          if (into !== undefined) {
+            into = undefined;
+            tabId = await this.deps.port.createTab({ url: s.url, active: false }).catch(() => undefined);
+          }
+        }
+        if (tabId === undefined) {
+          failed++;
+          continue;
+        }
         opened++;
         if (!manual) continue;
-        const at = windowId ?? (await this.deps.port.snapshot()).tabs.find((x) => x.id === tabId)?.windowId ?? -1;
+        const at = into ?? (await this.deps.port.snapshot()).tabs.find((x) => x.id === tabId)?.windowId ?? -1;
         await this.join(program, projects, p, tabId, at, s.url);
       }
       this.deps.schedule?.('project');
-      return { opened };
+      return { opened, ...(failed > 0 && { failed }) };
     });
   }
 
