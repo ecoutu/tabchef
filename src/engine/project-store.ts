@@ -8,10 +8,29 @@ const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object
 const isProject = (x: unknown): x is Project => isObj(x) && typeof x.id === 'string' && typeof x.recipeId === 'string'
   && typeof x.key === 'string' && Array.isArray(x.manual) && Array.isArray(x.excluded) && Array.isArray(x.linked);
 
+const isSavedTab = (x: unknown): boolean => isObj(x) && typeof x.url === 'string' && typeof x.title === 'string'
+  && (x.group === undefined || typeof x.group === 'string') && (x.pinned === undefined || typeof x.pinned === 'boolean');
+const isSaved = (x: unknown): x is NonNullable<Project['saved']> => isObj(x) && Array.isArray(x.tabs) && x.tabs.every(isSavedTab)
+  && typeof x.at === 'number' && (x.closed === undefined || typeof x.closed === 'boolean');
+
+/** A stored project with each malformed optional field (saved, keep, archivedAt) dropped: the project itself is kept. */
+function sanitize(p: Project): Project {
+  const q = { ...p };
+  if (q.saved !== undefined && !isSaved(q.saved)) delete q.saved;
+  if (q.keep !== undefined && typeof q.keep !== 'boolean') delete q.keep;
+  if (q.archivedAt !== undefined && !Number.isFinite(q.archivedAt)) delete q.archivedAt;
+  return q;
+}
+
 /** Stored projects, cached after the first read. A failed read is retried and never overwritten. */
 export class ProjectStore {
   private cache?: Promise<Map<string, Project>>;
   private chain: Promise<unknown> = Promise.resolve();
+  /**
+   * id → its stored saved list that could not be read: read without it, but stored as it was until a readable list
+   * replaces it, so a later write (a rename, an archive) never loses it.
+   */
+  private rawSaved = new Map<string, unknown>();
 
   constructor(private readonly local: Pick<KeyValueArea, 'get' | 'set'>) {}
 
@@ -19,7 +38,9 @@ export class ProjectStore {
     this.cache ??= this.local.get(PROJECTS_KEY).then((r) => {
       const v = r[PROJECTS_KEY];
       // A project stored before M4 T7 has no updatedAt: it reads as createdAt (nothing is written for it).
-      return new Map((Array.isArray(v) ? v.filter(isProject) : []).map((p) => [p.id, { ...p, updatedAt: typeof p.updatedAt === 'number' ? p.updatedAt : p.createdAt }]));
+      const ps = Array.isArray(v) ? v.filter(isProject) : [];
+      for (const p of ps) if (p.saved !== undefined && !isSaved(p.saved)) this.rawSaved.set(p.id, p.saved);
+      return new Map(ps.map(sanitize).map((p) => [p.id, { ...p, updatedAt: typeof p.updatedAt === 'number' ? p.updatedAt : p.createdAt }]));
     }, (e: unknown) => {
       this.cache = undefined;
       throw e;
@@ -33,18 +54,23 @@ export class ProjectStore {
 
   /** Stores (adds or replaces) each project, in one write. */
   put(...ps: Project[]): Promise<void> {
-    return this.write((m) => { for (const p of ps) m.set(p.id, structuredClone(p)); });
+    return this.write((m) => {
+      for (const p of ps) {
+        m.set(p.id, structuredClone(p));
+        if (isSaved(p.saved)) this.rawSaved.delete(p.id);
+      }
+    });
   }
 
   remove(...ids: string[]): Promise<void> {
-    return this.write((m) => { for (const id of ids) m.delete(id); });
+    return this.write((m) => { for (const id of ids) { m.delete(id); this.rawSaved.delete(id); } });
   }
 
   private write(fn: (m: Map<string, Project>) => void): Promise<void> {
     const next = this.chain.then(async () => {
       const m = await this.load();
       fn(m);
-      await this.local.set({ [PROJECTS_KEY]: [...m.values()] });
+      await this.local.set({ [PROJECTS_KEY]: [...m.values()].map((p) => (this.rawSaved.has(p.id) && !isSaved(p.saved) ? { ...p, saved: this.rawSaved.get(p.id) } : p)) });
     });
     this.chain = next.catch(() => {});
     return next;

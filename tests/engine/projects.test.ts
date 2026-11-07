@@ -371,6 +371,51 @@ describe('ProjectStore and pruning', () => {
     expect(await new ProjectStore(local).list()).toEqual([]);
   });
 
+  it('a project with an unreadable saved tab list, keep or archivedAt is read without that field, not dropped', async () => {
+    const local = memoryArea();
+    const good = { tabs: [{ url: 'https://a.test/', title: 'A', group: 'G', pinned: true }], at: NOW, closed: true };
+    const bad = (id: string, o: Record<string, unknown>) => ({ ...stored({ id: `${RID}:${id}`, key: id }), ...o });
+    local.data.set(PROJECTS_KEY, [
+      bad('S1', { saved: 'tabs' }), bad('S2', { saved: { tabs: 'x', at: NOW } }), bad('S3', { saved: { tabs: [{ title: 'no url' }], at: NOW } }),
+      bad('S4', { saved: { tabs: [], at: 'now' } }), bad('S5', { saved: { tabs: [], at: NOW, closed: 'yes' } }), bad('OK', { saved: good, keep: true, archivedAt: 5 }),
+      bad('K1', { keep: 'yes', archivedAt: 'x' }), bad('K2', { archivedAt: Number.NaN }), { id: 'broken' },
+    ]);
+    const byKey = new Map((await new ProjectStore(local).list()).map((p) => [p.key, p]));
+    expect([...byKey.keys()]).toEqual(['S1', 'S2', 'S3', 'S4', 'S5', 'OK', 'K1', 'K2']);
+    for (const k of ['S1', 'S2', 'S3', 'S4', 'S5']) expect(byKey.get(k)).not.toHaveProperty('saved');
+    expect(byKey.get('OK')).toMatchObject({ saved: good, keep: true, archivedAt: 5 });
+    for (const k of ['K1', 'K2']) expect(byKey.get(k)).not.toHaveProperty('keep');
+    expect(byKey.get('K1')).not.toHaveProperty('archivedAt');
+    expect(byKey.get('K2')).not.toHaveProperty('archivedAt');
+    expect(local.set).not.toHaveBeenCalled();
+  });
+
+  it('an unreadable saved tab list stays stored as it was through a put without one, until a readable list replaces it or the project goes', async () => {
+    const local = memoryArea();
+    const raw = { tabs: 'broken', at: NOW };
+    local.data.set(PROJECTS_KEY, [{ ...stored(), saved: raw }, stored({ id: `${RID}:B`, key: 'B', saved: raw as never })]);
+    const disk = (id: string) => (local.data.get(PROJECTS_KEY) as Record<string, unknown>[]).find((p) => p.id === id);
+    const s = new ProjectStore(local);
+    const p = (await s.list()).find((x) => x.id === PID)!;
+    expect(p).not.toHaveProperty('saved');
+    await s.put({ ...p, name: 'Renamed' });
+    expect(disk(PID)).toMatchObject({ name: 'Renamed', saved: raw });
+    // A new store (the worker restarted) over the same storage: still read without it, still stored.
+    const s2 = new ProjectStore(local);
+    expect((await s2.list()).find((x) => x.id === PID)).toMatchObject({ name: 'Renamed' });
+    expect((await s2.list()).find((x) => x.id === PID)).not.toHaveProperty('saved');
+    await s2.put({ ...(await s2.list()).find((x) => x.id === PID)!, archivedAt: 5 });
+    expect(disk(PID)).toMatchObject({ archivedAt: 5, saved: raw });
+    const good = { tabs: [{ url: 'https://a.test/', title: 'A' }], at: NOW + 1 };
+    await s2.put({ ...(await s2.list()).find((x) => x.id === PID)!, saved: good });
+    expect(disk(PID)?.saved).toEqual(good);
+    expect((await new ProjectStore(local).list()).find((x) => x.id === PID)?.saved).toEqual(good);
+    await s2.remove(`${RID}:B`);
+    expect(disk(`${RID}:B`)).toBeUndefined();
+    await s2.put(stored({ id: `${RID}:B`, key: 'B' }));
+    expect(disk(`${RID}:B`)).not.toHaveProperty('saved');
+  });
+
   it('on startup, a project closed for 7 days of browser time is pruned; a younger one or one with open tabs is kept', async () => {
     const local = memoryArea();
     local.data.set(PROJECTS_KEY, [
