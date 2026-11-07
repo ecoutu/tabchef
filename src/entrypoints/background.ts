@@ -21,10 +21,11 @@ import { ProgramCache } from '../engine/program-cache';
 import { Reconciler } from '../engine/reconciler';
 import { LoadHold } from '../engine/load-hold';
 import { SafetyService } from '../engine/safety';
-import { ChromePort } from '../platform/chrome-port';
+import { ChromeBookmarkPort, ChromePort } from '../platform/chrome-port';
 import { ConfigStore } from '../storage/config-store';
 import { createProjectMenu, onMenuClick, refreshMenus, type MenuApi, type MenuTab } from '../engine/context-menu';
-import { ProjectService, ProjectStore } from '../engine/projects';
+import { PROJECTS_KEY, ProjectService, ProjectStore } from '../engine/projects';
+import { ProjectSync } from '../engine/project-sync';
 import { ConnectionManager } from '../engine/connections/manager';
 import { SecretStore, type KeyValueArea } from '../engine/connections/secret-store';
 import { RateLimiter } from '../engine/connections/rate-limiter';
@@ -321,6 +322,14 @@ export default defineBackground(() => {
       return (r?.source === 'builtin' ? builtinRecipes()[id] : r?.body)?.name;
     },
   });
+  // Project sync (M4 T14): kept projects ↔ the Tabchef bookmark folder, while the per-device toggle is on and the
+  // optional bookmarks permission granted (refresh: syncPermissions, below). Stored-project changes (storage.onChanged,
+  // below) and bookmark changes are debounced into one sync.
+  const projectSync = new ProjectSync({
+    projects, bookmarks: new ChromeBookmarkPort(), local: localArea,
+    granted: () => port.hasPermission({ permissions: ['bookmarks'] }),
+    warn: warn('project sync'),
+  });
   // Tabs and page facts changed: look up what new or navigated tabs need (cache first; at most every few seconds).
   const scheduleSources = createDebounce(() => { sources.refresh('tabs').catch(warn('source refresh')); }, 1000, 5000);
   // A title change re-plans (title conditions and extracts, e.g. a PR title naming its ticket). A same-document
@@ -484,9 +493,11 @@ export default defineBackground(() => {
   for (const ev of [browser.tabs.onCreated, browser.tabs.onRemoved, browser.tabs.onUpdated, browser.tabs.onReplaced, browser.tabs.onAttached]) {
     ev.addListener(scheduleBadge);
   }
-  // Finished suggestions are counted in the badge: recount when CloseExecutor stores a change to them.
+  // Finished suggestions are counted in the badge: recount when CloseExecutor stores a change to them. A change to the
+  // stored projects schedules a project sync (a no-op while it is off).
   browser.storage.onChanged.addListener((changes, area) => {
     if (area === 'session' && CLOSE_SUGGESTIONS_KEY in changes) scheduleBadge();
+    if (area === 'local' && PROJECTS_KEY in changes) projectSync.schedule();
   });
   scheduleBadge();
   const handleRequest = createHandler({
@@ -529,6 +540,7 @@ export default defineBackground(() => {
       knownSecrets: () => secrets.knownSecrets(),
     },
     projects,
+    projectSync,
     // sources.refresh (M3 T17): the popup's Projects tab refreshes source data (refresh('popup'), throttled).
     sources,
     // explain.tab / rules.shadowed (M2 T14): read-only, like preview.
@@ -598,10 +610,11 @@ export default defineBackground(() => {
   // Permission grants / revocations (also from chrome://extensions) and worker start: re-check needs, pause or resume
   // recipes and re-register the watch for the granted origins enabled recipes need. A connection's state depends on
   // its host permissions too (revoked api.github.com → not-configured): every status is re-emitted, so the Connections
-  // page re-lists and the capability levels follow.
+  // page re-lists and the capability levels follow. Project sync starts or stops with the bookmarks permission (M4 T14).
   const syncPermissions = () => {
     void permissions.onChanged();
     connections.permissionsChanged().catch(warn('connection status'));
+    projectSync.refresh().catch(warn('project sync'));
   };
   browser.permissions.onAdded.addListener(syncPermissions);
   browser.permissions.onRemoved.addListener(syncPermissions);

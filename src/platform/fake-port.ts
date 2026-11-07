@@ -1,5 +1,5 @@
 import type { GroupColor, GroupSnap, Snapshot, TabSnap } from '../core/types';
-import type { BrowserPort } from './browser-port';
+import type { BookmarkNode, BookmarkPort, BrowserPort } from './browser-port';
 
 type NewTab = Omit<TabSnap, 'index' | 'groupId'> & Partial<Pick<TabSnap, 'index' | 'groupId'>>;
 
@@ -231,5 +231,103 @@ export class FakeBrowserPort implements BrowserPort {
   /** `granted` holds permissions and origins alike: origins are the entries with a scheme. */
   async grantedOrigins(): Promise<string[]> {
     return this.rec('grantedOrigins', [], () => [...this.granted].filter((x) => x.includes('://')));
+  }
+}
+
+/**
+ * In-memory BookmarkPort for tests (M4 T14): a root '0' with "Bookmarks bar" ('1') and "Other bookmarks" ('2'). One
+ * instance shared by two ProjectSync instances stands for one tree Chrome Sync keeps equal on two devices. Each change
+ * is reported to every listener after the call resolves (a timer task), as Chrome's events arrive later.
+ */
+export class FakeBookmarkPort implements BookmarkPort {
+  root: BookmarkNode = { id: '0', title: '', children: [{ id: '1', title: 'Bookmarks bar', children: [] }, { id: '2', title: 'Other bookmarks', children: [] }] };
+  /** Every successful change, in order. */
+  log: { method: string; args: unknown[] }[] = [];
+  private nextId = 100;
+  private listeners = new Set<() => void>();
+  /** Test switch: report each change synchronously, inside the call (a remote change landing mid-write). */
+  syncEvents = false;
+
+  /** Test helper: the number of successful changes. */
+  writes(): number {
+    return this.log.length;
+  }
+
+  private find(id: string, n: BookmarkNode = this.root, parent?: BookmarkNode): { node: BookmarkNode; parent?: BookmarkNode } {
+    if (n.id === id) return { node: n, parent };
+    for (const c of n.children ?? []) {
+      try { return this.find(id, c, n); } catch { /* not under c */ }
+    }
+    throw new Error(`Can't find bookmark for id. ${id}`);
+  }
+
+  private change(method: string, args: unknown[]): void {
+    this.log.push({ method, args });
+    for (const cb of [...this.listeners]) {
+      if (this.syncEvents) cb();
+      else setTimeout(cb, 0);
+    }
+  }
+
+  async otherId(): Promise<string> {
+    return '2';
+  }
+
+  async children(id: string): Promise<BookmarkNode[]> {
+    return (this.find(id).node.children ?? []).map((c) => ({ id: c.id, title: c.title, ...(c.url !== undefined && { url: c.url }) }));
+  }
+
+  async subtree(id: string): Promise<BookmarkNode> {
+    return structuredClone(this.find(id).node);
+  }
+
+  async create(p: { parentId: string; index?: number; title: string; url?: string }): Promise<string> {
+    const parent = this.find(p.parentId).node;
+    if (!parent.children) throw new Error('Parameter "parentId" does not specify a folder.');
+    const id = String(this.nextId++);
+    const node: BookmarkNode = { id, title: p.title, ...(p.url !== undefined ? { url: p.url } : { children: [] }) };
+    const at = p.index === undefined || p.index < 0 || p.index > parent.children.length ? parent.children.length : p.index;
+    parent.children.splice(at, 0, node);
+    this.change('create', [p]);
+    return id;
+  }
+
+  async update(id: string, p: { title?: string; url?: string }): Promise<void> {
+    const n = this.find(id).node;
+    if (p.title !== undefined) n.title = p.title;
+    if (p.url !== undefined) n.url = p.url;
+    this.change('update', [id, p]);
+  }
+
+  async move(id: string, p: { parentId: string; index?: number }): Promise<void> {
+    const { node, parent: from } = this.find(id);
+    const to = this.find(p.parentId).node;
+    if (!to.children || !from?.children) throw new Error('Invalid move');
+    const old = from.children.indexOf(node);
+    from.children.splice(old, 1);
+    // Chrome: the index is counted before the node leaves, so within the same parent a later index lands one before.
+    const want = p.index ?? to.children.length + (from === to ? 1 : 0);
+    const index = from === to && old < want ? want - 1 : want;
+    to.children.splice(Math.min(Math.max(index, 0), to.children.length), 0, node);
+    this.change('move', [id, p]);
+  }
+
+  async remove(id: string): Promise<void> {
+    const { node, parent } = this.find(id);
+    if (node.children?.length) throw new Error("Can't remove non-empty folder (use recursive to force).");
+    parent!.children!.splice(parent!.children!.indexOf(node), 1);
+    this.change('remove', [id]);
+  }
+
+  async removeTree(id: string): Promise<void> {
+    const { node, parent } = this.find(id);
+    parent!.children!.splice(parent!.children!.indexOf(node), 1);
+    this.change('removeTree', [id]);
+  }
+
+  onChanged(cb: () => void): () => void {
+    const once = () => cb();
+    this.listeners.add(once);
+    return () => { this.listeners.delete(once); };
   }
 }

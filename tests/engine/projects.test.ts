@@ -416,6 +416,31 @@ describe('ProjectStore and pruning', () => {
     expect(disk(`${RID}:B`)).not.toHaveProperty('saved');
   });
 
+  it('unreadableSaved: read from storage, so a put without a saved list and a new store (worker restart) keep it; a readable list clears it', async () => {
+    const local = memoryArea();
+    local.data.set(PROJECTS_KEY, [{ ...stored(), saved: { tabs: 'broken', at: NOW } }, stored({ id: `${RID}:B`, key: 'B' })]);
+    const s = new ProjectStore(local);
+    expect(await s.unreadableSaved()).toEqual(new Set([PID]));
+    await s.put({ ...(await s.list()).find((x) => x.id === PID)!, name: 'Renamed' });
+    expect(await s.unreadableSaved()).toEqual(new Set([PID]));
+    const s2 = new ProjectStore(local);
+    expect(await s2.unreadableSaved()).toEqual(new Set([PID]));
+    await s2.put({ ...(await s2.list()).find((x) => x.id === PID)!, saved: { tabs: [], at: NOW + 1 } });
+    expect(await s2.unreadableSaved()).toEqual(new Set());
+    expect(await new ProjectStore(local).unreadableSaved()).toEqual(new Set());
+  });
+
+  it('M4-R22: syncExtra that is not a plain object is dropped; a plain object is kept', async () => {
+    const local = memoryArea();
+    const bad = (id: string, o: Record<string, unknown>) => ({ ...stored({ id: `${RID}:${id}`, key: id }), ...o });
+    local.data.set(PROJECTS_KEY, [
+      bad('E1', { syncExtra: { tint: 'x', n: [1] } }), bad('E2', { syncExtra: 'x' }), bad('E3', { syncExtra: [1] }), bad('E4', { syncExtra: null }),
+    ]);
+    const byKey = new Map((await new ProjectStore(local).list()).map((p) => [p.key, p]));
+    expect(byKey.get('E1')?.syncExtra).toEqual({ tint: 'x', n: [1] });
+    for (const k of ['E2', 'E3', 'E4']) expect(byKey.get(k)).not.toHaveProperty('syncExtra');
+  });
+
   it('on startup, a project closed for 7 days of browser time is pruned; a younger one or one with open tabs is kept', async () => {
     const local = memoryArea();
     local.data.set(PROJECTS_KEY, [

@@ -57,6 +57,11 @@ vi.mock('wxt/browser', () => ({ browser: h.browser }));
 vi.mock('../../src/storage/config-store', () => ({ ConfigStore: h.fake('store') }));
 vi.mock('../../src/platform/chrome-port', () => ({
   ChromePort: h.fake('port', () => ({ snapshot: vi.fn(async () => ({ tabs: [], groups: [], windows: [] })) })),
+  ChromeBookmarkPort: h.fake('bookmarks'),
+}));
+vi.mock('../../src/engine/project-sync', async (orig) => ({
+  ...(await orig<typeof import('../../src/engine/project-sync')>()),
+  ProjectSync: h.fake('projectSync', () => ({ schedule: vi.fn() })),
 }));
 vi.mock('../../src/engine/program-cache', () => ({ ProgramCache: h.fake('programs', () => ({ get: vi.fn(async () => h.state.program) })) }));
 vi.mock('../../src/engine/permissions', () => ({ PermissionsManager: h.fake('permissions', () => ({ ready: Promise.resolve() })) }));
@@ -655,6 +660,23 @@ describe('background wiring', () => {
     expect(refreshBadge).toHaveBeenCalledTimes(1);
   });
 
+  it('M4 T14: a stored-project change schedules a project sync; other keys and areas do not', async () => {
+    I('projectSync').schedule!.mockClear();
+    await fire('storage.onChanged', { other: {} }, 'local');
+    await fire('storage.onChanged', { projects: {} }, 'session');
+    expect(I('projectSync').schedule).not.toHaveBeenCalled();
+    await fire('storage.onChanged', { projects: {} }, 'local');
+    expect(I('projectSync').schedule).toHaveBeenCalledTimes(1);
+  });
+
+  it('M4 T14: project sync gets the ProjectService, the bookmarks port and storage; the handler gets it', async () => {
+    const deps = I('projectSync').args[0] as Record<string, unknown>;
+    expect(deps.projects === I('projects')).toBe(true);
+    expect(deps.bookmarks === I('bookmarks')).toBe(true);
+    expect(deps.local).toBeDefined(); // storage.local (a fresh proxy node per read here)
+    expect((vi.mocked(createHandler).mock.calls[0]![0] as unknown as { projectSync: unknown }).projectSync === I('projectSync')).toBe(true);
+  });
+
   it('runtime messages go to createOnMessage; banner choices reach the ask controller and undo reaches safety', async () => {
     const listener = vi.mocked(createOnMessage).mock.results[0]!.value;
     expect(h.listeners['runtime.onMessage']).toContain(listener);
@@ -682,6 +704,13 @@ describe('background wiring', () => {
     await fireAt('permissions.onAdded', SYNC_PERMISSIONS, { permissions: ['scripting'] });
     await fire('permissions.onRemoved', { origins: ['https://a.test/*'] });
     expect(I('permissions').onChanged).toHaveBeenCalledTimes(2);
+  });
+
+  it('M4 T14: worker start, permission grants and revocations re-check project sync (toggle and bookmarks permission)', async () => {
+    expect(I('projectSync').refresh).toHaveBeenCalledTimes(1); // worker start
+    await fireAt('permissions.onAdded', SYNC_PERMISSIONS, { permissions: ['bookmarks'] });
+    await fire('permissions.onRemoved', { permissions: ['bookmarks'] });
+    expect(I('projectSync').refresh).toHaveBeenCalledTimes(3);
   });
 
   it('host grants and revocations re-emit every connection status (revoked api host → not-configured)', async () => {

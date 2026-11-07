@@ -336,16 +336,18 @@ export class ProjectService {
       }
       // Every saved tab list follows its project's open tabs (M4 T7), so it keeps the list of the last pass that saw
       // tabs once the user closes them all. A saved URL leaves the list only when its tab was a member at the
-      // previous pass and is gone now (M4-R21): one not seen open since the browser started (its tab was still open
-      // when Chrome quit, and the session was not restored) stays at its place, and a new member is added at its
-      // tab-bar place. A list frozen by close-and-save (`closed`, M4-R14) only grows until the open tabs cover it again
-      // (reopen, a full undo, the user reopening them by hand). A title-only change is not written (nor bumps
-      // updatedAt). A saved URL takes its open tab's group only when that tab's group changed since the previous pass;
-      // otherwise it keeps the saved group. Saved URLs are told apart by keyOf (M4-R41), never by the dedupe key: each
-      // open member replaces at most one saved entry, the one with its exact URL, else (a navigation, a redirect) the
-      // first unclaimed one with its dedupe key whose own URL was a member at the previous pass (M4-R43). All exact
-      // matches are made first, so a dedupe-key match never takes an entry another tab has exactly. A saved URL that
-      // shares a dedupe key with an open tab but was never a member here (another thread of the page) stays.
+      // previous pass and is gone now (M4-R21): one not seen open since the browser started (from a synced
+      // copy, M4 T14) stays at its place, and a new member is added at its tab-bar place. A list frozen by
+      // close-and-save (`closed`, M4-R14) only grows until the open tabs cover it again (reopen, a full undo, the user
+      // reopening them by hand). A title-only change is not written. None of this bumps updatedAt (M4-R31): it is no
+      // user change, and sync takes name, color and archivedAt from the newer copy by updatedAt. Likewise a saved URL
+      // takes its open tab's group only when that tab's group changed since the previous pass; otherwise it keeps the
+      // saved group (one synced from a device where the tab sits in another group), or two devices would rewrite it forever.
+      // Saved URLs are told apart by keyOf (M4-R41), never by the dedupe key: each open member replaces at most one saved
+      // entry, the one with its exact URL, else (a navigation, a redirect) the first unclaimed one with its dedupe key
+      // whose own URL was a member at the previous pass (M4-R43). All exact matches are made first, so a dedupe-key match
+      // never takes an entry another tab has exactly. A saved URL that shares a dedupe key with an open tab but was never
+      // a member here (another thread of the page, synced) stays.
       const key = (u: string): string => this.norm(program, u);
       const membersOf = new Map<string, Set<number>>();
       for (const [tabId, a] of r.assignments) membersOf.set(a.projectId, (membersOf.get(a.projectId) ?? new Set()).add(tabId));
@@ -361,7 +363,6 @@ export class ProjectService {
             const grown = growFrozen(p.saved.tabs, tabs, key);
             if (grown.length > p.saved.tabs.length) {
               p.saved = { tabs: grown, at: this.now(), closed: true };
-              p.updatedAt = this.now();
               changed.add(p);
             }
             continue;
@@ -372,7 +373,6 @@ export class ProjectService {
         const next = refreshSaved(p.saved?.tabs ?? [], tabs, last.get(p.id), key);
         if (p.saved && savedShape(next) === savedShape(p.saved.tabs)) continue;
         p.saved = { tabs: next, at: this.now() };
-        p.updatedAt = this.now();
         changed.add(p);
       }
       await this.storeMembers(new Map([...members].map(([id, tabs]) => [id, new Map(tabs.map((t) => [keyOf(t.url), t.group ?? '']))])));
@@ -675,8 +675,8 @@ export class ProjectService {
       // the pass keeps (M4-R44), never only the tabs open here: a list already frozen by an earlier Close and save (a
       // protected tab stayed open) only grows (M4-R14), or a second one would drop the tabs the first one closed; any
       // other list, kept or not (the pass maintains both, M4-R51), gets the M4-R21 refresh (under global dry run too,
-      // where no pass ran), so a saved URL not open here since the browser started (a variant reopen skips) stays and
-      // only a close this device saw removes one; a project with no list records its open tabs.
+      // where no pass ran), so a saved URL never open here (synced from another device, a variant reopen skips) stays
+      // and only a close this device saw removes one; a project with no list records its open tabs.
       if (members.length > 0) {
         const open = savedTabs(snap, new Set(members.map((t) => t.id)));
         const key = (u: string): string => this.norm(program, u);
@@ -788,6 +788,23 @@ export class ProjectService {
       }
       this.deps.schedule?.('project');
       return { opened, ...(failed > 0 && { failed }) };
+    });
+  }
+
+  /**
+   * Project sync (M4 T14): `plan` gets the stored projects, the ids of projects with open member tabs (this pass's
+   * membership) and those whose stored saved list could not be read (ProjectStore.unreadableSaved), inside the queue,
+   * and its `put` / `remove` are stored there, so a sync never races a user action or a pass. Applies under global dry
+   * run too (the stored data only). Returns what `plan` returned.
+   */
+  syncApply<T extends { put: Project[]; remove: string[] }>(plan: (stored: Project[], open: Set<string>, unsynced: Set<string>) => T): Promise<T> {
+    return this.serial(async () => {
+      const { assignments } = await this.resolve(await this.deps.port.snapshot());
+      const r = plan(await this.deps.store.list(), new Set([...assignments.values()].map((a) => a.projectId)), await this.deps.store.unreadableSaved());
+      if (r.put.length) await this.deps.store.put(...r.put);
+      if (r.remove.length) await this.deps.store.remove(...r.remove);
+      if (r.put.length || r.remove.length) this.deps.schedule?.('project');
+      return r;
     });
   }
 

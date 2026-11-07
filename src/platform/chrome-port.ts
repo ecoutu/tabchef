@@ -1,5 +1,5 @@
 import type { GroupColor, Snapshot, TabSnap } from '../core/types';
-import type { BrowserPort } from './browser-port';
+import type { BookmarkNode, BookmarkPort, BrowserPort } from './browser-port';
 import { withDragRetry } from './retry';
 
 import { browser } from 'wxt/browser';
@@ -101,3 +101,69 @@ export class ChromePort implements BrowserPort {
     return (await this.api.permissions.getAll()).origins ?? [];
   }
 }
+
+/** chrome.bookmarks as a BookmarkPort (M4 T14). `bookmarks` is optional: until granted every call throws. */
+export class ChromeBookmarkPort implements BookmarkPort {
+  constructor(private readonly api: ChromeApi = browser) {}
+
+  private get b(): ChromeApi['bookmarks'] {
+    const b = this.api.bookmarks as ChromeApi['bookmarks'] | undefined;
+    if (!b) throw new Error('the bookmarks permission is not granted');
+    return b;
+  }
+
+  async otherId(): Promise<string> {
+    // With account bookmarks a profile has a local and an account "Other bookmarks": the syncing one carries the
+    // folder to other devices. `syncing` may be missing (older Chrome, typings): read defensively.
+    const roots = (await this.b.getChildren('0')) as (BookmarkNode & { folderType?: unknown; syncing?: unknown })[];
+    const other = roots.filter((r) => r.folderType === 'other');
+    const n = other.find((r) => r.syncing === true) ?? other[0] ?? roots.find((r) => r.id === '2') ?? roots[1];
+    if (!n) throw new Error('Other bookmarks not found');
+    return n.id;
+  }
+
+  async children(id: string): Promise<BookmarkNode[]> {
+    return (await this.b.getChildren(id)).map((n) => node(n, false));
+  }
+
+  async subtree(id: string): Promise<BookmarkNode> {
+    const [n] = await this.b.getSubTree(id);
+    if (!n) throw new Error(`no bookmark ${id}`);
+    return node(n, true);
+  }
+
+  async create(p: { parentId: string; index?: number; title: string; url?: string }): Promise<string> {
+    return (await this.b.create(p)).id;
+  }
+
+  async update(id: string, p: { title?: string; url?: string }): Promise<void> {
+    await this.b.update(id, p);
+  }
+
+  async move(id: string, p: { parentId: string; index?: number }): Promise<void> {
+    await this.b.move(id, p);
+  }
+
+  async remove(id: string): Promise<void> {
+    await this.b.remove(id);
+  }
+
+  async removeTree(id: string): Promise<void> {
+    await this.b.removeTree(id);
+  }
+
+  onChanged(cb: () => void): () => void {
+    const b = this.api.bookmarks as ChromeApi['bookmarks'] | undefined;
+    if (!b) return () => {};
+    const evs = [b.onCreated, b.onRemoved, b.onChanged, b.onMoved, b.onChildrenReordered, b.onImportEnded] as unknown as
+      { addListener(f: () => void): void; removeListener(f: () => void): void }[];
+    const f = () => cb();
+    for (const e of evs) e.addListener(f);
+    return () => { for (const e of evs) { try { e.removeListener(f); } catch { /* the permission went away */ } } };
+  }
+}
+
+type ChromeNode = { id: string; title: string; url?: string; children?: ChromeNode[] };
+const node = (n: ChromeNode, deep: boolean): BookmarkNode => ({
+  id: n.id, title: n.title, ...(n.url !== undefined && { url: n.url }), ...(deep && n.children && { children: n.children.map((c) => node(c, true)) }),
+});

@@ -13,12 +13,15 @@ const isSavedTab = (x: unknown): boolean => isObj(x) && typeof x.url === 'string
 const isSaved = (x: unknown): x is NonNullable<Project['saved']> => isObj(x) && Array.isArray(x.tabs) && x.tabs.every(isSavedTab)
   && typeof x.at === 'number' && (x.closed === undefined || typeof x.closed === 'boolean');
 
-/** A stored project with each malformed optional field (saved, keep, archivedAt) dropped: the project itself is kept. */
+const isPlain = (x: unknown): x is Record<string, unknown> => isObj(x) && !Array.isArray(x);
+
+/** A stored project with each malformed optional field (saved, keep, archivedAt, syncExtra) dropped: the project itself is kept. */
 function sanitize(p: Project): Project {
   const q = { ...p };
   if (q.saved !== undefined && !isSaved(q.saved)) delete q.saved;
   if (q.keep !== undefined && typeof q.keep !== 'boolean') delete q.keep;
   if (q.archivedAt !== undefined && !Number.isFinite(q.archivedAt)) delete q.archivedAt;
+  if (q.syncExtra !== undefined && !isPlain(q.syncExtra)) delete q.syncExtra;
   return q;
 }
 
@@ -28,7 +31,7 @@ export class ProjectStore {
   private chain: Promise<unknown> = Promise.resolve();
   /**
    * id → its stored saved list that could not be read: read without it, but stored as it was until a readable list
-   * replaces it, so a later write (a rename, an archive) never loses it.
+   * replaces it, so a later write (a rename, an archive) never loses it and a new worker still sees it (unreadableSaved).
    */
   private rawSaved = new Map<string, unknown>();
 
@@ -50,6 +53,15 @@ export class ProjectStore {
 
   async list(): Promise<Project[]> {
     return [...(await this.load()).values()].map((p) => structuredClone(p));
+  }
+
+  /**
+   * The ids of projects whose stored saved list could not be read (see rawSaved). Project sync leaves them out, or
+   * their missing list would read as every tab removed.
+   */
+  async unreadableSaved(): Promise<Set<string>> {
+    await this.load();
+    return new Set(this.rawSaved.keys());
   }
 
   /** Stores (adds or replaces) each project, in one write. */

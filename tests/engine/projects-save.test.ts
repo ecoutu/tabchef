@@ -840,6 +840,20 @@ describe('M4-R21: the saved list of an open kept project', () => {
     expect((await next.stored(id))?.saved?.tabs.map((t) => t.url)).toEqual([A, X]);
   });
 
+  it('M4-R31: a pass that changes only the saved list leaves updatedAt unchanged; a user action still bumps it', async () => {
+    const h = harness();
+    const id = await taxes(h, [A, B]);
+    h.f.addTab(tab(9, 'https://other.example/'));
+    const at = (await h.stored(id))!.updatedAt;
+    h.clock.now += MIN;
+    await h.f.closeTab(2);
+    await h.r.flush();
+    expect(await h.stored(id)).toMatchObject({ updatedAt: at, saved: { tabs: [{ url: A }], at: NOW + MIN } });
+    h.f.addTab(tab(3, C));
+    await h.svc.addTab(3, id); // a user action: bumps
+    expect((await h.stored(id))?.updatedAt).toBe(NOW + MIN);
+  });
+
   it('a new member is added at its tab-bar place among the kept saved URLs', async () => {
     const h = harness();
     const id = await taxes(h, [A, B]);
@@ -1257,5 +1271,19 @@ describe('M4-R51: keeping a project again keeps the saved tabs this device did n
     await h.r.flush();
     await h.svc.closeAndSave(id);
     expect(await urls(h, id)).toEqual([A, B]);
+  });
+
+  it("control: a not-kept project's refresh bumps no updatedAt (M4-R31) and keeps it not kept", async () => {
+    const h = harness({ session: memorySession() });
+    const id = await taxes(h);
+    h.f.addTab(tab(9, 'https://other.example/'));
+    h.clock.now += MIN;
+    await h.svc.setKeep(id, false);
+    const at = (await h.stored(id))!.updatedAt;
+    h.clock.now += MIN;
+    await h.f.closeTab(3);
+    await h.r.flush();
+    expect((await h.stored(id))?.keep).toBeUndefined();
+    expect((await h.stored(id))?.updatedAt).toBe(at);
   });
 });

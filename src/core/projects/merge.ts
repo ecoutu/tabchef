@@ -10,7 +10,7 @@ type Tab = { url: string; title: string };
 type Entry = Tab & { k: string; group: string };
 
 /** Groups merged by title, empty ones dropped, the ungrouped group (title '') last, tabs deduped by key (first wins). */
-function normalize(p: SyncedProject): SyncedProject {
+export function normalize(p: SyncedProject): SyncedProject {
   const seen = new Set<string>();
   const byTitle = new Map<string, Tab[]>();
   for (const g of p.groups) {
@@ -39,7 +39,7 @@ const stable = (v: unknown): string => {
 };
 
 /** Canonical form of a project: known fields, tabs as {url,title}, `extra` with sorted keys. */
-const canon = (p: SyncedProject): string => stable({
+export const canon = (p: SyncedProject): string => stable({
   id: p.id, recipeId: p.recipeId, key: p.key, name: p.name, color: p.color, updatedAt: p.updatedAt, archivedAt: p.archivedAt,
   groups: p.groups.map((g) => ({ title: g.title, tabs: g.tabs.map((t) => ({ url: t.url, title: t.title })) })),
   extra: p.extra,

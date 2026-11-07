@@ -19,7 +19,7 @@ export interface SyncedProject {
 
 export const ROOT_TITLE = 'Tabchef';
 
-const META_URL_PREFIX = 'https://tabchef.invalid/project#';
+export const META_URL_PREFIX = 'https://tabchef.invalid/project#';
 const META_TITLE = "Tabchef project data (don't edit)";
 const MAX_TITLE = 4096;
 const MAX_META_URL = 8192;
