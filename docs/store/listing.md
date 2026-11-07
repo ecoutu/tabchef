@@ -65,6 +65,8 @@ https://github.com/ecoutu/tabchef. Bug reports and recipe ideas are welcome.
 
 Made by the store-art issue ([#48](https://github.com/ecoutu/tabchef/issues/48)) and the icon issue ([#47](https://github.com/ecoutu/tabchef/issues/47)); the designs are in the launch kit
 (https://claude.ai/artifact/RF913qNnKxbSjjQqTaFTVe). Screenshots come from the real extension, not mocks.
+`npm run store:assets` renders them, and each release re-renders them and commits the ones that changed in its
+`chore(release)` commit, so the files here match the latest release. The dashboard still needs them uploaded by hand.
 
 | Field | Size | File |
 |---|---|---|
