@@ -7,6 +7,7 @@
 // LINKED_REFRESH_MS per project.
 import { liveProgram } from '../core/lang/dry-run';
 import { managedGroupIds } from '../core/group/plan';
+import { keyOf } from '../core/projects/url-key';
 import { projectGroupTitle, projectTargets, resolveProjects, type ResolveResult, type StickyMap } from '../core/projects/resolve';
 import type { RecentlyClosed } from '../core/safety/recently-closed';
 import type { GroupTarget } from '../core/group/evaluate';
@@ -29,6 +30,8 @@ export { CLOSED_CLOCK_KEY, PRUNE_AFTER_MS } from './project-clock';
 /** Linked-PR searches per project at most this often (spec: 15 min). */
 const MANUAL_RECIPE = 'manual-project';
 export const LINKED_REFRESH_MS = 15 * 60_000;
+/** storage.session: ProjectService.lastMembers (M4-R21), so the first pass of a new worker compares with the last one. */
+export const LAST_MEMBERS_KEY = 'projects.lastMembers';
 
 const PILLS = new Set<PrState>(['open', 'draft', 'merged', 'closed']);
 const CATEGORIES = new Set(['new', 'indeterminate', 'done']);
@@ -98,7 +101,8 @@ function savedTabs(snap: Snapshot, ids: Set<number>): SavedTab[] {
 /**
  * M4-R14: a frozen saved list (`saved.closed`) grown by the open members `open` (tab-bar order) not in it, nothing
  * removed. Each new tab goes right after the open member before it in the tab bar, else right before the first open
- * member of the list, else (no open member is in the list) at the end.
+ * member of the list, else (no open member is in the list) at the end. M4-R21 uses it the other way round: the open
+ * members grown by the saved URLs that stay, each placed by its neighbours in the saved list.
  */
 function growFrozen(saved: SavedTab[], open: SavedTab[], key: (url: string) => string): SavedTab[] {
   const list = [...saved];
@@ -112,6 +116,51 @@ function growFrozen(saved: SavedTab[], open: SavedTab[], key: (url: string) => s
     else if (!lead.some((x) => key(x.url) === key(t.url))) lead.push(t);
   }
   return [...list, ...lead];
+}
+/**
+ * M4-R21/M4-R41: for each open member (`open[i]`), the index of the one saved entry it replaces, if any: the entry with
+ * its exact URL (keyOf), else the first unclaimed one with its dedupe key (`key`) whose own URL was a member at the
+ * previous pass (`wasMember`, M4-R43): such an entry leaves anyway, so a claim by key only places the new URL and keeps
+ * its saved group, never decides which URLs stay. Every exact match is made first.
+ */
+function claimSaved(saved: SavedTab[], open: SavedTab[], key: (url: string) => string, wasMember: (url: string) => boolean): (number | undefined)[] {
+  const taken = new Set<number>();
+  const out: (number | undefined)[] = open.map(() => undefined);
+  for (const match of [keyOf, key]) {
+    for (const [i, t] of open.entries()) {
+      if (out[i] !== undefined) continue;
+      const k = match(t.url);
+      const j = saved.findIndex((s, n) => !taken.has(n) && match(s.url) === k && (match === keyOf || wasMember(s.url)));
+      if (j < 0) continue;
+      taken.add(j);
+      out[i] = j;
+    }
+  }
+  return out;
+}
+/**
+ * M4-R21: an unfrozen saved list (kept or not, M4-R51) `saved` refreshed by the open members `open` (tab-bar order),
+ * given `before`, this project's members at the previous pass (keyOf → group title). Each open member replaces the
+ * entry claimSaved gives it (keeping that entry's group unless the tab's group changed since the previous pass), a
+ * saved URL whose tab was a member at the previous pass and is gone leaves, and every other saved URL stays at its
+ * place. Used by the pass and by Close and save (M4-R44), so both record the same list.
+ */
+function refreshSaved(saved: SavedTab[], open: SavedTab[], before: Map<string, string> | undefined, key: (url: string) => string): SavedTab[] {
+  const claim = claimSaved(saved, open, key, (u) => before?.has(keyOf(u)) ?? false);
+  const current = open.map((t, i) => {
+    const s = claim[i] === undefined ? undefined : saved[claim[i]];
+    const was = before?.get(keyOf(t.url)) ?? (s && before?.get(keyOf(s.url)));
+    if (!s || (was !== undefined && was !== (t.group ?? ''))) return t;
+    const kept: SavedTab = { ...t };
+    if (s.group === undefined) delete kept.group;
+    else kept.group = s.group;
+    return kept;
+  });
+  // The saved list with each claimed entry as its open tab (an anchor for growFrozen) and the entries that leave (their
+  // own URL was a member at the previous pass, and nothing claimed them) dropped.
+  const by = new Map(claim.flatMap((j, i) => (j === undefined ? [] : [[j, current[i]!] as const])));
+  const stays = saved.flatMap((t, j) => by.get(j) ?? (before?.has(keyOf(t.url)) ? [] : [t]));
+  return growFrozen(current, stays, keyOf);
 }
 /** Closed by Close group (M3-R84): kept for undo, out of membership and the UI. */
 const isTomb = (p: Project): boolean => p.closedAt !== undefined;
@@ -191,6 +240,13 @@ export class ProjectService {
   private readonly now: () => number;
   private chain: Promise<unknown> = Promise.resolve();
   private readonly clock: ProjectClock;
+  /**
+   * M4-R21: projectId → the URLs (keyOf, M4-R41) of its member tabs at the previous live pass, each with its Chrome group's
+   * title ('' ungrouped). Mirrored to storage.session (LAST_MEMBERS_KEY), so it survives worker restarts.
+   */
+  private lastMembers = new Map<string, Map<string, string>>();
+  /** Whether lastMembers was read from storage.session by this worker. */
+  private membersRead = false;
 
   constructor(private readonly deps: ProjectServiceDeps) {
     this.now = deps.now ?? Date.now;
@@ -278,20 +334,29 @@ export class ProjectService {
         const site = sites.get(p.id);
         if (site !== undefined && p.site === undefined) { p.site = site; changed.add(p); }
       }
-      // A kept project's saved tab list follows its open tabs (M4 T7), so it keeps the list of the last pass that saw
-      // tabs once the user closes them all. A list frozen by close-and-save (`closed`, M4-R14) only grows (a new
-      // member is added at its tab-bar place, nothing is removed) until the open tabs cover it again (reopen, a full
-      // undo, the user reopening them by hand). A title-only change is not written (nor bumps updatedAt).
+      // Every saved tab list follows its project's open tabs (M4 T7), so it keeps the list of the last pass that saw
+      // tabs once the user closes them all. A saved URL leaves the list only when its tab was a member at the
+      // previous pass and is gone now (M4-R21): one not seen open since the browser started (its tab was still open
+      // when Chrome quit, and the session was not restored) stays at its place, and a new member is added at its
+      // tab-bar place. A list frozen by close-and-save (`closed`, M4-R14) only grows until the open tabs cover it again
+      // (reopen, a full undo, the user reopening them by hand). A title-only change is not written (nor bumps
+      // updatedAt). A saved URL takes its open tab's group only when that tab's group changed since the previous pass;
+      // otherwise it keeps the saved group. Saved URLs are told apart by keyOf (M4-R41), never by the dedupe key: each
+      // open member replaces at most one saved entry, the one with its exact URL, else (a navigation, a redirect) the
+      // first unclaimed one with its dedupe key whose own URL was a member at the previous pass (M4-R43). All exact
+      // matches are made first, so a dedupe-key match never takes an entry another tab has exactly. A saved URL that
+      // shares a dedupe key with an open tab but was never a member here (another thread of the page) stays.
+      const key = (u: string): string => this.norm(program, u);
       const membersOf = new Map<string, Set<number>>();
       for (const [tabId, a] of r.assignments) membersOf.set(a.projectId, (membersOf.get(a.projectId) ?? new Set()).add(tabId));
+      const members = new Map([...membersOf].map(([id, tabIds]) => [id, savedTabs(snap, tabIds)]));
+      const last = await this.previousMembers();
       for (const p of projects) {
-        const ids = membersOf.get(p.id);
-        if (!p.keep || isTomb(p) || !ids) continue;
-        const tabs = savedTabs(snap, ids);
+        const tabs = members.get(p.id);
+        if ((!p.keep && !p.saved) || isTomb(p) || !tabs) continue;
+        const openKeys = new Set(tabs.map((t) => key(t.url)));
         if (p.saved?.closed) {
-          const key = (u: string): string => this.norm(program, u);
-          const open = new Set(tabs.map((t) => key(t.url)));
-          if (p.saved.tabs.some((t) => !open.has(key(t.url)))) {
+          if (p.saved.tabs.some((t) => !openKeys.has(key(t.url)))) {
             // M4-R14: frozen while the open tabs do not cover the list: it only grows.
             const grown = growFrozen(p.saved.tabs, tabs, key);
             if (grown.length > p.saved.tabs.length) {
@@ -304,11 +369,13 @@ export class ProjectService {
           delete p.saved.closed;
           changed.add(p);
         }
-        if (p.saved && savedShape(tabs) === savedShape(p.saved.tabs)) continue;
-        p.saved = { tabs, at: this.now() };
+        const next = refreshSaved(p.saved?.tabs ?? [], tabs, last.get(p.id), key);
+        if (p.saved && savedShape(next) === savedShape(p.saved.tabs)) continue;
+        p.saved = { tabs: next, at: this.now() };
         p.updatedAt = this.now();
         changed.add(p);
       }
+      await this.storeMembers(new Map([...members].map(([id, tabs]) => [id, new Map(tabs.map((t) => [keyOf(t.url), t.group ?? '']))])));
       const removed = await this.clock.closedTime(snap, projects, open, changed);
       projects = projects.filter((p) => !removed.includes(p.id));
       if (changed.size) await this.deps.store.put(...[...changed].filter((p) => !removed.includes(p.id)));
@@ -329,6 +396,29 @@ export class ProjectService {
       return def && open.has(p.id) ? [{ id: p.id, title: projectGroupTitle(def, p) }] : [];
     }));
     return { program, defs, projects, assignments: r.assignments, held: r.held };
+  }
+
+  /** lastMembers, read once per worker from storage.session (I3: an MV3 worker sleeps after any idle stretch). */
+  private async previousMembers(): Promise<Map<string, Map<string, string>>> {
+    if (this.membersRead || !this.deps.session) return this.lastMembers;
+    this.membersRead = true;
+    try {
+      const v = await this.deps.session.get(LAST_MEMBERS_KEY);
+      if (isObj(v)) {
+        this.lastMembers = new Map(Object.entries(v).filter((e): e is [string, Record<string, unknown>] => isObj(e[1]))
+          .map(([id, m]) => [id, new Map(Object.entries(m).filter((e): e is [string, string] => typeof e[1] === 'string'))]));
+      }
+    } catch (e) {
+      console.warn('[tabchef] project members read failed', e);
+    }
+    return this.lastMembers;
+  }
+
+  private async storeMembers(next: Map<string, Map<string, string>>): Promise<void> {
+    const json = (m: Map<string, Map<string, string>>) => Object.fromEntries([...m].map(([id, x]) => [id, Object.fromEntries(x)]));
+    const changed = JSON.stringify(json(next)) !== JSON.stringify(json(this.lastMembers));
+    this.lastMembers = next;
+    if (changed) await this.deps.session?.set(LAST_MEMBERS_KEY, json(next)).catch((e: unknown) => console.warn('[tabchef] project members write failed', e));
   }
 
   private log(tabId: number, detail: string, ruleId?: string, action = 'project-join'): void {
@@ -558,10 +648,11 @@ export class ProjectService {
   }
 
   /**
-   * Close and save (M4 T7): records the project's open tabs as its saved tab list (tab-bar order, group titles), keeps
-   * it (`keep`: never pruned) and closes them as closeGroup does: protected tabs stay open and stay in the list, and
-   * undo revives a fully closed project (M3-R84). With no tab open the previous list stays. A user action, so it applies
-   * under global dry run too (R50), as closeGroup does.
+   * Close and save (M4 T7): records the project's open tabs as its saved tab list (tab-bar order, group titles; an
+   * existing list keeps the saved URLs the pass keeps, M4-R44), keeps it (`keep`: never pruned) and closes them as
+   * closeGroup does: protected tabs stay open and stay in the list, and undo revives a fully closed project (M3-R84).
+   * With no tab open the previous list stays. A user action, so it applies under global dry run too (R50), as
+   * closeGroup does.
    */
   closeAndSave(projectId: string): Promise<{ closed: number; skipped: number; ids: string[] }> {
     return this.serial(() => this.close(projectId, true));
@@ -580,12 +671,18 @@ export class ProjectService {
     const members = snap.tabs.filter((x) => assignments.get(x.id)?.projectId === projectId);
     if (save) {
       p.keep = true;
-      // Marked closed: the protected tabs left open never shrink the list until reopen. A list already frozen by an
-      // earlier Close and save (a protected tab stayed open) only grows (M4-R14), or a second one would drop the tabs
-      // the first one closed.
+      // Marked closed: the protected tabs left open never shrink the list until reopen. The list recorded is the one
+      // the pass keeps (M4-R44), never only the tabs open here: a list already frozen by an earlier Close and save (a
+      // protected tab stayed open) only grows (M4-R14), or a second one would drop the tabs the first one closed; any
+      // other list, kept or not (the pass maintains both, M4-R51), gets the M4-R21 refresh (under global dry run too,
+      // where no pass ran), so a saved URL not open here since the browser started (a variant reopen skips) stays and
+      // only a close this device saw removes one; a project with no list records its open tabs.
       if (members.length > 0) {
         const open = savedTabs(snap, new Set(members.map((t) => t.id)));
-        const tabs = p.saved?.closed ? growFrozen(p.saved.tabs, open, (u) => this.norm(program, u)) : open;
+        const key = (u: string): string => this.norm(program, u);
+        const tabs = p.saved?.closed ? growFrozen(p.saved.tabs, open, key)
+          : p.saved ? refreshSaved(p.saved.tabs, open, (await this.previousMembers()).get(p.id), key)
+          : open;
         p.saved = { tabs, at: this.now(), closed: true };
       } else if (p.saved) p.saved.closed = true;
       p.updatedAt = this.now();

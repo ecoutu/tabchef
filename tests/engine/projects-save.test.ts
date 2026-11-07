@@ -433,6 +433,30 @@ describe('kept projects (Review Focus 5)', () => {
     expect(await h.stored(id)).toMatchObject({ keep: true, updatedAt: NOW + 2 });
     await expect(h.svc.setKeep(`${MANUAL}:nope`, true)).rejects.toThrow('unknown project');
   });
+
+  it('keeping a project again: a tab closed while it was not kept stays out of the list', async () => {
+    const h = harness({ session: memorySession() });
+    const id = await taxes(h);
+    h.f.addTab(tab(9, 'https://other.example/'));
+    await h.svc.setKeep(id, false);
+    h.clock.now += MIN;
+    await h.f.closeTab(3); // C closed while unkept: the pass sees it go
+    await h.r.flush();
+    await h.svc.setKeep(id, true);
+    expect((await h.stored(id))?.saved?.tabs.map((t) => t.url)).toEqual([A, B]);
+    h.clock.now += MIN;
+    await h.r.flush();
+    expect((await h.stored(id))?.saved?.tabs.map((t) => t.url)).toEqual([A, B]);
+  });
+
+  it('keeping a project again with none of its tabs open leaves its saved list', async () => {
+    const h = harness({ session: memorySession() });
+    const id = await taxes(h);
+    await h.svc.closeAndSave(id);
+    await h.svc.setKeep(id, false);
+    await h.svc.setKeep(id, true);
+    expect((await h.stored(id))?.saved?.tabs.map((t) => t.url)).toEqual([A, B, C]);
+  });
 });
 
 describe('updatedAt', () => {
@@ -708,5 +732,477 @@ describe('saved group order (M4-R16)', () => {
     await h.r.flush(); await h.r.flush();
     savedUntouched(h);
     expect(ids(h)).toEqual([7, 8, 9, 1, 2]);
+  });
+});
+
+describe('M4-R21: the saved list of an open kept project', () => {
+  beforeEach(() => { fakeBrowser.reset(); });
+  const X = 'https://x.example/';
+  /** Puts `urls` as the stored saved list of `id` (as a synced copy from another device would). */
+  async function setSaved(h: ReturnType<typeof harness>, id: string, urls: string[]): Promise<void> {
+    const p = (await h.stored(id))!;
+    p.saved = { tabs: urls.map((url) => ({ url, title: `T ${url}`, group: 'Taxes' })), at: NOW };
+    await h.store.put(p);
+  }
+
+  it('keeps a saved URL this worker never saw open; drops one whose tab was a member at the previous pass and is gone', async () => {
+    const h = harness();
+    const id = await taxes(h, [A, B]);
+    h.f.addTab(tab(9, 'https://other.example/'));
+    await setSaved(h, id, [A, X, B]);
+    h.clock.now += MIN;
+    await h.r.flush();
+    expect((await h.stored(id))?.saved?.tabs.map((t) => t.url)).toEqual([A, X, B]);
+    await h.f.closeTab(2); // B: a member at the previous pass
+    h.clock.now += MIN;
+    await h.r.flush();
+    expect((await h.stored(id))?.saved?.tabs.map((t) => t.url)).toEqual([A, X]);
+  });
+
+  it("without storage.session, the first pass after a worker start only adds: a saved URL whose tab closed while the worker was down stays", async () => {
+    const local = memoryArea();
+    const h = harness({ local });
+    const id = await taxes(h, [A, B]);
+    h.f.addTab(tab(9, 'https://other.example/'));
+    await setSaved(h, id, [A, X, B]);
+    await h.f.closeTab(2);
+    const next = harness({ local, port: h.f });
+    await next.r.flush();
+    expect((await next.stored(id))?.saved?.tabs.map((t) => t.url)).toEqual([A, X, B]);
+  });
+
+  it('I3: the previous members are kept in storage.session: a tab closed while the worker was down leaves the saved list', async () => {
+    const local = memoryArea();
+    const session = memorySession();
+    const h = harness({ local, session });
+    const id = await taxes(h, [A, B]);
+    h.f.addTab(tab(9, 'https://other.example/'));
+    await setSaved(h, id, [A, X, B]);
+    h.clock.now += MIN;
+    await h.r.flush(); // B is a member at this pass
+    await h.f.closeTab(2); // the tab close wakes a new worker
+    const next = harness({ local, session, port: h.f, clock: h.clock });
+    next.clock.now += MIN;
+    await next.r.flush();
+    expect((await next.stored(id))?.saved?.tabs.map((t) => t.url)).toEqual([A, X]);
+  });
+
+  it('a new member is added at its tab-bar place among the kept saved URLs', async () => {
+    const h = harness();
+    const id = await taxes(h, [A, B]);
+    await setSaved(h, id, [A, X, B]);
+    h.f.addTab(tab(3, C));
+    await h.svc.addTab(3, id); // joins the Taxes group: last in it
+    await h.r.flush();
+    expect((await h.stored(id))?.saved?.tabs.map((t) => t.url)).toEqual([A, X, B, C]);
+  });
+});
+
+// M4-R41: the M4-R21 refresh merges saved URLs into an open tab by the user's dedupe key, so a
+// synced URL never open here is dropped when an open tab shares its key. Once sync keeps such URLs (the I-1 fix), this
+// device's drop syncs back as a removal, and the device that has both open re-adds it: a sync loop.
+describe('M4-R21 refresh with saved URLs that share a dedupe key (M4-R41)', () => {
+  beforeEach(() => { fakeBrowser.reset(); });
+  const G1 = 'https://mail.google.com/mail/u/0/#inbox/AAA';
+  const G2 = 'https://mail.google.com/mail/u/0/#inbox/BBB';
+  async function setSaved(h: ReturnType<typeof harness>, id: string, urls: string[]): Promise<void> {
+    const p = (await h.stored(id))!;
+    p.saved = { tabs: urls.map((url) => ({ url, title: `T ${url}`, group: 'Taxes' })), at: NOW };
+    await h.store.put(p);
+  }
+
+  it('keeps a synced thread never open here while another thread of the same page is open (default settings strip #)', async () => {
+    const h = harness();
+    const id = await taxes(h, [G1, A]);
+    h.f.addTab(tab(9, 'https://other.example/'));
+    await setSaved(h, id, [G1, G2, A]);
+    h.clock.now += MIN;
+    await h.r.flush();
+    expect((await h.stored(id))?.saved?.tabs.map((t) => t.url)).toEqual([G1, G2, A]);
+  });
+
+  it('keeps a synced tracking-param variant never open here while the clean URL is open (default settings strip utm_*)', async () => {
+    const h = harness();
+    const U = `${A}?utm_source=mail`;
+    const id = await taxes(h, [A, B]);
+    h.f.addTab(tab(9, 'https://other.example/'));
+    await setSaved(h, id, [A, U, B]);
+    h.clock.now += MIN;
+    await h.r.flush();
+    expect((await h.stored(id))?.saved?.tabs.map((t) => t.url)).toEqual([A, U, B]);
+  });
+});
+
+// M4-R43: the M4-R21 dedupe-key claim takes the first unclaimed saved entry with the tab's dedupe key,
+// not one whose own URL was a member at the previous pass, so a synced URL never open here is replaced and lost.
+describe('M4-R43: the M4-R21 dedupe-key claim takes only an entry that was a member at the previous pass', () => {
+  beforeEach(() => { fakeBrowser.reset(); });
+  const G1 = 'https://mail.google.com/mail/u/0/#inbox/AAA';
+  const G2 = 'https://mail.google.com/mail/u/0/#inbox/BBB';
+  const G3 = 'https://mail.google.com/mail/u/0/#inbox/CCC';
+  const urls = async (h: ReturnType<typeof harness>, id: string) => (await h.stored(id))?.saved?.tabs.map((t) => t.url);
+  async function setSaved(h: ReturnType<typeof harness>, id: string, list: string[], closed = false): Promise<void> {
+    const p = (await h.stored(id))!;
+    p.saved = { tabs: list.map((url) => ({ url, title: `T ${url}`, group: 'Taxes' })), at: NOW, ...(closed && { closed: true }) };
+    await h.store.put(p);
+  }
+  const navigate = (h: ReturnType<typeof harness>, tabId: number, url: string) => { h.f.state.tabs.find((t) => t.id === tabId)!.url = url; };
+
+  it("a navigation in a tab replaces that tab's own saved URL, never a synced thread of the same page not open here", async () => {
+    const h = harness();
+    const id = await taxes(h, [G2, A]);
+    h.f.addTab(tab(9, 'https://other.example/'));
+    await setSaved(h, id, [G1, G2, A]); // G1: synced from another device, never open here
+    h.clock.now += MIN;
+    await h.r.flush();
+    expect(await urls(h, id)).toEqual([G1, G2, A]);
+    navigate(h, 1, G3); // in-page navigation: same dedupe key, still the manual member
+    h.clock.now += MIN;
+    await h.r.flush();
+    expect(await urls(h, id)).toEqual([G1, G3, A]);
+  });
+
+  it('the navigated entry keeps its place and its saved group (the claim still places it)', async () => {
+    const h = harness();
+    const id = await taxes(h, [A, G2]);
+    h.f.addTab(tab(9, 'https://other.example/'));
+    await setSaved(h, id, [A, G2, G1]);
+    h.clock.now += MIN;
+    await h.r.flush();
+    navigate(h, 2, G3);
+    h.clock.now += MIN;
+    await h.r.flush();
+    expect((await h.stored(id))?.saved?.tabs.map((t) => [t.url, t.group])).toEqual([[A, 'Taxes'], [G3, 'Taxes'], [G1, 'Taxes']]);
+  });
+
+  it('two open tabs at the same exact URL never replace a synced thread of the same page (no navigation at all)', async () => {
+    const h = harness();
+    const id = await taxes(h, [G2, G2, A]);
+    h.f.addTab(tab(9, 'https://other.example/'));
+    await setSaved(h, id, [G1, G2, A]);
+    h.clock.now += MIN;
+    await h.r.flush();
+    expect(await urls(h, id)).toEqual([G1, G2, G2, A]); // the second G2 tab is a new member, as without G1
+    h.clock.now += MIN;
+    await h.r.flush();
+    expect(await urls(h, id)).toEqual([G1, G2, G2, A]);
+  });
+
+  it('M4-R14: a frozen list unfrozen by another thread of the same page (the dedupe-key cover check) loses no saved URL', async () => {
+    const h = harness();
+    const id = await taxes(h, [A, G1, G2]);
+    h.f.addTab(tab(9, 'https://other.example/'));
+    h.formEdited.add(1); // A stays open: the project stays open, the list frozen
+    await h.svc.closeAndSave(id);
+    await h.r.flush();
+    expect(await urls(h, id)).toEqual([A, G1, G2]);
+    h.f.addTab(tab(5, G3));
+    await h.svc.addTab(5, id); // G3 covers G1 and G2 by the dedupe key: the list unfreezes
+    h.clock.now += MIN;
+    await h.r.flush();
+    expect(await urls(h, id)).toEqual([A, G1, G2, G3]); // G3 is no previous member's URL: a new member, at its tab-bar place
+  });
+
+  it('control: a thread that was a member and navigated away still leaves (M4-R21), and a redirect loop never grows the list', async () => {
+    const h = harness();
+    const id = await taxes(h, [G1, A]);
+    h.f.addTab(tab(9, 'https://other.example/'));
+    h.clock.now += MIN;
+    await h.r.flush();
+    for (const u of [G2, G3, G1, G2, G3]) {
+      navigate(h, 1, u);
+      h.clock.now += MIN;
+      await h.r.flush();
+      expect(await urls(h, id)).toEqual([u, A]);
+    }
+  });
+
+  it('control: two devices with different dedupe settings keep both threads (a device that keeps # claims nothing by key)', async () => {
+    const keepHash = program({ dedupe: { ...defaultConfig().dedupe, stripFragment: false } });
+    const h = harness({ program: keepHash });
+    const id = await taxes(h, [G2, A]);
+    h.f.addTab(tab(9, 'https://other.example/'));
+    await setSaved(h, id, [G1, G2, A]);
+    h.clock.now += MIN;
+    await h.r.flush();
+    navigate(h, 1, G3); // under this device's key G3 is its own page: the manual entry no longer holds the tab
+    h.clock.now += MIN;
+    await h.r.flush();
+    expect(await urls(h, id)).toContain(G1);
+  });
+
+  it('removeTab (out of scope, slice 4.4): removing one thread drops a synced thread of the same page from the saved list', async () => {
+    const h = harness();
+    const id = await taxes(h, [G1, A]);
+    h.f.addTab(tab(9, 'https://other.example/'));
+    await setSaved(h, id, [G1, G2, A]);
+    await h.r.flush();
+    await h.svc.removeTab(1);
+    await h.r.flush();
+    // Documents current behaviour (dedupe-key removal, consistent with `excluded`); see the ruling.
+    expect(await urls(h, id)).toEqual([A]);
+  });
+});
+
+// M4-R44: Close and save (and Close and archive) replaced the saved list with the tabs open on this
+// device, so a saved URL never open here (synced from another device, M4-R21; a fragment variant reopen skips,
+// M4-R43) left the list, and sync then removed it on every device.
+describe('M4-R44: Close and save keeps the saved URLs this device never had open', () => {
+  beforeEach(() => { fakeBrowser.reset(); });
+  const X = 'https://x.example/';
+  const G1 = 'https://mail.google.com/mail/u/0/#inbox/AAA';
+  const G2 = 'https://mail.google.com/mail/u/0/#inbox/BBB';
+  const urls = async (h: ReturnType<typeof harness>, id: string) => (await h.stored(id))?.saved?.tabs.map((t) => t.url);
+  async function setSaved(h: ReturnType<typeof harness>, id: string, list: string[], closed = false): Promise<void> {
+    const p = (await h.stored(id))!;
+    p.saved = { tabs: list.map((url) => ({ url, title: `T ${url}`, group: 'Taxes' })), at: NOW, ...(closed && { closed: true }) };
+    await h.store.put(p);
+  }
+
+  it('a saved URL from another device, never open here, stays in the list Close and save records', async () => {
+    const h = harness();
+    const id = await taxes(h, [A, B]);
+    h.f.addTab(tab(9, 'https://other.example/'));
+    await setSaved(h, id, [A, X, B]); // X: synced from another device
+    h.clock.now += MIN;
+    await h.r.flush();
+    expect(await urls(h, id)).toEqual([A, X, B]); // the pass keeps it (M4-R21)
+    h.clock.now += MIN;
+    expect(await h.svc.closeAndSave(id)).toMatchObject({ closed: 2, skipped: 0 });
+    expect((await h.stored(id))?.saved).toMatchObject({ closed: true, tabs: [{ url: A }, { url: X }, { url: B }] });
+  });
+
+  it('Close and archive keeps it too', async () => {
+    const h = harness();
+    const id = await taxes(h, [A, B]);
+    h.f.addTab(tab(9, 'https://other.example/'));
+    await setSaved(h, id, [A, X, B]);
+    h.clock.now += MIN;
+    await h.r.flush();
+    await h.svc.closeAndArchive(id);
+    expect(await h.stored(id)).toMatchObject({ archivedAt: expect.any(Number) });
+    expect(await urls(h, id)).toEqual([A, X, B]);
+  });
+
+  it('sync off: a fragment variant that reopen skips (M4-R43) survives the next Close and save', async () => {
+    const h = harness();
+    const id = await taxes(h, [G1, G2, A]);
+    h.f.addTab(tab(9, 'https://other.example/'));
+    await h.svc.closeAndSave(id);
+    expect(await urls(h, id)).toEqual([G1, G2, A]);
+    expect(await h.svc.reopen(id)).toEqual({ opened: 2 }); // one tab per dedupe key: G2 is not opened
+    h.clock.now += MIN;
+    await h.r.flush();
+    expect((await h.stored(id))?.saved?.closed).toBeUndefined(); // the dedupe-key cover check thawed it
+    expect(await urls(h, id)).toEqual([G1, G2, A]); // the pass keeps G2 (never a member here)
+    h.clock.now += MIN;
+    await h.svc.closeAndSave(id);
+    expect(await urls(h, id)).toEqual([G1, G2, A]);
+  });
+
+  it('a tab this device saw open and the user closed before Close and save leaves the list (M4-R21/R33); a never-open one stays', async () => {
+    const h = harness();
+    const id = await taxes(h, [A, B, C]);
+    h.f.addTab(tab(9, 'https://other.example/'));
+    await setSaved(h, id, [A, B, X, C]);
+    h.clock.now += MIN;
+    await h.r.flush(); // B is a member at this pass
+    await h.f.closeTab(2); // closed by hand; Close and save comes before any other pass
+    h.clock.now += MIN;
+    await h.svc.closeAndSave(id);
+    expect(await urls(h, id)).toEqual([A, X, C]);
+  });
+
+  it('control: a list with no saved URL beyond the open tabs is recorded as before (tab-bar order, groups)', async () => {
+    const h = harness();
+    const id = await taxes(h, [A, B]);
+    h.f.addTab(tab(9, 'https://other.example/'));
+    h.f.addTab(tab(3, C));
+    await h.svc.addTab(3, id);
+    await h.r.flush(); // C joins the Taxes group
+    h.clock.now += MIN;
+    await h.svc.closeAndSave(id);
+    expect((await h.stored(id))?.saved).toEqual({
+      at: NOW + MIN, closed: true,
+      tabs: [{ url: A, title: `T ${A}`, group: 'Taxes' }, { url: B, title: `T ${B}`, group: 'Taxes' }, { url: C, title: `T ${C}`, group: 'Taxes' }],
+    });
+  });
+
+  it('an unkept project keeps a saved URL never open here too: the pass maintains its list, and Close and save keeps it (M4-R51)', async () => {
+    const h = harness();
+    const id = await taxes(h, [A, B]);
+    h.f.addTab(tab(9, 'https://other.example/'));
+    await h.svc.setKeep(id, false);
+    await setSaved(h, id, [A, X, B]); // X from a synced copy, never open here
+    h.clock.now += MIN;
+    await h.r.flush();
+    expect(await urls(h, id)).toEqual([A, X, B]);
+    h.clock.now += MIN;
+    await h.svc.closeAndSave(id);
+    expect((await h.stored(id))?.saved).toMatchObject({ closed: true, tabs: [{ url: A }, { url: X }, { url: B }] });
+    expect(await h.stored(id)).toMatchObject({ keep: true });
+  });
+
+  it('global dry run: Close and save keeps a saved URL never open here too', async () => {
+    const h = harness({ program: program({ dryRun: true }) });
+    const id = await taxes(h, [A, B]);
+    h.f.addTab(tab(9, 'https://other.example/'));
+    await setSaved(h, id, [A, X, B]);
+    await h.svc.closeAndSave(id);
+    expect(await urls(h, id)).toEqual([A, X, B]);
+  });
+
+  it('frozen list: a URL that joins the list while it is frozen survives Close and save', async () => {
+    const h = harness();
+    const id = await taxes(h);
+    h.f.addTab(tab(9, 'https://other.example/'));
+    h.formEdited.add(2);
+    await h.svc.closeAndSave(id);
+    await setSaved(h, id, [A, B, C, X], true); // X arrives by sync; `closed` is local and kept (sync-plan.ts:50)
+    await h.r.flush();
+    h.formEdited.delete(2);
+    h.clock.now += MIN;
+    await h.svc.closeAndSave(id);
+    expect(await urls(h, id)).toEqual([A, B, C, X]);
+  });
+});
+
+describe('M4-R21 with sync off: a kept project across a browser restart', () => {
+  beforeEach(() => { fakeBrowser.reset(); });
+  const urls = async (h: ReturnType<typeof harness>, id: string) => (await h.stored(id))?.saved?.tabs.map((t) => t.url);
+
+  /** Taxes [A, B, C] kept and open; Chrome quits (no pass sees the tabs go) and the next session is not restored. */
+  async function restart() {
+    const local = memoryArea();
+    const h1 = harness({ local, session: memorySession() });
+    const id = await taxes(h1);
+    const port = new FakeBrowserPort();
+    port.addWindow(1, { focused: true });
+    return { h: harness({ local, port, session: memorySession(), clock: { now: NOW + 60 * MIN } }), id };
+  }
+
+  it('one tab back keeps the whole saved list, and Reopen still opens the others', async () => {
+    const { h, id } = await restart();
+    h.f.addTab(tab(10, A));
+    await h.r.flush();
+    expect(await urls(h, id)).toEqual([A, B, C]);
+    expect(await h.svc.reopen(id)).toEqual({ opened: 2 });
+  });
+
+  it('a tab back and then closed again leaves; the ones never back stay', async () => {
+    const { h, id } = await restart();
+    h.f.addTab(tab(10, A));
+    h.f.addTab(tab(11, B));
+    await h.r.flush();
+    await h.f.closeTab(11);
+    h.clock.now += MIN;
+    await h.r.flush();
+    expect(await urls(h, id)).toEqual([A, C]);
+  });
+
+  it('Close and save with one tab back keeps the whole saved list', async () => {
+    const { h, id } = await restart();
+    h.f.addTab(tab(10, A));
+    h.f.addTab(tab(9, 'https://other.example/'));
+    await h.r.flush();
+    await h.svc.closeAndSave(id);
+    expect(await urls(h, id)).toEqual([A, B, C]);
+  });
+});
+
+// M4-R51: Keep off → on must not cut a saved list to the open tabs.
+describe('M4-R51: keeping a project again keeps the saved tabs this device did not see close', () => {
+  beforeEach(() => { fakeBrowser.reset(); });
+  const urls = async (h: ReturnType<typeof harness>, id: string) => (await h.stored(id))?.saved?.tabs.map((t) => t.url);
+  /** Taxes [A, B, C] kept and open; Chrome quits (no pass sees the tabs go), the next session is not restored, A comes back. */
+  async function restartOneBack() {
+    const local = memoryArea();
+    const id = await taxes(harness({ local, session: memorySession() }));
+    const port = new FakeBrowserPort();
+    port.addWindow(1, { focused: true });
+    const h = harness({ local, port, session: memorySession(), clock: { now: NOW + 60 * MIN } });
+    h.f.addTab(tab(10, A));
+    await h.r.flush();
+    expect(await urls(h, id)).toEqual([A, B, C]); // the restart fix holds
+    return { h, id };
+  }
+
+  it('Keep off then on with one tab back keeps the saved tabs not reopened yet', async () => {
+    const { h, id } = await restartOneBack();
+    await h.svc.setKeep(id, false);
+    await h.svc.setKeep(id, true);
+    expect(await urls(h, id)).toEqual([A, B, C]);
+  });
+
+  it('Keep off, a pass, then Keep on keeps them too (and the pass meanwhile drops nothing)', async () => {
+    const { h, id } = await restartOneBack();
+    await h.svc.setKeep(id, false);
+    h.clock.now += MIN;
+    await h.r.flush();
+    expect(await urls(h, id)).toEqual([A, B, C]);
+    await h.svc.setKeep(id, true);
+    h.clock.now += MIN;
+    await h.r.flush();
+    expect(await urls(h, id)).toEqual([A, B, C]);
+  });
+
+  it('frozen list: Close and save with a protected tab, Keep off then on, keeps the frozen list', async () => {
+    const h = harness({ session: memorySession() });
+    const id = await taxes(h);
+    h.f.addTab(tab(9, 'https://other.example/'));
+    h.formEdited.add(1);
+    await h.svc.closeAndSave(id); // A stays open (protected), list [A, B, C] frozen
+    await h.svc.setKeep(id, false);
+    await h.svc.setKeep(id, true);
+    expect(await h.stored(id)).toMatchObject({ keep: true, saved: { closed: true } });
+    expect(await urls(h, id)).toEqual([A, B, C]);
+  });
+
+  it('control: a tab closed while the project was not kept stays out of the list once kept again', async () => {
+    const h = harness({ session: memorySession() });
+    const id = await taxes(h);
+    h.f.addTab(tab(9, 'https://other.example/'));
+    await h.svc.setKeep(id, false);
+    h.clock.now += MIN;
+    await h.f.closeTab(3);
+    await h.r.flush();
+    await h.svc.setKeep(id, true);
+    h.clock.now += MIN;
+    await h.r.flush();
+    expect(await urls(h, id)).toEqual([A, B]);
+  });
+
+  it('control (no pass between the close and Keep on): the close is seen at the next pass', async () => {
+    const h = harness({ session: memorySession() });
+    const id = await taxes(h);
+    h.f.addTab(tab(9, 'https://other.example/'));
+    await h.svc.setKeep(id, false);
+    h.clock.now += MIN;
+    await h.f.closeTab(3); // no flush: setKeep's own resolve is the first pass to see it
+    await h.svc.setKeep(id, true);
+    h.clock.now += MIN;
+    await h.r.flush();
+    expect(await urls(h, id)).toEqual([A, B]);
+  });
+
+  it('sibling (M4-R44 3(a), released): Keep off, then Close and save with one tab back keeps the saved tabs not reopened yet', async () => {
+    const { h, id } = await restartOneBack();
+    h.f.addTab(tab(9, 'https://other.example/'));
+    await h.r.flush();
+    await h.svc.setKeep(id, false);
+    await h.svc.closeAndSave(id);
+    expect(await urls(h, id)).toEqual([A, B, C]);
+  });
+
+  it('sibling control: Keep off, a tab closed here, then Close and save leaves the closed tab out', async () => {
+    const h = harness({ session: memorySession() });
+    const id = await taxes(h);
+    h.f.addTab(tab(9, 'https://other.example/'));
+    await h.svc.setKeep(id, false);
+    h.clock.now += MIN;
+    await h.f.closeTab(3);
+    await h.r.flush();
+    await h.svc.closeAndSave(id);
+    expect(await urls(h, id)).toEqual([A, B]);
   });
 });
