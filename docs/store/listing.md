@@ -127,6 +127,10 @@ Asked for only when the user turns on notifications for duplicates. Shows a noti
 
 Asked for only when the user turns on a rule or recipe that reads pages. Injects Tabchef's own bundled scripts into tabs on sites the user granted: a banner that asks before closing a duplicate or a tab with unsaved form edits, and a page watcher for rules that match on page text, read a value from the page (for example a pull request's branch) or protect unsaved form edits. The watcher reports only whether the phrases a rule names appear on the page, the values a rule reads, and whether a form field was edited; it never sends the page text.
 
+### bookmarks (optional)
+
+Asked for only when the user turns on "Sync kept projects across your devices" on the Projects page. Writes the user's kept projects (their names and tab addresses) as folders inside one visible folder named Tabchef in Other bookmarks, and reads it back, so Chrome Sync carries the projects to the user's other computers. To find that folder it reads only the list of top-level items in Other bookmarks; it manages everything inside the Tabchef folder and never changes or deletes any bookmark outside it. Turned off by default, per device.
+
 ### sidePanel
 
 Shows the user's projects (a Jira ticket with its pull requests) in Chrome's side panel.
