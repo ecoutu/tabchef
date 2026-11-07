@@ -1,3 +1,19 @@
+# [1.5.0](https://github.com/ecoutu/tabchef/compare/v1.4.0...v1.5.0) (2026-11-07)
+
+
+### Bug Fixes
+
+* **recipes:** reject project rules in a recipe without a project definition ([adffd70](https://github.com/ecoutu/tabchef/commit/adffd70c2d42cce8d36a3f75450bfe330b9d1a6c))
+* **ui:** name project closes in plain words ([5fe8f19](https://github.com/ecoutu/tabchef/commit/5fe8f193ac6a17d8245c123f8badd5a7b0f5c27e)), closes [#40](https://github.com/ecoutu/tabchef/issues/40)
+
+
+### Features
+
+* **projects:** add manual projects ([5895551](https://github.com/ecoutu/tabchef/commit/5895551300477bcb988a188c217628d04235f6cb))
+* **projects:** archive projects ([be604d0](https://github.com/ecoutu/tabchef/commit/be604d0613e941d1fdfcd79f0873d1e033c21d32))
+* **projects:** save a tab group as a project ([b6f4ba2](https://github.com/ecoutu/tabchef/commit/b6f4ba2eaf764d98020456b82f3022f90a8a6850))
+* **projects:** save, close and reopen projects ([9016ba0](https://github.com/ecoutu/tabchef/commit/9016ba0dfb22049e00dcad855cd9846f8eff4a59))
+
 # [1.4.0](https://github.com/ecoutu/tabchef/compare/v1.3.0...v1.4.0) (2026-11-06)
 
 
