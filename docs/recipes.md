@@ -159,11 +159,13 @@ lets it start a new project. Projects show in the popup's Projects tab and in th
 recipe rules can assign projects.
 
 Once a project's Jira ticket is done or its GitHub issue is closed, its card asks whether to close its group, with
-**Close group**, **Close and archive** and **Keep**, and the popup's Finished tab lists the project with the same
+**Close group**, **Close and archive** and **Keep open**, and the popup's Finished tab lists the project with the same
 buttons, above the tabs it suggests closing. The Finished tab shows while the Finished recipe is on, or a recipe whose
 projects can be done: GitHub issue projects, the Jira ticket projects, or your own recipe with a project and a rule
-whose `source` picks a `statusCategory` field. **Keep** keeps the project and stops asking, on the card and in the
-Finished tab, until you restart the browser or the ticket or issue is reopened.
+whose `source` picks a `statusCategory` field. **Keep open** leaves the group open, saves the project so it is never
+forgotten, and stops asking, on the card and in the Finished tab, until you restart the browser or the ticket or issue
+is reopened. While project sync is on, the button says **Keep and save to bookmarks**, because the saved project is
+also written to your bookmarks; for a project you already saved it stays **Keep open**.
 
 ### Priority order and sections
 

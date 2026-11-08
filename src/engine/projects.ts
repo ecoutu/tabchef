@@ -1375,7 +1375,7 @@ export class ProjectService {
         const openUrls = new Set(tabs.map((t) => this.norm(program, urlOf(t))));
         return [{
           id: p.id, key: p.key, title: projectGroupTitle(defOf.get(p.recipeId)!, p, prefixes), ...(p.summary !== undefined && { summary: p.summary }), ...prTitleOf(p),
-          ...(status && { status }), done,
+          ...(status && { status }), done, ...(p.keep && { keep: true }),
           tabs: tabs.map((t) => {
             const pr = factsOf(t).find((e) => PILLS.has(e.data?.state as PrState));
             return {

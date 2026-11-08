@@ -4,17 +4,22 @@
   // wait for a connection or host access (Connect opens #/connections; Allow requests in the click handler).
   // #195: the Finished view's done projects (`projects`) come first, one row each with the card prompt's actions (Close
   // group, Close and archive, Keep), sent as the card sends them; Close group's toast offers Undo as the card's does.
+  // #157: Keep is named as the card's is (doneKeepLabel), from project sync (`syncOn`, which view.data sends with the
+  // done projects, so the label is right on first render) and the project's keep.
   import { browser } from 'wxt/browser';
   import { send } from '../../../ui/send';
   import { requestNeeds } from '../../../ui/permissions';
   import { createProjectActions, type Toast } from '../../../ui/project-actions';
   import { buildDoneRows } from '../../../ui/projects-model';
+  import { doneKeepLabel } from '../../../ui/keep-wording';
   import PrPill from '../../../ui/PrPill.svelte';
   import ProjectTitle from '../../../ui/ProjectTitle.svelte';
   import type { ViewRow, ViewSummary } from '../../../engine/views';
   import type { DoneProject } from '../../../core/projects/types';
 
-  let { view, rows, projects = [], onChange }: { view: ViewSummary; rows: ViewRow[]; projects?: DoneProject[]; onChange: () => void } = $props();
+  let { view, rows, projects = [], syncOn = false, onChange }: {
+    view: ViewSummary; rows: ViewRow[]; projects?: DoneProject[]; syncOn?: boolean; onChange: () => void;
+  } = $props();
   let error = $state('');
   let status = $state('');
   /** After Close group or Close and archive: the closed tabs' recently-closed entries, which Undo reopens. */
@@ -100,6 +105,7 @@
   {#if done.length > 0}
     <ul>
       {#each done as d (d.id)}
+        {@const keepLabel = doneKeepLabel(syncOn, d.keep === true)}
         <li>
           <div class="row project" role="group" aria-label={d.title}>
             <span class="text">
@@ -111,7 +117,7 @@
             <span class="project-actions">
               <button type="button" class="act" aria-label={`Close group ${d.title}`} onclick={() => projectActions.closeGroup(d.id)}>Close group</button>
               <button type="button" class="act" aria-label={`Close and archive ${d.title}`} onclick={() => projectActions.closeAndArchive(d.id)}>Close and archive</button>
-              <button type="button" class="act" aria-label={`Keep ${d.title}`} onclick={() => projectActions.keepDone(d.id)}>Keep</button>
+              <button type="button" class="act" aria-label={`${keepLabel} ${d.title}`} onclick={() => projectActions.keepDone(d.id)}>{keepLabel}</button>
             </span>
           </div>
         </li>

@@ -28,6 +28,7 @@ function slim(c: ProjectCardData): DoneProject {
   return {
     id: c.id, key: c.key, title: c.title, ...(c.summary !== undefined && { summary: c.summary }),
     ...(c.prTitle !== undefined && { prTitle: c.prTitle }), ...(c.status && { status: c.status }), tabCount: c.tabs.length,
+    ...(c.keep === true && { keep: true as const }),
   };
 }
 

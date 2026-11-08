@@ -221,7 +221,7 @@
       {#if data.data.kind === 'duplicates'}
         <Duplicates data={{ sets: data.data.sets, pending: data.data.pending, locked }} onChange={refresh} />
       {:else if data.data.kind === 'list'}
-        <ListView view={activeView} rows={data.data.rows} projects={data.data.projects ?? []} onChange={refresh} />
+        <ListView view={activeView} rows={data.data.rows} projects={data.data.projects ?? []} syncOn={data.data.syncOn === true} onChange={refresh} />
       {/if}
     {/if}
   </div>

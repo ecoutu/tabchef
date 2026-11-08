@@ -370,6 +370,31 @@ test.describe('M3 with mocked services', () => {
     await expect.poll(() => titleOf(board), { timeout: 10_000 }).toBe('BRD-1');
   });
 
+  test('(l) the side panel project home does not scroll sideways at 320 px: its actions row wraps (#157)', async () => {
+    // Titles level, no connection: the project comes from the ticket URL alone. Open in tab bar, Close group, Close and
+    // save and Save project are wider than 320 px together.
+    await send(h, { type: 'connections.disconnect', id: 'github' });
+    await send(h, { type: 'connections.disconnect', id: 'jira' });
+    await setConfig(h, withRecipe(jiraRecipe(mock.origin)));
+    await openTab(h, `${mock.origin}/browse/SCRUM-9`);
+    const id = `${JIRA_RECIPE_ID}:SCRUM-9`;
+    await expect.poll(async () => (await send<{ id: string }[]>(h, { type: 'projects.list' })).map((c) => c.id), { timeout: 10_000 })
+      .toEqual([id]);
+
+    const panel = await h.context.newPage();
+    try {
+      await panel.setViewportSize({ width: 320, height: 600 });
+      await panel.goto(`chrome-extension://${h.extensionId}/panel.html#/project/${encodeURIComponent(id)}`);
+      await expect(panel.getByRole('heading', { name: 'SCRUM-9', level: 2 })).toBeVisible({ timeout: 10_000 });
+      await expect(panel.getByRole('button', { name: 'Save project' })).toBeVisible();
+      const widths = await panel.evaluate(() => ({ scroll: document.documentElement.scrollWidth, client: document.documentElement.clientWidth }));
+      expect(widths.client).toBe(320);
+      expect(widths.scroll).toBeLessThanOrEqual(widths.client);
+    } finally {
+      await panel.close();
+    }
+  });
+
   test('(c) a 401 marks the connection needs-reauth; the merged row stays, stale, and its due auto-close is skipped', async () => {
     // Auto-close on, falling due 15 s after the merge: the merge is "now", so the close is not due until after the 401.
     const AFTER_MS = 15_000;

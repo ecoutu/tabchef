@@ -84,6 +84,15 @@ describe('#195: ProjectService.doneProjects (the Finished view) and keepDone', (
     expect(h.sessionData.get(DONE_PROJECTS_KEY)).toMatchObject({ projects: done, kept: [] });
   });
 
+  it('#157: a saved project (keep) is listed with keep, so its Finished row\'s Keep says what the card\'s does', async () => {
+    const h = harness();
+    await openDone(h);
+    expect((await h.svc.doneProjects())[0]).not.toHaveProperty('keep');
+    await h.svc.setKeep(ID, true);
+    await h.svc.cards();
+    expect(await h.svc.doneProjects()).toEqual([expect.objectContaining({ id: ID, keep: true })]);
+  });
+
   it('a stale Done is not listed (M3-R90), and a project not done leaves the list at the next listing', async () => {
     const h = harness();
     h.port.addTab(tab(1, TICKET, '[ABC-1] Login fails - Jira'));

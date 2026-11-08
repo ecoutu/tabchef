@@ -1,15 +1,18 @@
 <script lang="ts">
   // One project card (M3 T17, spec §6.5 mockup): title, status pill and tab count; the open tabs (title focuses the tab,
   // PR state pill, stale dot); the linked PRs not open, greyed with "Open ↗"; and the Done prompt (Close group, M4 T9's
-  // Close and archive, Keep). Collapsed (#151): the header alone, whose disclosure button expands it again; a Done prompt
-  // then shows in the header as a Done badge and Close group (Close and archive and Keep stay in the body).
+  // Close and archive, and "Keep open"). Collapsed (#151): the header alone, whose disclosure button expands it again; a
+  // Done prompt then shows in the header as a Done badge and Close group (Close and archive and the keep button stay in
+  // the body). The keep button says what it does (#157): "Keep open", or "Keep and save to bookmarks" while project sync
+  // is on (`syncOn`) and the project is not kept yet (`card.keep`).
   import { staleText, type ProjectCard } from '../../../ui/projects-model';
   import PrPill from '../../../ui/PrPill.svelte';
   import ProjectTitle from '../../../ui/ProjectTitle.svelte';
   import { projectHomeHash } from '../../../ui/routes';
   import { browser } from 'wxt/browser';
+  import { doneKeepLabel } from '../../../ui/keep-wording';
 
-  let { card, prompt, collapsed = false, onToggle, onFocus, onOpenLinked, onCloseGroup, onCloseAndArchive, onKeep, onOpenProject }: {
+  let { card, prompt, collapsed = false, syncOn = false, onToggle, onFocus, onOpenLinked, onCloseGroup, onCloseAndArchive, onKeep, onOpenProject }: {
     card: ProjectCard;
     /**
      * Show "Ticket is done. Close this group?", or "Issue is closed. Close this group?" for a GitHub issue (`card.issue`)
@@ -18,6 +21,8 @@
     prompt: boolean;
     /** Only the header shows (#151). */
     collapsed?: boolean;
+    /** Project sync is on (projects.sync.status `enabled`): Keep also saves the project to bookmarks. */
+    syncOn?: boolean;
     /** The header's disclosure button: collapse or expand the card. */
     onToggle: () => void;
     onFocus: (tabId: number) => void;
@@ -63,7 +68,7 @@
       <div class="prompt-actions">
         <button type="button" class="act" onclick={onCloseGroup}>Close group</button>
         <button type="button" class="act" onclick={onCloseAndArchive}>Close and archive</button>
-        <button type="button" class="act" onclick={onKeep}>Keep</button>
+        <button type="button" class="act" onclick={onKeep}>{doneKeepLabel(syncOn, card.keep === true)}</button>
       </div>
     </div>
   {/if}

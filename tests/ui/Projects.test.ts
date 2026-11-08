@@ -96,9 +96,9 @@ describe('Projects tab (M3 T17)', () => {
     expect(undone).toEqual(['rc-2']); // rc-1 was restored; rc-2 failed and stops the loop, rc-3 is still pending
   });
 
-  it('[Keep] dismisses the prompt without closing and keeps the project (never pruned)', async () => {
+  it('[Keep open] dismisses the prompt without closing and keeps the project (never pruned)', async () => {
     render(Projects);
-    await fireEvent.click(await screen.findByRole('button', { name: 'Keep' }));
+    await fireEvent.click(await screen.findByRole('button', { name: 'Keep open' }));
     expect(screen.queryByText('Ticket is done. Close this group?')).toBeNull();
     expect(types()).not.toContain('projects.closeGroup');
     expect(send).toHaveBeenCalledWith({ type: 'projects.keepDone', projectId: 'jira:ABC-1' });
@@ -267,7 +267,7 @@ describe('collapsing project cards (#151)', () => {
     expect(within(h).getByText('Done').getAttribute('title')).toBe('Ticket is done. Close this group?');
     expect(screen.queryByRole('group', { name: 'Ticket is done' })).toBeNull(); // the body's prompt is hidden
     expect(screen.queryByRole('button', { name: 'Close and archive' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Keep' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Keep/ })).toBeNull();
     await fireEvent.click(within(h).getByRole('button', { name: 'Close group' }));
     expect(send).toHaveBeenCalledWith({ type: 'projects.closeGroup', projectId: 'jira:ABC-1' });
     expect(toggle('ABC-1 · Login fails').getAttribute('aria-expanded')).toBe('false');
@@ -290,9 +290,9 @@ describe('collapsing project cards (#151)', () => {
     expect(screen.queryByRole('button', { name: 'Close group' })).toBeNull();
   });
 
-  it('Keep removes the badge from the collapsed header', async () => {
+  it('Keep open removes the badge from the collapsed header', async () => {
     render(Projects);
-    await fireEvent.click(await screen.findByRole('button', { name: 'Keep' }));
+    await fireEvent.click(await screen.findByRole('button', { name: 'Keep open' }));
     await fireEvent.click(toggle('ABC-1 · Login fails'));
     const h = header('ABC-1 · Login fails');
     expect(h.querySelector('.badge')).toBeNull();
@@ -530,5 +530,73 @@ describe('collapsing project cards (#151)', () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Expand all' }));
     expect(toggle('ABC-1 · Login fails').getAttribute('aria-expanded')).toBe('true');
     expect(screen.queryByRole('alert')).toBeNull();
+  });
+});
+
+// #157: the Done prompt's Keep button says what it does, in the words Project home uses: with project sync on
+// (projects.sync.status `enabled`) a kept project is saved to bookmarks; otherwise the group just stays open.
+describe('Done prompt Keep wording (#157)', () => {
+  const withStatus = (status: unknown): void => {
+    const base = send.getMockImplementation()!;
+    send.mockImplementation(async (req: { type: string }) => (req.type === 'projects.sync.status' ? status : base(req)));
+  };
+  const keepButton = async (): Promise<HTMLElement> => {
+    const prompt = await screen.findByRole('group', { name: 'Ticket is done' });
+    return waitFor(() => within(prompt).getAllByRole('button').at(-1)!);
+  };
+
+  it('sync off: "Keep open"', async () => {
+    withStatus({ ok: true, data: { enabled: false, wanted: false } });
+    render(Projects);
+    await waitFor(async () => expect((await keepButton()).textContent).toBe('Keep open'));
+    expect(types()).toContain('projects.sync.status');
+  });
+
+  it('sync paused (the toggle on, no bookmarks permission): "Keep open"', async () => {
+    withStatus({ ok: true, data: { enabled: false, wanted: true } });
+    render(Projects);
+    await waitFor(async () => expect((await keepButton()).textContent).toBe('Keep open'));
+  });
+
+  it('sync on: "Keep and save to bookmarks", which keeps the project', async () => {
+    withStatus({ ok: true, data: { enabled: true, wanted: true } });
+    render(Projects);
+    const b = await screen.findByRole('button', { name: 'Keep and save to bookmarks' });
+    expect(screen.queryByRole('button', { name: 'Keep open' })).toBeNull();
+    await fireEvent.click(b);
+    expect(send).toHaveBeenCalledWith({ type: 'projects.keepDone', projectId: 'jira:ABC-1' }); // keepDone keeps it (setKeep) and dismisses the prompt (#195)
+    expect(screen.queryByText('Ticket is done. Close this group?')).toBeNull();
+  });
+
+  it('m1: a project already kept says "Keep open" even with sync on (it is already in bookmarks)', async () => {
+    withStatus({ ok: true, data: { enabled: true, wanted: true } });
+    cards = [{ ...done, keep: true }];
+    render(Projects);
+    await waitFor(async () => expect((await keepButton()).textContent).toBe('Keep open'));
+    expect(screen.queryByRole('button', { name: 'Keep and save to bookmarks' })).toBeNull();
+  });
+
+  it('m5: a later refresh whose sync status read fails keeps the last known wording (the side panel)', async () => {
+    vi.useFakeTimers();
+    let status: unknown = { ok: true, data: { enabled: true, wanted: true } };
+    const base = send.getMockImplementation()!;
+    send.mockImplementation(async (req: { type: string }) => (req.type === 'projects.sync.status' ? status : base(req)));
+    try {
+      render(Projects, { live: true });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(screen.getByRole('button', { name: 'Keep and save to bookmarks' })).toBeTruthy();
+      status = { ok: false, error: 'worker restarting' };
+      const before = types().filter((t) => t === 'projects.sync.status').length;
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(types().filter((t) => t === 'projects.sync.status').length).toBeGreaterThan(before);
+      expect(screen.getByRole('button', { name: 'Keep and save to bookmarks' })).toBeTruthy();
+      expect(screen.queryByRole('button', { name: 'Keep open' })).toBeNull();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('a failed sync status read: "Keep open"', async () => {
+    withStatus({ ok: false, error: 'worker restarting' });
+    render(Projects);
+    expect(await screen.findByRole('button', { name: 'Keep open' })).toBeTruthy();
   });
 });

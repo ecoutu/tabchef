@@ -26,6 +26,12 @@ describe('buildProjectCards (M3 T17)', () => {
     expect(c).toMatchObject({ showClose: false, status: { label: 'Done', tone: 'done' } });
   });
 
+  it('#157: a kept project\'s card is keep: true; one not kept has no keep flag', () => {
+    const [kept, not] = buildProjectCards([card({ id: 'a', keep: true }), card({ id: 'b' })]);
+    expect(kept).toMatchObject({ id: 'a', keep: true });
+    expect(not).not.toHaveProperty('keep');
+  });
+
   it('M3-R72: without a ticket status the card has the title alone', () => {
     const [c] = buildProjectCards([card()]);
     expect(c).not.toHaveProperty('status');

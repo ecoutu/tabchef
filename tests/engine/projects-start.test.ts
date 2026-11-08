@@ -138,6 +138,16 @@ describe('ProjectService.create (Manual projects)', () => {
     expect(await h.svc.create(MANUAL, 'Code')).toBe(`${MANUAL}:code`); // other names are free
   });
 
+  it('#157: an open project\'s card says whether it is kept, so the Done prompt does not offer to keep it again', async () => {
+    const h = harness();
+    h.f.addTab(tab(5, 'https://youtube.example/'));
+    const id = await h.svc.create(MANUAL, 'Media', [5]);
+    await h.r.flush();
+    expect((await h.svc.cards()).map((c) => [c.id, c.keep])).toEqual([[id, true]]);
+    await h.svc.setKeep(id, false);
+    expect((await h.svc.cards())[0]).not.toHaveProperty('keep');
+  });
+
   it('a hidden project of the same name (not kept, nothing open, not archived) is replaced, key and all', async () => {
     const h = harness();
     h.f.addTab(tab(5, 'https://youtube.example/'));

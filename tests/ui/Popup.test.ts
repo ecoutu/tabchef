@@ -168,9 +168,26 @@ describe('Popup', () => {
     await browser.storage.local.set({ 'popup.lastTab': 'finished' });
     render(Popup);
     expect(await screen.findByRole('group', { name: 'acme/web#12 · Fix login' })).toBeTruthy();
-    await fireEvent.click(screen.getByRole('button', { name: 'Keep acme/web#12 · Fix login' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Keep open acme/web#12 · Fix login' }));
     expect(send).toHaveBeenCalledWith({ type: 'projects.keepDone', projectId: project.id });
     await waitFor(() => expect(screen.getByRole('tab', { name: /Finished/ }).textContent).toContain('0'));
+  });
+
+  it('#157: the Finished row\'s Keep says what it does, as the card\'s does, from its first render: sync on and the project not saved yet', async () => {
+    views = [dupView, { ...finView, count: 1 }];
+    const project = { id: 'github-issue:acme/web#12', key: 'acme/web#12', title: 'acme/web#12 · Fix login', status: { name: 'Closed', category: 'done', via: 'api' }, tabCount: 2 };
+    const base = send.getMockImplementation()!;
+    send.mockImplementation(async (req: { type: string; viewId?: string }) => {
+      if (req.type === 'view.data' && req.viewId === 'finished') return { ok: true, data: { kind: 'list', rows: [], projects: [project], syncOn: true } };
+      return base(req);
+    });
+    await browser.storage.local.set({ 'popup.lastTab': 'finished' });
+    render(Popup);
+    // The first render already says it (sync comes with view.data), and no separate projects.sync.status goes out.
+    const row = await screen.findByRole('group', { name: 'acme/web#12 · Fix login' });
+    expect(row.querySelector('button[aria-label^="Keep"]')?.getAttribute('aria-label')).toBe('Keep and save to bookmarks acme/web#12 · Fix login');
+    expect(screen.getByRole('button', { name: 'Keep and save to bookmarks acme/web#12 · Fix login' }).textContent).toBe('Keep and save to bookmarks');
+    expect(send.mock.calls.filter((c) => c[0].type === 'projects.sync.status')).toEqual([]);
   });
 
   it('#195: refreshes when the done projects change (storage.session projects.done)', async () => {

@@ -30,6 +30,8 @@ export interface ProjectCard {
   done: boolean;
   /** The project's key is a GitHub issue (`owner/repo#N`): the Done prompt speaks of a closed issue, not a done ticket. */
   issue?: true;
+  /** The project is kept (#157): the Done prompt's Keep only keeps the group open, whether or not sync is on. */
+  keep?: boolean;
 }
 
 const TONES: Record<NonNullable<ProjectCardData['status']>['category'], StatusTone> = { new: 'todo', indeterminate: 'progress', done: 'done' };
@@ -72,7 +74,7 @@ export function buildProjectCards(data: ProjectCardData[]): ProjectCard[] {
         const state = shown(l.state);
         return { url: l.url, title: l.title, ...(state && { state }) };
       }),
-      ...(parseIssueKey(c.key) && { issue: true as const }),
+      ...(parseIssueKey(c.key) && { issue: true as const }), ...(c.keep && { keep: true }),
       // Fresh Done only (M3-R90): a stale or stored Done still shows as the status, without the prompt; nor once kept (#195).
       showClose: c.done && !c.doneKept, done: c.done,
     };
@@ -80,7 +82,7 @@ export function buildProjectCards(data: ProjectCardData[]): ProjectCard[] {
 }
 
 /** A done project row of the popup's Finished tab (#195): the card's header, with the card prompt's actions. */
-export type DoneRow = Pick<ProjectCard, 'id' | 'title' | 'subtitle' | 'status' | 'tabCount' | 'issue'>;
+export type DoneRow = Pick<ProjectCard, 'id' | 'title' | 'subtitle' | 'status' | 'tabCount' | 'issue' | 'keep'>;
 
 /** The Finished tab's done project rows, in the order listed. */
 export function buildDoneRows(done: DoneProject[]): DoneRow[] {
@@ -89,7 +91,7 @@ export function buildDoneRows(done: DoneProject[]): DoneRow[] {
     return {
       id: d.id, title: d.title, ...(subtitle && { subtitle }),
       ...(d.status && { status: { label: d.status.name, tone: TONES[d.status.category] } }),
-      tabCount: d.tabCount, ...(parseIssueKey(d.key) && { issue: true as const }),
+      tabCount: d.tabCount, ...(parseIssueKey(d.key) && { issue: true as const }), ...(d.keep && { keep: true }),
     };
   });
 }

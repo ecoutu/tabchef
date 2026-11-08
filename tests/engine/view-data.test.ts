@@ -523,6 +523,27 @@ describe('#195: done projects in the Finished view', () => {
     expect(((await s.handle({ type: 'view.data', viewId: 'mine' }, ui)) as Loose).data).toEqual({ kind: 'list', rows: [] });
   });
 
+  it('#157: view.data says project sync is on with the done projects, so the Finished row\'s Keep is named on first render', async () => {
+    const status = vi.fn(async () => ({ enabled: true, wanted: true }));
+    const s = setup({ done: [issue] });
+    s.deps.projectSync = { status, setEnabled: vi.fn(), dismiss: vi.fn() } as unknown as NonNullable<typeof s.deps.projectSync>;
+    await s.setCfg(enable(defaultConfig(), 'github-issue'));
+    expect(((await s.handle({ type: 'view.data', viewId: 'finished' }, ui)) as Loose).data).toEqual({ kind: 'list', rows: [], projects: [issue], syncOn: true });
+    status.mockResolvedValue({ enabled: false, wanted: true }); // paused: the bookmarks permission was taken away
+    expect(((await s.handle({ type: 'view.data', viewId: 'finished' }, ui)) as Loose).data).toEqual({ kind: 'list', rows: [], projects: [issue] });
+    status.mockRejectedValue(new Error('storage unavailable')); // a failed read: sync off, the view still answers
+    expect(((await s.handle({ type: 'view.data', viewId: 'finished' }, ui)) as Loose).data).toEqual({ kind: 'list', rows: [], projects: [issue] });
+  });
+
+  it('#157: without done projects, view.data does not read project sync', async () => {
+    const status = vi.fn(async () => ({ enabled: true, wanted: true }));
+    const s = setup({ done: [] });
+    s.deps.projectSync = { status, setEnabled: vi.fn(), dismiss: vi.fn() } as unknown as NonNullable<typeof s.deps.projectSync>;
+    await s.setCfg(enable(defaultConfig(), 'github-issue'));
+    expect(((await s.handle({ type: 'view.data', viewId: 'finished' }, ui)) as Loose).data).toEqual({ kind: 'list', rows: [] });
+    expect(status).not.toHaveBeenCalled();
+  });
+
   it('views.list (the popup opening) asks for a fresh project listing while Finished is listed; the badge never does', async () => {
     const refreshDone = vi.fn();
     const s = setup({ done: [issue], refreshDone });

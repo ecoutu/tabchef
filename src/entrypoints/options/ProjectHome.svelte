@@ -3,14 +3,20 @@
   // status, PR counts, Open in tab bar / Close group) → open tabs by group in tab-bar order → linked PRs not open, with
   // "Open into project" → the project's settings, collapsed and read-only (edited inline from T20). Kept current like the
   // side panel: re-fetched on config.changed and every LIVE_MS while visible.
-  // M4 T9 lifecycle: an open project offers Close group, Close and save, Keep, and Close and archive when its ticket is
-  // Done by fresh data (M3-R90). One with nothing open shows its saved tab list with Reopen, Keep, Archive and Delete; an
-  // archived one says so ("Archived: reopen?" when a rule assigns its key) with Reopen, Unarchive and Delete. Delete asks
-  // in the page first (M4-R9: "Delete for good?"), then goes back to Projects.
+  // M4 T9 lifecycle: an open project offers Close group, Close and save, the save button, and Close and archive when its
+  // ticket is Done by fresh data (M3-R90). One with nothing open shows its saved tab list with Reopen, the save button,
+  // Archive and Delete; an archived one says so ("Archived: reopen?" when a rule assigns its key) with Reopen, Unarchive
+  // and Delete. Delete asks in the page first (M4-R9: "Delete for good?"), then goes back to Projects.
+  // The save button (#157, once "Keep") is labelled with what it does: "Save to bookmarks" / "Remove from bookmarks" while project sync is on
+  // (projects.sync.status `enabled`: a kept project is written to the Tabchef bookmark folder), otherwise "Save project" /
+  // "Unsave project" (the words in ui/keep-wording, shared with the popup's Done prompt). A saved project shows a "Saved"
+  // (or "Saved to bookmarks") badge in the header. The label changes with the state, so the button is a plain action
+  // button, not an aria-pressed toggle. The actions row wraps, so the longer labels fit a narrow side panel.
   import { onDestroy, onMount, tick } from 'svelte';
   import { send } from '../../ui/send';
   import { createProjectActions, startLiveRefresh, type Toast } from '../../ui/project-actions';
   import { buildProjectHome, type ProjectHomeView } from '../../ui/project-home-model';
+  import { keepLabel, keepTitle, savedBadge, syncOnFrom } from '../../ui/keep-wording';
   import PrPill from '../../ui/PrPill.svelte';
   import ProjectTitle from '../../ui/ProjectTitle.svelte';
   import Help from './Help.svelte';
@@ -25,13 +31,17 @@
   let error = $state('');
   /** After Close group: the closed tabs' recently-closed entries, which Undo reopens (recent.undo). */
   let toast = $state<Toast | undefined>(undefined);
+  /** Project sync is on (the toggle on and the bookmarks permission granted): a kept project goes to bookmarks. */
+  let syncOn = $state(false);
   let seq = 0;
 
   async function load(): Promise<void> {
     const n = ++seq;
-    const r = await send({ type: 'projects.home', id });
+    const [r, s] = await Promise.all([send({ type: 'projects.home', id }), send({ type: 'projects.sync.status' })]);
     if (n !== seq) return; // a newer read is on its way
     if (r.ok) { view = r.data ? buildProjectHome(r.data) : null; error = ''; } else error = r.error;
+    // A failed read keeps the last known value (sync off until the first answer), so the wording does not flip.
+    syncOn = syncOnFrom(s, syncOn);
   }
 
   const actions = createProjectActions({
@@ -94,6 +104,7 @@
     <header>
       <h2><ProjectTitle title={v.title} subtitle={v.subtitle} /></h2>
       {#if v.status}<span class={`status tone-${v.status.tone}`}>{v.status.label}</span>{/if}
+      {#if v.keep && !v.archived}<span class="saved">{savedBadge(syncOn)}</span>{/if}
       {#if v.prSummary}<span class="prs">{v.prSummary}</span>{/if}
       <span class="actions">
         {#if v.open}
@@ -113,7 +124,7 @@
           {/if}
         {/if}
         {#if !v.archived}
-          <button type="button" class="act" aria-pressed={v.keep} title="A kept project is saved and never forgotten" onclick={() => actions.setKeep(id, !v.keep)}>Keep</button>
+          <button type="button" class="act" title={keepTitle(syncOn)} onclick={() => actions.setKeep(id, !v.keep)}>{keepLabel(syncOn, v.keep)}</button>
         {/if}
         {#if !v.open}
           {#if confirmDelete}
@@ -207,11 +218,13 @@
   h2 { font-size: 16px; margin: 0; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   h3 { font-size: 13px; margin: 16px 0 6px; }
   h4 { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--muted); margin: 8px 0 2px; }
-  .actions { display: inline-flex; gap: 6px; margin-left: auto; }
+  .actions { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; margin-left: auto; }
   .prs { color: var(--muted); font-size: 12px; }
   .status { flex: none; font-size: 11px; border-radius: 999px; padding: 1px 8px; border: 1px solid var(--border); color: var(--muted); }
   .tone-progress { color: var(--accent); border-color: var(--accent); }
   .tone-done { color: var(--ok, #1e8e3e); border-color: var(--ok, #1e8e3e); }
+  /* Like the in-progress status pill: --accent on --bg, 4.5:1 light and 6.4:1 dark (WCAG AA at 11px). */
+  .saved { flex: none; font-size: 11px; border-radius: 999px; padding: 1px 8px; border: 1px solid var(--accent); color: var(--accent); }
   ul { list-style: none; margin: 0; padding: 0; }
   .row { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
   .fav { width: 16px; height: 16px; flex: none; border-radius: 3px; }
@@ -223,7 +236,7 @@
   .act { flex: none; } /* the button itself: .act in src/ui/tokens.css */
   .muted { color: var(--muted); }
   .note { margin: 0 0 8px; color: var(--accent); }
-  .confirm { display: inline-flex; align-items: center; gap: 6px; }
+  .confirm { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
   .danger { color: var(--danger); }
   .error { color: var(--danger); font-size: 12px; }
   .toast { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px; background: var(--surface); }

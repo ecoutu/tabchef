@@ -133,7 +133,7 @@ describe('ListView: done projects in the Finished view (#195)', () => {
     expect(rows[1]!.textContent).toContain('Ticket is done');
     expect(rows[1]!.textContent).toContain('Login fails');
     expect(rows[1]!.textContent).toContain('1 tab');
-    for (const name of ['Close group', 'Close and archive', 'Keep']) {
+    for (const name of ['Close group', 'Close and archive', 'Keep open']) {
       expect(screen.getByRole('button', { name: `${name} acme/web#12 · Fix login` }).textContent).toBe(name);
     }
     expect(screen.getByText('Tab 3')).toBeTruthy(); // the tab suggestions stay listed
@@ -158,15 +158,31 @@ describe('ListView: done projects in the Finished view (#195)', () => {
   it('Keep sends projects.keepDone (the card prompt\'s Keep) and refreshes', async () => {
     const onChange = vi.fn();
     render(ListView, { view: finished, rows: [], projects: [issue], onChange });
-    await fireEvent.click(screen.getByRole('button', { name: 'Keep acme/web#12 · Fix login' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Keep open acme/web#12 · Fix login' }));
     expect(send.mock.calls.map((c) => c[0])).toEqual([{ type: 'projects.keepDone', projectId: issue.id }]);
     expect(onChange).toHaveBeenCalledTimes(1);
+  });
+
+  // #157: the same words as the card's Done prompt (doneKeepLabel), from project sync (view.data's syncOn) and the
+  // project's keep. The label is right on first render, and ListView sends no projects.sync.status of its own.
+  it('#157: with project sync on, Keep says it saves to bookmarks, unless the project is already saved', () => {
+    render(ListView, { view: finished, rows: [], projects: [issue, { ...ticket, keep: true }], syncOn: true, onChange: vi.fn() });
+    const keep = screen.getByRole('button', { name: 'Keep and save to bookmarks acme/web#12 · Fix login' });
+    expect(keep.textContent).toBe('Keep and save to bookmarks');
+    expect(screen.getByRole('button', { name: 'Keep open ABC-1' }).textContent).toBe('Keep open');
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('#157: with project sync off, Keep says it keeps the group open', () => {
+    render(ListView, { view: finished, rows: [], projects: [issue], onChange: vi.fn() });
+    expect(screen.getByRole('button', { name: 'Keep open acme/web#12 · Fix login' }).textContent).toBe('Keep open');
+    expect(send).not.toHaveBeenCalled();
   });
 
   it('a failed action shows its error', async () => {
     send.mockResolvedValue({ ok: false, error: 'unknown project' });
     render(ListView, { view: finished, rows: [], projects: [issue], onChange: vi.fn() });
-    await fireEvent.click(screen.getByRole('button', { name: 'Keep acme/web#12 · Fix login' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Keep open acme/web#12 · Fix login' }));
     expect((await screen.findByRole('alert')).textContent).toContain('unknown project');
   });
 });

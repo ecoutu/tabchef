@@ -125,6 +125,8 @@ export interface ProjectCardData {
    * popup's Finished tab no longer lists it. Cleared once fresh data says it is not done (the ticket was reopened).
    */
   doneKept?: true;
+  /** M4 T7: kept (never pruned, synced). #157: the Done prompt does not offer to keep it again. */
+  keep?: boolean;
   tabs: { tabId: number; windowId: number; title: string; url: string; favIconUrl?: string; lastAccessed?: number; pill?: PrState; stale?: boolean }[];
   /** Linked PRs not open in the project. */
   linked: Project['linked'];
@@ -138,6 +140,8 @@ export interface DoneProject {
   id: string; key: string; title: string; summary?: string; prTitle?: string;
   status?: ProjectCardData['status'];
   tabCount: number;
+  /** #157: the project is kept (ProjectCardData `keep`), so its Keep only keeps the group open (doneKeepLabel). */
+  keep?: true;
 }
 
 /** One project's home page (`projects.home`, M4 T4): its card data plus its groups, settings and recipe's name. */
@@ -153,8 +157,7 @@ export interface ProjectHomeData extends ProjectCardData {
   recipeName: string;
   /** M4 T9: its recipe is off (or gone): the stored data only, no settings; it cannot be reopened until it is on. */
   recipeOff?: true;
-  /** M4 T7: kept (never pruned, synced) and its saved tab list. A kept project with no open tab has no groups. */
-  keep?: boolean;
+  /** M4 T7: its saved tab list (`keep`: see ProjectCardData). A kept project with no open tab has no groups. */
   saved?: Project['saved'];
   /** M4 T9: archived at (no tabs, no groups), and how many open tabs a rule assigns its key to ("Archived: reopen?"). */
   archivedAt?: number;

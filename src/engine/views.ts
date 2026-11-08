@@ -66,8 +66,12 @@ export interface ViewSummary {
 
 export type ViewData =
   | { kind: 'duplicates'; sets: DupeSetView[]; pending: PendingAsk[] }
-  /** `projects` (#195): the Finished view's done projects, each with the card prompt's actions. */
-  | { kind: 'list'; rows: ViewRow[]; projects?: DoneProject[] }
+  /**
+   * `projects` (#195): the Finished view's done projects, each with the card prompt's actions. `syncOn` (#157): project
+   * sync is on (projects.sync.status `enabled`), set by view.data alongside `projects`, so their Keep is named on first
+   * render.
+   */
+  | { kind: 'list'; rows: ViewRow[]; projects?: DoneProject[]; syncOn?: true }
   | { kind: 'projects' };
 
 export interface ViewsDeps {

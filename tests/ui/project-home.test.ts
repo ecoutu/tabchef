@@ -183,13 +183,13 @@ describe('Project home lifecycle (M4 T9)', () => {
   });
   const button = (name: string) => screen.queryByRole('button', { name });
 
-  it('an open project: Close group, Close and save, Keep; Close and archive only when the ticket is Done by fresh data', async () => {
+  it('an open project: Close group, Close and save, Save project; Close and archive only when the ticket is Done by fresh data', async () => {
     data = home({ status: { name: 'Done', category: 'done', via: 'api' }, done: false }); // stale or stored Done (M3-R90)
     render(ProjectHome, { id: ID });
     await screen.findByRole('heading', { level: 2, name: 'ABC-1 · Login fails' });
     expect(button('Close group')).toBeTruthy();
     expect(button('Close and save')).toBeTruthy();
-    expect(button('Keep')?.getAttribute('aria-pressed')).toBe('false');
+    expect(button('Save project')).toBeTruthy();
     expect(button('Close and archive')).toBeNull();
     expect(button('Archive')).toBeNull();
     expect(button('Delete')).toBeNull();
@@ -198,14 +198,14 @@ describe('Project home lifecycle (M4 T9)', () => {
     render(ProjectHome, { id: ID });
     await fireEvent.click(await screen.findByRole('button', { name: 'Close and archive' }));
     expect(calls('projects.closeAndArchive')).toEqual([{ type: 'projects.closeAndArchive', projectId: ID }]);
-    expect(button('Keep')?.getAttribute('aria-pressed')).toBe('true');
+    expect(button('Unsave project')).toBeTruthy();
   });
 
-  it('Close and save and Keep send their requests', async () => {
+  it('Close and save and Save project send their requests', async () => {
     render(ProjectHome, { id: ID });
     await fireEvent.click(await screen.findByRole('button', { name: 'Close and save' }));
     expect(calls('projects.closeAndSave')).toEqual([{ type: 'projects.closeAndSave', projectId: ID }]);
-    await fireEvent.click(screen.getByRole('button', { name: 'Keep' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Save project' }));
     expect(calls('projects.setKeep')).toEqual([{ type: 'projects.setKeep', projectId: ID, keep: true }]);
   });
 
@@ -256,6 +256,153 @@ describe('Project home lifecycle (M4 T9)', () => {
     expect(calls('projects.delete')).toEqual([{ type: 'projects.delete', projectId: ID }]);
     await waitFor(() => expect(window.location.hash).toBe('#/projects'));
     expect(confirm).not.toHaveBeenCalled();
+  });
+});
+
+// #157: the Keep toggle says what it does (save to bookmarks while project sync is on, otherwise save the project) and a
+// saved project shows it.
+describe('Project home: save a project (#157)', () => {
+  const button = (name: string) => screen.queryByRole('button', { name });
+  /** projects.sync.status answers `enabled` (the toggle on and the bookmarks permission granted). */
+  const withSync = (enabled: boolean, wanted = enabled): void => {
+    const base = send.getMockImplementation()!;
+    send.mockImplementation(async (req: { type: string }) =>
+      req.type === 'projects.sync.status' ? { ok: true, data: { enabled, wanted } } : base(req));
+  };
+  const shown = async (name: string): Promise<HTMLElement> => {
+    await screen.findByRole('heading', { level: 2, name: 'ABC-1 · Login fails' });
+    return waitFor(() => screen.getByRole('button', { name }));
+  };
+
+  it('sync off, not saved: "Save project", no Saved badge; the button is not a pressed toggle', async () => {
+    withSync(false);
+    data = home({ keep: false });
+    render(ProjectHome, { id: ID });
+    const b = await shown('Save project');
+    expect(b.hasAttribute('aria-pressed')).toBe(false);
+    expect(button('Keep')).toBeNull();
+    expect(screen.queryByText('Saved')).toBeNull();
+    await fireEvent.click(b);
+    expect(calls('projects.setKeep')).toEqual([{ type: 'projects.setKeep', projectId: ID, keep: true }]);
+  });
+
+  it('sync off, saved: "Unsave project" and a Saved badge in the header', async () => {
+    withSync(false);
+    data = home({ keep: true });
+    render(ProjectHome, { id: ID });
+    const b = await shown('Unsave project');
+    expect(b.hasAttribute('aria-pressed')).toBe(false);
+    const badge = screen.getByText('Saved');
+    expect(badge.closest('header')).toBeTruthy();
+    await fireEvent.click(b);
+    expect(calls('projects.setKeep')).toEqual([{ type: 'projects.setKeep', projectId: ID, keep: false }]);
+  });
+
+  it('sync on, not saved: "Save to bookmarks", no badge', async () => {
+    withSync(true);
+    data = home({ keep: false });
+    render(ProjectHome, { id: ID });
+    await fireEvent.click(await shown('Save to bookmarks'));
+    expect(screen.queryByText(/^Saved/)).toBeNull();
+    expect(calls('projects.setKeep')).toEqual([{ type: 'projects.setKeep', projectId: ID, keep: true }]);
+  });
+
+  it('sync on, saved: "Remove from bookmarks" and a "Saved to bookmarks" badge', async () => {
+    withSync(true);
+    data = home({ keep: true });
+    render(ProjectHome, { id: ID });
+    await fireEvent.click(await shown('Remove from bookmarks'));
+    expect(screen.getByText('Saved to bookmarks').closest('header')).toBeTruthy();
+    expect(calls('projects.setKeep')).toEqual([{ type: 'projects.setKeep', projectId: ID, keep: false }]);
+  });
+
+  it('sync paused (the toggle on, the bookmarks permission taken away), saved: nothing is in bookmarks, so "Unsave project" and "Saved"', async () => {
+    withSync(false, true);
+    data = home({ keep: true });
+    render(ProjectHome, { id: ID });
+    expect(await shown('Unsave project')).toBeTruthy();
+    expect(screen.getByText('Saved')).toBeTruthy();
+    expect(button('Remove from bookmarks')).toBeNull();
+  });
+
+  it('sync paused, not saved: "Save project", not "Save to bookmarks"', async () => {
+    withSync(false, true);
+    data = home({ keep: false });
+    render(ProjectHome, { id: ID });
+    expect(await shown('Save project')).toBeTruthy();
+    expect(button('Save to bookmarks')).toBeNull();
+    expect(screen.queryByText(/^Saved/)).toBeNull();
+  });
+
+  it('a failed sync status read keeps the last known wording instead of switching to sync off', async () => {
+    vi.useFakeTimers();
+    let status: { ok: true; data: { enabled: boolean; wanted: boolean } } | { ok: false; error: string } = { ok: true, data: { enabled: true, wanted: true } };
+    const base = send.getMockImplementation()!;
+    send.mockImplementation(async (req: { type: string }) => (req.type === 'projects.sync.status' ? status : base(req)));
+    data = home({ keep: true });
+    render(ProjectHome, { id: ID });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(button('Remove from bookmarks')).toBeTruthy();
+    status = { ok: false, error: 'worker restarting' };
+    const before = calls('projects.sync.status').length;
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(calls('projects.sync.status').length).toBeGreaterThan(before);
+    expect(button('Remove from bookmarks')).toBeTruthy();
+    expect(button('Unsave project')).toBeNull();
+    expect(screen.getByText('Saved to bookmarks')).toBeTruthy();
+  });
+
+  it('a failed sync status read on the first load reads as sync off', async () => {
+    const base = send.getMockImplementation()!;
+    send.mockImplementation(async (req: { type: string }) => (req.type === 'projects.sync.status' ? { ok: false, error: 'boom' } : base(req)));
+    data = home({ keep: false });
+    render(ProjectHome, { id: ID });
+    expect(await shown('Save project')).toBeTruthy();
+  });
+
+  it('live: sync turned off while the page is open changes the wording on the next refresh', async () => {
+    vi.useFakeTimers();
+    let enabled = true;
+    const base = send.getMockImplementation()!;
+    send.mockImplementation(async (req: { type: string }) =>
+      req.type === 'projects.sync.status' ? { ok: true, data: { enabled, wanted: enabled } } : base(req));
+    data = home({ keep: true });
+    render(ProjectHome, { id: ID });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(button('Remove from bookmarks')).toBeTruthy();
+    expect(screen.getByText('Saved to bookmarks')).toBeTruthy();
+    enabled = false;
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(button('Unsave project')).toBeTruthy();
+    expect(button('Remove from bookmarks')).toBeNull();
+    expect(screen.getByText('Saved')).toBeTruthy();
+    enabled = true;
+    await trigger({ type: 'config.changed', rev: 'r2' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(button('Remove from bookmarks')).toBeTruthy();
+  });
+
+  it('saving updates the label and the badge after the project is re-read', async () => {
+    withSync(false);
+    data = home({ keep: false });
+    render(ProjectHome, { id: ID });
+    const b = await shown('Save project');
+    data = home({ keep: true });
+    b.focus();
+    await fireEvent.click(b);
+    expect(await screen.findByRole('button', { name: 'Unsave project' })).toBe(b); // the same button: focus stays on it
+    expect(document.activeElement).toBe(b);
+    expect(screen.getByText('Saved')).toBeTruthy();
+  });
+
+  it('an archived project offers neither button nor badge', async () => {
+    withSync(true);
+    data = home({ tabs: [], groups: [], linked: [], keep: true, archivedAt: 5, saved: { at: 1, tabs: [{ url: 'https://a.example/', title: 'A' }] } });
+    render(ProjectHome, { id: ID });
+    await screen.findByText(/^Archived/);
+    expect(button('Remove from bookmarks')).toBeNull();
+    expect(button('Unsave project')).toBeNull();
+    expect(screen.queryByText('Saved to bookmarks')).toBeNull();
   });
 });
 

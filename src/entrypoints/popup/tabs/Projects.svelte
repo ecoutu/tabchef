@@ -8,6 +8,8 @@
   // Collapsed cards (#151): storage.local `projects.collapsed`, read before the first cards show and followed while open
   // (the popup and the side panel share it). Ids of projects no longer listed are pruned when the first list loads, not
   // on later refreshes: a project missing from one refresh of the live panel keeps its state when it comes back.
+  // Project sync (#157): projects.sync.status is read with each list, so the Done prompt's Keep says whether it saves to
+  // bookmarks; a failed read keeps the last known value (sync off until the first answer).
   import { onDestroy, onMount } from 'svelte';
   import { browser } from 'wxt/browser';
   import { send } from '../../../ui/send';
@@ -16,6 +18,7 @@
   import {
     allCollapsed, collapseIds, COLLAPSED_PROJECTS_KEY, expandIds, parseCollapsed, pruneCollapsed, sameIds, type Edit,
   } from '../../../ui/collapsed-projects';
+  import { syncOnFrom } from '../../../ui/keep-wording';
   import ProjectCard from './ProjectCard.svelte';
 
   let { live = false, onChange, onOpenProject }: { live?: boolean; onChange?: () => void; onOpenProject?: (id: string) => void } = $props();
@@ -28,6 +31,8 @@
   let kept = $state<string[]>([]);
   /** After Close group: the closed tabs' recently-closed entries, which Undo reopens (M1 undo, recent.undo). */
   let toast = $state<Toast | undefined>(undefined);
+  /** Project sync is on: Keep in a Done prompt also saves the project to bookmarks. */
+  let syncOn = $state(false);
   let seq = 0;
   /**
    * The collapsed cards' ids as shown: `stored` with this page's edits not yet stored on top. Storage is the source of
@@ -124,9 +129,10 @@
 
   async function load(): Promise<void> {
     const n = ++seq;
-    const r = await send({ type: 'projects.list' });
+    const [r, s] = await Promise.all([send({ type: 'projects.list' }), send({ type: 'projects.sync.status' })]);
     await collapsedRead; // no card shows expanded before its stored state is known
     if (n !== seq) return; // a newer list is on its way
+    syncOn = syncOnFrom(s, syncOn);
     if (r.ok) {
       cards = buildProjectCards(r.data);
       error = '';
@@ -185,7 +191,7 @@
   {/if}
   {#each cards ?? [] as c (c.id)}
     <ProjectCard card={c} prompt={c.showClose && !kept.includes(c.id)}
-      collapsed={collapsed.includes(c.id)} onToggle={() => setIds([c.id], !collapsed.includes(c.id))}
+      collapsed={collapsed.includes(c.id)} {syncOn} onToggle={() => setIds([c.id], !collapsed.includes(c.id))}
       onFocus={focus} onOpenLinked={(url) => openLinked(c.id, url)} onCloseGroup={() => closeGroup(c.id)}
       onCloseAndArchive={() => closeAndArchive(c.id)}
       onKeep={() => { kept = [...kept, c.id]; void keepDone(c.id); }} onOpenProject={onOpenProject ? () => onOpenProject(c.id) : undefined} />

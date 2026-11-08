@@ -1238,7 +1238,14 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
       case 'view.data': {
         if (!deps.views) return fail('views unavailable');
         const v = (await listViews(deps.views, req.viewId)).views[0];
-        return v ? ok(v.data) : fail('unknown view');
+        if (!v) return fail('unknown view');
+        // #157: done projects come with project sync's state, so the Finished row's Keep is named on first render. A
+        // failed read leaves it out (sync off), as the popup did before any answer.
+        if (v.data.kind === 'list' && v.data.projects && deps.projectSync) {
+          const on = await deps.projectSync.status().then((s) => s.enabled, () => false);
+          if (on) return ok({ ...v.data, syncOn: true as const });
+        }
+        return ok(v.data);
       }
       case 'view.close': case 'view.keep': return deps.views ? runViewAction(req, deps.views) : fail('views unavailable');
       case 'dupes.closeExtras': {
