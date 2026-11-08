@@ -1,10 +1,24 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fakeBrowser } from 'wxt/testing/fake-browser';
 import { browser } from 'wxt/browser';
-import { ConfigStore, QUOTA_WARNING } from '../../src/storage/config-store';
+import { ConfigStore as RealConfigStore, QUOTA_WARNING } from '../../src/storage/config-store';
 import { defaultConfig } from '../../src/core/config/defaults';
 import type { Config, ConfigV1, GroupRule } from '../../src/core/types';
 import { v1Config, withGroupRules } from '../helpers/config';
+
+// Every store a test makes is disposed after it, so its debounce and retry timers (real 2 s and 5 s timers in most
+// tests) cannot fire inside a later test and read or write that test's storage (#155).
+const stores = new Set<RealConfigStore>();
+class ConfigStore extends RealConfigStore {
+  constructor(...args: ConstructorParameters<typeof RealConfigStore>) {
+    super(...args);
+    stores.add(this);
+  }
+}
+afterEach(() => {
+  for (const s of stores) s.dispose();
+  stores.clear();
+});
 
 const big = (kb: number, tag = 'x'): Config => {
   const c = defaultConfig();
