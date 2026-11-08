@@ -12,6 +12,7 @@
   import { createProjectActions, startLiveRefresh, type Toast } from '../../ui/project-actions';
   import { buildProjectHome, type ProjectHomeView } from '../../ui/project-home-model';
   import PrPill from '../../ui/PrPill.svelte';
+  import ProjectTitle from '../../ui/ProjectTitle.svelte';
   import Help from './Help.svelte';
 
   let { id }: { id: string } = $props();
@@ -87,7 +88,7 @@
   {:else if view}
     {@const v = view}
     <header>
-      <h2>{v.title}</h2>
+      <h2><ProjectTitle title={v.title} subtitle={v.subtitle} /></h2>
       {#if v.status}<span class={`status tone-${v.status.tone}`}>{v.status.label}</span>{/if}
       {#if v.prSummary}<span class="prs">{v.prSummary}</span>{/if}
       <span class="actions">
@@ -200,7 +201,7 @@
   .back { margin: 8px 0; }
   a { color: var(--accent); }
   header { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 4px 0 12px; }
-  h2 { font-size: 16px; margin: 0; }
+  h2 { font-size: 16px; margin: 0; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   h3 { font-size: 13px; margin: 16px 0 6px; }
   h4 { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--muted); margin: 8px 0 2px; }
   .actions { display: inline-flex; gap: 6px; margin-left: auto; }

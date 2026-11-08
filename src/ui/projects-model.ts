@@ -9,6 +9,8 @@ export type StatusTone = 'todo' | 'progress' | 'done';
 export interface ProjectCard {
   id: string;
   title: string;
+  /** The ticket title shown muted beside the title (projectSubtitle); absent when there is none or the title has it. */
+  subtitle?: string;
   /** The ticket status; absent without one (the card shows the title alone, M3-R72). */
   status?: { label: string; tone: StatusTone };
   tabCount: number;
@@ -26,12 +28,26 @@ const lastActive = (c: ProjectCardData): number => Math.max(-1, ...c.tabs.map((t
 /** The stale dot's tooltip: the row shows the last known state because `label` could not be reached. */
 export const staleText = (label: string): string => `Last known state; ${label} unavailable`;
 
+const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * The ticket title a project list shows, muted, beside a project's title (e.g. `ABC-123` · `Fix login`): its Jira
+ * summary, else its first linked PR's title without the key it starts with (`ABC-123: Fix login`). None when the title
+ * already shows it (a recipe title like `{key} · {summary}`), or for a manual project (a name, no summary, no prTitle).
+ */
+export function projectSubtitle(p: { key: string; title: string; summary?: string; prTitle?: string }): string | undefined {
+  const lead = new RegExp(`^\\[?${escapeRe(p.key)}\\]?(?![\\w-])[\\s:|·–—-]*`, 'i');
+  const s = p.summary?.trim() || p.prTitle?.trim().replace(lead, '').trim();
+  return s && !p.title.includes(s) ? s : undefined;
+}
+
 /** One card per project, the most recently active project first. */
 export function buildProjectCards(data: ProjectCardData[]): ProjectCard[] {
   return [...data].sort((a, b) => lastActive(b) - lastActive(a)).map((c): ProjectCard => {
     const open = new Set(c.tabs.map((t) => t.url));
+    const subtitle = projectSubtitle(c);
     return {
-      id: c.id, title: c.title,
+      id: c.id, title: c.title, ...(subtitle && { subtitle }),
       ...(c.status && { status: { label: c.status.name, tone: TONES[c.status.category] } }),
       tabCount: c.tabs.length,
       tabs: c.tabs.map((t) => {

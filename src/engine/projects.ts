@@ -901,7 +901,7 @@ export class ProjectService {
       const data = (p: Project): SavedProjectData => {
         const def = defOf.get(p.recipeId);
         return {
-          id: p.id, key: p.key, title: def ? projectGroupTitle(def, p) : (p.name ?? p.key), ...(p.summary !== undefined && { summary: p.summary }),
+          id: p.id, key: p.key, title: def ? projectGroupTitle(def, p) : (p.name ?? p.key), ...(p.summary !== undefined && { summary: p.summary }), ...prTitleOf(p),
           ...(p.status && { status: p.status }), savedCount: p.saved?.tabs.length ?? 0, ...(isArchived(p) && { archivedAt: p.archivedAt }),
           held: held.get(p.id)?.length ?? 0, updatedAt: p.updatedAt,
         };
@@ -993,7 +993,7 @@ export class ProjectService {
       ? await this.homeOf(def)
       : { recipeName: (await this.deps.recipeName?.(p.recipeId)) ?? p.recipeId, recipeOff: true as const };
     return {
-      id: p.id, key: p.key, title: def ? projectGroupTitle(def, p) : (p.name ?? p.key), ...(p.summary !== undefined && { summary: p.summary }),
+      id: p.id, key: p.key, title: def ? projectGroupTitle(def, p) : (p.name ?? p.key), ...(p.summary !== undefined && { summary: p.summary }), ...prTitleOf(p),
       ...(p.status && { status: p.status }), done: false, tabs: [], linked: p.linked, groups: [], ...recipe, ...kept(p),
       ...(isArchived(p) && { archivedAt: p.archivedAt, held }),
     };
@@ -1030,6 +1030,7 @@ export class ProjectService {
       const current = new Map((await this.deps.store.list()).map((p) => [p.id, p]));
       const factsOf = (t: TabSnap): SourceEntry<Record<string, unknown>>[] => Object.values(this.deps.sources.factsFor(t.id, urlOf(t)) ?? {});
       const changed: Project[] = [];
+      let renamed = false;
       const cards = open.flatMap((o): ProjectCardData[] => {
         const p = current.get(o.id);
         if (!p) return []; // removed meanwhile (or never stored: global dry run)
@@ -1042,7 +1043,12 @@ export class ProjectService {
           if (l.prs) p.linked = l.prs.map((x) => ({ url: x.url, title: x.title ?? x.url, state: x.state }));
         }
         const issue = asked.has(p.id) ? issues.get(p.key) : undefined;
-        if (p.summary === undefined && issue?.data?.summary) p.summary = issue.data.summary;
+        // A fresh lookup (via api or page, not stale) keeps the summary current when the ticket is renamed; a stale or
+        // unread one only fills a missing summary. Not a user change, so no updatedAt bump (M4-R31). A `{summary}`
+        // group title follows on the next pass, through the reconciler's rename (M3-R41).
+        const summary = issue?.data?.summary?.trim() ? issue.data.summary : undefined;
+        const fresh = issue !== undefined && !issue.stale && (issue.via === 'api' || issue.via === 'page');
+        if (summary !== undefined && summary !== p.summary && (fresh || p.summary === undefined)) { p.summary = summary; renamed = true; }
         // M3-R90: the status shown may be last known (a stale entry, else the stored one), but only a fresh entry
         // (via api or page, not stale) says Done: stale or unknown data never drives the close prompt.
         const src = [issue, ...tabs.flatMap(factsOf)].find((e) => e && statusOf(e.data, e.via));
@@ -1052,7 +1058,7 @@ export class ProjectService {
         if (JSON.stringify(p) !== before) changed.push(p);
         const openUrls = new Set(tabs.map((t) => this.norm(program, urlOf(t))));
         return [{
-          id: p.id, key: p.key, title: projectGroupTitle(defOf.get(p.recipeId)!, p), ...(p.summary !== undefined && { summary: p.summary }),
+          id: p.id, key: p.key, title: projectGroupTitle(defOf.get(p.recipeId)!, p), ...(p.summary !== undefined && { summary: p.summary }), ...prTitleOf(p),
           ...(status && { status }), done,
           tabs: tabs.map((t) => {
             const pr = factsOf(t).find((e) => PILLS.has(e.data?.state as PrState));
@@ -1066,6 +1072,7 @@ export class ProjectService {
         }];
       });
       if (changed.length) await this.deps.store.put(...changed);
+      if (renamed) this.deps.schedule?.('project'); // a group titled with the summary takes the new one
       return { cards, snap, open, defOf, held };
     });
   }
@@ -1103,6 +1110,13 @@ export class ProjectService {
     }
     return out;
   }
+}
+
+/** ProjectCardData.prTitle: the first linked PR's own title, for a project with no ticket summary and no name. */
+function prTitleOf(p: Project): Pick<ProjectCardData, 'prTitle'> {
+  if (p.summary !== undefined || p.name !== undefined) return {};
+  const t = p.linked.find((l) => l.title.trim() !== '' && l.title !== l.url)?.title;
+  return t === undefined ? {} : { prTitle: t };
 }
 
 /** A project's Keep and saved tab list, as the Project home shows them (M4 T7). */

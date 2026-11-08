@@ -521,3 +521,69 @@ describe('M4-R49: repeated skipped lines and sync notes still render', () => {
     expect(screen.getAllByText(/^same \(/)).toHaveLength(2);
   });
 });
+
+describe('project lists: the ticket title beside the key', () => {
+  const titled: ProjectCardData = { id: 'jira-ticket-either:ABC-2', key: 'ABC-2', title: 'ABC-2', summary: 'Fix login', done: false, tabs: [], linked: [] };
+  const savedOne: SavedProjectData = { id: 'jira-ticket-either:ABC-3', key: 'ABC-3', title: 'ABC-3', prTitle: 'ABC-3: Speed up search', savedCount: 1, held: 0, updatedAt: 1 };
+  const archivedOne: SavedProjectData = { id: 'jira-ticket-either:ABC-4', key: 'ABC-4', title: 'ABC-4', summary: 'Old bug', savedCount: 0, archivedAt: 1, held: 0, updatedAt: 1 };
+  beforeEach(() => {
+    send.mockImplementation(async (req: { type: string; id?: string }) => {
+      if (req.type === 'projects.list') return { ok: true, data: [titled, ...cards] };
+      if (req.type === 'projects.savedLists') return { ok: true, data: { saved: [savedOne], archived: [archivedOne] } };
+      if (req.type === 'projects.home') return { ok: true, data: { ...titled, groups: [], recipeName: 'r' } };
+      return reply(req);
+    });
+  });
+  const muted = (link: HTMLElement, text: string) => {
+    expect(link.querySelector('.sub')?.textContent).toBe(`· ${text}`);
+  };
+
+  it('Projects page: Open, Saved and Archived links show it, muted; a title that has it already is unchanged', async () => {
+    render(Projects);
+    muted(await screen.findByRole('link', { name: 'ABC-2 · Fix login' }), 'Fix login');
+    muted(await screen.findByRole('link', { name: 'ABC-3 · Speed up search' }), 'Speed up search');
+    muted(await screen.findByRole('link', { name: 'ABC-4 · Old bug' }), 'Old bug');
+    expect(screen.getByRole('link', { name: 'ABC-1 · Login fails' })).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'acme/web' })).toBeTruthy();
+  });
+
+  it('popup card and Project home heading show it', async () => {
+    render(PopupProjects, { onOpenProject: vi.fn() });
+    muted(await screen.findByRole('link', { name: 'ABC-2 · Fix login' }), 'Fix login');
+    cleanup();
+    render(ProjectHome, { id: titled.id });
+    muted(await screen.findByRole('heading', { level: 2, name: 'ABC-2 · Fix login' }), 'Fix login');
+  });
+});
+
+describe('project lists: a hover tooltip with the full title', () => {
+  const titled: ProjectCardData = { id: 'jira-ticket-either:ABC-2', key: 'ABC-2', title: 'ABC-2', summary: 'Fix login', done: false, tabs: [], linked: [] };
+  beforeEach(() => {
+    send.mockImplementation(async (req: { type: string; id?: string }) => {
+      if (req.type === 'projects.list') return { ok: true, data: [titled, ...cards] };
+      if (req.type === 'projects.home') return { ok: true, data: { ...titled, groups: [], recipeName: 'r' } };
+      return reply(req);
+    });
+  });
+  // The tooltip sits on the title's own span, not on the link or heading: their accessible name stays the text, and the
+  // tooltip (the same text) is not read again as their description.
+  const tooltip = (el: HTMLElement, full: string) => {
+    expect(el.hasAttribute('title')).toBe(false);
+    expect(el.querySelector('[title]')?.getAttribute('title')).toBe(full);
+  };
+
+  it('Projects page links: key and ticket title, or the whole title when there is none', async () => {
+    render(Projects);
+    tooltip(await screen.findByRole('link', { name: 'ABC-2 · Fix login' }), 'ABC-2 · Fix login');
+    tooltip(screen.getByRole('link', { name: 'ABC-1 · Login fails' }), 'ABC-1 · Login fails');
+    tooltip(screen.getByRole('link', { name: 'acme/web' }), 'acme/web');
+  });
+
+  it('popup card and Project home heading', async () => {
+    render(PopupProjects, { onOpenProject: vi.fn() });
+    tooltip(await screen.findByRole('link', { name: 'ABC-2 · Fix login' }), 'ABC-2 · Fix login');
+    cleanup();
+    render(ProjectHome, { id: titled.id });
+    tooltip(await screen.findByRole('heading', { level: 2, name: 'ABC-2 · Fix login' }), 'ABC-2 · Fix login');
+  });
+});

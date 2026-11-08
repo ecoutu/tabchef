@@ -4,6 +4,7 @@
   // Close and archive, Keep).
   import { staleText, type ProjectCard } from '../../../ui/projects-model';
   import PrPill from '../../../ui/PrPill.svelte';
+  import ProjectTitle from '../../../ui/ProjectTitle.svelte';
   import { projectHomeHash } from '../../../ui/routes';
   import { browser } from 'wxt/browser';
 
@@ -32,7 +33,7 @@
 <article class="card">
   <header>
     <h2><a class="home" href={homeHref}
-      onclick={onOpenProject ? (e) => { if (modified(e)) return; e.preventDefault(); onOpenProject(); } : undefined}>{card.title}</a></h2>
+      onclick={onOpenProject ? (e) => { if (modified(e)) return; e.preventDefault(); onOpenProject(); } : undefined}><ProjectTitle title={card.title} subtitle={card.subtitle} /></a></h2>
     {#if card.status}<span class={`status tone-${card.status.tone}`}>{card.status.label}</span>{/if}
     <span class="count">{card.tabCount} {card.tabCount === 1 ? 'tab' : 'tabs'}</span>
   </header>
