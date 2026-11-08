@@ -82,9 +82,10 @@ describe('URL globs fail closed (R31)', () => {
     bad('a.com/.*', /canonical/);
     bad('a.com/café', /canonical/);
   });
+  // Expands 256 branches three times: about 0.4 s idle, over the 5 s default on a loaded machine (#155).
   it('rejects too many wildcards', () => {
     bad('a.com/' + '*/'.repeat(40), /wildcards/);
-  });
+  }, 60_000);
 });
 
 describe('URL globs are backed by URLPattern', () => {

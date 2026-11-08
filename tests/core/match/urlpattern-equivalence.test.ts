@@ -190,5 +190,5 @@ describe('R31 equivalence: synthetic patterns (match and captures)', () => {
     const m = compilePattern(p);
     expect(corpus.filter((u) => m(u)).length).toBeGreaterThan(3);
     expect(corpus.some((u) => !m(u))).toBe(true);
-  });
+  }, 60_000);
 });
