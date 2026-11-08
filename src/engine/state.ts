@@ -19,6 +19,8 @@ export interface RuntimeState {
   retitleFailures?: [number, number][];
   /** ["<windowId>|<title>", consecutive flushes absent]: creation numbers are dropped only after 2 (tombstones). */
   creationAbsent?: [string, number][];
+  /** [title, consecutive flushes no group had it]: a managed title is dropped after ABSENT_LIMIT (as creationAbsent). */
+  managedTitlesAbsent?: [string, number][];
   /** Tabs Tabchef opened (or moved) into a group it created as that group's anchors (M2 T11). */
   anchors?: AnchorEntry[];
   /** `"<windowId>|<title>"` of groups whose anchor the user closed: not reopened until the group is removed (T11). */
@@ -53,6 +55,7 @@ export interface LiveState {
   leaveAloneUrls: Map<number, string>;
   retitleFailures: Map<number, number>;
   creationAbsent: Map<string, number>;
+  managedTitlesAbsent: Map<string, number>;
   anchors: AnchorEntry[];
   anchorsDismissed: Set<string>;
   anchorsDismissedGroups: Map<number, string>;
@@ -72,6 +75,7 @@ export function toLive(rt: Partial<RuntimeState> | undefined): LiveState {
     leaveAloneUrls: new Map(rt?.leaveAloneUrls ?? []),
     retitleFailures: new Map(rt?.retitleFailures ?? []),
     creationAbsent: new Map(rt?.creationAbsent ?? []),
+    managedTitlesAbsent: new Map(rt?.managedTitlesAbsent ?? []),
     anchors: (rt?.anchors ?? []).map((a) => ({ ...a })),
     anchorsDismissed: new Set(rt?.anchorsDismissed ?? []),
     anchorsDismissedGroups: new Map(rt?.anchorsDismissedGroups ?? []),
@@ -90,6 +94,7 @@ export function toRuntime(s: LiveState): RuntimeState {
     leaveAloneUrls: [...s.leaveAloneUrls],
     retitleFailures: [...s.retitleFailures],
     creationAbsent: [...s.creationAbsent],
+    managedTitlesAbsent: [...s.managedTitlesAbsent],
     anchors: s.anchors.map((a) => ({ ...a })),
     anchorsDismissed: [...s.anchorsDismissed],
     anchorsDismissedGroups: [...s.anchorsDismissedGroups],
