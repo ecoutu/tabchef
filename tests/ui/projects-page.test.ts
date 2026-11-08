@@ -302,8 +302,11 @@ describe('card title links', () => {
     render(Panel);
     (await screen.findByRole('link', { name: 'acme/web' })).click();
     await waitFor(() => expect(window.location.hash).toBe('#/project/repo%3Aacme%2Fweb'));
-    expect(await screen.findByRole('heading', { name: 'acme/web' })).toBeTruthy();
-    (screen.getByRole('link', { name: 'Projects' }) as HTMLAnchorElement).click();
+    // The hash changes at once but the panel swaps views on the hashchange event, which comes later. The list's card
+    // title is also an "acme/web" heading, so wait for the Projects link, which only ProjectHome has (#155).
+    const back = (await screen.findByRole('link', { name: 'Projects' })) as HTMLAnchorElement;
+    expect(await screen.findByRole('heading', { level: 2, name: 'acme/web' })).toBeTruthy(); // the list is gone by now
+    back.click();
     await waitFor(() => expect(window.location.hash).toBe('#/projects'));
     expect(await screen.findByRole('link', { name: 'acme/web' })).toBeTruthy();
   });
