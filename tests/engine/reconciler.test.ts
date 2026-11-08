@@ -810,3 +810,97 @@ describe('Reconciler: source facts (M3 T11)', () => {
     expect(factsFor).toHaveBeenCalledWith(1, url);
   });
 });
+
+describe('Reconciler: titles of groups that are gone (stale managedTitles)', () => {
+  beforeEach(() => fakeBrowser.reset());
+
+  const YT = 'https://youtube.com/watch';
+  const MEDIA: Config = withGroupRules([rule('media', 'https://youtube.com/**', 'Media', 'blue')]);
+  const rt = async () => ((await browser.storage.session.get('rt')) as { rt: RuntimeState }).rt;
+  /** Tabchef groups a matching tab into "Media"; the user then closes that tab and Chrome removes the group. */
+  const mediaGone = async (program: () => Program = () => programOf(MEDIA)) => {
+    const f = world();
+    f.addTab(tab(1, YT));
+    const r = new Reconciler(f, async () => program());
+    emitGroupEvents(f, r);
+    await r.flush();
+    expect(groupOf(f, 1)).toBe('Media');
+    expect((await rt()).managedTitles).toContain('Media');
+    f.state.tabs = [];
+    f.state.groups = [];
+    return { f, r };
+  };
+  /** The user groups two tabs no rule matches by hand and names the group "Media". */
+  const userMedia = (f: FakeBrowserPort): void => {
+    f.addTab(tab(2, OTHER, { groupId: 50 }));
+    f.addTab(tab(3, B, { groupId: 50 }));
+    f.addGroup({ id: 50, windowId: 1, title: 'Media', color: 'grey', collapsed: false });
+  };
+
+  it('keeps a title through one flush without its group and drops it after the next (across a restart)', async () => {
+    const { f, r } = await mediaGone();
+    await r.flush();
+    expect((await rt()).managedTitles).toContain('Media');
+    // The miss count is persisted: a restarted service worker picks it up.
+    await new Reconciler(f, async () => programOf(MEDIA)).flush();
+    expect((await rt()).managedTitles).not.toContain('Media');
+  });
+
+  it('a group back after one absent flush resets the count', async () => {
+    const { f, r } = await mediaGone();
+    await r.flush();
+    f.addTab(tab(1, YT, { groupId: 60 }));
+    f.addGroup({ id: 60, windowId: 1, title: 'Media', color: 'blue', collapsed: false });
+    await r.flush();
+    f.state.tabs = [];
+    f.state.groups = [];
+    await r.flush();
+    expect((await rt()).managedTitles).toContain('Media');
+  });
+
+  it('leaves a hand-made group alone once the title of Tabchef\'s gone group is dropped (rule still present)', async () => {
+    const { f, r } = await mediaGone();
+    await r.flush();
+    await r.flush();
+    userMedia(f);
+    const before = f.calls.length;
+    await r.flush();
+    expect(mutations({ calls: f.calls.slice(before) } as FakeBrowserPort)).toEqual([]);
+    expect([groupOf(f, 2), groupOf(f, 3)]).toEqual(['Media', 'Media']);
+  });
+
+  it('keeps the title of a group created but not titled yet (pending retitle)', async () => {
+    const f = world();
+    f.addTab(tab(1, A));
+    const r = new Reconciler(f, async () => programOf(config));
+    emitGroupEvents(f, r);
+    await r.flush();
+    f.state.tabs = [];
+    f.state.groups = [];
+    f.addTab(tab(2, A));
+    f.failNext('updateGroup', 'Group busy', 3); // the new group's title call, then two retitle attempts
+    await r.flush();
+    await r.flush();
+    await r.flush();
+    expect(f.state.groups.map((g) => g.title)).toEqual(['']);
+    const st = await rt();
+    expect(st.pendingTitles?.map(([, p]) => p.title)).toEqual(['A']);
+    expect(st.managedTitles).toContain('A');
+  });
+
+  it('a live managed group keeps its title and stays strict', async () => {
+    const f = world();
+    f.addTab(tab(1, YT));
+    const r = new Reconciler(f, async () => programOf(MEDIA));
+    emitGroupEvents(f, r);
+    await r.flush();
+    await r.flush();
+    await r.flush();
+    expect((await rt()).managedTitles).toContain('Media');
+    const gid = f.state.tabs.find((t) => t.id === 1)!.groupId;
+    f.addTab(tab(2, OTHER, { groupId: gid }));
+    await r.flush();
+    expect(groupOf(f, 2)).toBeUndefined();
+    expect(groupOf(f, 1)).toBe('Media');
+  });
+});

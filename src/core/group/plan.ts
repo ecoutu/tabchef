@@ -223,7 +223,7 @@ export interface CreationPrune {
   /** Count absence on this call (once per flush; later passes of the same flush pass false). */
   count: boolean;
 }
-const ABSENT_LIMIT = 2;
+export const ABSENT_LIMIT = 2;
 const titleOfKey = (k: string): string => k.slice(k.indexOf('|') + 1);
 
 /**

@@ -388,6 +388,27 @@ describe('planGroups: strict', () => {
   });
 });
 
+describe('planGroups: a managed title no rule or project produces (stale group titles)', () => {
+  /** The user grouped two non-matching tabs by hand and named the group "Media". */
+  const userMedia = () => {
+    const f = world();
+    f.addTab(tab(1, OTHER, { groupId: 50 }));
+    f.addTab(tab(2, 'https://news.example/b', { groupId: 50 }));
+    f.addGroup({ id: 50, windowId: 1, title: 'Media', color: 'grey', collapsed: false });
+    return f;
+  };
+  const MEDIA = cfg(rule('media', 'youtube.com/*', 'Media'));
+
+  it('once its title is no longer managed, a rule whose title no tab targets leaves the group alone', () => {
+    expect(planGroups(snap(userMedia()), MEDIA, ctx())).toEqual([]);
+  });
+
+  it('a live rule that produces the title still makes the group strict', () => {
+    expect(planGroups(snap(userMedia()), MEDIA, ctx({ managedTitles: new Set(['Media']) })))
+      .toEqual([{ kind: 'ungroup', tabIds: [1, 2], ruleId: 'user/media' }]);
+  });
+});
+
 describe('planGroups: merge', () => {
   const merged = cfg(rule('api', 'a.com/*', 'api', { merge: true }));
 

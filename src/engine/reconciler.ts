@@ -1,4 +1,4 @@
-import { dryRunGroupTabs, planGroups, planTargets, syncCreationOrder, type PageLookup, type PlanContext, type Targets } from '../core/group/plan';
+import { ABSENT_LIMIT, dryRunGroupTabs, planGroups, planTargets, syncCreationOrder, type PageLookup, type PlanContext, type Targets } from '../core/group/plan';
 import type { GroupTarget } from '../core/group/evaluate';
 import type { Op, Snapshot, TabSnap } from '../core/types';
 import type { Program, TabFacts } from '../core/lang/types';
@@ -374,9 +374,9 @@ export class Reconciler {
   private track(snap: Snapshot, st: LiveState, pre: Targets, firstPass: boolean): void {
     const { managed } = pre;
     st.managedTabs = new Map(snap.tabs.filter((t) => managed.has(t.groupId)).map((t) => [t.id, t.groupId]));
-    syncCreationOrder(snap, managed, st.creationOrder, {
-      pendingTitles: [...st.pendingTitles.values()].map((p) => p.title), absent: st.creationAbsent, count: firstPass,
-    });
+    const pendingTitles = [...st.pendingTitles.values()].map((p) => p.title);
+    syncCreationOrder(snap, managed, st.creationOrder, { pendingTitles, absent: st.creationAbsent, count: firstPass });
+    this.pruneManagedTitles(snap, st, new Set(pendingTitles), firstPass);
     const urls = new Map(snap.tabs.map((t) => [t.id, t.url]));
     for (const id of st.leaveAlone) {
       const url = urls.get(id);
@@ -384,6 +384,22 @@ export class Reconciler {
       else if (!st.leaveAloneUrls.has(id)) st.leaveAloneUrls.set(id, withoutFragment(url));
     }
     for (const id of st.leaveAloneUrls.keys()) if (!st.leaveAlone.has(id)) st.leaveAloneUrls.delete(id);
+  }
+
+  /**
+   * Forgets the title of a group that is gone, so a group the user later gives that title stays the user's. A title
+   * no group has and no pending retitle awaits is dropped after ABSENT_LIMIT consecutive flushes (counted once per
+   * flush), so a group that is briefly empty or untitled keeps it.
+   */
+  private pruneManagedTitles(snap: Snapshot, st: LiveState, pending: Set<string>, count: boolean): void {
+    const live = new Set(snap.groups.map((g) => g.title));
+    for (const title of [...st.managedTitles]) {
+      if (live.has(title) || pending.has(title)) { st.managedTitlesAbsent.delete(title); continue; }
+      if (!count) continue;
+      const n = (st.managedTitlesAbsent.get(title) ?? 0) + 1;
+      if (n >= ABSENT_LIMIT) { st.managedTitles.delete(title); st.managedTitlesAbsent.delete(title); } else st.managedTitlesAbsent.set(title, n);
+    }
+    for (const title of [...st.managedTitlesAbsent.keys()]) if (!st.managedTitles.has(title)) st.managedTitlesAbsent.delete(title);
   }
 
   /**
