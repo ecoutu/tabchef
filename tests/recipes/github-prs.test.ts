@@ -75,4 +75,24 @@ describe('github-prs recipe: group-by-repo', () => {
     });
     expect(evaluateGroupRules(tab('https://github.com/acme/widgets'), p)?.title).toBe('widgets');
   });
+
+  it('#136: GitHub pages that are not a repository (settings, orgs, notifications, users, ...) are not grouped', () => {
+    const b = structuredClone(body());
+    b.rules[0]!.enabled = true;
+    const p = programOf(withPrs(true), { ...builtinRecipes(), 'github-prs': b });
+    for (const u of [
+      'https://github.com/settings/profile', 'https://github.com/SETTINGS/profile', 'https://github.com/orgs/acme/repositories',
+      'https://github.com/notifications/subscriptions', 'https://github.com/users/foo/projects/1', 'https://github.com/organizations/acme/settings',
+      'https://github.com/marketplace/actions/checkout', 'https://github.com/sponsors/someone', 'https://github.com/topics/rust',
+      'https://github.com/trending/rust', 'https://github.com/codespaces/new', 'https://github.com/pulls/review-requested',
+      'https://github.com/issues/assigned', 'https://github.com/login/oauth/authorize', 'https://github.com/new/import',
+      'https://github.com/advisories/GHSA-abcd-1234-wxyz',
+      'https://github.com/user-attachments/assets/0b7e3c1a-1f2d-4e5f-9a8b-7c6d5e4f3a2b',
+    ]) expect(evaluateGroupRules(tab(u), p), u).toBeNull();
+    for (const [u, title] of [
+      ['https://github.com/acme/widgets', 'widgets'], ['https://github.com/acme/widgets/pull/1', 'widgets'],
+      ['https://github.com/acme/settings/issues', 'settings'], ['https://github.com/settingsx/repo', 'repo'], ['https://github.com/acme-orgs/web/tree/main', 'web'],
+      ['https://github.com/acme/advisories/security', 'advisories'],
+    ] as const) expect(evaluateGroupRules(tab(u), p)?.title, u).toBe(title);
+  });
 });

@@ -60,7 +60,7 @@ rules:
   - id: group-by-repo
     name: Group GitHub tabs by repository
     match:
-      url: 'github.com/:owner/:repo*'
+      url: 'github.com/acme/:repo*'
     actions:
       - group:
           title: '{repo}'

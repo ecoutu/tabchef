@@ -214,7 +214,9 @@ A group title is text with `{name}` placeholders. Each placeholder is filled fro
 - a named group in a URL or title regular expression;
 - an `extract` of the rule.
 
-So `url: 'github.com/:owner/:repo*'` with `title: '{repo}'` makes one group per repository. A name that has no value for
+So `url: 'github.com/acme/:repo*'` with `title: '{repo}'` makes one group per repository of acme. (A pattern such as
+`github.com/:owner/:repo*` also matches GitHub's own pages, like `github.com/settings/profile`; the built-in rule in
+[One group per GitHub repository](#1-one-group-per-github-repository) leaves them out.) A name that has no value for
 a tab is filled with nothing, and Tabchef checks when you save that each name you use can be filled. With a single
 `url` condition, every pattern in its list must capture the name.
 
@@ -304,7 +306,64 @@ id: group-by-repo
 name: Group GitHub tabs by repository
 enabled: false
 match:
-  url: 'github.com/:owner/:repo*'
+  all:
+    - url: 'github.com/:owner/:repo*'
+    # GitHub's own pages (settings, orgs, notifications, ...) have two path segments but are not a repository.
+    - not:
+        url:
+          - 'github.com/settings/*'
+          - 'github.com/notifications/*'
+          - 'github.com/orgs/*'
+          - 'github.com/organizations/*'
+          - 'github.com/marketplace/*'
+          - 'github.com/sponsors/*'
+          - 'github.com/topics/*'
+          - 'github.com/trending/*'
+          - 'github.com/codespaces/*'
+          - 'github.com/features/*'
+          - 'github.com/apps/*'
+          - 'github.com/enterprise/*'
+          - 'github.com/enterprises/*'
+          - 'github.com/collections/*'
+          - 'github.com/pulls/*'
+          - 'github.com/issues/*'
+          - 'github.com/account/*'
+          - 'github.com/users/*'
+          - 'github.com/login/*'
+          - 'github.com/logout/*'
+          - 'github.com/sessions/*'
+          - 'github.com/signup/*'
+          - 'github.com/search/*'
+          - 'github.com/new/*'
+          - 'github.com/explore/*'
+          - 'github.com/dashboard/*'
+          - 'github.com/stars/*'
+          - 'github.com/watching/*'
+          - 'github.com/site/*'
+          - 'github.com/security/*'
+          - 'github.com/about/*'
+          - 'github.com/readme/*'
+          - 'github.com/events/*'
+          - 'github.com/customer-stories/*'
+          - 'github.com/pricing/*'
+          - 'github.com/team/*'
+          - 'github.com/copilot/*'
+          - 'github.com/github-copilot/*'
+          - 'github.com/models/*'
+          - 'github.com/contact/*'
+          - 'github.com/discussions/*'
+          - 'github.com/downloads/*'
+          - 'github.com/redeem/*'
+          - 'github.com/join/*'
+          - 'github.com/auth/*'
+          - 'github.com/password_reset/*'
+          - 'github.com/showcases/*'
+          - 'github.com/solutions/*'
+          - 'github.com/resources/*'
+          - 'github.com/nonprofit/*'
+          - 'github.com/mobile/*'
+          - 'github.com/advisories/*'
+          - 'github.com/user-attachments/*'
 actions:
   - group:
       title: '{repo}'
@@ -312,10 +371,11 @@ actions:
       merge: true
 ```
 
-The pattern captures `owner` and `repo` from any github.com address with at least two path segments, and the title uses
-`repo`, so `github.com/acme/web/pull/7` and `github.com/acme/web/issues` share the group "web". `merge: true` keeps one
-"web" group across all your windows. To color each repository differently, Customize it and use a lookup table in the
-copy's color.
+The first pattern captures `owner` and `repo` from any github.com address with at least two path segments. The `not`
+leaves out GitHub's own pages, such as `github.com/settings/profile` or `github.com/orgs/acme/teams`, which look like
+an owner and a repository but are not one. The title uses `repo`, so `github.com/acme/web/pull/7` and
+`github.com/acme/web/issues` share the group "web". `merge: true` keeps one "web" group across all your windows. To
+color each repository differently, Customize it and use a lookup table in the copy's color.
 
 ### 2. Close a Meet tab when the call ends
 
