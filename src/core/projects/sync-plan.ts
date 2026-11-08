@@ -14,12 +14,17 @@ import type { Project, SavedTab } from './types';
  * A kept project as its bookmark folder carries it (M4-R22): groups by SavedTab.group, ungrouped last; pinned and
  * tombstone stay local. A tab opened from a "Tabchef project data" bookmark is no saved tab: fromFolder never reads one
  * back, so writing it would flip in and out of the list on every sync.
+ *
+ * `ownTitle` is the project's own group title (projectGroupTitle; a Manual project's is its name, else its key). A
+ * saved tab records its Chrome group's title, so the project's own tabs carry it: they are the project folder's own
+ * tabs, synced ungrouped, never a subfolder repeating the project's name. Done here, not in toFolder, so a folder read
+ * back equals the local copy and is not rewritten on every sync; a 1.6.0 folder with that subfolder is rewritten once.
  */
-export function toSynced(p: Project): SyncedProject {
+export function toSynced(p: Project, ownTitle: string = p.name ?? p.key): SyncedProject {
   const byGroup = new Map<string, { url: string; title: string }[]>();
   for (const t of p.saved?.tabs ?? []) {
     if (t.url.startsWith(META_URL_PREFIX)) continue;
-    const g = t.group ?? '';
+    const g = t.group === undefined || t.group === ownTitle ? '' : t.group;
     byGroup.set(g, [...(byGroup.get(g) ?? []), { url: t.url, title: t.title }]);
   }
   const titles = [...byGroup.keys()];
@@ -87,6 +92,8 @@ export interface SyncInput {
    * syncs as usual. A project with no base was never written, so it is in none of them: it is written as usual (M4-R35).
    */
   unreadable?: boolean;
+  /** A project's own group title (see toSynced); by default a Manual project's: its name, else its key. */
+  ownTitle?: (p: Project) => string;
 }
 
 export interface SyncPlan {
@@ -104,7 +111,7 @@ export interface SyncPlan {
   ignored: string[];
 }
 
-export function planSync({ stored, open, unsynced, remote, base, rootMissing, unreadable }: SyncInput): SyncPlan {
+export function planSync({ stored, open, unsynced, remote, base, rootMissing, unreadable, ownTitle }: SyncInput): SyncPlan {
   const plan: SyncPlan = { put: [], remove: [], write: new Map(), base: {}, fresh: new Set(), merged: 0, conflicts: [], ignored: [] };
   const localOf = new Map(stored.map((p) => [p.id, p]));
   const ids = new Set([...stored.filter((p) => p.keep).map((p) => p.id), ...remote.keys(), ...Object.keys(base)]);
@@ -130,7 +137,7 @@ export function planSync({ stored, open, unsynced, remote, base, rootMissing, un
       plan.merged += r ? 1 : 0;
       continue;
     }
-    const mine = local?.keep ? toSynced(local) : undefined;
+    const mine = local?.keep ? toSynced(local, ownTitle?.(local)) : undefined;
     const known = rootMissing && !r ? undefined : b;
     const prev = local && !local.keep ? undefined : known;
     // On one side only: a delete there applies when this side is unchanged since the base by the same measure as a

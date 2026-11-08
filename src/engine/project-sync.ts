@@ -196,7 +196,9 @@ export class ProjectSync {
       const base = switched || (based && folders.rootId === undefined) ? {} : stored;
       if (switched) folders = await readFolders(this.deps.bookmarks, base);
       const rootMissing = folders.rootId === undefined && based;
-      const plan = await this.deps.projects.syncApply((stored, open, unsynced) => planSync({ stored, open, unsynced, remote: folders.remote, base, rootMissing, unreadable: folders.unreadable }));
+      const plan = await this.deps.projects.syncApply((stored, open, unsynced, ownTitle) => planSync({
+        stored, open, unsynced, remote: folders.remote, base, rootMissing, unreadable: folders.unreadable, ownTitle,
+      }));
       this.writing = true;
       this.changedWhileWriting = false;
       let out: Awaited<ReturnType<typeof writeFolders>>;

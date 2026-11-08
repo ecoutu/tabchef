@@ -2,7 +2,8 @@
 import { describe, expect, it } from 'vitest';
 import type { SyncedProject } from '../../../src/core/projects/bookmark-format';
 import { applySynced, planSync, toSynced } from '../../../src/core/projects/sync-plan';
-import type { Project } from '../../../src/core/projects/types';
+import { projectGroupTitle } from '../../../src/core/projects/resolve';
+import type { Project, ProjectDef } from '../../../src/core/projects/types';
 
 const A = 'https://a.test/1';
 const B = 'https://b.test/2';
@@ -280,5 +281,73 @@ describe('M4-R42: the metadata bookmark never becomes a synced saved tab', () =>
     const meta = 'https://tabchef.invalid/project#eyJpZCI6IngifQ';
     const p = project({ saved: { tabs: [{ url: A, title: 'A', group: 'G' }, { url: meta, title: 'data' }, { url: B, title: 'B' }], at: 100 } });
     expect(toSynced(p)).toEqual(synced());
+  });
+});
+
+// A saved tab carries its Chrome group's title, and a project's tabs sit in the project's own group: that group is the
+// project folder itself, never a subfolder of it (M4-R22). 1.6.0 wrote it as one (Media / Media / tabs).
+describe("a project's own group syncs as its ungrouped tabs", () => {
+  const media = (over: Partial<Project> = {}): Project => project({
+    id: 'manual-project:media', key: 'media', name: 'Media',
+    saved: { tabs: [{ url: A, title: 'A', group: 'Media' }, { url: B, title: 'B', group: 'Media' }], at: 100 },
+    ...over,
+  });
+  const flat: SyncedProject = { id: 'manual-project:media', recipeId: 'manual-project', key: 'media', name: 'Media', updatedAt: 100,
+    groups: [{ title: '', tabs: [{ url: A, title: 'A' }, { url: B, title: 'B' }] }] };
+
+  it("writes a Manual project's tabs in its own group loose in the project folder", () => {
+    expect(toSynced(media())).toEqual(flat);
+    const r = plan({ stored: [media()] });
+    const folder = r.write.get('manual-project:media')!;
+    expect(folder.title).toBe('Media');
+    expect(folder.children!.slice(1)).toEqual([{ title: 'A', url: A }, { title: 'B', url: B }]);
+    expect(r.base['manual-project:media']).toEqual(flat);
+  });
+
+  it('a Manual project with no name: its own group is its key', () => {
+    const p = media({ name: undefined, saved: { tabs: [{ url: A, title: 'A', group: 'media' }], at: 100 } });
+    expect(toSynced(p).groups).toEqual([{ title: '', tabs: [{ url: A, title: 'A' }] }]);
+  });
+
+  it('rewrites a 1.6.0 folder (the project group nested in its own folder) flat once, then leaves it', () => {
+    const nested: SyncedProject = { ...flat, groups: [{ title: 'Media', tabs: [{ url: A, title: 'A' }, { url: B, title: 'B' }] }] };
+    const first = plan({ stored: [media()], remote: [nested], base: [nested] });
+    expect(first.write.get('manual-project:media')!.children!.slice(1)).toEqual([{ title: 'A', url: A }, { title: 'B', url: B }]);
+    expect(first.base['manual-project:media']).toEqual(flat);
+    // The local copy is unchanged: only the folder's shape moves.
+    expect(first.put).toEqual([]);
+    expect(first.remove).toEqual([]);
+    // Read back as written: nothing more to write.
+    const second = plan({ stored: [media()], remote: [flat], base: [first.base['manual-project:media']!] });
+    expect(second).toMatchObject({ put: [], remove: [], merged: 0 });
+    expect(second.write.size).toBe(0);
+  });
+
+  it('a tab from another group keeps its own subfolder', () => {
+    const p = media({ saved: { tabs: [{ url: A, title: 'A', group: 'Media' }, { url: B, title: 'B', group: 'Music' }, { url: C, title: 'C' }], at: 100 } });
+    expect(toSynced(p).groups).toEqual([
+      { title: 'Music', tabs: [{ url: B, title: 'B' }] },
+      { title: '', tabs: [{ url: A, title: 'A' }, { url: C, title: 'C' }] },
+    ]);
+    const folder = plan({ stored: [p] }).write.get('manual-project:media')!;
+    expect(folder.children!.slice(1)).toEqual([{ title: 'Music', children: [{ title: 'B', url: B }] }, { title: 'A', url: A }, { title: 'C', url: C }]);
+  });
+
+  it("a rule project: its own group is its recipe's title (projectGroupTitle)", () => {
+    const def: ProjectDef = { recipeId: 'jira', key: '{key}', title: '{key} · {summary}', color: 'blue', container: 'group', join: ['rules', 'manual'],
+      placement: ['existing', 'current'], onOpenElsewhere: 'move-and-follow', onSwitchAway: 'unload', start: 'auto' };
+    const own = 'ABC-1 · Login fails';
+    const p = project({ id: 'jira:ABC-1', recipeId: 'jira', key: 'ABC-1', name: undefined, summary: 'Login fails',
+      saved: { tabs: [{ url: A, title: 'A', group: own }, { url: B, title: 'B', group: 'ABC-1' }], at: 100 } });
+    const ownTitle = (q: Project) => projectGroupTitle(def, q);
+    expect(toSynced(p, ownTitle(p)).groups).toEqual([{ title: 'ABC-1', tabs: [{ url: B, title: 'B' }] }, { title: '', tabs: [{ url: A, title: 'A' }] }]);
+    const r = planSync({ stored: [p], open: new Set(), remote: new Map(), base: {}, ownTitle });
+    expect(r.write.get('jira:ABC-1')!.children!.slice(1)).toEqual([{ title: 'ABC-1', children: [{ title: 'B', url: B }] }, { title: 'A', url: A }]);
+    const nested: SyncedProject = { ...toSynced(p, ownTitle(p)), groups: [{ title: own, tabs: [{ url: A, title: 'A' }] }, { title: 'ABC-1', tabs: [{ url: B, title: 'B' }] }] };
+    const again = planSync({ stored: [p], open: new Set(), remote: new Map([[p.id, nested]]), base: { [p.id]: nested }, ownTitle });
+    expect(again.write.has(p.id)).toBe(true);
+    expect(again.put).toEqual([]);
+    const stable = planSync({ stored: [p], open: new Set(), remote: new Map([[p.id, again.base[p.id]!]]), base: again.base, ownTitle });
+    expect(stable.write.size).toBe(0);
   });
 });
