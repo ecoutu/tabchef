@@ -14,7 +14,9 @@
   import PrPill from '../../ui/PrPill.svelte';
   import Help from './Help.svelte';
 
-  let { id }: { id: string } = $props();
+  /** backLink: a "Projects" link above the project. The side panel has no other way back; the options page turns it off,
+   *  since its Projects tab already goes back. */
+  let { id, backLink = true }: { id: string; backLink?: boolean } = $props();
   const uid = $props.id();
   /** undefined: loading; null: the project is unknown, closed or has no tab. */
   let view = $state<ProjectHomeView | null | undefined>(undefined);
@@ -71,7 +73,7 @@
 </script>
 
 <section class="home">
-  <p class="back"><a href="#/projects">Projects</a></p>
+  {#if backLink}<p class="back"><a href="#/projects">Projects</a></p>{/if}
   {#if error}<p class="error" role="alert">{error}</p>{/if}
   {#if toast}
     {@const t = toast}
