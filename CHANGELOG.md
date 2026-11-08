@@ -1,3 +1,25 @@
+# [1.7.0](https://github.com/ecoutu/tabchef/compare/v1.6.0...v1.7.0) (2026-11-08)
+
+
+### Bug Fixes
+
+* **groups:** leave a hand-made group alone when Tabchef's group of that name is gone ([ed42c58](https://github.com/ecoutu/tabchef/commit/ed42c5872eb03ebc1e35de0f2b2b1ea583de5bae))
+* **options:** drop the extra Projects link above a project ([7d8e707](https://github.com/ecoutu/tabchef/commit/7d8e70745afd83b92ab2c39a284beda1f204352a))
+* **projects:** keep the project list in step with storage when a save fails ([b730bf1](https://github.com/ecoutu/tabchef/commit/b730bf1563949dad74980eb1e4bdc5d39c58fd30))
+* **projects:** list every project that takes tabs in the add-to-project menu ([45576f6](https://github.com/ecoutu/tabchef/commit/45576f605728592cc0543c17b6ca2470714e7e92))
+* **projects:** put a project's own tabs directly in its bookmark folder ([9e0d063](https://github.com/ecoutu/tabchef/commit/9e0d063a655700fce8e4aa5b6c6cb1df8508d68a))
+* **projects:** refuse duplicate project names instead of numbering them ([a44ee7f](https://github.com/ecoutu/tabchef/commit/a44ee7f8a6d6ba8c7809d9b2787723251bf09e95))
+* **projects:** tell the user when sync stops keeping a project ([0fcb753](https://github.com/ecoutu/tabchef/commit/0fcb7534b3dc003201af03ef551863d162e2cbfc))
+* **recipes:** stop grouping GitHub settings and other non-repository pages by repository ([771abb8](https://github.com/ecoutu/tabchef/commit/771abb8487a0b331c29e72675221dae9fbcea527)), closes [#136](https://github.com/ecoutu/tabchef/issues/136)
+
+
+### Features
+
+* **backups:** include projects in backup export and import ([d3b1acf](https://github.com/ecoutu/tabchef/commit/d3b1acfef150f5de5d322fb75183e1b6dfac43ec))
+* **projects:** collapse and expand projects in the popup and side panel ([8591639](https://github.com/ecoutu/tabchef/commit/859163900b159981db8edced4de457bd3bde0dfc)), closes [#151](https://github.com/ecoutu/tabchef/issues/151)
+* **projects:** rename project groups when their Jira ticket is renamed ([f0c3069](https://github.com/ecoutu/tabchef/commit/f0c3069a45195fa54b93f5aafe27265e745ecf3c))
+* **projects:** show the ticket title next to the key in project lists ([0b56761](https://github.com/ecoutu/tabchef/commit/0b5676168b155e9348b990570971e8ea1e644465))
+
 # [1.6.0](https://github.com/ecoutu/tabchef/compare/v1.5.0...v1.6.0) (2026-11-07)
 
 
