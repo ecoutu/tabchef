@@ -216,6 +216,46 @@ test.describe('M3 with mocked services', () => {
     }
   });
 
+  test('(h) a project card collapsed in the popup stays collapsed when the popup opens again, and in the side panel', async () => {
+    // Titles level, no connection: the card comes from the ticket URL alone.
+    await send(h, { type: 'connections.disconnect', id: 'github' });
+    await send(h, { type: 'connections.disconnect', id: 'jira' });
+    await setConfig(h, withRecipe(jiraRecipe(mock.origin)));
+    await openTab(h, `${mock.origin}/browse/SCRUM-5`);
+    await expect.poll(async () => (await send<{ id: string }[]>(h, { type: 'projects.list' })).map((c) => c.id), { timeout: 10_000 })
+      .toEqual([`${JIRA_RECIPE_ID}:SCRUM-5`]);
+
+    const openProjects = async (path: string) => {
+      const page = await h.context.newPage();
+      await page.goto(`chrome-extension://${h.extensionId}/${path}`);
+      if (path === 'popup.html') await page.getByRole('tab', { name: /^Projects/ }).click();
+      await expect(page.getByRole('heading', { name: 'SCRUM-5' })).toBeVisible({ timeout: 10_000 });
+      return page;
+    };
+    const popup = await openProjects('popup.html');
+    const disclosure = popup.getByRole('button', { name: 'SCRUM-5', exact: true });
+    await expect(disclosure).toHaveAttribute('aria-expanded', 'true');
+    await expect(popup.locator(`[id="${await disclosure.getAttribute('aria-controls')}"]`).getByRole('listitem')).toHaveCount(1);
+    await disclosure.click();
+    await expect(disclosure).toHaveAttribute('aria-expanded', 'false');
+    const body = popup.locator(`[id="${await disclosure.getAttribute('aria-controls')}"]`);
+    await expect(body).toBeHidden(); // the tab rows
+    await expect(popup.getByRole('button', { name: 'Expand all' })).toBeVisible();
+    await popup.close();
+
+    const again = await openProjects('popup.html');
+    await expect(again.getByRole('button', { name: 'SCRUM-5', exact: true })).toHaveAttribute('aria-expanded', 'false');
+    await again.close();
+    const panel = await openProjects('panel.html');
+    try {
+      await expect(panel.getByRole('button', { name: 'SCRUM-5', exact: true })).toHaveAttribute('aria-expanded', 'false');
+      await panel.getByRole('button', { name: 'Expand all' }).click();
+      await expect(panel.getByRole('button', { name: 'SCRUM-5', exact: true })).toHaveAttribute('aria-expanded', 'true');
+    } finally {
+      await panel.close();
+    }
+  });
+
   test('(c) a 401 marks the connection needs-reauth; the merged row stays, stale, and its due auto-close is skipped', async () => {
     // Auto-close on, falling due 15 s after the merge: the merge is "now", so the close is not due until after the 401.
     const AFTER_MS = 15_000;
