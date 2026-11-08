@@ -225,6 +225,21 @@ describe('App routing (R28, M2 T14)', () => {
   });
 });
 
+describe('App: #/project/<id>', () => {
+  it('a project shows only the Projects tab as the way back, not a second Projects link above it', async () => {
+    const base = send.getMockImplementation()!;
+    send.mockImplementation(async (req: { type: string }) => (req.type === 'projects.home'
+      ? { ok: true, data: { id: 'repo:acme/web', key: 'acme/web', title: 'acme/web', done: false, tabs: [], linked: [], groups: [] } }
+      : base(req)));
+    window.location.hash = '#/project/repo%3Aacme%2Fweb';
+    render(App);
+    expect(await screen.findByRole('heading', { level: 2, name: 'acme/web' })).toBeTruthy();
+    const back = screen.getAllByRole('link', { name: 'Projects' });
+    expect(back).toHaveLength(1);
+    expect(back[0]!.closest('nav')).toBeTruthy();
+  });
+});
+
 describe('App: #/connections (M3 T7)', () => {
   it('opens the Connections page from the nav', async () => {
     const base = send.getMockImplementation()!;

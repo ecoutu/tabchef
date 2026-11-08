@@ -196,7 +196,7 @@
     {:else if current.page === 'projects'}
       {#key matched.params.new}<Projects newTab={matched.params.new} initialError={matched.params.error} />{/key}
     {:else if current.page === 'projectHome'}
-      {#key matched.params.id}<ProjectHome id={matched.params.id ?? ''} />{/key}
+      {#key matched.params.id}<ProjectHome id={matched.params.id ?? ''} backLink={false} />{/key}
     {:else if current.page === 'connections'}
       <Connections />
     {:else if current.page === 'backups'}

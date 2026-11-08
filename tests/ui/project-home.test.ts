@@ -124,6 +124,12 @@ describe('Project home (M4 T4)', () => {
     expect(details.textContent).toContain('Jira ticket');
   });
 
+  it('backLink={false} (the options page, whose Projects tab already goes back): no Projects link above the project', async () => {
+    render(ProjectHome, { id: ID, backLink: false });
+    await screen.findByRole('heading', { level: 2, name: 'ABC-1 · Login fails' });
+    expect(screen.queryByRole('link', { name: 'Projects' })).toBeNull();
+  });
+
   it('an unknown id: "This project is no longer open" with a link to the projects list', async () => {
     data = null;
     render(ProjectHome, { id: 'nope' });
