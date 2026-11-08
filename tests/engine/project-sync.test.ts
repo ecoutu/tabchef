@@ -376,6 +376,8 @@ describe('ProjectSync', () => {
     const onB = await b.get(id);
     expect(onB).toBeDefined();
     expect(onB).not.toHaveProperty('keep');
+    expect(await notes(b)).toEqual([expect.stringMatching(/^Project “Taxes” was removed from the Tabchef bookmark folder\. .*no longer kept\.$/)]);
+    expect(await notes(a)).toEqual([]);
   });
 
   it('never touches bookmarks outside the Tabchef folder, nor folders in it without project data (reported)', async () => {
