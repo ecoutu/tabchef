@@ -192,7 +192,8 @@ The fields of https://github.com/settings/apps/tabchef, top to bottom.
 - [ ] **Where can this GitHub App be installed?** Any account ([#51](https://github.com/ecoutu/tabchef/issues/51)).
 - [ ] **Client secrets:** none needed; never put one in the extension or the repository.
 - [ ] **Private keys:** none needed by Tabchef.
-- [ ] **Display information:** the extension icon (`public/icon/128.png`, final icon from [#47](https://github.com/ecoutu/tabchef/issues/47)) as the logo.
+- [ ] **Display information:** `docs/store/icon-512.png` as the logo (the extension icon from [#47](https://github.com/ecoutu/tabchef/issues/47) at 512 px, rendered by `npm run icons`; GitHub asks for at least 200 px). It is a full square in the icon's background
+  colour, because GitHub adds its own frame; set **Badge background color** to `1A1E24` so the badge circle matches.
 - [ ] The **Client ID** matches `githubAppClientId` in `src/core/project.json`.
 - [ ] Sign in from a second GitHub account and read one of its pull requests.
 

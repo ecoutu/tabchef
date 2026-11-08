@@ -80,7 +80,8 @@ The Chrome Web Store listing, the launch copy and the step-by-step submission gu
 The Tabchef GitHub App's listing, permissions and settings are in [docs/store/github-app.md](docs/store/github-app.md).
 
 The extension icon's source is `docs/store/icon.svg`; after editing it, run `npm run icons` to render
-`public/icon/{16,32,48,96,128}.png` (the 128 px one, also the store icon, keeps 16 px of transparent padding).
+`public/icon/{16,32,48,96,128}.png` (the 128 px one, also the store icon, keeps 16 px of transparent padding) and
+`docs/store/icon-512.png`, the GitHub App's logo.
 
 After changing `src/core/config/config.schema.json` or `src/core/lang/*.schema.json`, regenerate the validators with
 `npm run gen:validator`.
