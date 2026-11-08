@@ -651,6 +651,71 @@ describe('ProjectService: the first linked PR\'s title (prTitle), for lists to s
   });
 });
 
+describe('ProjectService: a renamed ticket refreshes the stored summary', () => {
+  beforeEach(() => { fakeBrowser.reset(); });
+  type Entry = Partial<SourceEntry<JiraIssue>> & { summary?: string };
+  const issue = ({ summary, ...o }: Entry): Map<string, SourceEntry<JiraIssue>> => new Map([['ABC-1', {
+    data: { key: 'ABC-1', ...(summary !== undefined && { summary }), url: TICKET }, via: 'api', fetchedAt: NOW, final: false, stale: false, ...o,
+  }]]);
+  const storedSummary = async (h: ReturnType<typeof harness>) => (await h.store.list()).find((p) => p.id === PID)?.summary;
+
+  it('a fresh lookup (api or page) with a new summary replaces it, written once, without bumping updatedAt (M4-R31)', async () => {
+    const h = harness();
+    await h.store.put(stored({ summary: 'Login fails' }));
+    h.f.addTab(tab(1, TICKET, '[ABC-1] Login fails - Jira'));
+    await h.r.flush();
+    h.clock.now += DAY;
+    h.sources.issues.mockResolvedValue(issue({ summary: 'Login fails on Safari' }));
+    h.local.set.mockClear();
+    h.schedule.mockClear();
+    expect((await h.svc.cards())[0]).toMatchObject({ summary: 'Login fails on Safari' });
+    expect(await storedSummary(h)).toBe('Login fails on Safari');
+    expect((await h.store.list()).find((p) => p.id === PID)?.updatedAt).toBe(NOW);
+    expect(h.schedule).toHaveBeenCalledWith('project'); // its group title may follow it
+    const writes = h.local.set.mock.calls.filter(([items]) => PROJECTS_KEY in items).length;
+    h.schedule.mockClear();
+    await h.svc.cards();
+    expect(h.local.set.mock.calls.filter(([items]) => PROJECTS_KEY in items).length).toBe(writes); // unchanged: not written again
+    expect(h.schedule).not.toHaveBeenCalled();
+    h.sources.issues.mockResolvedValue(issue({ summary: 'Safari login', via: 'page' }));
+    await h.svc.cards();
+    expect(await storedSummary(h)).toBe('Safari login');
+  });
+
+  it('a stale, unread or empty lookup never overwrites it', async () => {
+    const h = harness();
+    await h.store.put(stored({ summary: 'Login fails' }));
+    h.f.addTab(tab(1, TICKET, '[ABC-1] Login fails - Jira'));
+    await h.r.flush();
+    for (const e of [{ summary: 'Old cached', stale: true }, { summary: 'Unread', via: 'none' as const }, { summary: '' }, { summary: '  ' }, {}]) {
+      h.sources.issues.mockResolvedValue(issue(e));
+      expect((await h.svc.cards())[0]).toMatchObject({ summary: 'Login fails' });
+      expect(await storedSummary(h)).toBe('Login fails');
+    }
+    expect(h.schedule).not.toHaveBeenCalled();
+  });
+
+  it('a `{key} · {summary}` group is retitled through the reconciler\'s rename path', async () => {
+    const r: Recipe = { ...recipe, project: { ...recipe.project!, title: '{key} · {summary}' } };
+    const c: Config = { ...defaultConfig(), recipes: [{ id: RID, enabled: true, params: {}, source: 'builtin' }] };
+    const h = harness({ program: compileProgram(c, { [RID]: r }).program });
+    await h.store.put(stored({ summary: 'Login fails' }));
+    h.f.addTab(tab(1, TICKET, '[ABC-1] Login fails - Jira'));
+    h.f.addTab(tab(2, PR, 'ABC-1: fix login'));
+    await h.r.flush();
+    expect(h.groupOf(1)).toBe('ABC-1 · Login fails');
+    const gid = h.f.state.tabs.find((t) => t.id === 1)?.groupId;
+    h.sources.issues.mockResolvedValue(issue({ summary: 'Login fails on Safari' }));
+    await h.svc.cards();
+    await h.r.flush();
+    expect(h.f.state.groups.map((g) => [g.id, g.title])).toEqual([[gid, 'ABC-1 · Login fails on Safari']]);
+    expect([1, 2].map(h.groupOf)).toEqual(['ABC-1 · Login fails on Safari', 'ABC-1 · Login fails on Safari']);
+    const st = await h.r.liveState();
+    expect(st.managedTitles.has('ABC-1 · Login fails on Safari')).toBe(true);
+    expect(st.managedTitles.has('ABC-1 · Login fails')).toBe(false);
+  });
+});
+
 describe('ProjectService fixes (round 1)', () => {
   beforeEach(() => { fakeBrowser.reset(); });
 

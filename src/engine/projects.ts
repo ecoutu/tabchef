@@ -1139,6 +1139,7 @@ export class ProjectService {
       const current = new Map((await this.deps.store.list()).map((p) => [p.id, p]));
       const factsOf = (t: TabSnap): SourceEntry<Record<string, unknown>>[] => Object.values(this.deps.sources.factsFor(t.id, urlOf(t)) ?? {});
       const changed: Project[] = [];
+      let renamed = false;
       const cards = open.flatMap((o): ProjectCardData[] => {
         const p = current.get(o.id);
         if (!p) return []; // removed meanwhile (or never stored: global dry run)
@@ -1151,7 +1152,12 @@ export class ProjectService {
           if (l.prs) p.linked = l.prs.map((x) => ({ url: x.url, title: x.title ?? x.url, state: x.state }));
         }
         const issue = asked.has(p.id) ? issues.get(p.key) : undefined;
-        if (p.summary === undefined && issue?.data?.summary) p.summary = issue.data.summary;
+        // A fresh lookup (via api or page, not stale) keeps the summary current when the ticket is renamed; a stale or
+        // unread one only fills a missing summary. Not a user change, so no updatedAt bump (M4-R31). A `{summary}`
+        // group title follows on the next pass, through the reconciler's rename (M3-R41).
+        const summary = issue?.data?.summary?.trim() ? issue.data.summary : undefined;
+        const fresh = issue !== undefined && !issue.stale && (issue.via === 'api' || issue.via === 'page');
+        if (summary !== undefined && summary !== p.summary && (fresh || p.summary === undefined)) { p.summary = summary; renamed = true; }
         // M3-R90: the status shown may be last known (a stale entry, else the stored one), but only a fresh entry
         // (via api or page, not stale) says Done: stale or unknown data never drives the close prompt.
         const src = [issue, ...tabs.flatMap(factsOf)].find((e) => e && statusOf(e.data, e.via));
@@ -1175,6 +1181,7 @@ export class ProjectService {
         }];
       });
       if (changed.length) await this.deps.store.put(...changed);
+      if (renamed) this.deps.schedule?.('project'); // a group titled with the summary takes the new one
       return { cards, snap, open, defOf, held };
     });
   }
