@@ -221,7 +221,10 @@ export interface ProjectServiceDeps {
   toast?: (entryIds: string[], text: string, focused: TabSnap | undefined) => void;
   /** Re-plan after a user action (Reconciler.schedule). */
   schedule?: (reason: string) => void;
-  /** After each pass: the open projects and their group titles (the context menu). */
+  /**
+   * After each pass: the open projects and their group titles (the Projects tab's count). The "Add to project"
+   * submenu lists more (`menuItems`).
+   */
   onProjectsChanged?: (projects: { id: string; title: string }[]) => void;
   /**
    * storage.session (survives worker restarts, cleared on browser restart): the closed-time clock, so browser running
@@ -247,6 +250,8 @@ export class ProjectService {
   private lastMembers = new Map<string, Map<string, string>>();
   /** Whether lastMembers was read from storage.session by this worker. */
   private membersRead = false;
+  /** The projects with a tab at the last pass (what onProjectsChanged reports): the submenu lists them (`menuItems`). */
+  private lastOpen = new Set<string>();
 
   constructor(private readonly deps: ProjectServiceDeps) {
     this.now = deps.now ?? Date.now;
@@ -311,6 +316,7 @@ export class ProjectService {
     const program = liveProgram(full);
     const defs = program.projects ?? [];
     if (defs.length === 0) {
+      this.lastOpen = new Set();
       this.deps.onProjectsChanged?.([]);
       return { program, defs, projects: [], assignments: new Map(), held: new Map() };
     }
@@ -389,6 +395,7 @@ export class ProjectService {
       st.projectTabs = r.sticky;
     }
     const defOf = new Map(defs.map((d) => [d.recipeId, d]));
+    this.lastOpen = open;
     // Under global dry run only stored projects are listed: addTab takes no unstored one.
     // Tombstones are never offered (addTab rejects them); under dry run none was revived.
     this.deps.onProjectsChanged?.((full.dryRun ? stored.filter((p) => !isTomb(p)) : projects).flatMap((p) => {
@@ -446,7 +453,8 @@ export class ProjectService {
 
   private async project(id: string): Promise<{ program: Program; projects: Project[]; p: Project }> {
     const [program, projects] = await Promise.all([this.deps.getProgram(), this.deps.store.list()]);
-    const p = projects.find((x) => x.id === id && !isTomb(x));
+    // A kept project closed by Close and save is a tombstone (for undo) that stays listed: it takes tabs again.
+    const p = projects.find((x) => x.id === id && (!isTomb(x) || x.keep === true));
     if (!p) throw new Error('unknown project');
     if (isArchived(p)) throw new Error('this project is archived');
     return { program, projects, p };
@@ -584,12 +592,31 @@ export class ProjectService {
     });
   }
 
-  /** Manual membership: wins over rules and clears the tab's exclusion. */
+  /**
+   * The "Add to project" submenu: the projects the Projects page lists (open at the last pass, or kept; never archived
+   * nor closed by Close group unless kept) whose recipe is on and takes tabs manually, in store order, each titled as
+   * its group. So a kept project with no open tab is listed (closed by Close and save, created without tabs, synced from
+   * another device), but not an unkept one (a ticket project whose tab was closed, stored until the prune).
+   */
+  menuItems(): Promise<{ id: string; title: string }[]> {
+    return this.serial(async () => {
+      const [program, stored] = await Promise.all([this.deps.getProgram(), this.deps.store.list()]);
+      const defOf = new Map((program.projects ?? []).map((d) => [d.recipeId, d]));
+      return stored.flatMap((p) => {
+        const def = defOf.get(p.recipeId);
+        const listed = (this.lastOpen.has(p.id) || p.keep === true) && (!isTomb(p) || p.keep === true) && !isArchived(p);
+        return def?.join.includes('manual') && listed ? [{ id: p.id, title: projectGroupTitle(def, p) }] : [];
+      });
+    });
+  }
+
+  /** Manual membership: wins over rules and clears the tab's exclusion. A kept project closed by Close and save is revived. */
   addTab(tabId: number, projectId: string): Promise<void> {
     return this.serial(async () => {
       const t = (await this.deps.port.snapshot()).tabs.find((x) => x.id === tabId);
       if (!t) throw new Error('tab not found');
       const { program, projects, p } = await this.project(projectId);
+      if (isTomb(p)) revive(p); // join stores it
       await this.join(program, projects, p, tabId, t.windowId, urlOf(t));
     });
   }

@@ -6,8 +6,8 @@ import type { SafetyService } from './safety';
 // The page / link / toolbar-icon context menu (M2 T16). Items are created on runtime.onInstalled (they persist across
 // worker restarts); background.ts registers contextMenus.onClicked at the top level and refreshes the items' title and
 // enabled state on tab activation, URL changes of the active tab and lock changes.
-// M3 T15: "Add to project" (`tc-project`) has one child per open project (`tc-project:<projectId>`), rebuilt by
-// createProjectMenu when the open projects change; "Remove from project" (`tc-project-remove`) follows it.
+// M3 T15: "Add to project" (`tc-project`) has one child per listed project that takes tabs (`tc-project:<projectId>`,
+// ProjectService.menuItems), rebuilt by createProjectMenu when that list changes; "Remove from project" (`tc-project-remove`) follows it.
 // M4 T6: the last child, "New project…" (`tc-project-new`), opens the Projects page's New project form for the tab.
 
 export const MENU_IDS = { group: 'tc-group', close: 'tc-close', allowDup: 'tc-allowdup', lock: 'tc-lock', why: 'tc-why', saveGroup: 'tc-save-group' } as const;
@@ -39,7 +39,7 @@ export interface MenuApi {
 }
 const CONTEXTS: [MenuContext, ...MenuContext[]] = [MENU_CONTEXTS[0], ...MENU_CONTEXTS.slice(1)];
 
-/** The project items: the parent with one child per open project and New project…, then Remove. */
+/** The project items: the parent with one child per listed project and New project…, then Remove. */
 function createProjectItems(api: MenuApi, projects: { id: string; title: string }[]): void {
   api.create({ id: PROJECT_MENU_ID, title: 'Add to project', contexts: CONTEXTS, enabled: true });
   for (const p of projects) api.create({ id: `${PROJECT_CHILD_PREFIX}${p.id}`, parentId: PROJECT_MENU_ID, title: p.title, contexts: CONTEXTS });
@@ -47,9 +47,9 @@ function createProjectItems(api: MenuApi, projects: { id: string; title: string 
   api.create({ id: PROJECT_REMOVE_MENU_ID, title: 'Remove from project', contexts: CONTEXTS });
 }
 
-/** The project submenu, kept in step with the open projects; every change to the menu goes through one queue. */
+/** The project submenu, kept in step with ProjectService.menuItems; every change to the menu goes through one queue. */
 export interface ProjectMenu {
-  /** ProjectService onProjectsChanged: a changed list removes and re-creates the project items; the same list does nothing. */
+  /** ProjectService.menuItems: a changed list removes and re-creates the project items; the same list does nothing. */
   sync(projects: { id: string; title: string }[]): Promise<void>;
   /** runtime.onInstalled: installMenus (removeAll + every item), then the last known projects again. */
   install(): Promise<void>;

@@ -274,3 +274,103 @@ describe('a saved or archived project whose recipe is off (fix round 1)', () => 
     expect(await off.svc.home(`${MANUAL}:nope`)).toBeUndefined();
   });
 });
+
+describe('ProjectService.menuItems: the "Add to project" submenu lists every project addTab takes', () => {
+  beforeEach(() => { fakeBrowser.reset(); });
+  const ids = async (h: H) => (await h.svc.menuItems()).map((m) => m.id);
+
+  it('a project created without tabs is listed by its name, before any pass', async () => {
+    const h = harness();
+    const id = await h.svc.create(MANUAL, 'Taxes');
+    expect(await h.svc.menuItems()).toEqual([{ id, title: 'Taxes' }]);
+  });
+
+  it('a kept project closed by Close and save stays listed, and adding a tab to it revives it', async () => {
+    const h = harness();
+    const id = await savedTaxes(h);
+    expect(await h.stored(id)).toHaveProperty('closedAt'); // a tombstone, for undo
+    expect(await h.svc.menuItems()).toEqual([{ id, title: 'Taxes' }]);
+    h.f.addTab(tab(3, 'https://c.example/'));
+    await h.svc.addTab(3, id);
+    expect(await h.stored(id)).not.toHaveProperty('closedAt');
+    expect((await h.stored(id))?.manual.at(-1)).toMatchObject({ tabId: 3, url: 'https://c.example/' });
+    await h.r.flush();
+    expect(h.groupOf(3)).toBe('Taxes');
+    expect((await h.stored(id))?.saved?.tabs.map((t) => t.url)).toEqual([A, B, 'https://c.example/']); // frozen: grows
+  });
+
+  it('a project closed by Close group and not kept is not listed (undo only) and takes no tab', async () => {
+    const h = harness();
+    await ticket(h);
+    await h.svc.closeGroup(PID);
+    expect(await h.svc.menuItems()).toEqual([]);
+    h.f.addTab(tab(3, 'https://c.example/'));
+    await expect(h.svc.addTab(3, PID)).rejects.toThrow('unknown project');
+  });
+
+  it('an open project is listed with its group title', async () => {
+    const h = harness();
+    await ticket(h);
+    expect(await h.svc.menuItems()).toEqual([{ id: PID, title: 'ABC-1' }]);
+  });
+
+  it('an unkept ticket project is listed while its tab is open', async () => {
+    const h = harness();
+    await ticket(h);
+    expect((await h.stored(PID))?.keep).not.toBe(true);
+    expect(await ids(h)).toEqual([PID]);
+  });
+
+  it('an unkept ticket project whose tab the user closed is not listed (the Projects page does not show it)', async () => {
+    const h = harness();
+    await ticket(h);
+    await h.f.closeTab(1);
+    await h.r.flush();
+    expect(await h.stored(PID)).toBeDefined(); // stored until the prune
+    expect(await ids(h)).toEqual([]);
+  });
+
+  it('an unkept project with a saved list and no open tab is not listed', async () => {
+    const h = harness();
+    h.f.addTab(tab(1, A));
+    const id = await h.svc.create(MANUAL, 'Taxes', [1]);
+    await h.r.flush();
+    await h.f.closeTab(1);
+    await h.r.flush();
+    await h.svc.setKeep(id, false);
+    await h.r.flush();
+    const st = await h.stored(id);
+    expect(st?.keep).not.toBe(true);
+    expect(st?.saved?.tabs.length).toBeGreaterThan(0);
+    expect(await ids(h)).toEqual([]);
+  });
+
+  it('archived, deleted and Close group (tombstoned) projects are not listed; unarchive lists it again', async () => {
+    const h = harness();
+    const id = await savedTaxes(h);
+    await h.svc.archive(id);
+    expect(await ids(h)).toEqual([]);
+    await h.svc.unarchive(id);
+    expect(await ids(h)).toEqual([id]);
+    await h.svc.remove(id);
+    expect(await ids(h)).toEqual([]);
+    await ticket(h);
+    expect(await ids(h)).toEqual([PID]);
+    await h.svc.closeGroup(PID);
+    await h.r.flush();
+    expect(await ids(h)).toEqual([]);
+  });
+
+  it('a project whose recipe does not take tabs manually, or is off, is not listed', async () => {
+    const local = memoryArea();
+    const on = harness({ local });
+    await ticket(on);
+    await on.svc.create(MANUAL, 'Taxes');
+    const rulesOnly = { ...recipe, project: { ...recipe.project!, join: ['rules' as const] } };
+    const base = defaultConfig();
+    const c: Config = { ...base, recipes: [...base.recipes.map((r) => (r.id === MANUAL ? { ...r, enabled: false } : r)), { id: RID, enabled: true, params: {}, source: 'builtin' }] };
+    const { program: p, errors } = compileProgram(c, { ...builtinRecipes(), [RID]: rulesOnly });
+    expect(errors).toEqual([]);
+    expect(await harness({ program: p, local }).svc.menuItems()).toEqual([]);
+  });
+});
