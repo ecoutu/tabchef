@@ -2,7 +2,8 @@
 
 The copy for each field of the [Developer Dashboard](https://chrome.google.com/webstore/devconsole), in the order the
 dashboard asks for it. [submitting.md](submitting.md) walks through the submission step by step;
-[launch.md](launch.md) has the launch posts and taglines.
+[launch.md](launch.md) has the launch posts and taglines. The GitHub App the GitHub connection signs in through has its
+own listing in [github-app.md](github-app.md).
 
 `npm run check:terms` checks this file against `terms.json` and against the page and view names the extension shows,
 so the listing never names a page the user can't find. The name is still open ([#46](https://github.com/ecoutu/tabchef/issues/46)): a rename changes `name` in
