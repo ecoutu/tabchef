@@ -23,7 +23,7 @@ import type { PauseDuration, SafetyService } from './safety';
 import type { ProjectService } from './projects';
 import type { ProjectSync, SyncStatus } from './project-sync';
 import type { SourceService } from './sources';
-import type { ProjectCardData, ProjectHomeData, SavedProjectData } from '../core/projects/types';
+import type { Project, ProjectCardData, ProjectHomeData, ProjectImportResult, SavedProjectData } from '../core/projects/types';
 import { dedupeDecision, openerOf } from './dedupe-handler';
 import { readViews, samePage, type ViewData, type ViewsDeps, type ViewSummary } from './views';
 import { builtinConnectionDefs } from '../core/connections/builtin';
@@ -255,6 +255,13 @@ export type Request =
   | { type: 'projects.delete'; projectId: string }
   /** M4 T9: the Projects page's Saved and Archived sections. */
   | { type: 'projects.savedLists' }
+  /** Backups: the stored projects as a backup file carries them (ProjectService.exportProjects). */
+  | { type: 'projects.export' }
+  /**
+   * Backups: merges a backup file's projects (ProjectService.importProjects): adds new ids, overwrites only the stored
+   * ids in `overwrite`, never deletes. `dryRun`: what it would do (the import preview).
+   */
+  | { type: 'projects.import'; projects: unknown[]; overwrite: string[]; dryRun?: boolean }
   /** M4 T14: whether kept projects sync through bookmarks on this device, and the last sync's time and result. */
   | { type: 'projects.sync.status' }
   /** M4 T14: the per-device sync toggle; turning it on needs the bookmarks permission. Answers the new status. */
@@ -391,6 +398,8 @@ export interface ResponseData {
   'projects.unarchive': null;
   'projects.delete': null;
   'projects.savedLists': { saved: SavedProjectData[]; archived: SavedProjectData[] };
+  'projects.export': Project[];
+  'projects.import': ProjectImportResult;
   'projects.sync.status': SyncStatus;
   'projects.sync.set': SyncStatus;
   'projects.sync.dismiss': SyncStatus;
@@ -402,7 +411,7 @@ const num = (v: unknown): v is number => typeof v === 'number' && Number.isFinit
 const str = (v: unknown): v is string => typeof v === 'string';
 const NO_ARGS = new Set(['config.get', 'config.backups', 'config.status', 'tabs.list', 'dupes.list', 'dupes.closeAll', 'recent.list', 'why.all',
   'safety.resume', 'safety.status', 'recipes.list', 'views.list', 'connections.list', 'connections.github.start', 'connections.github.poll',
-  'projects.list', 'projects.groups', 'projects.savedLists', 'projects.sync.status', 'sources.refresh']);
+  'projects.list', 'projects.groups', 'projects.savedLists', 'projects.export', 'projects.sync.status', 'sources.refresh']);
 const optRev = (x: Record<string, unknown>) => x.baseRev === undefined || str(x.baseRev);
 const isParams = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
@@ -518,6 +527,8 @@ export function isRequest(m: unknown): m is Request {
     case 'projects.unarchive': case 'projects.delete': return str(x.projectId);
     case 'projects.setKeep': return str(x.projectId) && typeof x.keep === 'boolean';
     case 'projects.saveGroup': return num(x.groupId);
+    case 'projects.import': return Array.isArray(x.projects) && Array.isArray(x.overwrite) && x.overwrite.every(str)
+      && (x.dryRun === undefined || typeof x.dryRun === 'boolean');
     case 'projects.sync.set': return typeof x.enabled === 'boolean';
     case 'projects.sync.dismiss': return num(x.upTo);
     default: return false;
@@ -587,7 +598,7 @@ export interface HandlerDeps {
   connections?: ConnectionsDeps;
   /** projects.* (M3 T15). Without it they fail. */
   projects?: Pick<ProjectService, 'cards' | 'addTab' | 'removeTab' | 'openLinked' | 'closeGroup' | 'home' | 'create' | 'start' | 'closeAndSave' | 'reopen' | 'setKeep' | 'saveGroup' | 'unmanagedGroups'
-    | 'archive' | 'closeAndArchive' | 'unarchive' | 'remove' | 'savedLists'>;
+    | 'archive' | 'closeAndArchive' | 'unarchive' | 'remove' | 'savedLists' | 'exportProjects' | 'importProjects'>;
   /** projects.sync.* (M4 T14). Without it they fail. */
   projectSync?: Pick<ProjectSync, 'status' | 'setEnabled' | 'dismiss'>;
   /** sources.refresh (M3 T17). Without it the request fails. */
@@ -1101,6 +1112,10 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
       case 'projects.unarchive': await p.unarchive(req.projectId); return ok(null);
       case 'projects.delete': await p.remove(req.projectId); return ok(null);
       case 'projects.savedLists': return ok(await p.savedLists());
+      case 'projects.export': return ok(await p.exportProjects());
+      case 'projects.import':
+        if ((JSON.stringify(req.projects) ?? '').length > MAX_IMPORT_BYTES) return fail('Import data too large (max 5 MB)');
+        return ok(await p.importProjects(req.projects, { overwrite: req.overwrite, dryRun: req.dryRun === true }));
     }
   }
 
@@ -1128,7 +1143,7 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
       case 'projects.list': case 'projects.addTab': case 'projects.removeTab': case 'projects.openLinked': case 'projects.closeGroup':
       case 'projects.home': case 'projects.create': case 'projects.start': case 'projects.closeAndSave': case 'projects.reopen':
       case 'projects.setKeep': case 'projects.groups': case 'projects.saveGroup': case 'projects.archive': case 'projects.closeAndArchive':
-      case 'projects.unarchive': case 'projects.delete': case 'projects.savedLists':
+      case 'projects.unarchive': case 'projects.delete': case 'projects.savedLists': case 'projects.export': case 'projects.import':
         return deps.projects ? runProjects(req, deps.projects) : fail('projects unavailable');
       case 'projects.sync.status': return deps.projectSync ? ok(await deps.projectSync.status()) : fail('project sync unavailable');
       case 'projects.sync.set': return deps.projectSync ? ok(await deps.projectSync.setEnabled(req.enabled)) : fail('project sync unavailable');

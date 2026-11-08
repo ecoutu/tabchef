@@ -12,7 +12,7 @@ import { projectGroupTitle, projectTargets, resolveProjects, type ResolveResult,
 import type { RecentlyClosed } from '../core/safety/recently-closed';
 import type { GroupTarget } from '../core/group/evaluate';
 import type { Program, TabFacts } from '../core/lang/types';
-import type { Project, ProjectAssignment, ProjectCardData, ProjectDef, ProjectHomeData, SavedProjectData, SavedTab } from '../core/projects/types';
+import type { NamedProject, Project, ProjectAssignment, ProjectCardData, ProjectDef, ProjectHomeData, ProjectImportResult, SavedProjectData, SavedTab } from '../core/projects/types';
 import type { JiraIssue, PrInfo, PrState, SourceEntry } from '../core/sources/types';
 import type { GroupColor, GroupSnap, Snapshot, TabSnap } from '../core/types';
 import { normalizeUrl } from '../core/url/normalize';
@@ -22,7 +22,7 @@ import type { WhyLog } from './reconciler';
 import type { SafetyService } from './safety';
 import type { SourceService } from './sources';
 import { ProjectClock } from './project-clock';
-import type { ProjectStore } from './project-store';
+import { parseProject, type ProjectStore } from './project-store';
 import { saveState, type LiveState } from './state';
 
 export { PROJECTS_KEY, ProjectStore } from './project-store';
@@ -167,6 +167,23 @@ const isTomb = (p: Project): boolean => p.closedAt !== undefined;
 const revive = (p: Project): void => { delete p.closedAt; delete p.closedIds; };
 /** Archived by the user (M4 T9): takes no tab, and a rule assigning its key does not bring it back. */
 const isArchived = (p: Project): boolean => p.archivedAt !== undefined;
+/**
+ * `p` without its device-local state, as a backup file carries it: the live tab id of each manual entry, the closed-time
+ * clock and the Close group tombstone with its recently-closed (undo) entries.
+ */
+function portable(p: Project): Project {
+  const q = structuredClone(p);
+  delete q.closedAt;
+  delete q.closedIds;
+  delete q.closedFor;
+  for (const m of q.manual) delete m.tabId;
+  return q;
+}
+/** How a backup import names an entry it dropped: its name, else its id, else its 1-based position in the file. */
+function dropLabel(x: unknown, i: number): string {
+  const o = typeof x === 'object' && x !== null ? (x as Record<string, unknown>) : {};
+  return typeof o.name === 'string' ? o.name : typeof o.id === 'string' ? o.id : `#${i + 1}`;
+}
 type Run = ResolveResult & { held: Map<string, number[]> };
 /**
  * `r` without the archived projects `archived` (M4 T9): resolveProjects created a copy of one whose key a rule assigned
@@ -911,6 +928,51 @@ export class ProjectService {
         saved: stored.filter((p) => p.keep && !isArchived(p) && !open.has(p.id)).map(data),
         archived: stored.filter(isArchived).map(data),
       };
+    });
+  }
+
+  /**
+   * Backups: the stored projects as the exported file carries them (portable), saved tab lists included. A project
+   * closed by Close group and never kept is left out: it is a tombstone waiting for its undo or for pruning.
+   */
+  exportProjects(): Promise<Project[]> {
+    return this.serial(async () => (await this.deps.store.list()).filter((p) => p.keep || !isTomb(p)).map(portable));
+  }
+
+  /**
+   * Backups: merges a backup's projects into the store (never deletes one). A malformed entry (parseProject) or a second
+   * copy of an id is dropped; an id not stored is added; a stored id is overwritten only when it is in `overwrite` (the
+   * user confirmed it), else skipped. Every imported project is kept, so one with no open tab shows under Saved (or
+   * Archived), and stored portable, with updatedAt now (a user action: project sync takes it over an older copy).
+   * `dryRun`: the same result, nothing stored. Stored through ProjectStore.put, so project sync picks it up.
+   */
+  importProjects(raw: unknown[], o: { overwrite: string[]; dryRun?: boolean }): Promise<ProjectImportResult> {
+    return this.serial(async () => {
+      const [program, stored] = await Promise.all([this.deps.getProgram(), this.deps.store.list()]);
+      const defOf = new Map((program.projects ?? []).map((d) => [d.recipeId, d]));
+      const named = (p: Project): NamedProject => {
+        const def = defOf.get(p.recipeId);
+        return { id: p.id, title: def ? projectGroupTitle(def, p) : (p.name ?? p.key) };
+      };
+      const byId = new Map(stored.map((p) => [p.id, p]));
+      const overwrite = new Set(o.overwrite);
+      const seen = new Set<string>();
+      const put: Project[] = [];
+      const r: ProjectImportResult = { added: [], overwritten: [], skipped: [], dropped: [] };
+      raw.forEach((x, i) => {
+        const p = parseProject(x);
+        if (!p || seen.has(p.id)) { r.dropped.push(dropLabel(x, i)); return; }
+        seen.add(p.id);
+        const local = byId.get(p.id);
+        if (local && !overwrite.has(p.id)) { r.skipped.push(named(local)); return; }
+        (local ? r.overwritten : r.added).push(named(local ?? p));
+        put.push({ ...portable(p), keep: true, updatedAt: this.now() });
+      });
+      if (!o.dryRun && put.length) {
+        await this.deps.store.put(...put);
+        this.deps.schedule?.('project');
+      }
+      return r;
     });
   }
 

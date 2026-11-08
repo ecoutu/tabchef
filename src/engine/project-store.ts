@@ -25,6 +25,26 @@ function sanitize(p: Project): Project {
   return q;
 }
 
+const isManualEntry = (m: unknown): boolean => isObj(m) && typeof m.url === 'string' && typeof m.windowId === 'number'
+  && (m.tabId === undefined || typeof m.tabId === 'number');
+const isLinked = (l: unknown): boolean => isObj(l) && typeof l.url === 'string' && typeof l.title === 'string' && typeof l.state === 'string';
+const optString = (v: unknown): boolean => v === undefined || typeof v === 'string';
+
+/**
+ * A project from outside the store (a backup file): the store's own checks plus well-formed entries, a createdAt and
+ * string name, color, summary and site, else undefined. Malformed optional fields the store drops (sanitize), and a
+ * malformed status, are dropped, keeping the project.
+ */
+export function parseProject(x: unknown): Project | undefined {
+  if (!isProject(x) || !Number.isFinite(x.createdAt) || !x.manual.every(isManualEntry) || !x.excluded.every((u) => typeof u === 'string')
+    || !x.linked.every(isLinked) || ![x.name, x.color, x.summary, x.site].every(optString)) return undefined;
+  const p = sanitize(structuredClone(x));
+  if (!Number.isFinite(p.updatedAt)) p.updatedAt = p.createdAt;
+  const st: unknown = p.status;
+  if (st !== undefined && !(isObj(st) && typeof st.name === 'string' && typeof st.category === 'string' && typeof st.via === 'string')) delete p.status;
+  return p;
+}
+
 /** Stored projects, cached after the first read. A failed read is retried and never overwritten. */
 export class ProjectStore {
   private cache?: Promise<Map<string, Project>>;

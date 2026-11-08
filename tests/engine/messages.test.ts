@@ -1245,6 +1245,8 @@ describe('projects.* (M3 T15)', () => {
     unarchive: vi.fn(async () => {}),
     remove: vi.fn(async () => {}),
     savedLists: vi.fn(async () => ({ saved: [], archived: [{ id: 'r:ABC-1', key: 'ABC-1', title: 'ABC-1', savedCount: 1, archivedAt: 5, held: 1, updatedAt: 5 }] })),
+    exportProjects: vi.fn(async () => [{ id: 'm:a', recipeId: 'm', key: 'a', createdAt: 1, updatedAt: 1, manual: [], excluded: [], linked: [] }]),
+    importProjects: vi.fn(async () => ({ added: [{ id: 'm:a', title: 'a' }], overwritten: [], skipped: [], dropped: [] })),
     unmanagedGroups: vi.fn(async () => [{ id: 5, title: 'Taxes', color: 'blue' as const, tabCount: 2 }]),
     home: vi.fn(async (id: string) => (id === 'r:ABC-1' ? {
       id, key: 'ABC-1', title: 'ABC-1', done: false, tabs: [], linked: [], groups: [], recipeName: 'r',
@@ -1310,6 +1312,31 @@ describe('projects.* (M3 T15)', () => {
     expect(p.closeAndArchive).toHaveBeenCalledTimes(1);
     expect(p.unarchive).toHaveBeenCalledTimes(1);
     expect(p.remove).toHaveBeenCalledTimes(1);
+  });
+
+  it('Backups: projects.export / projects.import validate, reach the ProjectService, and are refused from content scripts', async () => {
+    expect(isRequest({ type: 'projects.export' })).toBe(true);
+    expect(isRequest({ type: 'projects.import', projects: [], overwrite: [] })).toBe(true);
+    expect(isRequest({ type: 'projects.import', projects: [{}], overwrite: ['a'], dryRun: true })).toBe(true);
+    expect(isRequest({ type: 'projects.import', projects: {}, overwrite: [] })).toBe(false);
+    expect(isRequest({ type: 'projects.import', projects: [] })).toBe(false);
+    expect(isRequest({ type: 'projects.import', projects: [], overwrite: [1] })).toBe(false);
+    expect(isRequest({ type: 'projects.import', projects: [], overwrite: [], dryRun: 'yes' })).toBe(false);
+    const exported = [{ id: 'm:a', recipeId: 'm', key: 'a', createdAt: 1, updatedAt: 1, manual: [], excluded: [], linked: [] }];
+    const result = { added: [{ id: 'm:a', title: 'a' }], overwritten: [], skipped: [], dropped: [] };
+    const p = projects();
+    const s = setup({ projects: p });
+    expect(await s.handle({ type: 'projects.export' }, ui)).toEqual({ ok: true, data: exported });
+    expect(await s.handle({ type: 'projects.import', projects: exported, overwrite: ['m:a'], dryRun: true }, ui)).toEqual({ ok: true, data: result });
+    expect(p.importProjects).toHaveBeenCalledWith(exported, { overwrite: ['m:a'], dryRun: true });
+    expect(await s.handle({ type: 'projects.import', projects: [], overwrite: [] }, ui)).toEqual({ ok: true, data: result });
+    expect(p.importProjects).toHaveBeenLastCalledWith([], { overwrite: [], dryRun: false });
+    // Over the 5 MB import limit: refused before the service sees it.
+    expect(await s.handle({ type: 'projects.import', projects: ['x'.repeat(5 * 1024 * 1024)], overwrite: [] }, ui)).toMatchObject({ ok: false });
+    expect(p.importProjects).toHaveBeenCalledTimes(2);
+    expect(await s.handle({ type: 'projects.export' }, content)).toEqual({ ok: false, error: 'forbidden' });
+    expect(await s.handle({ type: 'projects.import', projects: [], overwrite: [] }, content)).toEqual({ ok: false, error: 'forbidden' });
+    expect(p.exportProjects).toHaveBeenCalledTimes(1);
   });
 
   it('M4 T14: projects.sync.status / set / dismiss validate, reach ProjectSync, fail without it, and are refused from content scripts', async () => {
