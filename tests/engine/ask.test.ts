@@ -169,7 +169,7 @@ describe('ask: choices', () => {
     await w.ctl.handleChoice(2, 1, 'switch');
     expect(w.calls('closeTab')).toEqual([[2]]);
     expect(w.calls('focusTab')).toEqual([[1, 2, undefined]]);
-    expect(w.closed).toEqual([expect.objectContaining({ reason: 'duplicate', url: `${PR}?utm_source=x`, windowId: 1 })]);
+    expect(w.closed).toEqual([expect.objectContaining({ reason: 'duplicate', url: `${PR}?utm_source=x`, windowId: 1, tabId: 2 })]);
   });
 
   it('keep closes nothing', async () => {

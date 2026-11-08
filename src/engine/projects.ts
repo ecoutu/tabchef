@@ -8,7 +8,7 @@
 import { liveProgram } from '../core/lang/dry-run';
 import { managedGroupIds } from '../core/group/plan';
 import { keyOf } from '../core/projects/url-key';
-import { issueTitlePrefixes, projectGroupTitle, projectTargets, resolveProjects, type ResolveResult, type StickyMap } from '../core/projects/resolve';
+import { hasOwnTab, isOwnGroup, issueTitlePrefixes, projectGroupTitle, projectTargets, resolveProjects, type ResolveResult, type StickyMap } from '../core/projects/resolve';
 import { parseIssueKey } from '../core/keys/github-issue';
 import type { RecentlyClosed } from '../core/safety/recently-closed';
 import type { GroupTarget } from '../core/group/evaluate';
@@ -34,6 +34,12 @@ const MANUAL_RECIPE = 'manual-project';
 export const LINKED_REFRESH_MS = 15 * 60_000;
 /** storage.session: ProjectService.lastMembers (M4-R21), so the first pass of a new worker compares with the last one. */
 export const LAST_MEMBERS_KEY = 'projects.lastMembers';
+/**
+ * storage.session flag, set by runtime.onStartup (ProjectService.browserStarted) and cleared once ProjectService.dropStaleIds
+ * has checked the stored manual tab ids: true => those ids are from the previous browser session. An extension update or
+ * reload, a worker restart, or turning global dry run or a recipe on or off never sets it: tab ids are still valid then.
+ */
+export const IDS_STALE_KEY = 'projects.idsStale';
 
 const PILLS = new Set<PrState>(['open', 'draft', 'merged', 'closed']);
 const CATEGORIES = new Set(['new', 'indeterminate', 'done']);
@@ -165,6 +171,24 @@ const revive = (p: Project): void => { delete p.closedAt; delete p.closedIds; };
 /** Archived by the user (M4 T9): takes no tab, and a rule assigning its key does not bring it back. */
 const isArchived = (p: Project): boolean => p.archivedAt !== undefined;
 /**
+ * Gives manual entries (`p.manual[index]`, `p` one of `all`) a new tab id, in place: the rebound write-back, bindUndone and
+ * onReplaced (#150). A tab id names at most one manual entry across all stored projects, tombstoned and archived ones
+ * included (M4-R58), because join and removeTab drop every entry holding it: an id some entry already holds is not
+ * given. Returns the projects it changed.
+ */
+function setTabIds(all: Project[], moves: { p: Project; index: number; tabId: number }[]): Set<Project> {
+  const changed = new Set<Project>();
+  for (const { p, index, tabId } of moves) {
+    if (!p.manual[index] || all.some((x) => x.manual.some((m) => m.tabId === tabId))) continue;
+    p.manual = p.manual.map((m, i) => (i === index ? { ...m, tabId } : m));
+    changed.add(p);
+  }
+  return changed;
+}
+/** Every manual entry of `ps` that `match` accepts, as setTabIds moves to `tabId`. */
+const movesOf = (ps: Project[], match: (m: Project['manual'][number]) => boolean, tabId: number) =>
+  ps.flatMap((p) => p.manual.flatMap((m, index) => (match(m) ? [{ p, index, tabId }] : [])));
+/**
  * Where the Projects page lists a stored project (M4 T9), `open` being the projects with a tab this pass: an open card,
  * Saved (kept, nothing open) or Archived. Undefined: listed nowhere (not kept, nothing open), so it waits only to be
  * pruned (project-clock.ts) or revived by an undo.
@@ -191,13 +215,17 @@ function dropLabel(x: unknown, i: number): string {
   const o = typeof x === 'object' && x !== null ? (x as Record<string, unknown>) : {};
   return typeof o.name === 'string' ? o.name : typeof o.id === 'string' ? o.id : `#${i + 1}`;
 }
-type Run = ResolveResult & { held: Map<string, number[]> };
+/**
+ * `held`: projectId → archived tabs (holdArchived). `heldTabIds`: the tab ids manual entries of every stored project hold,
+ * tombstoned and archived ones included (resolveProjects' heldTabIds, M4-R58).
+ */
+type Run = ResolveResult & { held: Map<string, number[]>; heldTabIds: ReadonlySet<number> };
 /**
  * `r` without the archived projects `archived` (M4 T9): resolveProjects created a copy of one whose key a rule assigned
  * (it was not given the archived ones); that copy, its tabs and their sticky entries are dropped, the tabs counted in
  * `held` (projectId → tab ids, "Archived: reopen?").
  */
-function holdArchived(r: ResolveResult, archived: Set<string>): Run {
+function holdArchived(r: ResolveResult, archived: Set<string>): Omit<Run, 'heldTabIds'> {
   const held = new Map<string, number[]>();
   const assignments = new Map<number, ProjectAssignment>();
   for (const [tabId, a] of r.assignments) {
@@ -209,6 +237,7 @@ function holdArchived(r: ResolveResult, archived: Set<string>): Run {
     created: r.created.filter((p) => !archived.has(p.id)),
     summaries: new Map([...r.summaries].filter(([id]) => !archived.has(id))),
     sticky: new Map([...r.sticky].filter(([, x]) => !archived.has(x.projectId))),
+    rebound: r.rebound,
   };
 }
 /**
@@ -260,7 +289,11 @@ export interface ProjectServiceDeps {
   now?: () => number;
 }
 
-interface Resolved { program: Program; defs: ProjectDef[]; projects: Project[]; assignments: Map<number, ProjectAssignment>; held: Map<string, number[]> }
+interface Resolved {
+  program: Program; defs: ProjectDef[]; projects: Project[]; assignments: Map<number, ProjectAssignment>; held: Map<string, number[]>;
+  /** Run's heldTabIds: the tab ids stored manual entries hold (tombstoned and archived ones included). */
+  heldTabIds: ReadonlySet<number>;
+}
 const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
 
 export class ProjectService {
@@ -278,6 +311,10 @@ export class ProjectService {
   private lastOpen = new Set<string>();
   /** #195: the done projects of the last listing and the kept Done prompts (storage.session). */
   private readonly done: DoneProjects;
+  /** IDS_STALE_KEY as this worker knows it; undefined until read. */
+  private idsStale?: boolean;
+  /** dropStaleIds swept, but writing IDS_STALE_KEY = false to storage.session failed: the next pass writes it again. */
+  private idsClearUnwritten = false;
 
   constructor(private readonly deps: ProjectServiceDeps) {
     this.now = deps.now ?? Date.now;
@@ -319,8 +356,9 @@ export class ProjectService {
   private run(snap: Snapshot, program: Program, stored: Project[], sticky: StickyMap): Run {
     const tabs = new Map(snap.tabs.map((t) => [t.id, t]));
     const archived = new Set(stored.filter(isArchived).map((p) => p.id));
-    return holdArchived(resolveProjects({
-      snap, program, now: this.now(), projects: stored.filter((p) => !isTomb(p) && !isArchived(p)), sticky,
+    const heldTabIds = new Set(stored.flatMap((p) => p.manual.flatMap((m) => (m.tabId === undefined ? [] : [m.tabId]))));
+    const r = holdArchived(resolveProjects({
+      snap, program, now: this.now(), projects: stored.filter((p) => !isTomb(p) && !isArchived(p)), sticky, heldTabIds,
       facts: (id): Partial<TabFacts> => {
         const t = tabs.get(id);
         const page = this.deps.facts.get(id);
@@ -331,6 +369,7 @@ export class ProjectService {
       // A key the Jira API answered for confirms its prefix (Review Focus #5); a GitHub issue key confirms none.
       knownPrefixes: new Set(stored.filter((p) => p.status?.via === 'api' && !parseIssueKey(p.key)).map((p) => p.key.slice(0, Math.max(0, p.key.lastIndexOf('-'))))),
     }), archived);
+    return { ...r, heldTabIds };
   }
 
   /**
@@ -342,11 +381,13 @@ export class ProjectService {
     const full = await this.deps.getProgram();
     const program = liveProgram(full);
     const defs = program.projects ?? [];
+    // Before the no-projects return and under global dry run too: the ids are stale whatever the settings say.
+    await this.dropStaleIds(snap, program);
     if (defs.length === 0) {
       this.lastOpen = new Set();
       await this.done.retain(this.lastOpen);
       this.deps.onProjectsChanged?.([]);
-      return { program, defs, projects: [], assignments: new Map(), held: new Map() };
+      return { program, defs, projects: [], assignments: new Map(), held: new Map(), heldTabIds: new Set() };
     }
     const [st, stored] = await Promise.all([this.deps.state(), this.deps.store.list()]);
     const r = this.run(snap, program, stored, st.projectTabs);
@@ -358,7 +399,13 @@ export class ProjectService {
     if (!full.dryRun) {
       const changed = new Set<Project>([...created, ...revived]);
       for (const p of revived) { revive(p); p.updatedAt = this.now(); }
-      if (revived.length) this.deps.schedule?.('project'); // its manual entries take their tabs on the next pass
+      if (revived.length) this.deps.schedule?.('project'); // its manual entries take their tabs in its group on the next pass
+      // A manual entry whose own tab is gone took a tab in its project's group (a browser restart, #150): that tab is
+      // its own now, so it stays a member once dragged out. Local state, like onReplaced, so updatedAt is not bumped
+      // (M4-R31).
+      const byIdNow = new Map(projects.map((p) => [p.id, p]));
+      const moves = r.rebound.flatMap(({ projectId: id, index, tabId }) => { const p = byIdNow.get(id); return p ? [{ p, index, tabId }] : []; });
+      for (const p of setTabIds(projects, moves)) changed.add(p);
       for (const p of projects) {
         const summary = r.summaries.get(p.id);
         if (summary !== undefined && p.summary === undefined) { p.summary = summary; changed.add(p); }
@@ -432,7 +479,7 @@ export class ProjectService {
       const def = defOf.get(p.recipeId);
       return def && open.has(p.id) ? [{ id: p.id, title: projectGroupTitle(def, p, prefixes) }] : [];
     }));
-    return { program, defs, projects, assignments: r.assignments, held: r.held };
+    return { program, defs, projects, assignments: r.assignments, held: r.held, heldTabIds: r.heldTabIds };
   }
 
   /** lastMembers, read once per worker from storage.session (I3: an MV3 worker sleeps after any idle stretch). */
@@ -474,7 +521,12 @@ export class ProjectService {
     for (const q of changed) { q.manual = q.manual.filter((m) => m.tabId !== tabId); q.updatedAt = this.now(); }
     const key = this.norm(program, url);
     p.excluded = p.excluded.filter((u) => u !== key);
-    p.manual = [...p.manual.filter((m) => m.tabId !== tabId), { url, windowId, tabId }];
+    // An entry is a saved page (M4-R61): the tab's entry at another page (it navigated) keeps its URL without the id, so
+    // join never deletes one of the project's own pages; its entry at this page is replaced.
+    p.manual = [
+      ...p.manual.flatMap((m) => (m.tabId !== tabId ? [m] : this.norm(program, m.url) === key ? [] : [{ url: m.url, windowId: m.windowId }])),
+      { url, windowId, tabId },
+    ];
     p.updatedAt = this.now();
     await this.deps.store.put(p, ...changed);
     this.log(tabId, `Joined ${p.key} manually`);
@@ -764,7 +816,7 @@ export class ProjectService {
       }
       const groupTitle = snap.groups.find((g) => g.id === t.groupId)?.title;
       ids.push(this.deps.recentlyClosed.add({
-        url: urlOf(t), title: t.title, ...(groupTitle && { groupTitle }), windowId: t.windowId, reason: 'project-closed', at: this.now(),
+        url: urlOf(t), title: t.title, ...(groupTitle && { groupTitle }), windowId: t.windowId, tabId: t.id, reason: 'project-closed', at: this.now(),
       }));
       this.log(t.id, `Closed with project ${p.key}`, undefined, 'project-close');
     }
@@ -788,17 +840,21 @@ export class ProjectService {
   /**
    * Reopens the project's saved tab list (M4 T7) in background tabs, in saved order (the reconciler then groups them),
    * in the window holding its open tabs, else the last window that held it (its newest manual entry's), else the
-   * focused one (placement: T16). A saved URL already open (dedupe's normalization) is not opened again: that tab joins
-   * instead. Each tab joins as a manual member when the recipe takes them (else by its rules). A closed (tombstoned)
-   * project is revived, an archived one unarchived (M4 T9: "Archived: reopen?"). A user action, so it applies under global dry run too (R50). Returns how many tabs it opened.
+   * focused one (placement: T16). A saved URL already open (dedupe's normalization) is not opened again. A tab no
+   * project holds, ungrouped or in this project's own group, joins instead; a tab another project or a rule's group holds
+   * stays where it is (#150, M4-R53),
+   * and `elsewhere` counts those (absent when none), so the frozen list keeps them. Each tab Reopen opens joins by id as
+   * a manual member when the recipe takes them (else by its rules). A closed (tombstoned) project is revived, an
+   * archived one unarchived (M4 T9: "Archived: reopen?"). A user action, so it applies under global dry run too (R50).
+   * Returns how many tabs it opened.
    * A saved tab that can't open in that window (closed meanwhile) is tried once more in Chrome's own choice of window. A
    * saved tab Chrome still refuses (a `javascript:` URL) never stops the others: `failed` counts them (absent when none
    * failed).
    */
-  reopen(projectId: string): Promise<{ opened: number; failed?: number }> {
+  reopen(projectId: string): Promise<{ opened: number; failed?: number; elsewhere?: number }> {
     return this.serial(async () => {
       const snap = await this.deps.port.snapshot();
-      const { program, projects, assignments } = await this.resolve(snap);
+      const { program, projects, assignments, heldTabIds } = await this.resolve(snap);
       const p = projects.find((x) => x.id === projectId);
       if (!p) throw new Error('unknown project');
       const def = program.projects?.find((d) => d.recipeId === p.recipeId);
@@ -816,21 +872,41 @@ export class ProjectService {
       p.updatedAt = this.now();
       await this.deps.store.put(p);
       const manual = def.join.includes('manual');
-      const openAt = new Map<string, TabSnap>();
+      // The open tab Reopen uses per saved URL: one of this project's, else one it may take (no project holds it, and
+      // it is ungrouped or in this project's group), else one held elsewhere (#150: left there and counted). A tab
+      // another project's manual entry holds by id is that project's own tab on another page for now (that project
+      // open, closed or archived): join would delete the entry (M4-R53, M4-R58, M4-R60). This project's own tab showing
+      // a saved page joins as that page; its entry at its old page keeps the URL (join, M4-R61).
+      // Its title head as the next pass names its group (open once reopened): a GitHub issue project's `#N` group may
+      // be another repo's.
+      const ownGroup = isOwnGroup(def, p, openPrefixes(projects, new Set([...[...assignments.values()].map((a) => a.projectId), p.id])));
+      const groupTitle = new Map(snap.groups.map((g) => [g.id, g.title]));
+      const ownIds = new Set(p.manual.flatMap((m) => (m.tabId === undefined ? [] : [m.tabId])));
+      const rank = (t: TabSnap): number => {
+        const holder = assignments.get(t.id)?.projectId;
+        if (holder === projectId) return 0;
+        if (holder !== undefined || (heldTabIds.has(t.id) && !ownIds.has(t.id))) return 2;
+        return t.groupId === -1 || ownGroup(groupTitle.get(t.groupId)) ? 1 : 2;
+      };
+      const openAt = new Map<string, { t: TabSnap; rank: number }>();
       for (const t of snap.tabs) {
+        if (!normal.has(t.windowId) || t.incognito) continue;
         const k = this.norm(program, urlOf(t));
-        if (normal.has(t.windowId) && !t.incognito && !openAt.has(k)) openAt.set(k, t);
+        const r = rank(t);
+        if ((openAt.get(k)?.rank ?? 3) > r) openAt.set(k, { t, rank: r });
       }
       const seen = new Set<string>();
       let opened = 0;
       let failed = 0;
+      let elsewhere = 0;
       for (const s of saved) {
         const k = this.norm(program, s.url);
         if (seen.has(k)) continue;
         seen.add(k);
-        const t = openAt.get(k);
-        if (t) {
-          if (manual && assignments.get(t.id)?.projectId !== projectId) await this.join(program, projects, p, t.id, t.windowId, urlOf(t));
+        const o = openAt.get(k);
+        if (o) {
+          if (o.rank === 2) elsewhere++;
+          else if (o.rank === 1 && manual) await this.join(program, projects, p, o.t.id, o.t.windowId, urlOf(o.t));
           continue;
         }
         let tabId: number | undefined;
@@ -854,7 +930,7 @@ export class ProjectService {
         await this.join(program, projects, p, tabId, at, s.url);
       }
       this.deps.schedule?.('project');
-      return { opened, ...(failed > 0 && { failed }) };
+      return { opened, ...(failed > 0 && { failed }), ...(elsewhere > 0 && { elsewhere }) };
     });
   }
 
@@ -1054,8 +1130,8 @@ export class ProjectService {
 
   /**
    * SafetyService.beforeUndo: a recently-closed entry of a Close group is about to be reopened. Revives its tombstone
-   * first, so the restored tab rejoins the same project (rules by key, manual entries by URL). The undo of a Close and
-   * archive (M4 T9) unarchives it too.
+   * first, so the restored tab rejoins the same project (rules by key, a manual entry through bindUndone). The undo of
+   * a Close and archive (M4 T9) unarchives it too.
    */
   onUndo(entryId: string): Promise<void> {
     return this.serial(async () => {
@@ -1068,6 +1144,93 @@ export class ProjectService {
     });
   }
 
+  /**
+   * SafetyService.onUndone: an undo reopened the closed tab `closedTabId` as `tabId` at `url`. Undo gives back the
+   * membership the closed tab had (#150, M4-R53): the manual entry that held the closed tab (its id, at that URL) takes
+   * the new tab, whichever close it was (Close group, auto-close, a popup close, dedupe, Ask). A tab that was in a
+   * project only by sitting in its group, or in none, comes back ungrouped. Local state, like onReplaced: updatedAt is
+   * not bumped. A user action, so it applies under global dry run too (R50).
+   */
+  bindUndone(closedTabId: number, tabId: number, url: string): Promise<void> {
+    return this.serial(async () => {
+      const [program, stored, snap] = await Promise.all([this.deps.getProgram(), this.deps.store.list(), this.deps.port.snapshot()]);
+      const live = new Set(snap.tabs.map((t) => t.id));
+      const key = this.norm(program, url);
+      const held = (m: Project['manual'][number]): boolean =>
+        m.tabId === closedTabId && !hasOwnTab(m.tabId, live) && this.norm(program, m.url) === key;
+      const p = stored.find((x) => x.manual.some(held));
+      if (!p) return;
+      // Not when another entry already holds the tab (a pass rebound it in the project's group, M4-R58).
+      if (setTabIds(stored, movesOf([p], held, tabId)).size === 0) return;
+      await this.deps.store.put(p);
+      this.deps.schedule?.('project');
+    });
+  }
+
+  /**
+   * After a browser start (runtime.onStartup, browserStarted), the next pass's check (once): Chrome numbers tabs from a
+   * low counter again, so a stored manual tabId may now name an unrelated tab. An id is kept only if its tab is at the
+   * entry's URL now; the others are dropped, so no later tab that reuses one is taken as the entry's own (or makes `join`
+   * delete the entry). Those entries take their restored tabs in their project's group (`rebound`). It runs under
+   * global dry run and with no projects recipe on too: the ids are stale whatever the settings. Nothing else sweeps (an
+   * extension update or reload, a worker restart, a settings change): ids are still valid then, and an own tab on
+   * another page for now keeps its id, so it is a member again when it comes back (M4-R59). Local state, like
+   * onReplaced: updatedAt is not bumped (M4-R31). A failure is retried at the next pass.
+   *
+   * The storage.session flag is cleared only once the sweep's store write succeeded. If clearing it fails, this worker
+   * does not sweep again (a sweep later in the session would drop the ids of own tabs on another page for now, M4-R59);
+   * it writes the flag again at each next pass until that succeeds. Only a new worker that starts before then sweeps
+   * again, with that cost.
+   */
+  private async dropStaleIds(snap: Snapshot, program: Program): Promise<void> {
+    if (this.idsStale === false) {
+      if (this.idsClearUnwritten) await this.clearIdsStale();
+      return;
+    }
+    try {
+      if (this.idsStale === undefined) {
+        const v = this.deps.session ? (await this.deps.session.get(IDS_STALE_KEY)) === true : false;
+        this.idsStale ??= v; // browserStarted may have set it while the read was pending: keep its true
+      }
+      if (!this.idsStale) return;
+      // Read here, not the pass's list: a failed put leaves the pass's projects untouched.
+      const stored = await this.deps.store.list();
+      const at = new Map(snap.tabs.map((t) => [t.id, this.norm(program, urlOf(t))]));
+      const stale = (m: Project['manual'][number]): boolean => m.tabId !== undefined && at.get(m.tabId) !== this.norm(program, m.url);
+      const changed = stored.filter((p) => p.manual.some(stale));
+      for (const p of changed) p.manual = p.manual.map((m) => (stale(m) ? { url: m.url, windowId: m.windowId } : m));
+      if (changed.length) await this.deps.store.put(...changed);
+      this.idsStale = false;
+    } catch (e) {
+      console.warn('[tabchef] stale tab id check failed (retried at the next pass)', e);
+      return;
+    }
+    this.idsClearUnwritten = true;
+    await this.clearIdsStale();
+  }
+
+  /** dropStaleIds is done: storage.session's IDS_STALE_KEY = false, so a new worker in this browser session does not sweep. */
+  private async clearIdsStale(): Promise<void> {
+    try {
+      await this.deps.session?.set(IDS_STALE_KEY, false);
+      this.idsClearUnwritten = false;
+    } catch (e) {
+      console.warn('[tabchef] clearing the stale tab id flag failed (retried at the next pass)', e);
+    }
+  }
+
+  /**
+   * runtime.onStartup: a new browser session, so the stored manual tab ids are checked (dropStaleIds) now, and by the
+   * next pass if this worker stops first (the flag is in storage.session). Now rather than at the next live pass: under
+   * global dry run this session's ids would otherwise be checked once dry run is off.
+   */
+  async browserStarted(): Promise<void> {
+    this.idsStale = true;
+    this.idsClearUnwritten = false;
+    await this.deps.session?.set(IDS_STALE_KEY, true);
+    return this.serial(async () => this.dropStaleIds(await this.deps.port.snapshot(), liveProgram(await this.deps.getProgram())));
+  }
+
   /** tabs.onReplaced (discard / prerender swap): manual and sticky membership move to the new tab id. */
   onReplaced(added: number, removed: number): Promise<void> {
     return this.serial(async () => {
@@ -1078,9 +1241,14 @@ export class ProjectService {
         st.projectTabs.set(added, e);
         await saveState(st);
       }
-      const changed = (await this.deps.store.list()).filter((p) => p.manual.some((m) => m.tabId === removed));
-      for (const p of changed) p.manual = p.manual.map((m) => (m.tabId === removed ? { ...m, tabId: added } : m));
-      if (changed.length) await this.deps.store.put(...changed);
+      const stored = await this.deps.store.list();
+      // `added` is new this browser session, so an entry holding it holds a stale id (not swept yet, M4-R59): it lets
+      // go, keeping its URL, and the replace wins. Local state, so updatedAt is not bumped (M4-R31).
+      const stale = stored.some((p) => p.manual.some((m) => m.tabId === removed))
+        ? stored.filter((p) => p.manual.some((m) => m.tabId === added)) : [];
+      for (const p of stale) p.manual = p.manual.map((m) => (m.tabId === added ? { url: m.url, windowId: m.windowId } : m));
+      const changed = new Set([...stale, ...setTabIds(stored, movesOf(stored, (m) => m.tabId === removed, added))]);
+      if (changed.size) await this.deps.store.put(...changed);
     });
   }
 

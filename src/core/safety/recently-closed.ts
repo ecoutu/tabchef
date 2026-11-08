@@ -2,6 +2,8 @@ import { browser } from 'wxt/browser';
 
 export interface RecentlyClosedInput {
   url: string; title: string; groupTitle?: string; windowId: number; reason: string; ruleId?: string; at: number;
+  /** The closed tab's id: undo gives the tab it reopens to the project's manual entry that held this id (#150). */
+  tabId?: number;
 }
 export type RecentlyClosedItem = RecentlyClosedInput & { id: string };
 

@@ -147,27 +147,73 @@ describe('resolveProjects: manual and excluded', () => {
     });
     expect(r.assignments.get(2)).toEqual({ projectId: `${RID}:ABC-1`, key: 'ABC-1', via: 'manual', index: -1 });
   });
-  it('a manual entry matches by normalized URL when its tab id is gone (browser restart)', () => {
-    const r = resolve(snapOf(tab(9, `${PR}#top`, 'x')), { projects: [project('ABC-1', { manual: [{ url: PR, windowId: 1, tabId: 2 }] })] });
+  // #150 (M4-R53): once its own tab is gone, an entry claims a tab at its URL only inside the project's own titled group,
+  // the group Chrome restores after a restart. A tab the user opened elsewhere at that URL is left to its rules.
+  const grouped = (id: number, title: string) => ({ id, windowId: 1, title, color: 'blue' as const, collapsed: false });
+  const inGroup = (s: Snapshot, ...groups: ReturnType<typeof grouped>[]): Snapshot => ({ ...s, groups });
+  it('a manual entry whose tab id is gone claims a tab at its URL in the project\'s own group (browser restart), reported as rebound', () => {
+    const p = project('ABC-1', { summary: 'Login fails', manual: [{ url: PR, windowId: 1, tabId: 2 }] });
+    const r = resolve(inGroup(snapOf(tab(9, `${PR}#top`, 'x', { groupId: 5 })), grouped(5, projectGroupTitle(def, p))), { projects: [p] });
     expect(r.assignments.get(9)?.via).toBe('manual');
+    expect(r.rebound).toEqual([{ projectId: p.id, index: 0, tabId: 9 }]);
   });
-  it('a manual entry whose own tab navigated away can be claimed by another tab at its URL', () => {
+  it('a rule project\'s restored group is its own while its title is the key or `key · …` (the summary may differ)', () => {
+    const p = project('ABC-1', { manual: [{ url: PR, windowId: 1, tabId: 2 }] });
+    for (const title of ['ABC-1', 'ABC-1 · old summary']) {
+      const r = resolve(inGroup(snapOf(tab(9, PR, 'x', { groupId: 5 })), grouped(5, title)), { projects: [p] });
+      expect(r.assignments.get(9)?.key).toBe('ABC-1');
+    }
+  });
+  it('a manual entry whose tab id is gone does not claim a tab at its URL ungrouped or in another group (#150)', () => {
+    const p = project('ABC-1', { manual: [{ url: PR, windowId: 1, tabId: 2 }] });
+    for (const groups of [[], [grouped(5, 'acme')], [grouped(5, 'ABC-12')]]) {
+      const r = resolve(inGroup(snapOf(tab(9, PR, 'x', { groupId: groups.length ? 5 : -1 })), ...groups), { projects: [p] });
+      expect(r.assignments.get(9)?.via).not.toBe('manual');
+      expect(r.rebound).toEqual([]);
+    }
+  });
+  it('an own tab (live id) holds outside its group: the user dragged it out', () => {
+    const r = resolve(inGroup(snapOf(tab(2, PR, 'x', { groupId: 5 })), grouped(5, 'acme')), { projects: [project('ABC-1', { manual: [{ url: PR, windowId: 1, tabId: 2 }] })] });
+    expect(r.assignments.get(2)?.via).toBe('manual');
+    expect(r.rebound).toEqual([]);
+  });
+  it('a manual entry whose own tab navigated away does not claim another tab at its URL outside its group', () => {
     const r = resolve(snapOf(tab(2, 'https://github.com/acme/api/pull/6', 'x'), tab(3, PR, 'y')), {
       projects: [project('ABC-1', { manual: [{ url: PR, windowId: 1, tabId: 2 }] })],
     });
     expect(r.assignments.has(2)).toBe(false);
-    expect(r.assignments.get(3)?.via).toBe('manual');
+    expect(r.assignments.get(3)?.via).not.toBe('manual');
   });
-  it('a second copy of a manually added page joins with it (same PR open twice)', () => {
-    const r = resolve(snapOf(tab(2, PR, 'x'), tab(3, PR, 'y')), { projects: [project('ABC-1', { manual: [{ url: PR, windowId: 1, tabId: 2 }] })] });
-    expect(r.assignments.get(2)?.via).toBe('manual');
+  it('a second copy of a manually added page joins only in the project\'s group (Chrome\'s Duplicate puts it there)', () => {
+    const projects = [project('ABC-1', { manual: [{ url: PR, windowId: 1, tabId: 2 }] })];
+    const out = resolve(snapOf(tab(2, PR, 'x'), tab(3, PR, 'y')), { projects });
+    expect(out.assignments.get(2)?.via).toBe('manual');
+    expect(out.assignments.get(3)?.via).not.toBe('manual');
+    const r = resolve(inGroup(snapOf(tab(2, PR, 'x', { groupId: 5 }), tab(3, PR, 'y', { groupId: 5 })), grouped(5, 'ABC-1')), { projects });
     expect(r.assignments.get(3)).toEqual({ projectId: `${RID}:ABC-1`, key: 'ABC-1', via: 'manual', index: -1 });
+    expect(r.rebound).toEqual([]); // the entry still has its own tab
   });
-  it('two projects listing the same URL each keep their own tab; a further copy goes to the first', () => {
+  it('two projects listing the same URL each keep their own tab; a further copy in neither group goes to its rules', () => {
     const r = resolve(snapOf(tab(2, PR, 'x'), tab(3, PR, 'y'), tab(4, PR, 'z')), {
       projects: [project('ABC-1', { manual: [{ url: PR, windowId: 1, tabId: 2 }] }), project('DEF-2', { manual: [{ url: PR, windowId: 1, tabId: 3 }] })],
     });
-    expect([2, 3, 4].map((id) => r.assignments.get(id)?.key)).toEqual(['ABC-1', 'DEF-2', 'ABC-1']);
+    expect([2, 3].map((id) => r.assignments.get(id)?.key)).toEqual(['ABC-1', 'DEF-2']);
+    expect(r.assignments.get(4)?.via).not.toBe('manual');
+  });
+  it('two dead entries at one URL rebind to two restored tabs, one each', () => {
+    const p = project('ABC-1', { manual: [{ url: PR, windowId: 1, tabId: 2 }, { url: PR, windowId: 1, tabId: 3 }] });
+    const r = resolve(inGroup(snapOf(tab(8, PR, 'x', { groupId: 5 }), tab(9, PR, 'y', { groupId: 5 })), grouped(5, 'ABC-1')), { projects: [p] });
+    expect([8, 9].map((id) => r.assignments.get(id)?.via)).toEqual(['manual', 'manual']);
+    expect(r.rebound).toEqual([{ projectId: p.id, index: 0, tabId: 8 }, { projectId: p.id, index: 1, tabId: 9 }]);
+  });
+  it('a dead entry never rebinds to a tab another entry holds by id, here or in a project left out (M4-R58)', () => {
+    // A (dead id 1) and B (own tab 2, showing A for now) in ABC-1's group; tab 3 at A is held by an archived project.
+    const p = project('ABC-1', { manual: [{ url: PR, windowId: 1, tabId: 1 }, { url: 'https://github.com/acme/api/pull/6', windowId: 1, tabId: 2 }] });
+    const snap = inGroup(snapOf(tab(2, PR, 'x', { groupId: 5 }), tab(3, PR, 'y', { groupId: 5 })), grouped(5, 'ABC-1'));
+    const r = resolve(snap, { projects: [p], heldTabIds: new Set([1, 2, 3]) });
+    expect(r.rebound).toEqual([]);
+    expect([2, 3].map((id) => r.assignments.get(id)?.key)).toEqual(['ABC-1', 'ABC-1']); // still members, through the group
+    expect(resolve(snap, { projects: [p] }).rebound).toEqual([{ projectId: p.id, index: 0, tabId: 3 }]); // default: ids of `projects`
   });
   it('a manual entry whose tab navigated away no longer holds that tab', () => {
     const r = resolve(snapOf(tab(2, 'https://github.com/acme/api/pull/6', 'x')), { projects: [project('ABC-1', { manual: [{ url: PR, windowId: 1, tabId: 2 }] })] });
@@ -412,6 +458,54 @@ describe('GitHub issue projects: #N titles, disambiguated when two would collide
     it('Jira keys are unchanged', () => {
       expect(projectGroupTitle(def, project('ABC-1'))).toBe('ABC-1');
       expect(projectGroupTitle(def, project('ABC-1', { summary: 'x' }))).toBe('ABC-1 · x');
+    });
+  });
+
+  // A manual entry's group test (#150) where another stored issue project has the same number: the bare `#N` forms may be
+  // either one's group, so an entry whose tab is gone takes only its own rendered title or its `repo#N`/`owner/repo#N` forms.
+  describe('resolveProjects: a manual entry of an issue project whose number another project shares', () => {
+    // The builtin github-issue recipe with `#{num} · {summary}` titles, the format whose groups can be another repo's.
+    const ghProgram = (): Program => {
+      const c: Config = {
+        ...defaultConfig(),
+        recipes: defaultConfig().recipes.map((r) => (r.id === GH ? { ...r, enabled: true, params: { titleFormat: '#{num} · {summary}' } } : r)),
+      };
+      const { program: p, errors } = compileProgram(c, builtinRecipes());
+      expect(errors).toEqual([]);
+      return p;
+    };
+    const DOC = 'https://docs.example/design';
+    const grouped = (id: number, title: string) => ({ id, windowId: 1, title, color: 'blue' as const, collapsed: false });
+    const run = (groupTitle: string, tabs: TabSnap[], projects: Project[]) =>
+      resolve({ ...snapOf(...tabs), groups: [grouped(5, groupTitle)] }, { program: ghProgram(), projects });
+    it('a closed entry of acme/web#12 does not take a copy in other/api#12\'s "#12 · B" group', () => {
+      const a = issue('acme/web#12', { manual: [{ url: DOC, windowId: 1, tabId: 99 }] }); // own tab closed
+      const b = issue('other/api#12', { summary: 'B', manual: [{ url: DOC, windowId: 1, tabId: 3 }] });
+      const r = run('#12 · B', [tab(3, DOC, 'x', { groupId: 5 }), tab(4, DOC, 'x', { groupId: 5 })], [a, b]);
+      expect(r.assignments.get(3)?.projectId).toBe(b.id);
+      expect(r.rebound).toEqual([]);
+      expect(r.assignments.get(4)?.projectId).toBe(b.id);
+    });
+    it('nor one in a bare "#12" group, which may be either\'s', () => {
+      const a = issue('acme/web#12', { manual: [{ url: DOC, windowId: 1, tabId: 99 }] });
+      for (const b of [issue('other/api#12'), issue('other/api#12', { summary: 'B' })]) {
+        const r = run('#12', [tab(4, DOC, 'x', { groupId: 5 })], [a, b]);
+        expect(r.rebound).toEqual([]);
+        expect(r.assignments.has(4)).toBe(false);
+      }
+    });
+    it('a restarted tab still rejoins its own "#12 · A" group (A was the only #12 open), or its "web#12" one', () => {
+      const a = issue('acme/web#12', { summary: 'A', manual: [{ url: DOC, windowId: 1, tabId: 99 }] });
+      for (const title of ['#12 · A', 'web#12 · A', 'acme/web#12']) {
+        const r = run(title, [tab(9, DOC, 'x', { groupId: 5 })], [a, issue('other/api#12', { summary: 'B' })]);
+        expect(r.rebound).toEqual([{ projectId: a.id, index: 0, tabId: 9 }]);
+      }
+    });
+    it('with no other #12, the bare "#12" forms are its own', () => {
+      const a = issue('acme/web#12', { manual: [{ url: DOC, windowId: 1, tabId: 99 }] });
+      for (const title of ['#12', '#12 · old summary']) {
+        expect(run(title, [tab(9, DOC, 'x', { groupId: 5 })], [a, issue('acme/web#7')]).rebound).toEqual([{ projectId: a.id, index: 0, tabId: 9 }]);
+      }
     });
   });
 

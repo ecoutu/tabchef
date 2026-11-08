@@ -206,7 +206,7 @@ export function createAskController(port: BrowserPort, deps: AskDeps) {
     const at = now();
     const groupTitle = snap.groups.find((g) => g.id === cand.groupId)?.title;
     const entry: RecentlyClosedEntry = {
-      url: cur.url, title: cand.title, windowId: cand.windowId, reason: 'duplicate', at,
+      url: cur.url, title: cand.title, windowId: cand.windowId, reason: 'duplicate', at, tabId: newTabId,
       ...(groupTitle !== undefined ? { groupTitle } : {}),
       ...(ruleId !== undefined ? { ruleId } : {}),
     };

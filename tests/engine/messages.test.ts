@@ -67,7 +67,7 @@ describe('messages', () => {
     expect(r).toEqual({ ok: true, data: 2 });
     expect((await s.port.snapshot()).tabs.map((t) => t.id)).toEqual([1]);
     expect(s.added).toHaveLength(2);
-    expect(s.added[0]).toMatchObject({ reason: 'duplicate', url: A });
+    expect(s.added).toEqual([expect.objectContaining({ reason: 'duplicate', url: A, tabId: 2 }), expect.objectContaining({ tabId: 3 })]);
     expect(s.port.badge).toBe('1'); // 0 extras + 1 pending
   });
 

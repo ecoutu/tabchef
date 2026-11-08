@@ -621,6 +621,15 @@ describe('background wiring', () => {
     expect(I('safety').toastGroup).toHaveBeenCalledWith(['rc1', 'rc2'], 'Closed 2 tabs', undefined);
     await (I('safety').args[1] as { beforeUndo: (id: string) => Promise<void> }).beforeUndo('rc1');
     expect(I('projects').onUndo).toHaveBeenCalledWith('rc1');
+    // #150: the tab the undo opened takes the closed tab's manual entry, by the closed tab's id (and is exempt from
+    // auto-close, D38). An entry without a closed tab id binds nothing.
+    const onUndone = (I('safety').args[1] as { onUndone: (tabId: number, url: string, closedTabId: number | undefined) => void }).onUndone;
+    onUndone(31, 'https://a.example/', 4);
+    expect(I('projects').bindUndone).toHaveBeenCalledWith(4, 31, 'https://a.example/');
+    expect(I('closeExecutor').exempt).toHaveBeenCalledWith(31, 'https://a.example/');
+    onUndone(32, 'https://b.example/', undefined);
+    expect(I('projects').bindUndone).toHaveBeenCalledTimes(1);
+    expect(I('closeExecutor').exempt).toHaveBeenCalledWith(32, 'https://b.example/');
     await fire('contextMenus.onClicked', { menuItemId: 'tc-project:r:ABC-1' }, { id: 8 });
     expect(onMenuClick).toHaveBeenCalledWith({ menuItemId: 'tc-project:r:ABC-1' }, { id: 8 }, expect.objectContaining({ projects: I('projects') }));
   });
@@ -641,9 +650,10 @@ describe('background wiring', () => {
     expect(refreshMenus).toHaveBeenCalledWith(expect.anything(), undefined, expect.any(Function)); // tabs.query found none
   });
 
-  it('browser startup opens the dedupe grace, re-plans and re-evaluates every tab for closes', async () => {
+  it('browser startup opens the dedupe grace, checks project tab ids, re-plans and re-evaluates every tab for closes', async () => {
     await fire('runtime.onStartup');
     expect(I('dedupe').noteStartup).toHaveBeenCalled();
+    expect(I('projects').browserStarted).toHaveBeenCalledTimes(1);
     expect(I('reconciler').schedule).toHaveBeenCalledWith('startup');
     expect(I('closeExecutor').evaluateAll).toHaveBeenCalled();
   });
@@ -651,6 +661,11 @@ describe('background wiring', () => {
   it('suspend flushes the pending config write', async () => {
     await fire('runtime.onSuspend');
     expect(I('store').flush).toHaveBeenCalled();
+  });
+
+  it('an extension update never checks project tab ids (they are still valid, M4-R59)', async () => {
+    await fire('runtime.onInstalled', { reason: 'update', previousVersion: '1.0.0' });
+    expect(I('projects').browserStarted).not.toHaveBeenCalled();
   });
 
   it('install re-plans and installs the context menu (through the project menu queue, M3-R71)', async () => {

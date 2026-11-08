@@ -10,7 +10,7 @@ import type { BrowserPort } from '../platform/browser-port';
 import { SESSION_MARKER, STARTUP_GRACE_MS } from './dedupe-constants';
 
 export interface RecentlyClosedEntry {
-  url: string; title: string; groupTitle?: string; windowId: number; reason: string; ruleId?: string; at: number;
+  url: string; title: string; groupTitle?: string; windowId: number; reason: string; ruleId?: string; at: number; tabId?: number;
 }
 export interface LogEntry { tabId?: number; ruleId?: string; action: string; detail: string; at: number; dryRun?: true }
 
@@ -386,7 +386,7 @@ export class DedupeHandler {
     const at = this.now();
     const groupTitle = fresh.groups.find((g) => g.id === cand.groupId)?.title;
     const entry: RecentlyClosedEntry = {
-      url, title: cand.title, windowId: cand.windowId, reason: 'duplicate', at,
+      url, title: cand.title, windowId: cand.windowId, reason: 'duplicate', at, tabId,
       ...(groupTitle !== undefined ? { groupTitle } : {}),
       ...(ruleId !== undefined ? { ruleId } : {}),
     };

@@ -32,6 +32,11 @@ export interface ResolveInput {
   allowPrefixes: string[];
   now: number;
   sticky: StickyMap;
+  /**
+   * The tab ids manual entries hold, in `projects` and in the stored projects left out of it (tombstoned, archived): a
+   * tab one of them holds is never rebound to another entry (M4-R58). Default: those of `projects`.
+   */
+  heldTabIds?: ReadonlySet<number>;
 }
 export interface ResolveResult {
   assignments: Map<number, ProjectAssignment>;
@@ -41,6 +46,11 @@ export interface ResolveResult {
   summaries: Map<string, string>;
   /** The next sticky map: every rule assignment, keyed by tab. */
   sticky: StickyMap;
+  /**
+   * Manual entries whose own tab is gone and that took a tab in their project's group this pass (a browser restart):
+   * the project, the entry's index in `manual` and its new tab id.
+   */
+  rebound: { projectId: string; index: number; tabId: number }[];
 }
 
 const projectId = (recipeId: string, key: string): string => `${recipeId}:${key}`;
@@ -82,20 +92,42 @@ export function resolveProjects(input: ResolveInput): ResolveResult {
     if (url !== undefined) tabs.push({ t, url });
   }
 
-  // Manual: an entry first holds its own tab while that tab is at the entry's URL, then every other tab at that URL
-  // (a second copy of the page, or any copy once its own tab is gone or has navigated away). The first project
-  // listing a tab wins.
-  const entries = input.projects.flatMap((p) => p.manual.flatMap((m) => {
+  // Manual (#150, M4-R53): an entry holds its own tab while that tab is at the entry's URL. Otherwise it holds tabs at
+  // its URL only inside the project's own titled group: the evidence Chrome keeps when it restores tabs under new ids
+  // (a browser restart), and what Chrome's Duplicate or the user's drag into the group shows. A tab the user opened
+  // elsewhere at that URL is left to its rules. An entry whose own tab is gone takes the first such tab as its own
+  // (`rebound`), unless some entry already holds that tab by id: a tab id names at most one entry, because join and
+  // removeTab act on every entry holding it (M4-R58). The first project listing a tab wins.
+  const live = new Set(snap.tabs.map((t) => t.id));
+  const defOf = new Map((program.projects ?? []).map((d) => [d.recipeId, d]));
+  // The own-group test of each project with manual entries, built once per pass (its title is rendered once, not per tab).
+  const ownGroupOf = new Map(input.projects.filter((p) => p.manual.length > 0).map((p) => [p, manualOwnGroup(defOf, p, input.projects)]));
+  const entries = input.projects.flatMap((p) => p.manual.flatMap((m, index) => {
     const url = norm(m.url);
-    return url === undefined ? [] : [{ p, tabId: m.tabId, url }];
+    return url === undefined ? [] : [{ p, index, tabId: m.tabId, url }];
   }));
-  for (const ownOnly of [true, false]) {
-    for (const { p, tabId, url } of entries) {
-      for (const { t, url: u } of tabs) {
-        if (u !== url || (ownOnly && t.id !== tabId) || assignments.has(t.id)) continue;
-        assignments.set(t.id, { projectId: p.id, key: p.key, via: 'manual', index: -1 });
-      }
-    }
+  const groupTitle = new Map(snap.groups.map((g) => [g.id, g.title]));
+  const inOwnGroup = (p: Project, t: TabSnap): boolean => ownGroupOf.get(p)!(groupTitle.get(t.groupId));
+  const tabById = new Map(tabs.map((x) => [x.t.id, x]));
+  const rebound: ResolveResult['rebound'] = [];
+  const claim = (p: Project, t: TabSnap): void => { assignments.set(t.id, { projectId: p.id, key: p.key, via: 'manual', index: -1 }); };
+  // Own tabs first; then each entry whose own tab is gone takes one tab in its group (so two entries at one URL take
+  // two restored tabs); then every further copy in the group.
+  for (const { p, tabId, url } of entries) {
+    const own = tabId === undefined ? undefined : tabById.get(tabId);
+    if (own && own.url === url && !assignments.has(own.t.id)) claim(p, own.t);
+  }
+  const held = input.heldTabIds ?? new Set(entries.flatMap(({ tabId }) => (tabId === undefined ? [] : [tabId])));
+  for (const { p, index, tabId, url } of entries) {
+    if (hasOwnTab(tabId, live)) continue;
+    // A held tab (another entry's own tab, on another page for now) stays a member through the next loop.
+    const next = tabs.find(({ t, url: u }) => u === url && !assignments.has(t.id) && !held.has(t.id) && inOwnGroup(p, t));
+    if (!next) continue;
+    claim(p, next.t);
+    rebound.push({ projectId: p.id, index, tabId: next.t.id });
+  }
+  for (const { p, url } of entries) {
+    for (const { t, url: u } of tabs) if (u === url && !assignments.has(t.id) && inOwnGroup(p, t)) claim(p, t);
   }
 
   const excluded = (p: Project | undefined, url: string): boolean => p !== undefined && p.excluded.includes(url);
@@ -191,7 +223,7 @@ export function resolveProjects(input: ResolveInput): ResolveResult {
       }
     }
   }
-  return { assignments, created, summaries, sticky };
+  return { assignments, created, summaries, sticky, rebound };
 }
 
 /** An issue's title forms, least to most specific: `#N`, `repo#N`, `owner/repo#N`. */
@@ -274,6 +306,47 @@ export function titleBelongsToProject(title: string, key: string, prefix?: strin
 }
 
 /**
+ * Whether a group titled `title` (undefined: ungrouped) is the project's own group: its rendered title (`def`'s, when
+ * its recipe is known), or one titleBelongsToProject accepts. `prefixes` (issueTitlePrefixes of the open projects)
+ * picks a GitHub issue project's title head, so it never takes a less specific `#N` group that may be another repo's.
+ * Build it once per project and pass: the title is rendered here, not per call.
+ */
+export function isOwnGroup(def: ProjectDef | undefined, p: Project, prefixes?: ReadonlyMap<string, string>): (title: string | undefined) => boolean {
+  const own = def && projectGroupTitle(def, p, prefixes);
+  const issue = parseIssueKey(p.key);
+  const prefix = def && issue && prefixes ? issueHead(def, issue, prefixes.get(p.id)) : undefined;
+  return (title) => title !== undefined && (title === own || titleBelongsToProject(title, p.key, prefix));
+}
+
+/**
+ * resolveProjects' own-group test for a project's manual entries: lenient (isOwnGroup with no prefixes: any title head
+ * of its own, as its group may have been named while it was the only open project of its number), except that a GitHub
+ * issue project whose number another project in `projects` shares never takes the bare `#N` forms, which may be that
+ * project's group. It then takes its own title rendered with its summary or name (`#12 · A`: its group while it was the
+ * only #12 open, unless another of them renders the same) or its `repo#N` / `owner/repo#N` forms.
+ */
+function manualOwnGroup(defOf: ReadonlyMap<string, ProjectDef>, p: Project, projects: readonly Project[]): (title: string | undefined) => boolean {
+  const def = defOf.get(p.recipeId);
+  const r = parseIssueKey(p.key);
+  const twins = r ? projects.filter((q) => q.id !== p.id && parseIssueKey(q.key)?.number === r.number) : [];
+  if (twins.length === 0) return isOwnGroup(def, p);
+  const strict = isOwnGroup(def, p, issueTitlePrefixes([p, ...twins]));
+  const own = def && (p.summary || p.name) ? projectGroupTitle(def, p) : undefined;
+  const shared = twins.some((q) => { const d = defOf.get(q.recipeId); return d !== undefined && projectGroupTitle(d, q) === own; });
+  return (title) => strict(title) || (own !== undefined && !shared && title === own);
+}
+
+/**
+ * Whether a manual entry still has its own tab: a tab with its id is open (#150, M4-R53), whatever page it shows. While
+ * it has, the entry takes no other tab: not one in its group (resolveProjects), not the tab an undo reopened
+ * (ProjectService.bindUndone). Ids from an earlier browser session, which Chrome reuses for other tabs, are dropped
+ * after the browser starts (runtime.onStartup, ProjectService.dropStaleIds), so an open id is the entry's own tab.
+ */
+export function hasOwnTab(tabId: number | undefined, live: ReadonlySet<number>): boolean {
+  return tabId !== undefined && live.has(tabId);
+}
+
+/**
  * The planner override (PlanContext.overrides, M3-R39) for each assigned tab: its project's group. A project with no
  * def (its recipe is gone) or an assignment to an unknown project gets no target.
  */
@@ -283,22 +356,24 @@ export function projectTargets(assignments: Map<number, ProjectAssignment>, proj
   const out = new Map<number, GroupTarget>();
   const assigned = new Set([...assignments.values()].map((a) => a.projectId));
   const prefixes = issueTitlePrefixes(projects.filter((p) => assigned.has(p.id)));
+  // Each project's group title and own-group test, rendered once per call, not per tab.
+  const titles = new Map<Project, { title: string; titleMatches: (title: string | undefined) => boolean }>();
   for (const [tabId, a] of assignments) {
     const p = byId.get(a.projectId);
     const def = p && defOf.get(p.recipeId);
     if (!p || !def) continue;
+    let named = titles.get(p);
+    if (!named) titles.set(p, (named = { title: projectGroupTitle(def, p, prefixes), titleMatches: isOwnGroup(def, p, prefixes) }));
     const rendered = p.color ?? renderTemplate(def.color, templateVars(p));
     const valid = COLORS.has(rendered);
     const ruleId = a.ruleKey ?? `${p.recipeId}/project`;
-    const issue = parseIssueKey(p.key);
-    const prefix = issue ? issueHead(def, issue, prefixes.get(p.id)) : undefined;
     // Manual-only (a saved group): its group is the user's, so it is not strict (a tab Chrome or the user puts into it
     // stays) and has no place in the order pass (M4-R16).
     const manualOnly = def.join.length === 1 && def.join[0] === 'manual';
     out.set(tabId, {
-      key: ruleId, ruleId, index: a.index, ruleIndex: a.index, title: projectGroupTitle(def, p, prefixes),
+      key: ruleId, ruleId, index: a.index, ruleIndex: a.index, title: named.title,
       color: (valid ? rendered : 'grey') as GroupColor, collapsed: false, sortGroups: 'creation', strict: !manualOnly, merge: false,
-      dryRun: false, anchors: [], titleMatches: (t) => titleBelongsToProject(t, p.key, prefix),
+      dryRun: false, anchors: [], titleMatches: named.titleMatches,
       ...(manualOnly ? { unordered: true as const } : {}),
       ...(valid ? {} : { invalidColor: true as const }),
     });

@@ -176,8 +176,11 @@ describe('ProjectService.closeAndSave', () => {
     expect(await h.svc.cards()).toEqual([]);
     for (const rc of ['rc1', 'rc2']) await h.svc.onUndo(rc);
     expect(await h.stored(id)).not.toHaveProperty('closedAt');
+    // SafetyService.undo recreates each tab, then binds it by id (onUndone → bindUndone, #150).
     h.f.addTab(tab(11, A));
+    await h.svc.bindUndone(1, 11, A);
     h.f.addTab(tab(12, B));
+    await h.svc.bindUndone(2, 12, B);
     await h.r.flush();
     expect([11, 12].map(h.groupOf)).toEqual(['Taxes', 'Taxes']);
     expect((await h.svc.cards()).map((c) => [c.id, c.tabs.map((t) => t.tabId)])).toEqual([[id, [11, 12]]]);
@@ -191,12 +194,15 @@ describe('ProjectService.closeAndSave', () => {
     expect(ids).toHaveLength(3);
     await h.svc.onUndo(ids[0]!); // recent.undo restores one entry
     h.f.addTab(tab(11, A));
+    await h.svc.bindUndone(1, 11, A);
     await h.r.flush();
     expect(h.groupOf(11)).toBe('Taxes');
     expect((await h.stored(id))?.saved).toMatchObject({ closed: true, tabs: [{ url: A }, { url: B }, { url: C }] });
     for (const rc of ids.slice(1)) await h.svc.onUndo(rc);
     h.f.addTab(tab(12, B));
+    await h.svc.bindUndone(2, 12, B);
     h.f.addTab(tab(13, C));
+    await h.svc.bindUndone(3, 13, C);
     await h.r.flush();
     const p = await h.stored(id);
     expect(p?.saved?.closed).toBeUndefined();
@@ -1134,32 +1140,43 @@ describe('M4-R44: Close and save keeps the saved URLs this device never had open
   });
 });
 
+/** Chrome restores `url` under a new id into the group it was in, titled Taxes (made on first use). */
+function restoreInto(h: ReturnType<typeof harness>, tabId: number, url: string): void {
+  if (!h.f.state.groups.some((g) => g.id === 70)) h.f.addGroup({ id: 70, windowId: 1, title: 'Taxes', color: 'grey', collapsed: false });
+  h.f.addTab(tab(tabId, url, { groupId: 70 }));
+}
+
 describe('M4-R21 with sync off: a kept project across a browser restart', () => {
   beforeEach(() => { fakeBrowser.reset(); });
   const urls = async (h: ReturnType<typeof harness>, id: string) => (await h.stored(id))?.saved?.tabs.map((t) => t.url);
 
-  /** Taxes [A, B, C] kept and open; Chrome quits (no pass sees the tabs go) and the next session is not restored. */
+  /**
+   * Taxes [A, B, C] kept and open; Chrome quits (no pass sees the tabs go) and the next session starts empty: tabs come
+   * back one by one, restored by Chrome (`back`: into the project's own group, under new ids, #150) or opened by the user.
+   */
   async function restart() {
     const local = memoryArea();
     const h1 = harness({ local, session: memorySession() });
     const id = await taxes(h1);
     const port = new FakeBrowserPort();
     port.addWindow(1, { focused: true });
-    return { h: harness({ local, port, session: memorySession(), clock: { now: NOW + 60 * MIN } }), id };
+    const h = harness({ local, port, session: memorySession(), clock: { now: NOW + 60 * MIN } });
+    return { h, id, back: (tabId: number, url: string) => restoreInto(h, tabId, url) };
   }
 
   it('one tab back keeps the whole saved list, and Reopen still opens the others', async () => {
-    const { h, id } = await restart();
-    h.f.addTab(tab(10, A));
+    const { h, id, back } = await restart();
+    back(10, A);
     await h.r.flush();
+    expect((await h.svc.cards()).map((c) => c.tabs.map((t) => t.tabId))).toEqual([[10]]);
     expect(await urls(h, id)).toEqual([A, B, C]);
     expect(await h.svc.reopen(id)).toEqual({ opened: 2 });
   });
 
   it('a tab back and then closed again leaves; the ones never back stay', async () => {
-    const { h, id } = await restart();
-    h.f.addTab(tab(10, A));
-    h.f.addTab(tab(11, B));
+    const { h, id, back } = await restart();
+    back(10, A);
+    back(11, B);
     await h.r.flush();
     await h.f.closeTab(11);
     h.clock.now += MIN;
@@ -1168,11 +1185,24 @@ describe('M4-R21 with sync off: a kept project across a browser restart', () => 
   });
 
   it('Close and save with one tab back keeps the whole saved list', async () => {
-    const { h, id } = await restart();
-    h.f.addTab(tab(10, A));
+    const { h, id, back } = await restart();
+    back(10, A);
     h.f.addTab(tab(9, 'https://other.example/'));
     await h.r.flush();
     await h.svc.closeAndSave(id);
+    expect(await urls(h, id)).toEqual([A, B, C]);
+  });
+
+  it('tabs the user opens again outside the group are not members (#150), and the saved list is untouched', async () => {
+    const { h, id } = await restart();
+    h.f.addTab(tab(10, A));
+    h.f.addTab(tab(11, B));
+    await h.r.flush();
+    expect(await h.svc.cards()).toEqual([]);
+    expect(h.f.state.tabs.map((t) => t.groupId)).toEqual([-1, -1]);
+    await h.f.closeTab(11);
+    h.clock.now += MIN;
+    await h.r.flush();
     expect(await urls(h, id)).toEqual([A, B, C]);
   });
 });
@@ -1181,14 +1211,14 @@ describe('M4-R21 with sync off: a kept project across a browser restart', () => 
 describe('M4-R51: keeping a project again keeps the saved tabs this device did not see close', () => {
   beforeEach(() => { fakeBrowser.reset(); });
   const urls = async (h: ReturnType<typeof harness>, id: string) => (await h.stored(id))?.saved?.tabs.map((t) => t.url);
-  /** Taxes [A, B, C] kept and open; Chrome quits (no pass sees the tabs go), the next session is not restored, A comes back. */
+  /** Taxes [A, B, C] kept and open; Chrome quits (no pass sees the tabs go), and only A comes back (restored into its group). */
   async function restartOneBack() {
     const local = memoryArea();
     const id = await taxes(harness({ local, session: memorySession() }));
     const port = new FakeBrowserPort();
     port.addWindow(1, { focused: true });
     const h = harness({ local, port, session: memorySession(), clock: { now: NOW + 60 * MIN } });
-    h.f.addTab(tab(10, A));
+    restoreInto(h, 10, A);
     await h.r.flush();
     expect(await urls(h, id)).toEqual([A, B, C]); // the restart fix holds
     return { h, id };

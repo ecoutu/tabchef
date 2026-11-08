@@ -575,7 +575,7 @@ export class CloseExecutor {
   ): Promise<void> {
     const groupTitle = tab.groupId !== -1 ? snap.groups.find((g) => g.id === tab.groupId)?.title : undefined;
     const entry: RecentlyClosedInput = {
-      url: tab.url, title: tab.title, windowId: tab.windowId, reason: this.nameOf(p, ruleKey), ruleId: ruleKey, at: this.now(),
+      url: tab.url, title: tab.title, windowId: tab.windowId, reason: this.nameOf(p, ruleKey), ruleId: ruleKey, at: this.now(), tabId: tab.id,
       ...(groupTitle !== undefined && { groupTitle }),
     };
     const id = this.deps.recentlyClosed.add(entry);

@@ -77,7 +77,7 @@ describe('CloseExecutor', () => {
     expect(w.closes()).toEqual([]);
     await vi.advanceTimersByTimeAsync(1);
     expect(w.closes()).toEqual([2]);
-    expect(w.recentlyClosed.list()).toEqual([expect.objectContaining({ url: CB, reason: 'Callback', ruleId: 'user/cb', windowId: 1 })]);
+    expect(w.recentlyClosed.list()).toEqual([expect.objectContaining({ url: CB, reason: 'Callback', ruleId: 'user/cb', windowId: 1, tabId: 2 })]);
     expect(w.logs).toContainEqual(expect.objectContaining({ tabId: 2, ruleId: 'user/cb', action: 'auto-close' }));
     expect(w.toast).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ url: CB }), expect.objectContaining({ id: 1 }));
     expect(e.store.get(PENDING_CLOSES_KEY)).toEqual([]);

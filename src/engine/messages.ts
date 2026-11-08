@@ -394,7 +394,7 @@ export interface ResponseData {
   'projects.create': { id: string };
   'projects.start': { id: string };
   'projects.closeAndSave': { closed: number; skipped: number; ids: string[] };
-  'projects.reopen': { opened: number; failed?: number };
+  'projects.reopen': { opened: number; failed?: number; elsewhere?: number };
   'projects.setKeep': null;
   'projects.keepDone': null;
   'projects.groups': { id: number; title: string; color: GroupColor; tabCount: number }[];
@@ -782,7 +782,7 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
       if (never(t)) continue;
       const url = tabUrl(t);
       await deps.port.closeTab(t.id);
-      deps.recentlyClosed.add({ url, title: t.title, windowId: t.windowId, reason: 'duplicate', at: now() });
+      deps.recentlyClosed.add({ url, title: t.title, windowId: t.windowId, tabId: t.id, reason: 'duplicate', at: now() });
       deps.whyLog.add({ tabId: t.id, action: 'dupes-close', detail: `Closed duplicate of tab ${set.tabs[0]!.id} from the popup`, at: now() });
       closed++;
     }
@@ -842,7 +842,7 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
       const groupTitle = tab.groupId !== -1 ? snap.groups.find((g) => g.id === tab.groupId)?.title : undefined;
       await deps.port.closeTab(tab.id);
       deps.recentlyClosed.add({
-        url: row.url, title: tab.title, windowId: tab.windowId, reason: row.reason ?? VIEW_CLOSE_REASONS[`${v.view.recipeId}/${v.view.id}`] ?? v.view.tab, at,
+        url: row.url, title: tab.title, windowId: tab.windowId, tabId: tab.id, reason: row.reason ?? VIEW_CLOSE_REASONS[`${v.view.recipeId}/${v.view.id}`] ?? v.view.tab, at,
         ...(row.ruleKey !== undefined && { ruleId: row.ruleKey }), ...(groupTitle !== undefined && { groupTitle }),
       });
       deps.whyLog.add({

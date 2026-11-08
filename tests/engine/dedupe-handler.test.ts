@@ -46,7 +46,7 @@ describe('DedupeHandler', () => {
     expect(w.calls('closeTab')).toEqual([[2]]);
     expect(w.calls('focusTab')).toEqual([[1, 2, undefined]]);
     expect(w.port.state.tabs.map((x) => x.id)).toEqual([1]);
-    expect(w.closed).toEqual([expect.objectContaining({ url: `${PR}/files`, title: 't2', windowId: 1, reason: 'duplicate' })]);
+    expect(w.closed).toEqual([expect.objectContaining({ url: `${PR}/files`, title: 't2', windowId: 1, reason: 'duplicate', tabId: 2 })]);
     expect(w.logs[0]!.detail).toBe('Closed duplicate of tab 1 (t1)');
     expect(w.logs[0]!.tabId).toBe(2);
   });

@@ -550,11 +550,21 @@ describe('SafetyService', () => {
       expect(onResume).toHaveBeenCalledTimes(1);
     });
 
-    it('undo calls onUndone with the reopened tab and URL (auto-close exemption, D38)', async () => {
+    it('undo calls onUndone with the reopened tab, URL and closed tab id (auto-close exemption D38; project bind #150)', async () => {
       const onUndone = vi.fn();
       const w = setup({ onUndone });
-      await w.svc.undo(w.recentlyClosed.add(closedEntry));
-      expect(onUndone).toHaveBeenCalledWith(w.port.state.tabs.at(-1)!.id, PR);
+      const id = w.recentlyClosed.add({ ...closedEntry, tabId: 7 });
+      await w.svc.undo(id);
+      expect(onUndone).toHaveBeenCalledWith(w.port.state.tabs.at(-1)!.id, PR, 7);
+    });
+
+    it('undo of an entry saved without a closed tab id (before #150) passes none and still reopens', async () => {
+      const onUndone = vi.fn();
+      const w = setup({ onUndone });
+      const id = w.recentlyClosed.add(closedEntry);
+      await w.svc.undo(id);
+      expect(w.port.state.tabs.at(-1)).toMatchObject({ url: PR });
+      expect(onUndone).toHaveBeenCalledWith(w.port.state.tabs.at(-1)!.id, PR, undefined);
     });
   });
 });

@@ -83,6 +83,24 @@ describe('reopen', () => {
     await actions.reopen('p1');
     expect(s.toast).toEqual({ text: '1 saved tab could not be opened', ids: [] });
   });
+  it('says how many saved tabs are already open in another group, where Reopen left them (#150)', async () => {
+    const { s, actions } = setup();
+    send.mockResolvedValue({ ok: true, data: { opened: 1, elsewhere: 1 } });
+    await actions.reopen('p1');
+    expect(s.toast).toEqual({ text: 'Opened 1 tab · 1 already open in another group', ids: [] });
+    send.mockResolvedValue({ ok: true, data: { opened: 2, failed: 1, elsewhere: 2 } });
+    await actions.reopen('p1');
+    expect(s.toast).toEqual({ text: 'Opened 2 tabs · 1 could not be opened · 2 already open in another group', ids: [] });
+    send.mockResolvedValue({ ok: true, data: { opened: 0, failed: 1, elsewhere: 1 } });
+    await actions.reopen('p1');
+    expect(s.toast).toEqual({ text: '1 saved tab could not be opened · 1 already open in another group', ids: [] });
+    send.mockResolvedValue({ ok: true, data: { opened: 0, elsewhere: 1 } });
+    await actions.reopen('p1');
+    expect(s.toast).toEqual({ text: '1 saved tab is already open in another group', ids: [] });
+    send.mockResolvedValue({ ok: true, data: { opened: 0, elsewhere: 3 } });
+    await actions.reopen('p1');
+    expect(s.toast).toEqual({ text: '3 saved tabs are already open in another group', ids: [] });
+  });
   it('leaves the toast alone when every tab opened, and surfaces a failure without reloading', async () => {
     const { s, actions } = setup();
     s.toast = { text: 'Closed 2 tabs', ids: ['a', 'b'] };

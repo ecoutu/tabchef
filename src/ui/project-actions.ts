@@ -55,15 +55,25 @@ export function createProjectActions(host: ProjectActionsHost) {
     await host.reload();
     return true;
   }
-  /** Reopen (M4 T7): when Chrome refused some saved tabs, a toast (no Undo) says how many could not be opened. */
+  /**
+   * Reopen (M4 T7): a toast (no Undo) says how many saved tabs Chrome refused, and how many Reopen left where they are
+   * because another project or group holds them (#150).
+   */
   async function reopen(projectId: string): Promise<boolean> {
     const r = await send({ type: 'projects.reopen', projectId });
     if (!r.ok) { host.setError(r.error); return false; }
     host.setError('');
-    const { opened, failed = 0 } = r.data;
-    const text = opened > 0 ? `Opened ${opened} ${opened === 1 ? 'tab' : 'tabs'} · ${failed} could not be opened`
-      : `${failed} saved ${failed === 1 ? 'tab' : 'tabs'} could not be opened`;
-    if (failed > 0) host.setToast({ text, ids: [] });
+    const { opened, failed = 0, elsewhere = 0 } = r.data;
+    const tabs = (n: number) => `${n} saved ${n === 1 ? 'tab' : 'tabs'}`;
+    const parts = [
+      ...(failed > 0 ? [`${failed} could not be opened`] : []),
+      ...(elsewhere > 0 ? [`${elsewhere} already open in another group`] : []),
+    ];
+    let text: string;
+    if (opened > 0) text = [`Opened ${opened} ${opened === 1 ? 'tab' : 'tabs'}`, ...parts].join(' · ');
+    else if (failed > 0) text = [`${tabs(failed)} could not be opened`, ...parts.slice(1)].join(' · ');
+    else text = `${tabs(elsewhere)} ${elsewhere === 1 ? 'is' : 'are'} already open in another group`;
+    if (failed > 0 || elsewhere > 0) host.setToast({ text, ids: [] });
     await host.reload();
     return true;
   }

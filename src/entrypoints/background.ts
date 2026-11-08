@@ -214,7 +214,11 @@ export default defineBackground(() => {
     bannerFile: 'content-scripts/banner.js',
     pageFormEdited: (id) => pageFacts.get(id)?.formEdited === true,
     onResume: () => { void closeExecutor.rearm(); },
-    onUndone: (id, url) => { void closeExecutor.exempt(id, url); },
+    // The undo's tab takes the place of the closed tab in its Manual project, by the closed tab's id (#150).
+    onUndone: (id, url, closedTabId) => {
+      void closeExecutor.exempt(id, url);
+      if (closedTabId !== undefined) projects.bindUndone(closedTabId, id, url).catch((e: unknown) => console.warn('[tabchef] undo bind failed', e));
+    },
     // Undo of a Close group entry revives the project first (M3-R84).
     beforeUndo: (entryId) => projects.onUndo(entryId),
   });
@@ -466,6 +470,7 @@ export default defineBackground(() => {
   browser.windows.onFocusChanged.addListener(() => refreshActiveMenu());
   browser.runtime.onStartup.addListener(() => {
     dedupe.noteStartup();
+    projects.browserStarted().catch(warn('project tab id check')); // tab ids are from the previous browser session
     reconciler.schedule('startup');
     void closeExecutor.evaluateAll(); // storage.session (pending closes) is empty after a browser start
     startSourcesAlarm();

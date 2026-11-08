@@ -72,7 +72,7 @@ function harness(o: {
   const local = o.local ?? memoryArea();
   const p = o.program ?? program();
   const logs: { tabId?: number; action: string; detail: string }[] = [];
-  const closed: { url: string; reason: string; windowId: number; title: string }[] = [];
+  const closed: { url: string; reason: string; windowId: number; title: string; tabId?: number }[] = [];
   const locked = new Set<number>();
   const clock = { now: NOW };
   type Facts = Record<string, SourceEntry<Record<string, unknown>>> | undefined;
@@ -231,7 +231,7 @@ describe('ProjectService actions', () => {
     h.locked.add(3);
     expect(await h.svc.closeGroup(PID)).toEqual({ closed: 2, skipped: 1, ids: ['rc1', 'rc2'] }); // ids: the popup's undo (T17)
     expect(h.f.state.tabs.map((t) => t.id)).toEqual([3]);
-    expect(h.closed.map((c) => [c.url, c.reason, c.windowId])).toEqual([[TICKET, 'project-closed', 1], [PR, 'project-closed', 1]]);
+    expect(h.closed.map((c) => [c.url, c.reason, c.windowId, c.tabId])).toEqual([[TICKET, 'project-closed', 1, 1], [PR, 'project-closed', 1, 2]]);
     expect(h.closed[0]!.title).toBe('[ABC-1] Login fails - Jira');
     expect((await h.store.list()).map((p) => p.id)).toEqual([PID]); // a tab remains
   });
@@ -250,16 +250,20 @@ describe('ProjectService actions', () => {
     await expect(h.svc.addTab(1, PID)).rejects.toThrow(); // gone from the UI: no manual adds either
   });
 
-  it('closeGroup also closes a second copy of a manually added page (same PR open twice): the project closes', async () => {
+  it('closeGroup closes a second copy of a manually added page in the project\'s group; a copy outside it stays open (#150)', async () => {
     const h = await withPair();
     h.f.addTab(tab(3, PR2, 'Saved carts page')); // no key in the title: it joins only by hand
     h.f.addTab(tab(4, PR2, 'Saved carts page'));
+    h.f.addTab(tab(5, PR2, 'Saved carts page'));
     await h.r.flush();
     await h.svc.addTab(3, PID);
     await h.r.flush();
-    expect([1, 2, 3, 4].map(h.groupOf)).toEqual(['ABC-1', 'ABC-1', 'ABC-1', 'ABC-1']);
+    expect([1, 2, 3, 4, 5].map(h.groupOf)).toEqual(['ABC-1', 'ABC-1', 'ABC-1', undefined, undefined]);
+    h.f.state.tabs.find((t) => t.id === 4)!.groupId = h.f.state.tabs.find((t) => t.id === 3)!.groupId; // the user drags it in
+    await h.r.flush();
+    expect([1, 2, 3, 4, 5].map(h.groupOf)).toEqual(['ABC-1', 'ABC-1', 'ABC-1', 'ABC-1', undefined]);
     expect(await h.svc.closeGroup(PID)).toEqual({ closed: 4, skipped: 0, ids: ['rc1', 'rc2', 'rc3', 'rc4'] });
-    expect(h.f.state.tabs).toEqual([]);
+    expect(h.f.state.tabs.map((t) => t.id)).toEqual([5]);
     expect(await h.store.list()).toEqual([expect.objectContaining({ id: PID, closedAt: NOW })]);
   });
 
@@ -299,6 +303,9 @@ describe('ProjectService actions', () => {
     h.f.addTab(tab(11, TICKET, '[ABC-1] Login fails - Jira'));
     h.f.addTab(tab(12, PR, 'ABC-1: fix login'));
     h.f.addTab(tab(13, 'https://example.com/notes', 'Notes'));
+    // …and SafetyService.onUndone binds each tab it opened to the closed tab's manual entry (#150): the manual one, by
+    // its closed id; the rule ones bind nothing.
+    for (const [closed, t, u] of [[1, 11, TICKET], [2, 12, PR], [3, 13, 'https://example.com/notes']] as const) await h.svc.bindUndone(closed, t, u);
     await h.r.flush();
     expect([11, 12, 13].map(h.groupOf)).toEqual(['ABC-1', 'ABC-1', 'ABC-1']);
     const [p] = await h.store.list();

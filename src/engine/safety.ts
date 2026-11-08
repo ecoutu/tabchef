@@ -38,8 +38,12 @@ export interface SafetyDeps {
   pageFormEdited?: (tabId: number) => boolean;
   /** Pause ended: re-fire the pending closes that were kept while paused (CloseExecutor.rearm, D37 / R23). */
   onResume?: () => void;
-  /** A closed tab was reopened by undo: exempt it from auto-close until its URL changes (CloseExecutor.exempt, R24). */
-  onUndone?: (tabId: number, url: string) => void;
+  /**
+   * A closed tab (`closedTabId`, when its entry recorded it) was reopened by undo in `tabId`: exempt it from auto-close
+   * until its URL changes (CloseExecutor.exempt, R24), and give it to the manual entry that held the closed tab
+   * (ProjectService.bindUndone, #150).
+   */
+  onUndone?: (tabId: number, url: string, closedTabId: number | undefined) => void;
   /** Awaited before an undo recreates its tab (ProjectService.onUndo revives a closed project first, M3-R84). */
   beforeUndo?: (entryId: string) => Promise<void>;
   now?: () => number;
@@ -332,7 +336,7 @@ export class SafetyService {
     }
     disarm();
     this.deps.exemptOnce(tabId);
-    this.deps.onUndone?.(tabId, e.url);
+    this.deps.onUndone?.(tabId, e.url, e.tabId);
     this.deps.recentlyClosed.take(id);
     this.deps.log.add({
       tabId, action: 'undo', detail: `Reopened "${e.title}"${e.groupTitle ? ` (was in ${e.groupTitle})` : ''}`, at: this.now(),

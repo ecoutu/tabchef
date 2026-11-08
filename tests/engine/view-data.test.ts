@@ -270,7 +270,7 @@ describe('view actions (user-initiated: they apply under global dry run, R50)', 
     s.locked.add(4);
     expect(await s.handle({ type: 'view.close', viewId: 'finished', tabId: 3 }, ui)).toEqual({ ok: true, data: null });
     expect((await s.port.snapshot()).tabs.map((t) => t.id)).toEqual([4, 5]);
-    expect(s.added[0]).toMatchObject({ url: CB, reason: 'Close OAuth callback tabs', ruleId: 'finished/oauth-callback' });
+    expect(s.added[0]).toMatchObject({ url: CB, reason: 'Close OAuth callback tabs', ruleId: 'finished/oauth-callback', tabId: 3 }); // undo binds by it (#150)
     expect(s.whyAdd).toHaveBeenCalledWith(expect.objectContaining({ tabId: 3, action: 'view-close' }));
     expect(await s.handle({ type: 'view.close', viewId: 'finished', tabId: 4 }, ui)).toEqual({ ok: false, error: 'tab is locked' });
     expect(await s.handle({ type: 'view.close', viewId: 'finished', tabId: 5 }, ui)).toEqual({ ok: false, error: 'not in view' });
