@@ -3,8 +3,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fakeBrowser } from 'wxt/testing/fake-browser';
 import { compileProgram } from '../../src/core/lang/compile';
-import { defaultConfig } from '../../src/core/config/defaults';
+import { builtinRecipeRefs, defaultConfig } from '../../src/core/config/defaults';
+import type { Config } from '../../src/core/types';
 import { fromFolder, toFolder, ROOT_TITLE, type FolderNode, type SyncedProject } from '../../src/core/projects/bookmark-format';
+import { projectGroupTitle } from '../../src/core/projects/resolve';
 import { toSynced, sameContent } from '../../src/core/projects/sync-plan';
 import type { Project } from '../../src/core/projects/types';
 import { PROJECTS_KEY, ProjectService, ProjectStore } from '../../src/engine/projects';
@@ -33,8 +35,8 @@ const memoryArea = (onSet?: (keys: string[]) => void) => {
 };
 
 /** One device: its own storage, store, ProjectService and ProjectSync on the shared tree. */
-function device(tree: FakeBookmarkPort, o: { granted?: boolean; debounceMs?: number } = {}) {
-  const program = compileProgram(defaultConfig(), builtinRecipes()).program;
+function device(tree: FakeBookmarkPort, o: { granted?: boolean; debounceMs?: number; config?: Config } = {}) {
+  const program = compileProgram(o.config ?? defaultConfig(), builtinRecipes()).program;
   const port = new FakeBrowserPort();
   port.addWindow(1, { focused: true });
   const clock = { now: 1_000 };
@@ -1478,5 +1480,69 @@ describe('M4-R51: Keep off then on never deletes a synced saved tab from every d
     await b.sync.syncNow();
     await a.sync.syncNow();
     for (const d of [a, b]) expect(await urlsOf(d, id)).toContain(C);
+  });
+});
+
+// A saved tab records its Chrome group's title, and a project's tabs sit in the project's own group: they are written
+// loose in the project folder, never in a subfolder repeating its name (1.6.0 did: Media / Media / tabs).
+describe("ProjectSync: a project's own group is its folder", () => {
+  beforeEach(() => { fakeBrowser.reset(); });
+
+  const tabsOf = (tree: FakeBookmarkPort, title: string) => rootOf(tree)!.children!.find((f) => f.title === title)!.children!.slice(1).map((c) => c.url ?? c.title);
+
+  it('a Manual project: its tabs in its own group are written loose, and a 1.6.0 folder is flattened once', async () => {
+    const tree = new FakeBookmarkPort();
+    const d = device(tree);
+    const p = await d.keep('media', { name: 'Media', saved: { tabs: [{ url: A, title: 'A', group: 'Media' }, { url: B, title: 'B', group: 'Other' }], at: 1 } });
+    await d.sync.syncNow();
+    expect(tabsOf(tree, 'Media')).toEqual(['Other', A]);
+    // As 1.6.0 wrote it: the project's own group as a subfolder.
+    const folder = rootOf(tree)!.children!.find((f) => f.title === 'Media')!;
+    const loose = folder.children!.find((c) => c.url === A)!;
+    await tree.remove(loose.id);
+    await tree.create({ parentId: folder.id, title: 'Media' });
+    const sub = rootOf(tree)!.children!.find((f) => f.title === 'Media')!.children!.find((c) => c.title === 'Media' && !c.url)!;
+    await tree.create({ parentId: sub.id, title: 'A', url: A });
+    // ...and its base (1.6.0 made it with the same toSynced).
+    const nested = fromFolder(rootOf(tree)!.children!.find((f) => f.title === 'Media')! as FolderNode) as SyncedProject;
+    expect(nested.groups.map((g) => g.title)).toEqual(['Other', 'Media']);
+    d.local.data.set(SYNC_BASE_KEY, { [p.id]: nested });
+    expect(await d.sync.syncNow()).toMatchObject({ merged: 1 });
+    expect(tabsOf(tree, 'Media')).toEqual(['Other', A]);
+    expect(content([await d.get(p.id)])).toEqual([toSynced(p)]);
+    expect(await d.sync.syncNow()).toMatchObject({ merged: 0 });
+    expect(tabsOf(tree, 'Media')).toEqual(['Other', A]);
+  });
+
+  it('a 1.6.0 device writing the nested folder again: the two converge on the flat one', async () => {
+    const tree = new FakeBookmarkPort();
+    const d = device(tree);
+    const p = await d.keep('media', { name: 'Media', saved: { tabs: [{ url: A, title: 'A', group: 'Media' }], at: 1 } });
+    await d.sync.syncNow();
+    const folder = rootOf(tree)!.children!.find((f) => f.title === 'Media')!;
+    await tree.remove(folder.children!.find((c) => c.url === A)!.id);
+    const sub = await tree.create({ parentId: folder.id, title: 'Media' });
+    await tree.create({ parentId: sub, title: 'A', url: A });
+    for (let i = 0; i < 3; i++) await d.sync.syncNow();
+    expect(tabsOf(tree, 'Media')).toEqual([A]);
+    expect(content([await d.get(p.id)])).toEqual([toSynced(p)]);
+    expect(await d.sync.syncNow()).toMatchObject({ merged: 0 });
+  });
+
+  it("a rule project: its tabs in its own group (its recipe's title) are written loose", async () => {
+    const tree = new FakeBookmarkPort();
+    const config: Config = { ...defaultConfig(), recipes: builtinRecipeRefs({ 'jira-ticket-title': true }) };
+    config.recipes = config.recipes.map((r) => (r.id === 'jira-ticket-title' ? { ...r, params: { titleFormat: '{key} · {summary}' } } : r));
+    const d = device(tree, { config });
+    const def = d.program.projects!.find((x) => x.recipeId === 'jira-ticket-title')!;
+    const p: Project = {
+      id: 'jira-ticket-title:ABC-1', recipeId: 'jira-ticket-title', key: 'ABC-1', summary: 'Login fails', keep: true, createdAt: 1, updatedAt: 1,
+      manual: [], excluded: [], linked: [], saved: { tabs: [{ url: A, title: 'A', group: 'ABC-1 · Login fails' }, { url: B, title: 'B' }], at: 1 },
+    };
+    expect(projectGroupTitle(def, p)).toBe('ABC-1 · Login fails');
+    await d.store.put(p);
+    await d.sync.syncNow();
+    expect(tabsOf(tree, 'ABC-1')).toEqual([A, B]);
+    expect(await d.sync.syncNow()).toMatchObject({ merged: 0 });
   });
 });

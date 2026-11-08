@@ -820,14 +820,20 @@ export class ProjectService {
 
   /**
    * Project sync (M4 T14): `plan` gets the stored projects, the ids of projects with open member tabs (this pass's
-   * membership) and those whose stored saved list could not be read (ProjectStore.unreadableSaved), inside the queue,
-   * and its `put` / `remove` are stored there, so a sync never races a user action or a pass. Applies under global dry
-   * run too (the stored data only). Returns what `plan` returned.
+   * membership), those whose stored saved list could not be read (ProjectStore.unreadableSaved) and each project's own
+   * group title (as its card names it, see toSynced), inside the queue, and its `put` / `remove` are stored there, so a
+   * sync never races a user action or a pass. Applies under global dry run too (the stored data only). Returns what
+   * `plan` returned.
    */
-  syncApply<T extends { put: Project[]; remove: string[] }>(plan: (stored: Project[], open: Set<string>, unsynced: Set<string>) => T): Promise<T> {
+  syncApply<T extends { put: Project[]; remove: string[] }>(
+    plan: (stored: Project[], open: Set<string>, unsynced: Set<string>, ownTitle: (p: Project) => string) => T,
+  ): Promise<T> {
     return this.serial(async () => {
-      const { assignments } = await this.resolve(await this.deps.port.snapshot());
-      const r = plan(await this.deps.store.list(), new Set([...assignments.values()].map((a) => a.projectId)), await this.deps.store.unreadableSaved());
+      const { assignments, defs } = await this.resolve(await this.deps.port.snapshot());
+      const defOf = new Map(defs.map((d) => [d.recipeId, d]));
+      // A project's own group title, as its card names it (a Manual one: its name): its saved tabs carry it (toSynced).
+      const ownTitle = (p: Project): string => { const def = defOf.get(p.recipeId); return def ? projectGroupTitle(def, p) : (p.name ?? p.key); };
+      const r = plan(await this.deps.store.list(), new Set([...assignments.values()].map((a) => a.projectId)), await this.deps.store.unreadableSaved(), ownTitle);
       if (r.put.length) await this.deps.store.put(...r.put);
       if (r.remove.length) await this.deps.store.remove(...r.remove);
       if (r.put.length || r.remove.length) this.deps.schedule?.('project');
