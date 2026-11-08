@@ -430,6 +430,28 @@ describe('ProjectStore and pruning', () => {
     expect(await new ProjectStore(local).unreadableSaved()).toEqual(new Set());
   });
 
+  it('a failed write changes nothing: the cached list, the unreadable saved lists and later writes stay in step with storage', async () => {
+    const local = memoryArea();
+    const raw = { tabs: 'broken', at: NOW };
+    local.data.set(PROJECTS_KEY, [{ ...stored(), saved: raw }, stored({ id: `${RID}:B`, key: 'B' })]);
+    const s = new ProjectStore(local);
+    const before = await s.list();
+    const disk = () => structuredClone(local.data.get(PROJECTS_KEY));
+    const onDisk = disk();
+    local.set.mockRejectedValueOnce(new Error('QUOTA_BYTES quota exceeded'));
+    await expect(s.put(stored({ id: `${RID}:C`, key: 'C' }))).rejects.toThrow(/quota/);
+    local.set.mockRejectedValueOnce(new Error('QUOTA_BYTES quota exceeded'));
+    await expect(s.remove(PID)).rejects.toThrow(/quota/);
+    local.set.mockRejectedValueOnce(new Error('QUOTA_BYTES quota exceeded'));
+    await expect(s.put({ ...before[0]!, saved: { tabs: [], at: NOW + 1 } })).rejects.toThrow(/quota/);
+    expect(await s.list()).toEqual(before);
+    expect(await s.unreadableSaved()).toEqual(new Set([PID]));
+    expect(disk()).toEqual(onDisk);
+    // The next write stores only its own change, and the unreadable list stays as it was.
+    await s.put({ ...before[1]!, name: 'B2' });
+    expect((disk() as Project[]).map((p) => [p.id, p.name, p.saved])).toEqual([[PID, undefined, raw], [`${RID}:B`, 'B2', undefined]]);
+  });
+
   it('M4-R22: syncExtra that is not a plain object is dropped; a plain object is kept', async () => {
     const local = memoryArea();
     const bad = (id: string, o: Record<string, unknown>) => ({ ...stored({ id: `${RID}:${id}`, key: id }), ...o });

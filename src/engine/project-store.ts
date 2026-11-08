@@ -66,23 +66,30 @@ export class ProjectStore {
 
   /** Stores (adds or replaces) each project, in one write. */
   put(...ps: Project[]): Promise<void> {
-    return this.write((m) => {
+    return this.write((m, raw) => {
       for (const p of ps) {
         m.set(p.id, structuredClone(p));
-        if (isSaved(p.saved)) this.rawSaved.delete(p.id);
+        if (isSaved(p.saved)) raw.delete(p.id);
       }
     });
   }
 
   remove(...ids: string[]): Promise<void> {
-    return this.write((m) => { for (const id of ids) { m.delete(id); this.rawSaved.delete(id); } });
+    return this.write((m, raw) => { for (const id of ids) { m.delete(id); raw.delete(id); } });
   }
 
-  private write(fn: (m: Map<string, Project>) => void): Promise<void> {
+  /**
+   * Applies `fn` to copies of the projects and of rawSaved and stores the result; the copies replace them only once
+   * storage took it, so a failed write (quota, a closing worker) changes nothing here either.
+   */
+  private write(fn: (m: Map<string, Project>, raw: Map<string, unknown>) => void): Promise<void> {
     const next = this.chain.then(async () => {
-      const m = await this.load();
-      fn(m);
-      await this.local.set({ [PROJECTS_KEY]: [...m.values()].map((p) => (this.rawSaved.has(p.id) && !isSaved(p.saved) ? { ...p, saved: this.rawSaved.get(p.id) } : p)) });
+      const m = new Map(await this.load());
+      const raw = new Map(this.rawSaved);
+      fn(m, raw);
+      await this.local.set({ [PROJECTS_KEY]: [...m.values()].map((p) => (raw.has(p.id) && !isSaved(p.saved) ? { ...p, saved: raw.get(p.id) } : p)) });
+      this.cache = Promise.resolve(m);
+      this.rawSaved = raw;
     });
     this.chain = next.catch(() => {});
     return next;
