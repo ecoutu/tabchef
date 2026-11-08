@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fakeBrowser } from 'wxt/testing/fake-browser';
 import { browser } from 'wxt/browser';
 import { ConfigStore, QUOTA_WARNING } from '../../src/storage/config-store';
@@ -684,6 +684,263 @@ describe('ConfigStore', () => {
       const c = await s.get();
       expect(c.version).toBe(2);
       expect(c.rules.map((r) => r.id)).toEqual(['r1', 'r-2']);
+    });
+  });
+
+  // dispose() must be terminal: work already in flight when it runs (a remote read, a retry, a sync write, a load) must
+  // not arm a timer or write storage afterwards, or it lands in the next test's storage (#155). Each test holds one
+  // storage call open, disposes, then lets the call finish.
+  describe('dispose', () => {
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    function deferred<T>() {
+      let resolve!: (v: T) => void;
+      let reject!: (e: unknown) => void;
+      const promise = new Promise<T>((res, rej) => {
+        resolve = res;
+        reject = rej;
+      });
+      return { promise, resolve, reject };
+    }
+    const settle = async () => {
+      for (let i = 0; i < 100; i++) await new Promise((r) => setImmediate(r));
+    };
+
+    /** Holds the next sync read of cfg:meta open; every other call goes through. */
+    function gateMetaRead() {
+      const gate = deferred<void>();
+      const entered = deferred<void>();
+      // Callers pass one key, a list of keys (readSync's chunk read) or null.
+      const real = sync().get.bind(sync()) as (keys?: string | string[] | null) => Promise<Record<string, unknown>>;
+      let armed = true;
+      vi.spyOn(sync(), 'get').mockImplementation(async (keys?: unknown) => {
+        if (armed && keys === 'cfg:meta') {
+          armed = false;
+          entered.resolve();
+          await gate.promise;
+        }
+        return real(keys as string | string[] | null);
+      });
+      return { gate, entered };
+    }
+
+    /** Holds the next sync write open; `real` decides whether it then goes through. */
+    function gateSyncWrite() {
+      const gate = deferred<void>();
+      const entered = deferred<void>();
+      const real = sync().set.bind(sync());
+      let armed = true;
+      vi.spyOn(sync(), 'set').mockImplementation(async (items: Record<string, unknown>) => {
+        if (armed) {
+          armed = false;
+          entered.resolve();
+          await gate.promise;
+        }
+        return real(items);
+      });
+      return { gate, entered };
+    }
+
+    it('a remote read that fails verification after dispose arms no retry', async () => {
+      const s = mk();
+      await s.get();
+      const { gate, entered } = gateMetaRead();
+      // Another device writes a meta whose chunk is missing: the store starts a remote read nobody awaits.
+      await sync().set({ 'cfg:meta': { v: 1, n: 1, sha: 'x'.repeat(64), at: 1 } });
+      await entered.promise;
+      s.dispose();
+      gate.resolve();
+      await settle();
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('a remote read that succeeds after dispose applies nothing', async () => {
+      const s = mk();
+      await s.get();
+      const seen = vi.fn();
+      s.onChange(seen);
+      const { gate, entered } = gateMetaRead();
+      const json = JSON.stringify(withSite('remote.example'));
+      await putSync(json);
+      // Records the read's checksum, so the test can prove the read got as far as applying the remote config.
+      const realDigest = crypto.subtle.digest.bind(crypto.subtle);
+      const digests: Promise<ArrayBuffer>[] = [];
+      vi.spyOn(crypto.subtle, 'digest').mockImplementation((...a: Parameters<typeof realDigest>) => {
+        const d = realDigest(...a);
+        digests.push(d);
+        return d;
+      });
+      await entered.promise;
+      s.dispose();
+      // What the next test's beforeEach does; keep the remote copy so the held read still finds it.
+      const synced = await sync().get(null);
+      fakeBrowser.reset();
+      await sync().set(synced);
+      gate.resolve();
+      await settle();
+      // The held read went on to verify the chunk, and its checksum matched: it reached applyRemote.
+      expect(digests).toHaveLength(1);
+      const hex = [...new Uint8Array(await digests[0]!)].map((x) => x.toString(16).padStart(2, '0')).join('');
+      expect(hex).toBe((synced['cfg:meta'] as { sha: string }).sha);
+      await settle();
+      expect(await s.get()).toEqual(defaultConfig()); // the remote config was not applied, even in memory
+      expect(await local().get(null)).toEqual({});
+      expect(seen).not.toHaveBeenCalled();
+    });
+
+    it('a read retry in flight at dispose arms no further retry', async () => {
+      await sync().set({ 'cfg:meta': { v: 1, n: 1, sha: 'y'.repeat(64), at: 1 } }); // chunk missing: 'bad'
+      const s = mk();
+      await s.get();
+      expect(vi.getTimerCount()).toBe(1);
+      const { gate, entered } = gateMetaRead();
+      vi.advanceTimersByTime(5000); // the retry fires and its read is held
+      await entered.promise;
+      s.dispose();
+      gate.resolve();
+      await settle();
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('a sync write that fails after dispose arms no backoff', async () => {
+      const s = new ConfigStore({ debounceMs: 2000, retryMs: 5000, backoffMs: 30_000 });
+      await s.get();
+      await s.set(withSite('local.example'));
+      const hold = deferred<void>();
+      const entered = deferred<void>();
+      vi.spyOn(sync(), 'set').mockImplementation(async () => {
+        entered.resolve();
+        await hold.promise;
+      });
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      vi.advanceTimersByTime(2000); // the debounce fires and the sync write is held
+      await entered.promise;
+      s.dispose();
+      hold.reject(new Error('MAX_WRITE_OPERATIONS_PER_MINUTE'));
+      await settle();
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('a sync write that succeeds after dispose writes no meta and leaves the edit pending', async () => {
+      const s = mk();
+      await s.get();
+      await s.set(withSite('local.example'));
+      const { gate, entered } = gateSyncWrite();
+      vi.advanceTimersByTime(2000); // the debounce fires and the chunk write is held
+      await entered.promise;
+      s.dispose();
+      gate.resolve();
+      await settle();
+      expect((await sync().get('cfg:meta'))['cfg:meta']).toBeUndefined();
+      expect((await local().get('cfg:pending'))['cfg:pending']).toBe(true);
+    });
+
+    it('a sync write still hashing at dispose writes no chunk to sync', async () => {
+      const s = mk();
+      await s.get();
+      await s.set(withSite('local.example'));
+      const gate = deferred<void>();
+      const entered = deferred<void>();
+      const realDigest = crypto.subtle.digest.bind(crypto.subtle);
+      let armed = true;
+      vi.spyOn(crypto.subtle, 'digest').mockImplementation(async (...a: Parameters<typeof realDigest>) => {
+        if (armed) {
+          armed = false;
+          entered.resolve();
+          await gate.promise;
+        }
+        return realDigest(...a);
+      });
+      vi.advanceTimersByTime(2000); // the debounce fires and the write's checksum is held
+      await entered.promise;
+      s.dispose();
+      gate.resolve();
+      await settle();
+      expect(await sync().get(null)).toEqual({});
+    });
+
+    it('a meta write in flight at dispose removes no chunk from sync', async () => {
+      const s = mk();
+      await s.get();
+      await s.set(withSite('local.example'));
+      const realSet = sync().set.bind(sync());
+      const gate = deferred<void>();
+      const entered = deferred<void>();
+      vi.spyOn(sync(), 'set').mockImplementation(async (items: Record<string, unknown>) => {
+        if ('cfg:meta' in items) {
+          entered.resolve();
+          await gate.promise;
+        }
+        return realSet(items);
+      });
+      vi.advanceTimersByTime(2000); // the debounce fires, the chunk is written and the meta write is held
+      await entered.promise;
+      s.dispose();
+      await realSet({ 'cfg:7': 'next test' }); // a later test's chunk, above this store's chunk count
+      gate.resolve();
+      await settle();
+      expect((await sync().get('cfg:7'))['cfg:7']).toBe('next test');
+    });
+
+    it('flush() after dispose touches no sync storage', async () => {
+      const s = mk();
+      await s.get();
+      await s.set(withSite('local.example')); // pending, and this device never synced: the write would read sync first
+      s.dispose();
+      const get = vi.spyOn(sync(), 'get');
+      const set = vi.spyOn(sync(), 'set');
+      const digest = vi.spyOn(crypto.subtle, 'digest');
+      await s.flush();
+      await settle();
+      expect(get).not.toHaveBeenCalled();
+      expect(set).not.toHaveBeenCalled();
+      expect(digest).not.toHaveBeenCalled();
+    });
+
+    it('a remote change after dispose is never read', async () => {
+      const s = mk();
+      await s.get();
+      s.dispose();
+      const get = vi.spyOn(sync(), 'get');
+      await putSync(JSON.stringify(withSite('remote.example')));
+      await settle();
+      expect(get).not.toHaveBeenCalled();
+    });
+
+    it('set() after dispose notifies no listener', async () => {
+      const s = mk();
+      await s.get();
+      const seen = vi.fn();
+      s.onChange(seen);
+      s.dispose();
+      await s.set(withSite('later.example'));
+      expect(seen).not.toHaveBeenCalled();
+    });
+
+    it('a load in flight at dispose arms no sync write for a pending edit', async () => {
+      await local().set({ 'cfg:lastGood': defaultConfig(), 'cfg:pending': true });
+      const s = mk();
+      const loading = s.get(); // a caller that has not awaited it when the test ends
+      s.dispose();
+      await loading;
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('set() after dispose updates only the in-memory copy', async () => {
+      const s = mk();
+      await s.get();
+      const before = await local().get(null);
+      s.dispose();
+      await s.set(withSite('later.example'));
+      await settle();
+      expect(await s.get()).toEqual(withSite('later.example'));
+      expect(await local().get(null)).toEqual(before);
+      expect(vi.getTimerCount()).toBe(0);
     });
   });
 });

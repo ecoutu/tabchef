@@ -118,17 +118,36 @@ export class ConfigStore {
   private freshDevice = false;
   private localChain: Promise<void> = Promise.resolve();
   private writeChain: Promise<void> = Promise.resolve();
+  private disposed = false;
 
   constructor(opts: ConfigStoreOptions = {}) {
     this.debounceMs = opts.debounceMs ?? 2000;
     this.retryMs = opts.retryMs ?? 5000;
     this.backoffMs = opts.backoffMs ?? 30_000;
-    browser.storage.onChanged.addListener((changes, area) => {
-      if (area !== 'sync' || !changes[META_KEY]) return;
-      const meta = changes[META_KEY].newValue as Meta | undefined;
-      if (!meta || meta.sha === this.syncedSha) return; // removed, or our own echo
-      this.onRemote().catch((e: unknown) => console.warn('[tabchef] remote config read failed', e));
-    });
+    browser.storage.onChanged.addListener(this.onStorageChanged);
+  }
+
+  private readonly onStorageChanged = (changes: Record<string, { newValue?: unknown }>, area: string): void => {
+    if (area !== 'sync' || !changes[META_KEY]) return;
+    const meta = changes[META_KEY].newValue as Meta | undefined;
+    if (!meta || meta.sha === this.syncedSha) return; // removed, or our own echo
+    this.onRemote().catch((e: unknown) => console.warn('[tabchef] remote config read failed', e));
+  };
+
+  /**
+   * Makes the store inert: cancels the pending sync write and read retry, stops listening for remote changes and drops
+   * its onChange listeners. From then on the store never writes storage, starts a timer or notifies a listener again,
+   * neither from work already in flight nor from later set()/update() calls, which change only its in-memory copy. A
+   * pending write is dropped, not flushed. Only tests call this, so a store cannot touch a later test's storage; the
+   * background keeps one store for the worker's life.
+   */
+  dispose(): void {
+    this.disposed = true;
+    clearTimeout(this.timer);
+    clearTimeout(this.retryTimer);
+    this.timer = this.retryTimer = undefined;
+    browser.storage.onChanged.removeListener(this.onStorageChanged);
+    this.listeners.clear();
   }
 
   get(): Promise<Config> {
@@ -237,7 +256,7 @@ export class ConfigStore {
   }
 
   private enqueueLocal(fn: () => Promise<void>): Promise<void> {
-    const p = this.localChain.then(fn);
+    const p = this.localChain.then(() => (this.disposed ? undefined : fn()));
     this.localChain = p.catch(() => {});
     return p;
   }
@@ -363,7 +382,7 @@ export class ConfigStore {
 
   private scheduleRetry(attempt: number): void {
     clearTimeout(this.retryTimer);
-    if (attempt > MAX_RETRIES) return;
+    if (attempt > MAX_RETRIES || this.disposed) return;
     this.retryTimer = setTimeout(() => {
       this.retryRead(attempt).catch((e: unknown) => console.warn('[tabchef] config re-read failed', e));
     }, this.retryMs);
@@ -392,7 +411,7 @@ export class ConfigStore {
 
   /** `original` (default: config) is what the backup holds: the v1 when another, older device wrote one to sync. */
   private async applyRemote(config: Config, sha: string, warnings: string[], original: ConfigV1 | Config = config): Promise<void> {
-    if (this.dirty !== undefined || this.localOnly || sha === this.syncedSha) return;
+    if (this.disposed || this.dirty !== undefined || this.localOnly || sha === this.syncedSha) return;
     this.syncedSha = sha;
     this.freshDevice = false;
     this.warning = undefined;
@@ -437,6 +456,7 @@ export class ConfigStore {
 
   private scheduleWrite(delay = this.debounceMs): void {
     clearTimeout(this.timer);
+    if (this.disposed) return;
     this.timer = setTimeout(() => {
       this.flush().catch((e: unknown) => console.warn('[tabchef] config sync failed', e));
     }, delay);
@@ -444,7 +464,7 @@ export class ConfigStore {
 
   private async writeSync(): Promise<void> {
     const json = this.dirty;
-    if (json === undefined) return;
+    if (json === undefined || this.disposed) return;
     this.inflight = true;
     try {
       if (this.freshDevice && this.syncedSha === undefined) {
@@ -456,17 +476,21 @@ export class ConfigStore {
       }
       const chunks = splitChunks(json);
       const sha = await sha256(json);
+      // A disposed store never writes sync: check after each await, since dispose() may run during any of them.
+      if (this.disposed) return;
       const meta: Meta = { v: 1, n: chunks.length, sha, at: Date.now() };
       this.syncedSha = sha; // set before writing so our own onChanged echo is recognised
       this.freshDevice = false;
       const items: Record<string, string> = {};
       chunks.forEach((c, i) => { items[chunkKey(i)] = c; });
       await browser.storage.sync.set(items);
+      if (this.disposed) return;
       await browser.storage.sync.set({ [META_KEY]: meta });
       const stale = Object.keys(await browser.storage.sync.get(null)).filter((k) => {
         const m = /^cfg:(\d+)$/.exec(k);
         return m !== null && Number(m[1]) >= chunks.length;
       });
+      if (this.disposed) return;
       if (stale.length) await browser.storage.sync.remove(stale);
       this.failures = 0;
       if (this.dirty === json) {
