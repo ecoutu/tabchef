@@ -961,7 +961,7 @@ export class ProjectService {
       const data = (p: Project): SavedProjectData => {
         const def = defOf.get(p.recipeId);
         return {
-          id: p.id, key: p.key, title: def ? projectGroupTitle(def, p) : (p.name ?? p.key), ...(p.summary !== undefined && { summary: p.summary }),
+          id: p.id, key: p.key, title: def ? projectGroupTitle(def, p) : (p.name ?? p.key), ...(p.summary !== undefined && { summary: p.summary }), ...prTitleOf(p),
           ...(p.status && { status: p.status }), savedCount: p.saved?.tabs.length ?? 0, ...(isArchived(p) && { archivedAt: p.archivedAt }),
           held: held.get(p.id)?.length ?? 0, updatedAt: p.updatedAt,
         };
@@ -1102,7 +1102,7 @@ export class ProjectService {
       ? await this.homeOf(def)
       : { recipeName: (await this.deps.recipeName?.(p.recipeId)) ?? p.recipeId, recipeOff: true as const };
     return {
-      id: p.id, key: p.key, title: def ? projectGroupTitle(def, p) : (p.name ?? p.key), ...(p.summary !== undefined && { summary: p.summary }),
+      id: p.id, key: p.key, title: def ? projectGroupTitle(def, p) : (p.name ?? p.key), ...(p.summary !== undefined && { summary: p.summary }), ...prTitleOf(p),
       ...(p.status && { status: p.status }), done: false, tabs: [], linked: p.linked, groups: [], ...recipe, ...kept(p),
       ...(isArchived(p) && { archivedAt: p.archivedAt, held }),
     };
@@ -1161,7 +1161,7 @@ export class ProjectService {
         if (JSON.stringify(p) !== before) changed.push(p);
         const openUrls = new Set(tabs.map((t) => this.norm(program, urlOf(t))));
         return [{
-          id: p.id, key: p.key, title: projectGroupTitle(defOf.get(p.recipeId)!, p), ...(p.summary !== undefined && { summary: p.summary }),
+          id: p.id, key: p.key, title: projectGroupTitle(defOf.get(p.recipeId)!, p), ...(p.summary !== undefined && { summary: p.summary }), ...prTitleOf(p),
           ...(status && { status }), done,
           tabs: tabs.map((t) => {
             const pr = factsOf(t).find((e) => PILLS.has(e.data?.state as PrState));
@@ -1212,6 +1212,13 @@ export class ProjectService {
     }
     return out;
   }
+}
+
+/** ProjectCardData.prTitle: the first linked PR's own title, for a project with no ticket summary and no name. */
+function prTitleOf(p: Project): Pick<ProjectCardData, 'prTitle'> {
+  if (p.summary !== undefined || p.name !== undefined) return {};
+  const t = p.linked.find((l) => l.title.trim() !== '' && l.title !== l.url)?.title;
+  return t === undefined ? {} : { prTitle: t };
 }
 
 /** A project's Keep and saved tab list, as the Project home shows them (M4 T7). */

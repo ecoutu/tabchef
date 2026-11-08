@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildProjectCards, staleText } from '../../src/ui/projects-model';
+import { buildProjectCards, projectSubtitle, staleText } from '../../src/ui/projects-model';
 import type { ProjectCardData } from '../../src/core/projects/types';
 
 const TICKET = 'https://acme.atlassian.net/browse/ABC-1';
@@ -63,5 +63,35 @@ describe('buildProjectCards (M3 T17)', () => {
       id, tabs: ts.map((t, i) => ({ tabId: i + 1, windowId: 1, title: 't', url: `${TICKET}?${i}`, ...(t !== undefined && { lastAccessed: t }) })),
     });
     expect(buildProjectCards([at('a', 5, 1), at('none', undefined), at('b', 2, 30), at('c', 20)]).map((c) => c.id)).toEqual(['b', 'c', 'a', 'none']);
+  });
+});
+
+describe('projectSubtitle: the ticket title shown beside the project key in lists', () => {
+  it('the Jira summary, beside a title that is the key', () => {
+    expect(projectSubtitle({ key: 'ABC-123', title: 'ABC-123', summary: 'Fix login' })).toBe('Fix login');
+  });
+  it('none when the title already shows it (titleFormat {key} · {summary}), or without a summary or PR title', () => {
+    expect(projectSubtitle({ key: 'ABC-123', title: 'ABC-123 · Fix login', summary: 'Fix login' })).toBeUndefined();
+    expect(projectSubtitle({ key: 'ABC-123', title: 'ABC-123' })).toBeUndefined();
+    expect(projectSubtitle({ key: 'ABC-123', title: 'ABC-123', summary: '  ' })).toBeUndefined();
+  });
+  it('a manual project (titled by its name, no summary) has none', () => {
+    expect(projectSubtitle({ key: 'taxes', title: 'Taxes' })).toBeUndefined();
+  });
+  it('falls back to the first PR\'s title, without the key it starts with', () => {
+    expect(projectSubtitle({ key: 'ABC-123', title: 'ABC-123', prTitle: 'Fix the login form' })).toBe('Fix the login form');
+    for (const t of ['ABC-123: Fix login', '[ABC-123] Fix login', 'abc-123 - Fix login', 'ABC-123 Fix login', 'ABC-123 | Fix login']) {
+      expect(projectSubtitle({ key: 'ABC-123', title: 'ABC-123', prTitle: t }), t).toBe('Fix login');
+    }
+    expect(projectSubtitle({ key: 'ABC-123', title: 'ABC-123', prTitle: 'ABC-123' })).toBeUndefined();
+    expect(projectSubtitle({ key: 'ABC-1', title: 'ABC-1', prTitle: 'ABC-12: other' })).toBe('ABC-12: other');
+  });
+  it('the summary wins over the PR title', () => {
+    expect(projectSubtitle({ key: 'ABC-123', title: 'ABC-123', summary: 'Fix login', prTitle: 'ABC-123: tests' })).toBe('Fix login');
+  });
+  it('buildProjectCards sets it on the card', () => {
+    const [c] = buildProjectCards([card({ title: 'ABC-1', summary: 'Login fails' })]);
+    expect(c!.subtitle).toBe('Login fails');
+    expect(buildProjectCards([card()])[0]).not.toHaveProperty('subtitle');
   });
 });

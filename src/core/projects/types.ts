@@ -111,6 +111,11 @@ export interface Project {
 /** One project as listed to the UI (`projects.list`, T15); T17's buildProjectCards shapes it into a card. */
 export interface ProjectCardData {
   id: string; key: string; title: string; summary?: string;
+  /**
+   * The title of its first linked PR with one, when it has no ticket summary and no name (not a manual project): lists
+   * show it beside the key instead (projectSubtitle).
+   */
+  prTitle?: string;
   /** Best first: the Jira API (or its page read), the ticket tab's own source entry, the last stored status. */
   status?: NonNullable<Project['status']>;
   /** The status is Done by fresh data (via api or page, not stale, M3-R90); a stale or stored Done is only shown. */
@@ -144,6 +149,11 @@ export interface ProjectHomeData extends ProjectCardData {
 /** A project with nothing open, as the Projects page's Saved and Archived sections list it (M4 T9, `projects.savedLists`). */
 export interface SavedProjectData {
   id: string; key: string; title: string; summary?: string;
+  /**
+   * The title of its first linked PR with one, when it has no ticket summary and no name (not a manual project): lists
+   * show it beside the key instead (projectSubtitle).
+   */
+  prTitle?: string;
   status?: NonNullable<Project['status']>;
   /** Tabs in its saved tab list (what Reopen opens). */
   savedCount: number;

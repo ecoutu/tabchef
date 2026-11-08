@@ -12,6 +12,8 @@ export type HomeTab = ProjectCard['tabs'][number] & {
 export interface ProjectHomeView {
   id: string;
   title: string;
+  /** The ticket title shown muted beside it (projectSubtitle). */
+  subtitle?: string;
   status?: NonNullable<ProjectCard['status']>;
   /** The ticket is Done by fresh data (M3-R90). */
   done: boolean;
@@ -102,7 +104,7 @@ export function buildProjectHome(d: ProjectHomeData): ProjectHomeView {
   const prCounts = PILL_ORDER.map((state) => ({ state, count: states.filter((s) => s === state).length })).filter((c) => c.count > 0);
   const firstTabId = groups.flatMap((g) => g.tabs)[0]?.tabId;
   return {
-    id: card.id, title: card.title, ...(card.status && { status: card.status }), done: d.done,
+    id: card.id, title: card.title, ...(card.subtitle && { subtitle: card.subtitle }), ...(card.status && { status: card.status }), done: d.done,
     prCounts, prSummary: prCounts.map((c) => `${c.count} ${c.state}`).join(' · '),
     ...(firstTabId !== undefined && { firstTabId }),
     groups, linked: card.linked, settings: d.settings ? settings(d.settings) : [], recipeName: d.recipeName,

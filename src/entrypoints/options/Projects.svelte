@@ -13,8 +13,9 @@
   import { onDestroy, onMount, tick } from 'svelte';
   import { send } from '../../ui/send';
   import { createProjectActions, startLiveRefresh, type Toast } from '../../ui/project-actions';
-  import { buildProjectCards, type ProjectCard } from '../../ui/projects-model';
+  import { buildProjectCards, projectSubtitle, type ProjectCard } from '../../ui/projects-model';
   import { projectHomeHash } from '../../ui/routes';
+  import ProjectTitle from '../../ui/ProjectTitle.svelte';
   import { requestPermissions } from '../../ui/permissions';
   import Field from './Field.svelte';
   import type { SyncStatus } from '../../engine/project-sync';
@@ -233,7 +234,7 @@
       <ul>
         {#each cards as c (c.id)}
           <li>
-            <a href={projectHomeHash(c.id)}>{c.title}</a>
+            <a href={projectHomeHash(c.id)}><ProjectTitle title={c.title} subtitle={c.subtitle} /></a>
             {#if c.status}<span class="status">{c.status.label}</span>{/if}
             <span class="muted">{c.tabCount} {c.tabCount === 1 ? 'tab' : 'tabs'}</span>
             {#if c.showClose}
@@ -249,8 +250,9 @@
       <h3 id="projects-saved">Saved</h3>
       <ul>
         {#each saved as p (p.id)}
+          {@const s = projectSubtitle(p)}
           <li>
-            <a href={projectHomeHash(p.id)}>{p.title}</a>
+            <a href={projectHomeHash(p.id)}><ProjectTitle title={p.title} subtitle={s} /></a>
             <span class="muted">{p.savedCount} saved {p.savedCount === 1 ? 'tab' : 'tabs'}</span>
             {#if p.savedCount > 0}
               <button type="button" aria-label={`Reopen ${p.title}`} onclick={() => reopen(p.id)}>Reopen</button>
@@ -266,8 +268,9 @@
       <h3 id="projects-archived">Archived</h3>
       <ul>
         {#each archived as p (p.id)}
+          {@const s = projectSubtitle(p)}
           <li>
-            <a href={projectHomeHash(p.id)}>{p.title}</a>
+            <a href={projectHomeHash(p.id)}><ProjectTitle title={p.title} subtitle={s} /></a>
             {#if p.held > 0}<span class="note">Archived: reopen?</span>{/if}
             <button type="button" aria-label={`Reopen ${p.title}`} onclick={() => reopen(p.id)}>Reopen</button>
             <button type="button" aria-label={`Unarchive ${p.title}`} onclick={() => unarchive(p.id)}>Unarchive</button>
@@ -304,7 +307,7 @@
   .new { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
   ul { list-style: none; margin: 0; padding: 0; }
   li { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); }
-  li a { flex: 1; min-width: 0; color: var(--accent); }
+  li a { flex: 1; min-width: 0; color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .status { font-size: 12px; border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px; color: var(--muted); }
   .sync { margin: 8px 0; }
   .sync p { margin: 2px 0; }

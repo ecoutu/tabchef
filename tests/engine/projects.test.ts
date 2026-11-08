@@ -619,6 +619,38 @@ describe('ProjectService.cards', () => {
   });
 });
 
+describe('ProjectService: the first linked PR\'s title (prTitle), for lists to show beside the key', () => {
+  beforeEach(() => { fakeBrowser.reset(); });
+  const web = { url: PR2, title: 'ABC-1 web', state: 'merged' as const };
+
+  it('cards: without a ticket summary, the first linked PR\'s title; with one, none', async () => {
+    const h = harness();
+    await h.store.put(stored());
+    h.f.addTab(tab(1, TICKET, '[ABC-1] Login fails - Jira'));
+    await h.r.flush();
+    h.sources.linkedFor.mockResolvedValue(new Map([['ABC-1', [{ owner: 'acme', repo: 'web', number: 9, state: 'merged', title: 'ABC-1 web', url: PR2 }]]]));
+    expect((await h.svc.cards())[0]).toMatchObject({ prTitle: 'ABC-1 web' });
+    h.sources.issues.mockResolvedValue(new Map([['ABC-1', {
+      data: { key: 'ABC-1', summary: 'Login fails', url: TICKET }, via: 'api', fetchedAt: NOW, final: false, stale: false,
+    }]]));
+    const [card] = await h.svc.cards();
+    expect(card).toMatchObject({ summary: 'Login fails' });
+    expect(card).not.toHaveProperty('prTitle');
+  });
+
+  it('savedLists and a resting Project home carry it; a named (manual) project and a PR without a title do not', async () => {
+    const h = harness();
+    await h.store.put(stored({ keep: true, linked: [web] }));
+    await h.store.put(stored({ id: `${RID}:ZZZ-9`, key: 'ZZZ-9', keep: true, name: 'Taxes', linked: [web] }));
+    await h.store.put(stored({ id: `${RID}:YYY-2`, key: 'YYY-2', keep: true, linked: [{ url: PR, title: PR, state: 'open' }] }));
+    const { saved } = await h.svc.savedLists();
+    expect(saved.find((x) => x.id === PID)).toMatchObject({ prTitle: 'ABC-1 web' });
+    expect(saved.find((x) => x.key === 'ZZZ-9')).not.toHaveProperty('prTitle');
+    expect(saved.find((x) => x.key === 'YYY-2')).not.toHaveProperty('prTitle');
+    expect(await h.svc.home(PID)).toMatchObject({ prTitle: 'ABC-1 web' });
+  });
+});
+
 describe('ProjectService fixes (round 1)', () => {
   beforeEach(() => { fakeBrowser.reset(); });
 
