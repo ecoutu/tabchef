@@ -130,6 +130,8 @@ describe('planSync', () => {
     expect(r.put).toHaveLength(1);
     expect(r.put[0]).not.toHaveProperty('keep');
     expect(r.put[0]?.saved).toEqual(project().saved);
+    expect(r.notes).toEqual(['Project “Taxes” was removed from the Tabchef bookmark folder. Its tabs are open here, so it stays until you close them, but it is no longer kept.']);
+    expect(plan({ stored: [project()], base: [synced()] }).notes).toEqual([]); // removed here: nothing to tell
   });
 
   it('rootMissing: no folder at all removes nothing here; kept projects are written again', () => {

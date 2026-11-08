@@ -223,7 +223,7 @@ export class ProjectSync {
         : switched ? [`Chrome now uses a different ${ROOT_TITLE} bookmark folder (you signed in or out of Chrome, or switched accounts). Nothing was removed: the projects here and that folder's were combined, so projects or saved tabs removed since this device last synced with that folder may have come back.`]
           : [];
       const result: SyncResult = { merged: plan.merged, conflicts: plan.conflicts, ignored: [...folders.ignored, ...plan.ignored, ...out.failed.values(), ...out.errors] };
-      await this.report(result, [...missing, ...plan.conflicts]);
+      await this.report(result, [...missing, ...plan.conflicts, ...plan.notes]);
       return result;
     } catch (e) {
       const error = e instanceof Error ? e.message : String(e);

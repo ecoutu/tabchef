@@ -109,10 +109,12 @@ export interface SyncPlan {
   merged: number;
   conflicts: string[];
   ignored: string[];
+  /** One-time reports for the sync notes (M4-R46) that are no conflict: a project that is no longer kept (M4-R23). */
+  notes: string[];
 }
 
 export function planSync({ stored, open, unsynced, remote, base, rootMissing, unreadable, ownTitle }: SyncInput): SyncPlan {
-  const plan: SyncPlan = { put: [], remove: [], write: new Map(), base: {}, fresh: new Set(), merged: 0, conflicts: [], ignored: [] };
+  const plan: SyncPlan = { put: [], remove: [], write: new Map(), base: {}, fresh: new Set(), merged: 0, conflicts: [], ignored: [], notes: [] };
   const localOf = new Map(stored.map((p) => [p.id, p]));
   const ids = new Set([...stored.filter((p) => p.keep).map((p) => p.id), ...remote.keys(), ...Object.keys(base)]);
   for (const id of ids) {
@@ -167,6 +169,8 @@ export function planSync({ stored, open, unsynced, remote, base, rootMissing, un
           const q = structuredClone(local);
           delete q.keep;
           plan.put.push(q);
+          // Not silent: once its tabs close it is listed nowhere and pruned.
+          plan.notes.push(`Project “${local.name ?? local.key}” was removed from the ${ROOT_TITLE} bookmark folder. Its tabs are open here, so it stays until you close them, but it is no longer kept.`);
         } else plan.remove.push(id);
       }
     } else {
