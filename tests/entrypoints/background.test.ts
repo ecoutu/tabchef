@@ -590,8 +590,13 @@ describe('background wiring', () => {
     expect(I('reconciler').liveState).toHaveBeenCalled();
     d.schedule('project');
     expect(I('reconciler').schedule).toHaveBeenCalledWith('project');
+    // Each pass (config and recipe changes re-plan) refreshes the submenu from ProjectService.menuItems, not from the
+    // pass's open projects: a closed kept project or one created without tabs is listed too.
+    const items = [{ id: 'r:ABC-1', title: 'ABC-1' }, { id: 'manual-project:taxes', title: 'Taxes' }];
+    I('projects').menuItems!.mockResolvedValue(items);
     d.onProjectsChanged([{ id: 'r:ABC-1', title: 'ABC-1' }]);
-    expect(h.projectMenu.sync).toHaveBeenCalledWith([{ id: 'r:ABC-1', title: 'ABC-1' }]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.projectMenu.sync).toHaveBeenCalledWith(items);
     const r = I('reconciler').args[2] as { projects: { targets: (s: unknown) => Promise<unknown>; previewTargets: (s: unknown, p: unknown) => Promise<unknown> } };
     const snap = { tabs: [], groups: [], windows: [] };
     await r.projects.targets(snap);
@@ -667,6 +672,17 @@ describe('background wiring', () => {
     expect(I('projectSync').schedule).not.toHaveBeenCalled();
     await fire('storage.onChanged', { projects: {} }, 'local');
     expect(I('projectSync').schedule).toHaveBeenCalledTimes(1);
+  });
+
+  it('a stored-project change refreshes the "Add to project" submenu from ProjectService.menuItems', async () => {
+    I('projects').menuItems!.mockResolvedValue([{ id: 'manual-project:taxes', title: 'Taxes' }]);
+    h.projectMenu.sync.mockClear();
+    await fire('storage.onChanged', { other: {} }, 'local');
+    await fire('storage.onChanged', { projects: {} }, 'session');
+    expect(h.projectMenu.sync).not.toHaveBeenCalled();
+    await fire('storage.onChanged', { projects: {} }, 'local');
+    expect(h.projectMenu.sync).toHaveBeenCalledTimes(1);
+    expect(h.projectMenu.sync).toHaveBeenCalledWith([{ id: 'manual-project:taxes', title: 'Taxes' }]);
   });
 
   it('M4 T14: project sync gets the ProjectService, the bookmarks port and storage; the handler gets it', async () => {

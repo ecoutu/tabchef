@@ -306,15 +306,18 @@ export default defineBackground(() => {
     },
   });
   // Projects (M3 T15): stored in storage.local `projects` (not synced); sticky membership in the reconciler's state.
-  // Each pass reports the open projects, which the "Add to project" submenu follows.
+  // The "Add to project" submenu lists every project that takes tabs (ProjectService.menuItems), refreshed after each
+  // pass (config and recipe changes re-plan) and on each stored-project change (storage.onChanged, below): a project
+  // created without tabs or closed and saved changes the store without a pass. ProjectMenu.sync skips an unchanged list.
   const projectMenu = createProjectMenu(menuApi);
+  const refreshProjectMenu = () => { projects.menuItems().then((ps) => projectMenu.sync(ps)).catch(warn('project menu')); };
   /** Open projects as of the last pass: the Projects tab's count. */
   let openProjects = 0;
   const projects: ProjectService = new ProjectService({
     store: new ProjectStore(localArea), port, getProgram, sources, facts: pageFacts, log: whyLog, recentlyClosed, safety, session,
     state: () => reconciler.liveState(),
     schedule: (r) => reconciler.schedule(r),
-    onProjectsChanged: (ps) => { openProjects = ps.length; projectMenu.sync(ps).catch(warn('project menu')); },
+    onProjectsChanged: (ps) => { openProjects = ps.length; refreshProjectMenu(); },
     toast: (ids, text, focused) => { safety.toastGroup(ids, text, focused).catch(warn('undo toast')); },
     // The Project home names the recipe a project comes from: a built-in's name, else a user recipe body's.
     recipeName: async (id) => {
@@ -494,10 +497,10 @@ export default defineBackground(() => {
     ev.addListener(scheduleBadge);
   }
   // Finished suggestions are counted in the badge: recount when CloseExecutor stores a change to them. A change to the
-  // stored projects schedules a project sync (a no-op while it is off).
+  // stored projects schedules a project sync (a no-op while it is off) and refreshes the "Add to project" submenu.
   browser.storage.onChanged.addListener((changes, area) => {
     if (area === 'session' && CLOSE_SUGGESTIONS_KEY in changes) scheduleBadge();
-    if (area === 'local' && PROJECTS_KEY in changes) projectSync.schedule();
+    if (area === 'local' && PROJECTS_KEY in changes) { projectSync.schedule(); refreshProjectMenu(); }
   });
   scheduleBadge();
   const handleRequest = createHandler({
@@ -621,7 +624,7 @@ export default defineBackground(() => {
   syncPermissions();
   browser.runtime.onInstalled.addListener(() => {
     reconciler.schedule('installed');
-    projectMenu.install().then(refreshActiveMenu, warn('context menu install')); // installMenus, then the open projects
+    projectMenu.install().then(refreshActiveMenu, warn('context menu install')); // installMenus, then the listed projects
     startSourcesAlarm();
   });
   browser.contextMenus.onClicked.addListener((info, tab) => {
