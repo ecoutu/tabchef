@@ -44,7 +44,7 @@
 </script>
 
 <LinesField label="URL patterns (one per line: glob, /regex/, or :param)" value={lines} rows={2}
-  helpLabel="URL patterns" help="A tab whose URL matches any line belongs to this rule. * matches anything (github.com/*), /…/ is a regular expression, and :name captures one path segment for the group title, e.g. github.com/:owner/:repo*."
+  helpLabel="URL patterns" help="A tab whose URL matches any line belongs to this rule. * matches anything (github.com/*), /…/ is a regular expression, and :name captures one path segment for the group title, e.g. github.com/acme/:repo*."
   check={patternError} onChange={(l) => onPatch({ url: toUrl(l) })} extraErrors={sErr(matchPath('url'))} />
 {#each hints as h (h)}<p class="hint" role="note">{h}</p>{/each}
 <span class="count">{count}</span>
@@ -60,7 +60,7 @@
 </Field>
 {#if form.group}
   <div class="grid">
-    <Field label="Group name" help={"The group's name. {name} inserts a value captured by the URL pattern: {repo} with github.com/:owner/:repo* gives one group per repository."}>
+    <Field label="Group name" help={"The group's name. {name} inserts a value captured by the URL pattern: {repo} with github.com/acme/:repo* gives one group per acme repository."}>
       <input value={form.group.title} oninput={(e) => group({ title: e.currentTarget.value })} />
     </Field>
     {#each sErr(`${groupPath}/title`) as m (m)}<p class="err" role="alert">title {m}</p>{/each}
