@@ -116,6 +116,17 @@ describe('Projects page: New project (M4 T6, M4-R8)', () => {
     expect((await screen.findByRole('alert')).textContent).toContain('turn on the recipe manual-project first');
     expect(window.location.hash).toBe('');
   });
+
+  it('a name clash from the New project form is shown in full, and the page stays', async () => {
+    const clash = 'A project named “Media” already exists (Saved). Open it, or pick another name.';
+    withCreate({ ok: false, error: clash });
+    render(Projects, {});
+    await fireEvent.click(await screen.findByRole('button', { name: 'New project' }));
+    await fireEvent.input(screen.getByLabelText('Project name'), { target: { value: 'Media' } });
+    await fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+    expect((await screen.findByRole('alert')).textContent).toBe(clash);
+    expect(window.location.hash).toBe('');
+  });
 });
 
 describe('Projects page: Save a group (M4 T8)', () => {

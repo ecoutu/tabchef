@@ -94,44 +94,73 @@ describe('ProjectService.create (Manual projects)', () => {
     expect((await h.svc.cards()).map((c) => [c.id, c.title, c.tabs.map((t) => t.tabId)])).toEqual([[id, 'Tax 2026', [5]]]);
   });
 
-  it('M4-R12: the same name again becomes "Name (2)" (key -2); a different name with a taken slug gets the next key', async () => {
-    const h = harness();
-    expect(await h.svc.create(MANUAL, 'Tax 2026')).toBe(`${MANUAL}:tax-2026`);
-    expect(await h.svc.create(MANUAL, 'Tax 2026')).toBe(`${MANUAL}:tax-2026-2`);
-    expect(await h.svc.create(MANUAL, ' Tax 2026 ')).toBe(`${MANUAL}:tax-2026-3`);
-    expect(await h.svc.create(MANUAL, 'tax  2026!')).toBe(`${MANUAL}:tax-2026-4`);
-    expect((await h.store.list()).map((p) => [p.key, p.name])).toEqual([
-      ['tax-2026', 'Tax 2026'], ['tax-2026-2', 'Tax 2026 (2)'], ['tax-2026-3', 'Tax 2026 (3)'], ['tax-2026-4', 'tax  2026!'],
-    ]);
-  });
-
-  it('M4-R12: two Manual projects named alike in one window get two separate groups, "Tax 2026" and "Tax 2026 (2)"', async () => {
+  it('a name the Projects page already lists is refused, naming where it is (Open, Saved, Archived); no "Name (2)"', async () => {
     const h = harness();
     h.f.addTab(tab(1, 'https://a.example/'));
-    h.f.addTab(tab(2, 'https://b.example/'));
-    await h.svc.create(MANUAL, 'Tax 2026', [1]);
-    await h.svc.create(MANUAL, 'Tax 2026', [2]);
+    await h.svc.create(MANUAL, 'Media', [1]);
+    await h.svc.create(MANUAL, 'Taxes');
+    const old = await h.svc.create(MANUAL, 'Old');
+    await h.svc.archive(old);
     await h.r.flush();
-    expect(h.f.state.groups.map((g) => [g.windowId, g.title]).sort()).toEqual([[1, 'Tax 2026'], [1, 'Tax 2026 (2)']]);
-    expect(h.groupOf(1)?.title).toBe('Tax 2026');
-    expect(h.groupOf(2)?.title).toBe('Tax 2026 (2)');
-    expect(h.groupOf(1)?.id).not.toBe(h.groupOf(2)?.id);
-    expect((await h.svc.cards()).map((c) => c.title).sort()).toEqual(['Tax 2026', 'Tax 2026 (2)']);
+    const before = await h.store.list();
+    await expect(h.svc.create(MANUAL, 'Media')).rejects.toThrow('A project named “Media” already exists (Open). Open it, or pick another name.');
+    await expect(h.svc.create(MANUAL, ' Taxes ')).rejects.toThrow('A project named “Taxes” already exists (Saved). Open it, or pick another name.');
+    await expect(h.svc.create(MANUAL, 'Old')).rejects.toThrow('A project named “Old” already exists (Archived). Open it, or pick another name.');
+    expect(await h.store.list()).toEqual(before);
   });
 
-  it("M4-R12: a name equal to an open project's title (a Jira key) or a closed project's name gets (2)", async () => {
+  it('a different name with a taken slug gets the next key', async () => {
+    const h = harness();
+    expect(await h.svc.create(MANUAL, 'Tax 2026')).toBe(`${MANUAL}:tax-2026`);
+    expect(await h.svc.create(MANUAL, 'tax  2026!')).toBe(`${MANUAL}:tax-2026-2`);
+    expect((await h.store.list()).map((p) => [p.key, p.name])).toEqual([['tax-2026', 'Tax 2026'], ['tax-2026-2', 'tax  2026!']]);
+  });
+
+  it("a name equal to an open project's title (a Jira key) is refused (Open)", async () => {
     const h = harness(program({ repo: jira }));
     h.f.addTab(tab(1, 'https://acme.atlassian.net/browse/ABC-1'));
     h.f.addTab(tab(2, 'https://b.example/'));
     await h.r.flush();
     expect(h.groupOf(1)?.title).toBe('ABC-1');
-    expect(await h.svc.create(MANUAL, 'ABC-1', [2])).toBe(`${MANUAL}:abc-1-2`);
-    await h.store.put({ id: `${MANUAL}:old`, recipeId: MANUAL, key: 'old', name: 'Old', createdAt: 1, updatedAt: 1, manual: [], excluded: [], linked: [], closedAt: 2, closedIds: ['rc'] });
-    expect(await h.svc.create(MANUAL, 'Old')).toBe(`${MANUAL}:old-2`);
-    expect((await h.store.list()).filter((p) => p.recipeId === MANUAL).map((p) => p.name)).toEqual(['ABC-1 (2)', 'Old', 'Old (2)']);
+    await expect(h.svc.create(MANUAL, 'ABC-1', [2])).rejects.toThrow('A project named “ABC-1” already exists (Open).');
+    expect((await h.store.list()).filter((p) => p.recipeId === MANUAL)).toEqual([]);
+  });
+
+  it("a name equal to an open rule group's title is refused: the project's group would merge with it", async () => {
+    const rules = [{ id: 'gh', name: 'GitHub', enabled: true, match: { url: 'gh.example/*' }, actions: [{ group: { title: 'GitHub', color: 'green' } }] }];
+    const h = harness(program({ over: { rules: (rules as unknown) as Config['rules'] } }));
+    h.f.addTab(tab(7, 'https://gh.example/a'));
+    h.f.addTab(tab(8, 'https://gh.example/b'));
     await h.r.flush();
-    expect(h.groupOf(1)?.title).toBe('ABC-1');
-    expect(h.groupOf(2)?.title).toBe('ABC-1 (2)');
+    expect(h.groupOf(7)?.title).toBe('GitHub');
+    await expect(h.svc.create(MANUAL, 'GitHub')).rejects.toThrow('A group named “GitHub” is already open. Pick another name.');
+    expect(await h.store.list()).toEqual([]);
+    expect(await h.svc.create(MANUAL, 'Code')).toBe(`${MANUAL}:code`); // other names are free
+  });
+
+  it('a hidden project of the same name (not kept, nothing open, not archived) is replaced, key and all', async () => {
+    const h = harness();
+    h.f.addTab(tab(5, 'https://youtube.example/'));
+    const id = await h.svc.create(MANUAL, 'Media', [5]);
+    await h.r.flush();
+    await h.svc.setKeep(id, false);
+    await h.f.closeTab(5);
+    await h.r.flush();
+    expect((await h.svc.savedLists()).saved).toEqual([]);
+    expect((await h.store.list()).map((p) => p.name)).toEqual(['Media']); // stored, listed nowhere
+    h.f.addTab(tab(6, 'https://spotify.example/'));
+    expect(await h.svc.create(MANUAL, 'Media', [6])).toBe(`${MANUAL}:media`);
+    expect((await h.store.list()).map((p) => [p.name, p.keep, p.manual.map((m) => m.url)])).toEqual([['Media', true, ['https://spotify.example/']]]);
+    await h.r.flush();
+    expect((await h.svc.cards()).map((c) => c.title)).toEqual(['Media']);
+  });
+
+  it('a hidden tombstone of the same name (Close group, not kept) is replaced too; its undo then revives nothing', async () => {
+    const h = harness();
+    await h.store.put({ id: `${MANUAL}:old`, recipeId: MANUAL, key: 'old', name: 'Old', createdAt: 1, updatedAt: 1, manual: [{ url: 'https://old.example/', windowId: 1, tabId: 9 }], excluded: [], linked: [], closedAt: 2, closedIds: ['rc'] });
+    expect(await h.svc.create(MANUAL, 'Old')).toBe(`${MANUAL}:old`);
+    await h.svc.onUndo('rc');
+    expect((await h.store.list()).map((p) => [p.id, p.name, p.keep, p.manual, p.closedAt])).toEqual([[`${MANUAL}:old`, 'Old', true, [], undefined]]);
   });
 
   it('keys match the rule id pattern (R38): accents dropped, other characters folded to -, at most 64 characters', async () => {
@@ -140,10 +169,10 @@ describe('ProjectService.create (Manual projects)', () => {
     const R38 = /^[a-z0-9][a-z0-9_-]{0,63}$/;
     expect(await keyOf('  Café Déjà-vu / Q3 ')).toBe('cafe-deja-vu-q3');
     expect(await keyOf('税金')).toBe('project');
-    expect(await keyOf('税金')).toBe('2'); // its name is now '税金 (2)'
+    expect(await keyOf('税金!')).toBe('project-2');
     const long = await keyOf('a'.repeat(80));
     expect(long).toBe('a'.repeat(64));
-    const long2 = await keyOf('a'.repeat(80));
+    const long2 = await keyOf(`${'a'.repeat(80)}b`);
     expect(long2).toBe(`${'a'.repeat(62)}-2`);
     for (const p of await h.store.list()) expect(p.key).toMatch(R38);
   });

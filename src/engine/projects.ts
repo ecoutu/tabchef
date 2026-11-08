@@ -72,11 +72,6 @@ function nameSlug(name: string): string {
   const s = name.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+/, '');
   return s.slice(0, KEY_MAX).replace(/-+$/, '') || 'project';
 }
-/** `name`, else `name (2)`, `name (3)`, …, the first not in `taken` (M4-R12). */
-function freeName(name: string, taken: Set<string>): string {
-  if (!taken.has(name)) return name;
-  for (let n = 2; ; n++) if (!taken.has(`${name} (${n})`)) return `${name} (${n})`;
-}
 /** `base`, else `base-2`, `base-3`, …, the first not in `taken`, shortened to fit KEY_MAX. */
 function freeKey(base: string, taken: Set<string>): string {
   if (!taken.has(base)) return base;
@@ -167,6 +162,16 @@ const isTomb = (p: Project): boolean => p.closedAt !== undefined;
 const revive = (p: Project): void => { delete p.closedAt; delete p.closedIds; };
 /** Archived by the user (M4 T9): takes no tab, and a rule assigning its key does not bring it back. */
 const isArchived = (p: Project): boolean => p.archivedAt !== undefined;
+/**
+ * Where the Projects page lists a stored project (M4 T9), `open` being the projects with a tab this pass: an open card,
+ * Saved (kept, nothing open) or Archived. Undefined: listed nowhere (not kept, nothing open), so it waits only to be
+ * pruned (project-clock.ts) or revived by an undo.
+ */
+function listedAs(p: Project, open: Set<string>): 'Open' | 'Saved' | 'Archived' | undefined {
+  if (isArchived(p)) return 'Archived';
+  if (open.has(p.id)) return 'Open';
+  return p.keep ? 'Saved' : undefined;
+}
 type Run = ResolveResult & { held: Map<string, number[]> };
 /**
  * `r` without the archived projects `archived` (M4 T9): resolveProjects created a copy of one whose key a rule assigned
@@ -465,9 +470,11 @@ export class ProjectService {
 
   /**
    * A new named project of an on-request recipe (M4 T6: Manual projects, `manual-project`), kept (`keep`), with
-   * `tabIds` as its manual members (each leaves its previous project). The name is made unique (M4-R12): one equal to
-   * another stored project's name (closed ones too) or an open project's title becomes `Name (2)`, `Name (3)`, …, so
-   * its group title never merges it with another project's group. The key is the unique name's slug (`-2`, `-3`, …
+   * `tabIds` as its manual members (each leaves its previous project). A name its group would share is refused, so the
+   * group never merges with another: the title of a project the Projects page lists (open, saved or archived; the
+   * error names which) or of an open rule's group. This replaces M4-R12's `Name (2)`, which a project listed nowhere
+   * also triggered: a project of that name listed nowhere (not kept, nothing open, not archived) is removed instead,
+   * a tombstone too (its undo then reopens the tabs without the project). The key is the name's slug (`-2`, `-3`, …
    * when taken, by a closed project too). User-initiated, so it applies under global dry run too (R50), like addTab; the
    * dry-run reconciler then groups nothing. Returns the project id.
    */
@@ -488,20 +495,24 @@ export class ProjectService {
         if (!t) throw new Error('tab not found');
         return t;
       });
-      // The open projects' titles, as their groups show them (this pass's membership).
+      // Projects by title as their groups show them (this pass's membership), and where the Projects page lists them.
       const open = await this.resolve(snap);
       const defOf = new Map(open.defs.map((d) => [d.recipeId, d]));
       const openIds = new Set([...open.assignments.values()].map((a) => a.projectId));
-      const titles = open.projects.flatMap((q) => {
-        const def = defOf.get(q.recipeId);
-        return def && openIds.has(q.id) ? [projectGroupTitle(def, q)] : [];
-      });
-      const projects = await this.deps.store.list();
-      const unique = freeName(title, new Set([...projects.flatMap((q) => q.name ?? []), ...titles]));
-      // An adopted group keeps its title: a renamed project ("Taxes (2)") would retitle it (M4-R12), so refuse instead.
-      if (existing && unique !== title) throw new Error(`A project named “${title}” already exists. Rename the group first, then save it.`);
-      const key = freeKey(nameSlug(unique), new Set(projects.filter((q) => q.recipeId === recipeId).map((q) => q.key)));
-      const p: Project = { id: `${recipeId}:${key}`, recipeId, key, name: unique, keep: true, ...(existing && { color: existing.color }), createdAt: this.now(), updatedAt: this.now(), manual: [], excluded: [], linked: [] };
+      const titleOf = (q: Project): string => { const def = defOf.get(q.recipeId); return def ? projectGroupTitle(def, q) : (q.name ?? q.key); };
+      const fix = existing ? 'Rename the group first, then save it.' : 'Open it, or pick another name.';
+      const clash = open.projects.find((q) => listedAs(q, openIds) && titleOf(q) === title);
+      if (clash) throw new Error(`A project named “${title}” already exists (${listedAs(clash, openIds)}). ${fix}`);
+      const managed = await this.managedGroups(snap, open);
+      if (snap.groups.some((g) => g.id !== existing?.id && g.title === title && managed.has(g.id))) {
+        throw new Error(`A group named “${title}” is already open. ${existing ? fix : 'Pick another name.'}`);
+      }
+      const all = await this.deps.store.list();
+      const hidden = new Set(all.filter((q) => !listedAs(q, openIds) && titleOf(q) === title).map((q) => q.id));
+      if (hidden.size) await this.deps.store.remove(...hidden);
+      const projects = all.filter((q) => !hidden.has(q.id));
+      const key = freeKey(nameSlug(title), new Set(projects.filter((q) => q.recipeId === recipeId).map((q) => q.key)));
+      const p: Project = { id: `${recipeId}:${key}`, recipeId, key, name: title, keep: true, ...(existing && { color: existing.color }), createdAt: this.now(), updatedAt: this.now(), manual: [], excluded: [], linked: [] };
       projects.push(p);
       if (tabs.length === 0) await this.deps.store.put(p);
       for (const t of tabs) await this.join(program, projects, p, t.id, t.windowId, urlOf(t));
@@ -511,8 +522,7 @@ export class ProjectService {
 
   /**
    * Saves a Chrome group as a kept Manual project (M4 T8): named after the group (an untitled group is refused, M4-R15), keeping the group's color (`Project.color`), with its tabs as manual members. Not regrouped, retitled or
-   * recolored: when another project already has the name (M4-R12 would make it "Name (2)" and so retitle the group) it
-   * is refused with a clear message. Refused too when a tab of the group already belongs to a project, when Tabchef
+   * recolored: a name create refuses (a listed project's or an open rule group's) is refused with a clear message. Refused too when a tab of the group already belongs to a project, when Tabchef
    * manages the group (a rule's, see managedGroups), or the Manual recipe is off. Applies under global dry run like create (M4-R11). Returns the project id.
    */
   saveGroup(groupId: number): Promise<string> {
@@ -525,7 +535,7 @@ export class ProjectService {
       if (g.title !== g.title.trim()) throw new Error('Remove the spaces around the group name first, then save it.');
       const open = await this.resolve(snap);
       if (tabs.some((t) => open.assignments.has(t.id))) throw new Error('This group is already part of a project.');
-      // A group named like an open project is the name clash createLocked reports (M4-R12), not a rule's group.
+      // A group named like an open project is the name clash createLocked reports, not a rule's group.
       const defOf = new Map(open.defs.map((d) => [d.recipeId, d]));
       const openIds = new Set([...open.assignments.values()].map((a) => a.projectId));
       const named = new Set(open.projects.flatMap((q) => { const d = defOf.get(q.recipeId); return d && openIds.has(q.id) ? [projectGroupTitle(d, q)] : []; }));
@@ -908,8 +918,8 @@ export class ProjectService {
       };
       const stored = (await this.deps.store.list()).sort((a, b) => b.updatedAt - a.updatedAt);
       return {
-        saved: stored.filter((p) => p.keep && !isArchived(p) && !open.has(p.id)).map(data),
-        archived: stored.filter(isArchived).map(data),
+        saved: stored.filter((p) => listedAs(p, open) === 'Saved').map(data),
+        archived: stored.filter((p) => listedAs(p, open) === 'Archived').map(data),
       };
     });
   }
