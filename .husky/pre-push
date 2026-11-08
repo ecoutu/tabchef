@@ -1,7 +1,8 @@
 # git passes "<local ref> <local sha> <remote ref> <remote sha>" per pushed ref: read it before npm can consume stdin.
 refs=$(cat)
 
-npm run lint && npm run check && npm run check:cycles && npm test || exit 1
+npm run lint && npm run check && npm run check:cycles && npm run check:terms && npm run validate:recipes \
+  && npm test || exit 1
 
 # e2e is slow: run it only when the push changes the manifest config or the e2e suite, which unit tests don't cover.
 zero=0000000000000000000000000000000000000000
