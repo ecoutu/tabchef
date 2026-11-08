@@ -155,3 +155,13 @@ export interface SavedProjectData {
 
 /** Why a tab is in a project. `index` is the assigning rule's priority (-1 for manual: it wins over every rule). */
 export interface ProjectAssignment { projectId: string; key: string; via: 'rule' | 'manual'; ruleKey?: string; index: number }
+
+/** A project as a backup import reports it: its id and the title the Projects page shows. */
+export interface NamedProject { id: string; title: string }
+
+/**
+ * What a backup's projects did, or would do (`projects.import`, dry run): `added` (ids not stored), `overwritten` (stored
+ * ids the user chose to overwrite), `skipped` (stored ids left as they are, by their stored title) and `dropped`
+ * (malformed entries, by name, else id, else `#<position>`).
+ */
+export interface ProjectImportResult { added: NamedProject[]; overwritten: NamedProject[]; skipped: NamedProject[]; dropped: string[] }

@@ -170,3 +170,143 @@ describe('Backups', () => {
   });
 });
 
+
+describe('Backups: projects travel with the config', () => {
+  const P = { id: 'manual-project:taxes', recipeId: 'manual-project', key: 'taxes', name: 'Taxes', keep: true, createdAt: 1, updatedAt: 2, manual: [], excluded: [], linked: [], saved: { tabs: [{ url: 'https://a.example/', title: 'A' }], at: 2 } };
+  const Q = { ...P, id: 'manual-project:trip', key: 'trip', name: 'Trip' };
+  type Req = { type: string; config?: Config; projects?: unknown[]; overwrite?: string[]; dryRun?: boolean };
+  let importReply: (req: Req) => unknown;
+  beforeEach(() => {
+    importReply = (req) => ({ ok: true, data: { added: [{ id: Q.id, title: 'Trip' }], overwritten: req.overwrite?.length ? [{ id: P.id, title: 'Taxes' }] : [], skipped: req.overwrite?.length ? [] : [{ id: P.id, title: 'Taxes' }], dropped: [] } });
+    send.mockImplementation(async (req: Req) => {
+      if (req.type === 'config.backups') return { ok: true, data: [] };
+      if (req.type === 'projects.export') return { ok: true, data: [P] };
+      if (req.type === 'projects.import') return importReply(req);
+      return { ok: true, data: null };
+    });
+  });
+  const sent = (type: string) => send.mock.calls.map((c) => c[0] as Req).filter((r) => r.type === type);
+  const backup = (config: unknown, projects: unknown[] = [P, Q]) => JSON.stringify({ tabchef: 'backup', version: 1, config, projects });
+
+  it('the page says projects are included', async () => {
+    render(Backups, props());
+    expect(await screen.findByRole('button', { name: 'Export config and projects as JSON' })).toBeTruthy();
+    expect(screen.getByText(/stored projects/)).toBeTruthy();
+  });
+
+  it('export downloads the config and the stored projects in one backup file', async () => {
+    let blob: Blob | undefined;
+    const create = vi.fn((b: Blob) => { blob = b; return 'blob:x'; });
+    Object.assign(URL, { createObjectURL: create, revokeObjectURL: vi.fn() });
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) { expect(this.download).toBe('tabchef-backup.json'); });
+    const saved = cfgWith('a');
+    render(Backups, props({ saved }));
+    await fireEvent.click(await screen.findByRole('button', { name: 'Export config and projects as JSON' }));
+    await waitFor(() => expect(click).toHaveBeenCalled());
+    expect(JSON.parse(await blob!.text())).toEqual({ tabchef: 'backup', version: 1, config: saved, projects: [P] });
+  });
+
+  it('export reports a failure to read the projects and downloads nothing', async () => {
+    send.mockImplementation(async (req: Req) => (req.type === 'projects.export' ? { ok: false, error: 'boom' } : { ok: true, data: [] }));
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    render(Backups, props());
+    await fireEvent.click(await screen.findByRole('button', { name: 'Export config and projects as JSON' }));
+    expect(await screen.findByText('Could not export projects: boom')).toBeTruthy();
+    expect(click).not.toHaveBeenCalled();
+  });
+
+  it('an old config-only file still imports, with no project request', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    render(Backups, props());
+    await pick(file(JSON.stringify(cfgWith('a', 'b'))));
+    await fireEvent.click(await screen.findByRole('button', { name: 'Apply import' }));
+    await waitFor(() => expect(sent('config.set')).toHaveLength(1));
+    expect(sent('projects.import')).toHaveLength(0);
+    expect(screen.queryByText(/new project/)).toBeNull();
+  });
+
+  it('a backup file previews the project changes next to the config changes, then imports both', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const p = props({ saved: cfgWith('a') });
+    render(Backups, p);
+    await pick(file(backup(cfgWith('a', 'b'))));
+    await screen.findByText(/changes 1 item compared with your current config/);
+    expect(sent('projects.import')).toEqual([{ type: 'projects.import', projects: [P, Q], overwrite: [], dryRun: true }]);
+    await screen.findByText(/1 new project/);
+    expect(screen.getByText(/Taxes/)).toBeTruthy();
+    await fireEvent.click(screen.getByRole('button', { name: 'Apply import' }));
+    await waitFor(() => expect(sent('projects.import')).toHaveLength(2));
+    expect(sent('config.set')).toHaveLength(1);
+    expect(sent('projects.import')[1]).toEqual({ type: 'projects.import', projects: [P, Q], overwrite: [] });
+    expect(confirm.mock.calls[0]![0]).toMatch(/1 change/);
+    expect(confirm.mock.calls[0]![0]).toMatch(/1 new project/);
+    await screen.findByText(/Imported\..*1 project added.*1 skipped/);
+    expect(p.onApplied).toHaveBeenCalled();
+  });
+
+  it('a stored project is overwritten only when the user chooses to, and the confirmation names it', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    render(Backups, props({ saved: cfgWith('a') }));
+    await pick(file(backup(cfgWith('a', 'b'))));
+    await fireEvent.click(await screen.findByRole('checkbox', { name: /Overwrite the 1 project you already have/ }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Apply import' }));
+    await waitFor(() => expect(sent('projects.import')).toHaveLength(2));
+    expect(sent('projects.import')[1]!.overwrite).toEqual([P.id]);
+    expect(confirm.mock.calls[0]![0]).toMatch(/Overwrite 1 project you already have: Taxes/);
+    await screen.findByText(/1 overwritten/);
+  });
+
+  it('malformed projects in the file are reported as dropped', async () => {
+    importReply = () => ({ ok: true, data: { added: [{ id: Q.id, title: 'Trip' }], overwritten: [], skipped: [], dropped: ['#2'] } });
+    render(Backups, props());
+    await pick(file(backup(cfgWith('a'), [Q, { id: 1 }])));
+    await screen.findByText(/1 malformed project left out: #2/);
+  });
+
+  it('projects import alone when the config is unchanged: no config write, no reload, no unsaved-changes warning', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const saved = cfgWith('a');
+    const p = props({ saved, dirty: true });
+    render(Backups, p);
+    await pick(file(backup(saved)));
+    await fireEvent.click(await screen.findByRole('button', { name: 'Apply import' }));
+    await waitFor(() => expect(sent('projects.import')).toHaveLength(2));
+    expect(sent('config.set')).toHaveLength(0);
+    expect(sent('preview.change')).toHaveLength(0);
+    expect(confirm.mock.calls[0]![0]).not.toContain(UNSAVED);
+    expect(confirm.mock.calls[0]![0]).toMatch(/config is unchanged/);
+    expect(p.onApplied).not.toHaveBeenCalled();
+    await screen.findByText(/Imported\./);
+  });
+
+  it('a backup whose config differs only in rule sections counts it as a change and stores the config', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const saved = cfgWith('a');
+    const p = props({ saved });
+    render(Backups, p);
+    await pick(file(backup({ ...saved, sections: [{ id: 's1', name: 'Work', rules: ['a'] }] })));
+    await fireEvent.click(await screen.findByRole('button', { name: 'Apply import' }));
+    await waitFor(() => expect(sent('config.set')).toHaveLength(1));
+    expect(sent('config.set')[0]!.config!.sections).toEqual([{ id: 's1', name: 'Work', rules: ['a'] }]);
+    expect(confirm.mock.calls[0]![0]).toMatch(/1 change/);
+    expect(p.onApplied).toHaveBeenCalled();
+  });
+
+  it('a failed project import after the config was stored says so', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    importReply = (req) => (req.dryRun ? { ok: true, data: { added: [], overwritten: [], skipped: [], dropped: [] } } : { ok: false, error: 'boom' });
+    render(Backups, props({ saved: cfgWith('a') }));
+    await pick(file(backup(cfgWith('a', 'b'))));
+    await fireEvent.click(await screen.findByRole('button', { name: 'Apply import' }));
+    await screen.findByText('Config imported, but the projects were not: boom');
+  });
+
+  it('a backup file of an unknown version, or with no project list, is refused', async () => {
+    render(Backups, props());
+    await pick(file(JSON.stringify({ tabchef: 'backup', version: 2, config: cfgWith('a'), projects: [] })));
+    await screen.findByText('Unsupported backup version: 2');
+    await pick(file(JSON.stringify({ tabchef: 'backup', version: 1, config: cfgWith('a'), projects: {} })));
+    await screen.findByText('Invalid backup: projects must be a list');
+    expect(sent('projects.import')).toHaveLength(0);
+  });
+});
