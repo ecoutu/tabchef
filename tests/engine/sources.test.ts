@@ -656,6 +656,47 @@ describe('SourceService: Jira', () => {
     expect(r.get('ABC-9')).toMatchObject({ via: 'none', error: 'not-found' });
     expect(t.fetch.mock.calls.map(([, req]) => req.path)).toEqual(['/rest/api/3/search/jql']);
   });
+
+  describe('a failed lookup backs off (#190)', () => {
+    // A ticket that does not exist or that the user cannot browse is absent from the search answer.
+    const search = (absent: string[]) => async (_id: string, req: ApiRequest): Promise<ApiResult> =>
+      req.path.includes('myself') ? { ok: true, status: 200, data: { accountId: 'me' } } : { ok: true, status: 200, data: issues(jql(req).filter((k) => !absent.includes(k))) };
+    const minuteOfPolling = async (t: ReturnType<typeof setup>, keys: string[]) => {
+      const before = t.fetch.mock.calls.length;
+      for (let i = 0; i < 12; i++) { await t.svc.issues(keys); t.advance(5000); }
+      return t.fetch.mock.calls.slice(before).map((c) => c[1].path);
+    };
+
+    it('a found ticket is asked once a minute of polling', async () => {
+      const t = setup({ fetch: search([]) });
+      expect(await minuteOfPolling(t, ['ABC-1'])).toHaveLength(1);
+    });
+
+    it('a missing or unbrowsable ticket costs one search and one /myself, not two requests every listing', async () => {
+      const t = setup({ fetch: search(['ABC-404']) });
+      expect(await minuteOfPolling(t, ['ABC-404'])).toEqual(['/rest/api/3/search/jql', '/rest/api/3/myself']);
+      expect((await t.svc.issues(['ABC-404'])).get('ABC-404')).toMatchObject({ via: 'none' });
+    });
+
+    it('a missing ticket among found ones is not asked again on the next listing', async () => {
+      const t = setup({ fetch: search(['ABC-404']) });
+      await t.svc.issues(['ABC-1', 'ABC-404']);
+      t.fetch.mockClear();
+      t.advance(5000);
+      await t.svc.issues(['ABC-1', 'ABC-404']);
+      expect(t.fetch).not.toHaveBeenCalled();
+    });
+
+    it('a Jira connection change clears its back-off', async () => {
+      const t = setup({ fetch: search(['ABC-404']) });
+      await t.svc.issues(['ABC-404']);
+      t.fetch.mockClear();
+      await t.svc.connectionChanged('jira');
+      t.advance(5000);
+      await t.svc.issues(['ABC-404']);
+      expect(t.fetch.mock.calls.map((c) => c[1].path)).toContain('/rest/api/3/search/jql');
+    });
+  });
 });
 
 describe('SourceService: linkedFor', () => {
@@ -1013,6 +1054,103 @@ describe('SourceService: GitHub issues', () => {
     expect((await t.svc.githubIssues(['acme/web#5'])).get('acme/web#5')).toMatchObject({ via: 'page', stale: false, data: { statusCategory: 'done' } });
     expect(t.fetch).toHaveBeenCalledTimes(before + 1);
     expect(t.onUpdated).not.toHaveBeenCalled();
+  });
+
+  describe('a failed lookup backs off (#190)', () => {
+    const forbidden = async (): Promise<ApiResult> => ({ ok: true, status: 200, data: { data: { r0: { i0: null } }, errors: [{ type: 'FORBIDDEN', path: ['r0', 'i0'], message: 'Resource not accessible by integration' }] } });
+    const pageRule: Rule = { ...ghIssueRule, source: { ...ghIssueRule.source!, fallback: { adapter: 'github.issuePage' } } };
+    const openPage = { texts: [], extracts: { 'adapter:github.issuePage.state': 'Open' }, formEdited: false };
+    /** A minute of a list view polling (LIVE_MS = 5 s): `list` once per tick; the requests sent. */
+    async function minuteOfPolling(t: ReturnType<typeof setup>, list: () => Promise<unknown>) {
+      const before = t.fetch.mock.calls.length;
+      for (let i = 0; i < 12; i++) { await list(); t.advance(5000); }
+      return t.fetch.mock.calls.length - before;
+    }
+
+    it('a found issue is asked once a minute of polling', async () => {
+      const t = setup({ fetch: async (_id, req) => issueResponse(req) });
+      expect(await minuteOfPolling(t, () => t.svc.githubIssues(['acme/web#5']))).toBe(1);
+    });
+
+    it('an issue the API cannot find is asked once, not on every listing', async () => {
+      const t = setup({ fetch: async (_id, req) => issueResponse(req, ['acme/web#9']) });
+      expect(await minuteOfPolling(t, () => t.svc.githubIssues(['acme/web#9']))).toBe(1);
+      const e = (await t.svc.githubIssues(['acme/web#9'])).get('acme/web#9');
+      expect(e).toMatchObject({ via: 'none', error: 'not-found' });
+      expect(e).not.toHaveProperty('triedAt');
+    });
+
+    it('an issue the API refuses (no Issues permission) is asked once, and again after the window', async () => {
+      const t = setup({ fetch: forbidden });
+      expect(await minuteOfPolling(t, () => t.svc.githubIssues(['acme/web#5']))).toBe(1);
+      expect(t.svc.missingIssuesPermission()).toBe(true);
+      t.advance(5 * MIN);
+      expect(await minuteOfPolling(t, () => t.svc.githubIssues(['acme/web#5']))).toBe(1);
+    });
+
+    it('a refused issue with a page reading older than the window is asked once per window, and the reading does not flap', async () => {
+      const t = setup({ tabs: [issueTab(1, 'acme/web/issues/5')], rules: [pageRule], granted: true, fetch: forbidden, facts: { 1: openPage } });
+      await t.svc.refresh('alarm');
+      t.advance(6 * MIN);
+      t.onUpdated.mockClear();
+      expect(await minuteOfPolling(t, () => t.svc.githubIssues(['acme/web#5']))).toBe(1);
+      expect(stateOf(t.svc, 1, 'rec/ghissue')).toMatchObject({ via: 'page', stale: false });
+      expect(stateOf(t.svc, 1, 'rec/ghissue')).not.toHaveProperty('triedAt');
+      expect(t.onUpdated).not.toHaveBeenCalled();
+    });
+
+    it("#198: with 'check every' at 1 min, the back-off follows that window", async () => {
+      const t = setup({ tabs: [issueTab(1, 'acme/web/issues/5')], rules: [pageRule], granted: true, fetch: forbidden, facts: { 1: openPage }, refreshEvery: { 'merged-prs': '1m' } });
+      await t.svc.refresh('alarm');
+      t.advance(MIN);
+      expect(await minuteOfPolling(t, () => t.svc.githubIssues(['acme/web#5']))).toBe(2); // 55 s apart
+    });
+
+    it('a connection change clears the back-off: the next listing asks at once', async () => {
+      let missing = ['acme/web#9'];
+      const t = setup({ fetch: async (_id, req) => issueResponse(req, missing) });
+      await t.svc.githubIssues(['acme/web#9']);
+      t.advance(5000);
+      await t.svc.githubIssues(['acme/web#9']);
+      expect(t.fetch).toHaveBeenCalledTimes(1);
+      missing = [];
+      await t.svc.connectionChanged('github');
+      t.advance(5000);
+      expect((await t.svc.githubIssues(['acme/web#9'])).get('acme/web#9')).toMatchObject({ via: 'api' });
+      expect(t.fetch).toHaveBeenCalledTimes(2);
+    });
+
+    it("another connection's change leaves the back-off alone", async () => {
+      const t = setup({ fetch: async (_id, req) => issueResponse(req, ['acme/web#9']) });
+      await t.svc.githubIssues(['acme/web#9']);
+      await t.svc.connectionChanged('jira');
+      t.advance(5000);
+      await t.svc.githubIssues(['acme/web#9']);
+      expect(t.fetch).toHaveBeenCalledTimes(1);
+    });
+
+    // In the extension a worker start re-emits every connection, which clears the back-off (connectionChanged); this
+    // pins only that the stamp itself is stored with the entry.
+    it('the back-off is stored with the entry (a new SourceService reads it)', async () => {
+      const t = setup({ fetch: async (_id, req) => issueResponse(req, ['acme/web#9']) });
+      await t.svc.githubIssues(['acme/web#9']);
+      t.advance(5000);
+      await t.make().githubIssues(['acme/web#9']);
+      expect(t.fetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('the tab path still asks a failed issue on its own schedule, and the alarm does not rewrite an unchanged failure', async () => {
+      const t = setup({ tabs: [issueTab(1, 'acme/web/issues/5')], rules: [ghIssueRule], fetch: async (_id, req) => issueResponse(req, ['acme/web#5']) });
+      await t.svc.githubIssues(['acme/web#5']);
+      t.advance(MIN);
+      await t.svc.refresh('alarm');
+      expect(t.fetch).toHaveBeenCalledTimes(2);
+      t.local.set.mockClear();
+      t.advance(MIN);
+      await t.svc.refresh('alarm');
+      expect(t.fetch).toHaveBeenCalledTimes(3);
+      expect(t.local.set).not.toHaveBeenCalled();
+    });
   });
 
   it('with the connection not ok, an issue tab sends nothing and is via none', async () => {

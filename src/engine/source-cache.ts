@@ -9,15 +9,20 @@ import type { KeyValueArea } from './connections/secret-store';
 export const SOURCE_CACHE_KEY = 'sourceCache';
 export const CACHE_MAX = 2000;
 
-export type CacheEntry = SourceEntry & { usedAt: number };
+/**
+ * `usedAt`: LRU bookkeeping. `triedAt`: when the API last answered a lookup of this key without its data (#190); a
+ * listing does not ask again for a freshness window from then. Neither is part of the entry rules read.
+ */
+export type CacheEntry = SourceEntry & { usedAt: number; triedAt?: number };
 const VIA = new Set(['api', 'page', 'none']);
 
 /** Has data a rule can read (a `none` entry's placeholder data does not count). */
 export const hasData = (e: CacheEntry | undefined): boolean => !!e && e.via !== 'none' && e.data !== undefined;
-/** The entry without its LRU bookkeeping. */
+/** The entry without its bookkeeping (LRU, back-off). */
 export function publicOf(e: CacheEntry): SourceEntry {
-  const out: SourceEntry & { usedAt?: number } = { ...e };
+  const out: SourceEntry & { usedAt?: number; triedAt?: number } = { ...e };
   delete out.usedAt;
+  delete out.triedAt;
   return out;
 }
 const sameDetail = (e: CacheEntry, error: ConnErrorKind, d: IssueFailureDetail): boolean =>
@@ -96,19 +101,43 @@ export class SourceCache {
     this.put(key, { data, via: 'page', fetchedAt: now, final: false, stale: false, ...(retryAt !== undefined && { retryAt }) }, now);
   }
 
-  /** A failed lookup: the previous data stays (stale, with the error); without any, a `none` entry with `noneData`. */
-  fail(key: string, error: ConnErrorKind, d: IssueFailureDetail, now: number, noneData?: object): void {
+  /**
+   * A failed lookup: the previous data stays (stale, with the error); without any, a `none` entry with `noneData`.
+   * `tried`: the API answered this lookup without its data, so its back-off starts now (see `tried()`).
+   */
+  fail(key: string, error: ConnErrorKind, d: IssueFailureDetail, now: number, noneData?: object, tried = false): void {
     const e = this.entries.get(key);
     if (e && hasData(e)) {
       this.markStale(e, error);
+      if (tried) this.tried(e, now);
       if ((d.retryAt !== undefined && e.retryAt !== d.retryAt) || (d.sso && JSON.stringify(e.sso) !== JSON.stringify(d.sso))) {
         Object.assign(e, d);
         this.dirty = true;
       }
       return;
     }
-    if (e?.via === 'none' && sameDetail(e, error, d)) return; // the same failure again: nothing to write
+    if (e?.via === 'none' && sameDetail(e, error, d)) { // the same failure again: nothing to write but the back-off
+      if (tried) this.tried(e, now);
+      return;
+    }
     this.put(key, { ...(noneData && { data: noneData }), via: 'none', fetchedAt: now, final: false, stale: false, error, ...d }, now);
+    if (tried) this.entries.get(key)!.triedAt = now;
+  }
+
+  /** The API was asked about `e` and gave no data (also a refusal that leaves a page reading as it is): back off from `now`. */
+  tried(e: CacheEntry, now: number): void {
+    if (e.triedAt === now) return;
+    e.triedAt = now;
+    this.dirty = true;
+  }
+
+  /** Forgets the back-off of `connection`'s entries: its status changed (re-auth, reconnect, hosts granted or revoked). */
+  clearTried(connection: string): void {
+    for (const [k, e] of this.entries) {
+      if (e.triedAt === undefined || !k.startsWith(`${connection}|`)) continue;
+      delete e.triedAt;
+      this.dirty = true;
+    }
   }
 
   /**

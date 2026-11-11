@@ -464,6 +464,13 @@ describe('background wiring', () => {
     expect(I('sources').refresh).toHaveBeenCalledWith('manual', ['rec/pr']);
   });
 
+  it('a connection status change (re-auth, reconnect, hosts granted) clears the back-off of its failed lookups', async () => {
+    await vi.advanceTimersByTimeAsync(0);
+    const [cb] = I('connManager').onStatusChange!.mock.calls[0] as [(s: { id: string }) => void];
+    cb({ id: 'jira' });
+    expect(I('sources').connectionChanged).toHaveBeenCalledWith('jira');
+  });
+
   it('changed source data re-plans, re-evaluates closes of the changed tabs and recounts the badge', async () => {
     await vi.advanceTimersByTimeAsync(3000);
     vi.mocked(refreshBadge).mockClear();

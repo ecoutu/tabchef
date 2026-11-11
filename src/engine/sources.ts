@@ -344,6 +344,18 @@ export class SourceService {
     return [...this.unreadable].filter(([repo]) => open.has(repo)).sort(([a], [b]) => a.localeCompare(b)).map(([repo, error]) => ({ repo, error }));
   }
 
+  /**
+   * A connection's status changed (re-auth, reconnect, hosts granted or revoked, SSO list): its failed lookups may be
+   * asked again at once (the back-off of `due()`). After the lookups in flight, so their back-off is cleared too.
+   */
+  connectionChanged(id: string): Promise<void> {
+    return this.serial(async () => {
+      await this.ensureLoaded();
+      this.cache.clearTried(id);
+      await this.cache.save();
+    });
+  }
+
   /** Whether GitHub issue data is missing because the GitHub App lacks the Issues permission (see `issuesForbidden`). */
   missingIssuesPermission(): boolean {
     return this.issuesForbidden;
@@ -499,14 +511,17 @@ export class SourceService {
     return e.via === 'api' && !e.stale && this.young(e, query, now);
   }
 
-  /** A failed lookup (SourceCache.fail); a PR's or GitHub issue's `none` entry holds it with state 'unknown'. */
-  private fail(key: string, target: Target | undefined, error: ConnErrorKind, d: IssueFailureDetail, now: number): void {
+  /**
+   * A failed lookup (SourceCache.fail); a PR's or GitHub issue's `none` entry holds it with state 'unknown'. `tried`:
+   * an answer to a listing's request (`due()`), which then backs off.
+   */
+  private fail(key: string, target: Target | undefined, error: ConnErrorKind, d: IssueFailureDetail, now: number, tried = false): void {
     const data = target && 'pr' in target
       ? { ...target.pr, state: 'unknown', url: `https://github.com/${target.pr.owner}/${target.pr.repo}/pull/${target.pr.number}` }
       : target && 'ghIssue' in target
         ? { ...target.ghIssue, state: 'unknown', url: `https://github.com/${target.ghIssue.owner}/${target.ghIssue.repo}/issues/${target.ghIssue.number}` }
         : undefined;
-    this.cache.fail(key, error, d, now, data);
+    this.cache.fail(key, error, d, now, data, tried);
   }
 
   /** The page adapter's reading of a loaded, live tab on a granted host (the first usable one), or undefined. */
@@ -595,16 +610,18 @@ export class SourceService {
 
   /**
    * github.issue lookups of `refs` in batches; stops when the background budget is spent. `failed`: what an issue the API answered for without its data becomes (default: a failed lookup).
+   * `tried`: a listing's lookups (`due()`): a failed answer backs off.
    */
   private async fetchGhIssues(connection: string, refs: IssueRef[], background: boolean, now: number,
-    failed: (ref: IssueRef, kind: ConnErrorKind, d: IssueFailureDetail) => Promise<void> = async (ref, kind, d) => this.fail(cacheKey(connection, 'github.issue', issueKey(ref)), { ghIssue: ref }, kind, d, now)): Promise<void> {
+    failed: (ref: IssueRef, kind: ConnErrorKind, d: IssueFailureDetail) => Promise<void> = async (ref, kind, d) => this.fail(cacheKey(connection, 'github.issue', issueKey(ref)), { ghIssue: ref }, kind, d, now),
+    tried = false): Promise<void> {
     for (const batch of chunks(refs, SOURCE_QUERIES['github.issue'].batch)) {
       const q = buildIssueQuery(batch);
       const res = await this.send(connection, { method: 'POST', path: '/graphql', json: { query: q.query, variables: q.variables } }, background);
       if (!res) return; // background budget spent: leave the rest as they are
       const key = (ref: IssueRef) => cacheKey(connection, 'github.issue', issueKey(ref));
       if (!res.ok) {
-        for (const ref of batch) this.fail(key(ref), { ghIssue: ref }, res.kind, detailOf(res), now); // keeps retryAt (rate limits)
+        for (const ref of batch) this.fail(key(ref), { ghIssue: ref }, res.kind, detailOf(res), now, tried); // keeps retryAt (rate limits)
         continue;
       }
       const parsed = parseIssueResponse(res.data, q.aliases);
@@ -620,8 +637,11 @@ export class SourceService {
     }
   }
 
-  /** jira.issue lookups of `keys` on `site` (the connection's) in batches (bad requests bisected, M3-R31); stops when the background budget is spent. */
-  private async fetchIssues(connection: string, site: string, keys: string[], background: boolean, now: number): Promise<void> {
+  /**
+   * jira.issue lookups of `keys` on `site` (the connection's) in batches (bad requests bisected, M3-R31); stops when the
+   * background budget is spent. `tried`: a listing's lookups (`due()`): a failed answer backs off.
+   */
+  private async fetchIssues(connection: string, site: string, keys: string[], background: boolean, now: number, tried = false): Promise<void> {
     let revalidated = false;
     for (const batch of chunks(keys, SOURCE_QUERIES['jira.issue'].batch)) {
       let spent = false;
@@ -641,18 +661,23 @@ export class SourceService {
         const key = cacheKey(connection, 'jira.issue', issueId(site, k));
         const issue = r.issues.get(k);
         if (issue) this.cache.put(key, { data: issue, via: 'api', fetchedAt: now, final: false, stale: false }, now);
-        else this.fail(key, { issue: k, site }, r.errors.get(k) ?? 'not-found', r.details.get(k) ?? {}, now);
+        else this.fail(key, { issue: k, site }, r.errors.get(k) ?? 'not-found', r.details.get(k) ?? {}, now, tried);
       }
     }
   }
 
-  /** Keys whose entry is due a fetch on an `ok` connection (not fresh, final or before its retryAt); touches them. */
+  /**
+   * Keys whose entry is due a fetch on an `ok` connection (not fresh, final, before its retryAt, or backing off);
+   * touches them. #190: a key the API answered for without its data (`triedAt`) waits a freshness window, as a found
+   * one does, so a list view polling every few seconds does not ask again each time (these calls skip the limiter).
+   */
   private async due(connection: string, keys: string[], query: SourceQueryKind, key: (k: string) => string, now: number): Promise<string[]> {
     const [st] = await this.deps.conn.status(connection);
     const out: string[] = [];
     for (const k of keys) {
       const e = this.cache.touch(key(k), now);
-      if (st?.state === 'ok' && !(e && (e.final || this.fresh(e, query, now) || (e.retryAt ?? 0) > now))) out.push(k);
+      const backingOff = e?.triedAt !== undefined && this.young({ ...e, fetchedAt: e.triedAt }, query, now);
+      if (st?.state === 'ok' && !(e && (e.final || this.fresh(e, query, now) || (e.retryAt ?? 0) > now || backingOff))) out.push(k);
     }
     return out;
   }
@@ -675,7 +700,7 @@ export class SourceService {
           const parsed = res.ok ? parseKeySearchResponse(res.data, q.aliases, {}, o) : undefined; // orgs: the SSO org (T8 carry)
           for (const k of batch) {
             const err = parsed ? parsed.errors.find((e) => e.key === k) : (res as ApiResult & { ok: false });
-            if (err) this.fail(key(k), undefined, err.kind, detailOf(err), now);
+            if (err) this.fail(key(k), undefined, err.kind, detailOf(err), now, true);
             else this.cache.put(key(k), { data: parsed!.byKey.get(k) ?? [], via: 'api', fetchedAt: now, final: false, stale: false }, now);
           }
         }
@@ -708,7 +733,7 @@ export class SourceService {
       const valid = [...new Set(keys)].filter((k) => KEY_RE.test(k));
       const key = (k: string) => cacheKey(JIRA, 'jira.issue', issueId(site, k));
       // Settled: tab rules read these entries too.
-      await this.settling(async () => this.fetchIssues(JIRA, site, await this.due(JIRA, valid, 'jira.issue', key, now), false, now));
+      await this.settling(async () => this.fetchIssues(JIRA, site, await this.due(JIRA, valid, 'jira.issue', key, now), false, now, true));
       const out = new Map<string, SourceEntry<JiraIssue>>();
       for (const k of valid) {
         const e = this.cache.get(key(k));
@@ -739,14 +764,16 @@ export class SourceService {
       // A fresh page reading (an issue tab the API cannot read) is as good as an API one here: failing it would mark it
       // stale until the tab's next lookup reads the page again, and each flip cancels or re-arms close prompts (M3-R92).
       const freshPage = (e: CacheEntry | undefined) => e?.via === 'page' && !e.stale && this.young(e, 'github.issue', now);
+      // A refusal leaves a page reading as it is, but backs off as any failed answer does (#190).
       const failed = async (ref: IssueRef, kind: ConnErrorKind, d: IssueFailureDetail) => {
         const e = this.cache.get(key(issueKey(ref)));
-        if (!(e?.via === 'page' && !e.stale)) this.fail(key(issueKey(ref)), { ghIssue: ref }, kind, d, now);
+        if (e?.via === 'page' && !e.stale) this.cache.tried(e, now);
+        else this.fail(key(issueKey(ref)), { ghIssue: ref }, kind, d, now, true);
       };
       // Settled: tab rules read these entries too.
       await this.settling(async () => {
         const due = (await this.due(GITHUB, [...refs.keys()], 'github.issue', key, now)).filter((id) => !freshPage(this.cache.get(key(id))));
-        await this.fetchGhIssues(GITHUB, due.map((id) => refs.get(id)!), false, now, failed);
+        await this.fetchGhIssues(GITHUB, due.map((id) => refs.get(id)!), false, now, failed, true);
       });
       const out = new Map<string, SourceEntry<GithubIssueInfo>>();
       for (const [k, id] of given) {

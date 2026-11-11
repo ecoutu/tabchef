@@ -295,6 +295,10 @@ export default defineBackground(() => {
     const m: ConnectionsChangedMessage = { type: 'connections.changed', id: s.id };
     Promise.resolve(browser.runtime.sendMessage(m)).catch(() => {});
     void permissions.onChanged();
+    // #190: lookups the API answered without data (not found, refused) may succeed now: ask again at once. A worker
+    // start re-emits every connection (syncPermissions), so it clears the back-off too: one request per failing batch
+    // per wake, not a loop (a polling view keeps the worker awake).
+    sources.connectionChanged(s.id).catch(warn('source back-off'));
   });
   // Source lookups of recipe rules (M3 T11), cached in storage.local. Changed data re-plans, re-evaluates closes of
   // the changed tabs and recounts the badge (list views may show source fields).
