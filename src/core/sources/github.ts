@@ -2,6 +2,7 @@
 // User data (owner, repo, number, search terms) only ever travels in `variables`; the query text is fixed text + aliases.
 import type { ConnErrorKind } from '../connections/types';
 import { extractJiraKeys, type JiraKeyOptions } from '../keys/jira-key';
+import { issueKey } from '../keys/github-issue';
 import type { PrInfo, PrState } from './types';
 
 export const MAX_PR_BATCH = 50;
@@ -12,17 +13,29 @@ export interface PrStateResult {
   prs: Map<string, PrInfo>;
   rate?: { remaining: number; limit: number; resetAt: string };
   errors: { key: string; kind: ConnErrorKind; sso?: { org: string; url: string } }[];
+  /** A PR that was read had its closingIssuesReferences refused for lack of the GitHub App's Issues permission (issuesForbidden). */
+  issuesForbidden?: true;
+  /**
+   * An error's path ends in closingIssuesReferences: 'forbidden' when it is the Issues-permission refusal, else 'error'.
+   * GitHub may null the PR (or all `data`) for it instead of the field alone, so an unread PR may be lost to that
+   * field only: fetchPrs asks again without it.
+   */
+  closingFailed?: 'forbidden' | 'error';
+  /** Keys of the unread PRs a closingIssuesReferences error may have lost: those it names, every unread PR when `data` is null. */
+  closingLost?: string[];
 }
 
-const PR_FIELDS = 'state merged mergedAt isDraft title headRefName reviewDecision url';
+const BASE_PR_FIELDS = 'state merged mergedAt isDraft title headRefName reviewDecision url';
+const CLOSING_FIELD = 'closingIssuesReferences(first: 5) { nodes { number repository { owner { login } name } } }';
 export const prKey = (p: PrRef): string => `${p.owner}/${p.repo}#${p.number}`;
-const ssoUrl = (owner: string): string => `https://github.com/orgs/${owner}/sso`;
+export const ssoUrl = (owner: string): string => `https://github.com/orgs/${owner}/sso`;
 
 /**
  * One `repository` alias (r<i>) per repo holding a `pullRequest` alias (p<j>) per PR. `aliases` maps r<i> to
- * 'owner/repo' and p<j> to 'owner/repo#n'. Throws over 50 PRs.
+ * 'owner/repo' and p<j> to 'owner/repo#n'. `closing: false` leaves closingIssuesReferences out. Throws over 50 PRs.
  */
-export function buildPrStateQuery(prs: PrRef[]): GqlBuild {
+export function buildPrStateQuery(prs: PrRef[], o: { closing?: boolean } = {}): GqlBuild {
+  const fields = o.closing === false ? BASE_PR_FIELDS : `${BASE_PR_FIELDS} ${CLOSING_FIELD}`;
   if (prs.length > MAX_PR_BATCH) throw new Error(`too many PRs in one query: ${prs.length} > ${MAX_PR_BATCH}`);
   const variables: Record<string, unknown> = {};
   const aliases = new Map<string, string>();
@@ -47,22 +60,22 @@ export function buildPrStateQuery(prs: PrRef[]): GqlBuild {
     j++;
   }
   const body = [...repos.values()].map((r) =>
-    `r${r.i}: repository(owner: $o${r.i}, name: $n${r.i}) { ${r.prs.map((x) => `p${x.j}: pullRequest(number: $k${x.j}) { ${PR_FIELDS} }`).join(' ')} }`).join(' ');
+    `r${r.i}: repository(owner: $o${r.i}, name: $n${r.i}) { ${r.prs.map((x) => `p${x.j}: pullRequest(number: $k${x.j}) { ${fields} }`).join(' ')} }`).join(' ');
   const query = `query(${decls.join(', ')}) { ${body} rateLimit { cost remaining limit resetAt } }`;
   return { query, variables, aliases };
 }
 
-const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
-const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
+export const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+export const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
 
-function mapState(n: Record<string, unknown>): PrState {
+export function mapState(n: Record<string, unknown>): PrState {
   if (n.state === 'MERGED' || n.merged === true) return 'merged';
   if (n.state === 'CLOSED') return 'closed';
   if (n.state === 'OPEN' && n.isDraft === true) return 'draft';
   return 'open';
 }
 
-function splitKey(k: string): PrRef {
+export function splitKey(k: string): PrRef {
   const m = /^(.*?)\/(.*)#(\d+)$/.exec(k);
   return { owner: m?.[1] ?? '', repo: m?.[2] ?? '', number: Number(m?.[3] ?? 0) };
 }
@@ -78,9 +91,21 @@ function isSaml(e: Record<string, unknown>): boolean {
   return Boolean(ext.saml_failure) || /SAML/i.test(str(e.message) ?? '');
 }
 
-/** GraphQL errors by where they hit: path[0] (a repo / search alias), path[1] (a PR alias), or no path (whole response). */
-interface Errs { repo: Map<string, ConnErrorKind>; item: Map<string, ConnErrorKind>; global?: ConnErrorKind }
-function collectErrors(root: Record<string, unknown>): Errs {
+/**
+ * Whether `root` has an error refusing a field for lack of the GitHub App's Issues permission: a non-SAML FORBIDDEN
+ * `Resource not accessible by integration` whose path satisfies `at`.
+ */
+export function issuesForbidden(root: Record<string, unknown>, at: (path: unknown[]) => boolean): boolean {
+  return (Array.isArray(root.errors) ? root.errors : []).some((e) => isObj(e) && e.type === 'FORBIDDEN' && !isSaml(e)
+    && /Resource not accessible by integration/i.test(str(e.message) ?? '') && Array.isArray(e.path) && at(e.path as unknown[]));
+}
+
+/** GraphQL errors by where they hit: path[0] (a repo / search alias), path[1] (a PR alias), or no path (whole response).
+ * Errors with a 3+ segment path (a field inside an item, e.g. closingIssuesReferences without the Issues permission)
+ * land in `item` under path[1] as before, but parsers only read `item` when the item node itself is missing, so
+ * a present item is never failed by one of its fields. */
+export interface Errs { repo: Map<string, ConnErrorKind>; item: Map<string, ConnErrorKind>; global?: ConnErrorKind }
+export function collectErrors(root: Record<string, unknown>): Errs {
   const out: Errs = { repo: new Map(), item: new Map() };
   for (const e of Array.isArray(root.errors) ? root.errors : []) {
     if (!isObj(e)) continue;
@@ -95,6 +120,19 @@ function collectErrors(root: Record<string, unknown>): Errs {
   return out;
 }
 
+/** Issue keys from a `closingIssuesReferences` connection; undefined when absent (null when the app lacks Issues access). */
+function closingIssues(v: unknown): string[] | undefined {
+  if (!isObj(v) || !Array.isArray(v.nodes)) return undefined;
+  const keys: string[] = [];
+  for (const n of v.nodes) {
+    if (!isObj(n) || typeof n.number !== 'number' || !isObj(n.repository)) continue;
+    const owner = isObj(n.repository.owner) ? str(n.repository.owner.login) : undefined;
+    const repo = str(n.repository.name);
+    if (owner && repo) keys.push(issueKey({ owner, repo, number: n.number }));
+  }
+  return keys;
+}
+
 export function parsePrStateResponse(body: unknown, aliases: Map<string, string>): PrStateResult {
   const out: PrStateResult = { prs: new Map(), errors: [] };
   const root = isObj(body) ? body : {};
@@ -104,6 +142,15 @@ export function parsePrStateResponse(body: unknown, aliases: Map<string, string>
     out.rate = { remaining: rl.remaining, limit: rl.limit, resetAt: rl.resetAt };
   }
   const errs = collectErrors(root);
+  // Only a PR that was read: an unread one may be lost to that field alone (closingFailed), and counts once read again.
+  const closingOf = (p: unknown[]) => p.length >= 3 && p.at(-1) === 'closingIssuesReferences';
+  const read = (p: unknown[]) => { const r = data[String(p[0])]; return isObj(r) && isObj(r[String(p[1])]); };
+  if (issuesForbidden(root, (p) => closingOf(p) && read(p))) out.issuesForbidden = true;
+  if (issuesForbidden(root, closingOf)) out.closingFailed = 'forbidden';
+  else if ((Array.isArray(root.errors) ? root.errors : []).some((e) => isObj(e) && Array.isArray(e.path) && closingOf(e.path as unknown[]))) out.closingFailed = 'error';
+  const closingAt = new Set((Array.isArray(root.errors) ? root.errors : [])
+    .flatMap((e) => (isObj(e) && Array.isArray(e.path) && closingOf(e.path as unknown[]) ? [String((e.path as unknown[])[1])] : [])));
+  const lost = (alias: string) => out.closingFailed !== undefined && (!isObj(root.data) || closingAt.has(alias));
   const repoOf = new Map<string, string>(); // p alias -> r alias, from the response shape
   for (const [ra, rv] of Object.entries(data)) if (isObj(rv)) for (const pa of Object.keys(rv)) repoOf.set(pa, ra);
   const repoAliasOfRepo = new Map<string, string>();
@@ -121,6 +168,7 @@ export function parsePrStateResponse(body: unknown, aliases: Map<string, string>
       const title = str(node.title); if (title !== undefined) info.title = title;
       const head = str(node.headRefName); if (head !== undefined) info.headRefName = head;
       const rd = str(node.reviewDecision); if (rd) info.reviewDecision = rd;
+      const closing = closingIssues(node.closingIssuesReferences); if (closing) info.closingIssues = closing;
       out.prs.set(key, info);
       continue;
     }
@@ -129,6 +177,7 @@ export function parsePrStateResponse(body: unknown, aliases: Map<string, string>
     const sso = kind === 'sso-required' ? { org: owner, url: ssoUrl(owner) } : undefined;
     out.prs.set(key, unknownPr(key, sso));
     out.errors.push({ key, kind, ...(sso ? { sso } : {}) });
+    if (lost(alias)) (out.closingLost ??= []).push(key);
   }
   return out;
 }

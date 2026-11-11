@@ -278,9 +278,9 @@ describe('M3 T1: sources, fields, keys and projects', () => {
   it('a recipe rule may declare a source', () => {
     expect(errorsOf(validateRecipe(recipe({ rules: [rule({ source: src() })] })))).toEqual([]);
   });
-  it('the query enum lists exactly the four source queries (M3-R29)', () => {
+  it('the query enum lists exactly the five source queries (M3-R29)', () => {
     const q = (ruleJsonSchema as unknown as { $defs: { source: { properties: { query: { enum: string[] } } } } }).$defs.source.properties.query.enum;
-    expect(q).toEqual(['github.pull_request', 'github.search_prs_by_key', 'jira.issue', 'jira.projects']);
+    expect(q).toEqual(['github.pull_request', 'github.search_prs_by_key', 'github.issue', 'jira.issue', 'jira.projects']);
   });
   it('rejects an unknown query and a field path that is not a dot path', () => {
     expect(at(validateRecipe(recipe({ rules: [rule({ source: src({ query: 'github.anything' }) })] })), '/rules/0/source/query').length).toBeGreaterThan(0);

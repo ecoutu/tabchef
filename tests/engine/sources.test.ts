@@ -646,3 +646,256 @@ describe('SourceService: same-document navigation', () => {
     expect(t.svc.factsFor(1, 'https://github.com/acme/api')).toBeUndefined();
   });
 });
+
+describe('SourceService: GitHub issues', () => {
+  const ghIssueRule: Rule = {
+    id: 'ghissue', name: 'GitHub issue', enabled: true,
+    source: { connection: 'github', query: 'github.issue', args: { owner: '{owner}', repo: '{repo}', number: '{num}' }, fields: { status: 'status', statusCategory: 'statusCategory', summary: 'summary' } },
+    match: { url: 'github.com/:owner/:repo/issues/:num' }, actions: [{ group: { title: 'Issues', color: 'green' } }],
+  };
+  /** A GraphQL issue response for the query's aliases; issues in `missing` ('owner/repo#n') come back null and NOT_FOUND. */
+  function issueResponse(req: ApiRequest, missing: string[] = []): ApiResult {
+    const { query, variables } = req.json as { query: string; variables: Record<string, unknown> };
+    const data: Record<string, Record<string, unknown>> = {};
+    const errors: unknown[] = [];
+    let repo = '';
+    let repoKey = '';
+    for (const m of query.matchAll(/(r\d+): repository\(owner: \$(o\d+), name: \$(n\d+)\)|(i\d+): issue\(number: \$(k\d+)\)/g)) {
+      if (m[1]) {
+        repo = m[1];
+        repoKey = `${String(variables[m[2]!])}/${String(variables[m[3]!])}`;
+        data[repo] = {};
+      } else {
+        const key = `${repoKey}#${String(variables[m[5]!])}`;
+        if (missing.includes(key)) {
+          data[repo]![m[4]!] = null;
+          errors.push({ type: 'NOT_FOUND', path: [repo, m[4]!], message: 'Could not resolve to an Issue' });
+        } else {
+          data[repo]![m[4]!] = { title: `T ${key}`, state: 'OPEN', stateReason: null, url: `https://github.com/${key.replace('#', '/issues/')}`, closedByPullRequestsReferences: { nodes: [] } };
+        }
+      }
+    }
+    return { ok: true, status: 200, data: { data, ...(errors.length && { errors }) } };
+  }
+  const issuesIn = (req: ApiRequest) => [...(req.json as { query: string }).query.matchAll(/issue\(/g)].length;
+  const issueTab = (id: number, path: string) => tab(id, `https://github.com/${path}`);
+
+  it('an issue tab on an ok connection sends one GraphQL POST and exposes status, statusCategory and summary', async () => {
+    const t = setup({ tabs: [issueTab(1, 'acme/web/issues/5')], rules: [ghIssueRule], fetch: async (_id, req) => issueResponse(req) });
+    await t.svc.refresh('alarm');
+    expect(t.fetch).toHaveBeenCalledTimes(1);
+    expect(t.fetch.mock.calls[0]).toEqual(['github', expect.objectContaining({ method: 'POST', path: '/graphql', background: true })]);
+    expect(stateOf(t.svc, 1, 'rec/ghissue')).toMatchObject({ via: 'api', stale: false, data: { status: 'Open', statusCategory: 'new', summary: 'T acme/web#5' } });
+  });
+
+  it('mixed-case owner/repo are lower-cased: Acme/Web and acme/web are one issue, and it is found', async () => {
+    const t = setup({ tabs: [issueTab(1, 'Acme/Web/issues/5'), issueTab(2, 'acme/web/issues/5')], rules: [ghIssueRule], fetch: async (_id, req) => issueResponse(req) });
+    await t.svc.refresh('alarm');
+    expect(t.fetch).toHaveBeenCalledTimes(1);
+    expect(issuesIn(t.fetch.mock.calls[0]![1])).toBe(1);
+    expect((t.fetch.mock.calls[0]![1].json as { variables: Record<string, unknown> }).variables).toMatchObject({ o0: 'acme', n0: 'web', k0: 5 });
+    for (const id of [1, 2]) expect(stateOf(t.svc, id, 'rec/ghissue')).toMatchObject({ via: 'api', data: { status: 'Open' } });
+  });
+
+  it('githubIssues() reuses the tab lookup\'s cache entry (no second request)', async () => {
+    const t = setup({ tabs: [issueTab(1, 'acme/web/issues/5')], rules: [ghIssueRule], fetch: async (_id, req) => issueResponse(req) });
+    await t.svc.refresh('alarm');
+    const r = await t.svc.githubIssues(['acme/web#5']);
+    expect(t.fetch).toHaveBeenCalledTimes(1);
+    expect(r.get('acme/web#5')).toMatchObject({ via: 'api', data: { owner: 'acme', repo: 'web', number: 5, state: 'open', summary: 'T acme/web#5' } });
+  });
+
+  it('githubIssues() fetches due keys in the foreground, mixed case included, and a tab rule then reads that entry', async () => {
+    const t = setup({ tabs: [issueTab(1, 'acme/web/issues/5')], rules: [ghIssueRule], fetch: async (_id, req) => issueResponse(req, ['acme/web#9']) });
+    const r = await t.svc.githubIssues(['Acme/Web#5', 'acme/web#9']);
+    expect(t.fetch).toHaveBeenCalledTimes(1);
+    expect(t.fetch.mock.calls[0]![1].background).toBe(false);
+    expect(issuesIn(t.fetch.mock.calls[0]![1])).toBe(2);
+    expect(r.get('Acme/Web#5')).toMatchObject({ via: 'api', data: { state: 'open' } });
+    expect(r.get('acme/web#9')).toMatchObject({ via: 'none', error: 'not-found', data: { owner: 'acme', repo: 'web', number: 9, state: 'unknown' } });
+    await t.svc.refresh('alarm');
+    expect(t.fetch).toHaveBeenCalledTimes(1);
+    expect(stateOf(t.svc, 1, 'rec/ghissue')).toMatchObject({ via: 'api', data: { summary: 'T acme/web#5' } });
+  });
+
+  it('githubIssues() skips malformed keys and sends nothing for them', async () => {
+    const t = setup({ fetch: async (_id, req) => issueResponse(req) });
+    const r = await t.svc.githubIssues(['not a key', 'acme/web#0', 'acme#5']);
+    expect(t.fetch).not.toHaveBeenCalled();
+    expect(r.size).toBe(0);
+  });
+
+  it('an issue the API cannot read, with no page adapter, is a failed lookup (not-found)', async () => {
+    const t = setup({ tabs: [issueTab(1, 'acme/web/issues/5')], rules: [ghIssueRule], granted: true, fetch: async (_id, req) => issueResponse(req, ['acme/web#5']) });
+    await t.svc.refresh('alarm');
+    expect(t.fetch).toHaveBeenCalledTimes(1);
+    expect(stateOf(t.svc, 1, 'rec/ghissue')).toMatchObject({ via: 'none', error: 'not-found' });
+  });
+
+  it('without the Issues permission: the issue is via none, its PR via api, the connection untouched, and missingIssuesPermission() says so until an issue is read', async () => {
+    let allowed = false;
+    const fetch = async (_id: string, req: ApiRequest): Promise<ApiResult> => {
+      if (!issuesIn(req)) return prResponse(req, new Map());
+      if (allowed) return issueResponse(req);
+      return { ok: true, status: 200, data: { data: { r0: { i0: null } }, errors: [{ type: 'FORBIDDEN', path: ['r0', 'i0'], message: 'Resource not accessible by integration' }] } };
+    };
+    const t = setup({ tabs: [issueTab(1, 'acme/web/issues/5'), prTab(2)], rules: [ghIssueRule, prRule], fetch });
+    expect(t.svc.missingIssuesPermission()).toBe(false);
+    await t.svc.refresh('alarm');
+    expect(stateOf(t.svc, 1, 'rec/ghissue')).toMatchObject({ via: 'none', error: 'not-found' });
+    expect(stateOf(t.svc, 2)).toMatchObject({ via: 'api', data: { state: 'open' } });
+    expect(t.conn).toEqual({ github: 'ok', jira: 'ok' });
+    expect(t.svc.unreadableRepos()).toEqual([]);
+    expect(t.svc.missingIssuesPermission()).toBe(true);
+    allowed = true;
+    t.advance(10 * MIN);
+    await t.svc.refresh('alarm');
+    expect(stateOf(t.svc, 1, 'rec/ghissue')).toMatchObject({ via: 'api' });
+    expect(t.svc.missingIssuesPermission()).toBe(false);
+  });
+
+  it('a PR lost to a refused closingIssuesReferences (the PR node or data null) is asked again once without it: read via api, flag set, 2 POSTs', async () => {
+    const error = { type: 'FORBIDDEN', path: ['r0', 'p0', 'closingIssuesReferences'], message: 'Resource not accessible by integration' };
+    for (const lost of [{ r0: { p0: null } }, null]) {
+      const fetch = async (_id: string, req: ApiRequest): Promise<ApiResult> => {
+        if (!(req.json as { query: string }).query.includes('closingIssuesReferences')) return prResponse(req, new Map([['acme/api#1', 'MERGED']]));
+        return { ok: true, status: 200, data: { data: lost, errors: [error] } };
+      };
+      const t = setup({ tabs: [prTab(1)], fetch });
+      await t.svc.refresh('alarm');
+      expect(t.fetch).toHaveBeenCalledTimes(2);
+      expect(stateOf(t.svc, 1)).toMatchObject({ via: 'api', stale: false, data: { state: 'merged' } });
+      expect(t.svc.missingIssuesPermission()).toBe(true);
+      expect(t.svc.unreadableRepos()).toEqual([]);
+    }
+  });
+
+  /** prResponse with `edit` applied to its data (PR alias -> node) and `errors` set, for closingIssuesReferences shapes. */
+  const prResponseWith = (req: ApiRequest, states: Map<string, string>, edit: (r0: Record<string, unknown>) => void, errors: unknown[]): ApiResult => {
+    const res = prResponse(req, states) as ApiResult & { data: { data: { r0: Record<string, unknown> }; errors?: unknown[] } };
+    edit(res.data.data.r0);
+    res.data.errors = errors;
+    return res;
+  };
+  const closingQuery = (req: ApiRequest) => (req.json as { query: string }).query.includes('closingIssuesReferences');
+  const refusedAt = (alias: string) => ({ type: 'FORBIDDEN', path: ['r0', alias, 'closingIssuesReferences'], message: 'Resource not accessible by integration' });
+
+  it('only the PRs lost to a refused closingIssuesReferences are asked again: a PR read the first time keeps its closingIssues (and, merged, stays final with them)', async () => {
+    const states = new Map([['acme/api#1', 'MERGED']]);
+    const fetch = async (_id: string, req: ApiRequest): Promise<ApiResult> => {
+      if (!closingQuery(req)) return prResponse(req, states);
+      return prResponseWith(req, states, (r0) => {
+        if (r0.p0) (r0.p0 as Record<string, unknown>).closingIssuesReferences = { nodes: [{ number: 5, repository: { owner: { login: 'acme' }, name: 'web' } }] };
+        if ('p1' in r0) r0.p1 = null;
+      }, prsIn(req) > 1 ? [refusedAt('p1')] : []);
+    };
+    const rule: Rule = { ...prRule, source: { ...prSource, fields: { state: 'state', closingIssues: 'closingIssues' } } };
+    const t = setup({ tabs: [prTab(1), prTab(2)], rules: [rule], fetch });
+    await t.svc.refresh('alarm');
+    expect(t.fetch).toHaveBeenCalledTimes(2);
+    const retry = t.fetch.mock.calls[1]![1];
+    expect(closingQuery(retry)).toBe(false);
+    expect(prsIn(retry)).toBe(1);
+    expect((retry.json as { variables: Record<string, unknown> }).variables).toMatchObject({ k0: 2 });
+    expect(stateOf(t.svc, 1)).toMatchObject({ via: 'api', data: { state: 'merged', closingIssues: ['acme/web#5'] } });
+    expect(stateOf(t.svc, 2)).toMatchObject({ via: 'api', data: { state: 'open' } });
+    t.advance(10 * MIN);
+    await t.svc.refresh('alarm'); // #1 is final: only #2 is asked for
+    expect(prsIn(t.fetch.mock.calls[2]![1])).toBe(1);
+    expect(stateOf(t.svc, 1)).toMatchObject({ via: 'api', data: { state: 'merged', closingIssues: ['acme/web#5'] } });
+  });
+
+  it('with data null for a refused closingIssuesReferences, every PR of the batch is asked again', async () => {
+    const fetch = async (_id: string, req: ApiRequest): Promise<ApiResult> =>
+      closingQuery(req) ? { ok: true, status: 200, data: { data: null, errors: [refusedAt('p1')] } } : prResponse(req, new Map());
+    const t = setup({ tabs: [prTab(1), prTab(2), prTab(3)], fetch });
+    await t.svc.refresh('alarm');
+    expect(t.fetch).toHaveBeenCalledTimes(2);
+    expect(prsIn(t.fetch.mock.calls[1]![1])).toBe(3);
+    for (const id of [1, 2, 3]) expect(stateOf(t.svc, id)).toMatchObject({ via: 'api', data: { state: 'open' } });
+  });
+
+  it('a refused retry keeps the first answer\'s PRs and goes on to the next batch', async () => {
+    const tabs = Array.from({ length: 51 }, (_, i) => prTab(i + 1));
+    const fetch = async (_id: string, req: ApiRequest): Promise<ApiResult> => {
+      if (prsIn(req) === 1) return prResponse(req, new Map());
+      return prResponseWith(req, new Map(), (r0) => { r0.p1 = null; }, [refusedAt('p1')]);
+    };
+    const t = setup({ tabs, fetch });
+    t.canSend.mockResolvedValueOnce({ ok: true }).mockResolvedValueOnce({ ok: false }); // the retry is refused
+    await t.svc.refresh('alarm');
+    expect(t.fetch).toHaveBeenCalledTimes(2);
+    expect(prsIn(t.fetch.mock.calls[0]![1])).toBe(50);
+    expect(prsIn(t.fetch.mock.calls[1]![1])).toBe(1);
+    expect(stateOf(t.svc, 1)).toMatchObject({ via: 'api', data: { state: 'open' } });
+    expect(stateOf(t.svc, 51)).toMatchObject({ via: 'api', data: { state: 'open' } });
+    expect(stateOf(t.svc, 2)?.via).not.toBe('api'); // left as it was
+    expect(t.svc.unreadableRepos()).toEqual([]);
+  });
+
+  it('a failed retry fails only the PRs it asked for again', async () => {
+    const fetch = async (_id: string, req: ApiRequest): Promise<ApiResult> => {
+      if (!closingQuery(req)) return { ok: false, kind: 'server', message: 'boom' };
+      return prResponseWith(req, new Map(), (r0) => { r0.p1 = null; }, [refusedAt('p1')]);
+    };
+    const t = setup({ tabs: [prTab(1), prTab(2)], fetch });
+    await t.svc.refresh('alarm');
+    expect(t.fetch).toHaveBeenCalledTimes(2);
+    expect(stateOf(t.svc, 1)).toMatchObject({ via: 'api', data: { state: 'open' } });
+    expect(stateOf(t.svc, 2)).toMatchObject({ via: 'none', error: 'server' });
+  });
+
+  it('a PR read with only its closingIssuesReferences null (as GitHub documents it) is 1 POST per refresh', async () => {
+    const fetch = async (_id: string, req: ApiRequest): Promise<ApiResult> =>
+      prResponseWith(req, new Map(), (r0) => { (r0.p0 as Record<string, unknown>).closingIssuesReferences = null; }, [refusedAt('p0')]);
+    const t = setup({ tabs: [prTab(1)], fetch });
+    await t.svc.refresh('alarm');
+    t.advance(10 * MIN);
+    await t.svc.refresh('alarm');
+    expect(t.fetch).toHaveBeenCalledTimes(2);
+    expect(t.fetch.mock.calls.every(([, req]) => closingQuery(req))).toBe(true);
+    expect(stateOf(t.svc, 1)).toMatchObject({ via: 'api', data: { state: 'open' } });
+  });
+
+  it('a PR read with only its closingIssuesReferences refused is not asked again (1 POST)', async () => {
+    const fetch = async (_id: string, req: ApiRequest): Promise<ApiResult> => {
+      const res = prResponse(req, new Map()) as ApiResult & { data: { data: { r0: { p0: Record<string, unknown> } }; errors?: unknown[] } };
+      res.data.data.r0.p0.closingIssuesReferences = null;
+      res.data.errors = [{ type: 'FORBIDDEN', path: ['r0', 'p0', 'closingIssuesReferences'], message: 'Resource not accessible by integration' }];
+      return res;
+    };
+    const t = setup({ tabs: [prTab(1)], fetch });
+    await t.svc.refresh('alarm');
+    expect(t.fetch).toHaveBeenCalledTimes(1);
+    expect(stateOf(t.svc, 1)).toMatchObject({ via: 'api', data: { state: 'open' } });
+    expect(t.svc.missingIssuesPermission()).toBe(true);
+  });
+
+  it('a PR whose closingIssuesReferences is refused sets missingIssuesPermission(); one read clears it', async () => {
+    let allowed = false;
+    const fetch = async (_id: string, req: ApiRequest): Promise<ApiResult> => {
+      const res = prResponse(req, new Map()) as ApiResult & { data: { data: { r0: { p0: Record<string, unknown> } }; errors?: unknown[] } };
+      const p0 = res.data.data.r0.p0;
+      if (allowed) p0.closingIssuesReferences = { nodes: [] };
+      else { p0.closingIssuesReferences = null; res.data.errors = [{ type: 'FORBIDDEN', path: ['r0', 'p0', 'closingIssuesReferences'], message: 'Resource not accessible by integration' }]; }
+      return res;
+    };
+    const t = setup({ tabs: [prTab(1)], fetch });
+    await t.svc.refresh('alarm');
+    expect(stateOf(t.svc, 1)).toMatchObject({ via: 'api' });
+    expect(t.svc.missingIssuesPermission()).toBe(true);
+    allowed = true;
+    t.advance(10 * MIN);
+    await t.svc.refresh('alarm');
+    expect(t.svc.missingIssuesPermission()).toBe(false);
+  });
+
+  it('with the connection not ok, an issue tab sends nothing and is via none', async () => {
+    const t = setup({ tabs: [issueTab(1, 'acme/web/issues/5')], rules: [ghIssueRule], conn: { github: 'not-configured' }, fetch: async (_id, req) => issueResponse(req) });
+    await t.svc.refresh('alarm');
+    expect(t.fetch).not.toHaveBeenCalled();
+    expect(stateOf(t.svc, 1, 'rec/ghissue')).toMatchObject({ via: 'none', error: 'not-configured' });
+    expect((await t.svc.githubIssues(['acme/web#5'])).get('acme/web#5')).toMatchObject({ via: 'none' });
+    expect(t.fetch).not.toHaveBeenCalled();
+  });
+});

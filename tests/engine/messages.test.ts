@@ -980,6 +980,16 @@ describe('connections.* (M3 T7)', () => {
     expect(old.ok && 'unreadable' in (old.data as object)).toBe(false);
   });
 
+  it('connections.list: missingIssues when GitHub issue data is missing for lack of the Issues permission, only then', async () => {
+    const s = await connRig();
+    const withSources = (missing: boolean) => createHandler({ ...s.deps, sources: { refresh: vi.fn(async () => {}), missingIssuesPermission: () => missing } });
+    expect(await withSources(true)({ type: 'connections.list' }, ui)).toMatchObject({ ok: true, data: { missingIssues: true } });
+    const none = await withSources(false)({ type: 'connections.list' }, ui);
+    expect(none.ok && 'missingIssues' in (none.data as object)).toBe(false);
+    const old = await s.handle({ type: 'connections.list' }, ui);
+    expect(old.ok && 'missingIssues' in (old.data as object)).toBe(false);
+  });
+
   it('every connections.* request from a content script (or another extension) is forbidden; nothing runs', async () => {
     const s = await connRig();
     const spies = [vi.spyOn(s.connections, 'setGitHubToken'), vi.spyOn(s.manager, 'disconnect'), vi.spyOn(s.device, 'start'), vi.spyOn(s.device, 'poll')];

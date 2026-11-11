@@ -371,8 +371,11 @@ export interface ResponseData {
   /** null for one tab; `{closed, skipped}` for `tabs` (close-all). */
   'view.close': null | { closed: number; skipped: number };
   'view.keep': null;
-  /** `unreadable`: repos of open PR tabs the GitHub connection cannot read (SourceService.unreadableRepos). */
-  'connections.list': { defs: ConnectionDef[]; status: ConnectionStatus[]; unreadable?: { repo: string; error: ConnErrorKind }[] };
+  /**
+   * `unreadable`: repos of open PR tabs the GitHub connection cannot read (SourceService.unreadableRepos).
+   * `missingIssues`: GitHub issue data is missing for lack of the GitHub App's Issues permission (SourceService.missingIssuesPermission).
+   */
+  'connections.list': { defs: ConnectionDef[]; status: ConnectionStatus[]; unreadable?: { repo: string; error: ConnErrorKind }[]; missingIssues?: true };
   'connections.github.start': { userCode: string; verificationUri: string; expiresAt: number; interval: number };
   'connections.github.poll': DevicePollResult;
   'connections.setToken': ConnectionStatus;
@@ -602,7 +605,7 @@ export interface HandlerDeps {
   /** projects.sync.* (M4 T14). Without it they fail. */
   projectSync?: Pick<ProjectSync, 'status' | 'setEnabled' | 'dismiss'>;
   /** sources.refresh (M3 T17). Without it the request fails. */
-  sources?: Pick<SourceService, 'refresh'> & Partial<Pick<SourceService, 'unreadableRepos'>>;
+  sources?: Pick<SourceService, 'refresh'> & Partial<Pick<SourceService, 'unreadableRepos' | 'missingIssuesPermission'>>;
   now?: () => number;
 }
 
@@ -1048,7 +1051,8 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
         const defs = [...builtins, ...stored.filter((d) => !builtins.includes(d))].map(publicDef);
         const status = (await Promise.all(defs.map((d) => c.manager.status(d.id)))).flat();
         const unreadable = deps.sources?.unreadableRepos?.() ?? [];
-        return ok({ defs, status, ...(unreadable.length && { unreadable }) });
+        const missingIssues = deps.sources?.missingIssuesPermission?.() === true;
+        return ok({ defs, status, ...(unreadable.length && { unreadable }), ...(missingIssues && { missingIssues }) });
       }
       case 'connections.github.start': {
         const r = await c.github.start(builtinConnectionDefs().github);

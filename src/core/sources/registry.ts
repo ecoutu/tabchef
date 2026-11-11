@@ -10,6 +10,7 @@ const HOUR = 60 * MIN;
 export const SOURCE_QUERIES: Record<SourceQueryKind, SourceQueryInfo> = {
   'github.pull_request': { connectionKind: 'github', batch: 50, final: (d) => (d as { state?: unknown } | null)?.state === 'merged', ttlMs: 5 * MIN },
   'github.search_prs_by_key': { connectionKind: 'github', batch: 10, final: () => false, ttlMs: 15 * MIN },
+  'github.issue': { connectionKind: 'github', batch: 50, final: () => false, ttlMs: 5 * MIN },
   'jira.issue': { connectionKind: 'jira', batch: 50, final: () => false, ttlMs: 5 * MIN },
   'jira.projects': { connectionKind: 'jira', batch: 1, final: () => false, ttlMs: 24 * HOUR },
 };

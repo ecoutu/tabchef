@@ -9,6 +9,7 @@
 import { adapterOf } from '../core/adapters';
 import type { AdapterId } from '../core/adapters';
 import type { ApiRequest, ApiResult, ConnErrorKind, ConnectionDef, ConnectionState } from '../core/connections/types';
+import { issueKey, parseIssueKey, type IssueRef } from '../core/keys/github-issue';
 import { DEFAULT_KEY_PATTERN } from '../core/keys/jira-key';
 import { evalCond } from '../core/lang/cond';
 import { DURATION, parseDuration } from '../core/lang/duration';
@@ -18,9 +19,10 @@ import type { CompiledRule, Cond, Program, Rule, SourceQueryKind, TabFacts } fro
 import { matchesPattern } from '../core/match/pattern';
 import { renderTemplate } from '../core/match/template';
 import { buildKeySearchQuery, buildPrStateQuery, parseKeySearchResponse, parsePrStateResponse, prKey, type PrRef } from '../core/sources/github';
+import { buildIssueQuery, parseIssueResponse } from '../core/sources/github-issue';
 import { buildIssueSearch, parseIssueSearch, resolveInHalves, type IssueFailureDetail } from '../core/sources/jira';
 import { pickFields, SOURCE_QUERIES } from '../core/sources/registry';
-import type { JiraIssue, PrInfo, SourceEntry } from '../core/sources/types';
+import type { GithubIssueInfo, JiraIssue, PrInfo, SourceEntry } from '../core/sources/types';
 import type { Snapshot, TabSnap } from '../core/types';
 import { isExemptUrl } from '../core/url/normalize';
 import type { BrowserPort } from '../platform/browser-port';
@@ -50,8 +52,11 @@ const GITHUB = 'github';
 const JIRA = 'jira';
 
 export type RefreshReason = 'alarm' | 'popup' | 'tabs' | 'manual';
-/** An issue names its site (the tab's host, M3-R110): only the connected site's issues are looked up through the API. */
-type Target = { pr: PrRef } | { issue: string; site: string };
+/**
+ * A Jira issue names its site (the tab's host, M3-R110): only the connected site's issues are looked up through the
+ * API. A GitHub issue (`ghIssue`) is lower-cased like a PR (M3-R61).
+ */
+type Target = { pr: PrRef } | { ghIssue: IssueRef } | { issue: string; site: string };
 /** One tab's lookup for one rule. `key` is the cache key (connection, query and the normalized target). */
 export interface SourceRequest {
   tabId: number; url: string; ruleKey: string; connection: string; query: SourceQueryKind; key: string; target: Target;
@@ -123,6 +128,12 @@ function targetOf(query: SourceQueryKind, a: Record<string, string>, url: string
     const pr = { owner, repo, number: Number(n) };
     return { target: { pr }, id: prKey(pr) };
   }
+  if (query === 'github.issue') {
+    const [owner, repo, n] = [a.owner?.toLowerCase(), a.repo?.toLowerCase(), a.number]; // M3-R61
+    if (!owner || !repo || !NAME_RE.test(owner) || !NAME_RE.test(repo) || !n || !/^[1-9]\d{0,9}$/.test(n)) return undefined;
+    const ghIssue = { owner, repo, number: Number(n) };
+    return { target: { ghIssue }, id: issueKey(ghIssue) };
+  }
   if (query === 'jira.issue' && a.key && KEY_RE.test(a.key)) {
     let site: string;
     try {
@@ -160,6 +171,11 @@ export class SourceService {
    * App installation does not cover the repo). In memory only; a PR read there clears it. The Connections page shows it.
    */
   private unreadable = new Map<string, ConnErrorKind>();
+  /**
+   * The API refused an issue, or a PR's closing issues, for lack of the GitHub App's Issues permission; an issue or a
+   * PR's closing issues read since clears it. In memory only; the Connections page shows it.
+   */
+  private issuesForbidden = false;
   private chain: Promise<unknown> = Promise.resolve();
   private readonly now: () => number;
   /** The cache loaded and the open tabs indexed (no network): factsFor answers from here on. */
@@ -301,6 +317,11 @@ export class SourceService {
     return [...this.unreadable].filter(([repo]) => open.has(repo)).sort(([a], [b]) => a.localeCompare(b)).map(([repo, error]) => ({ repo, error }));
   }
 
+  /** Whether GitHub issue data is missing because the GitHub App lacks the Issues permission (see `issuesForbidden`). */
+  missingIssuesPermission(): boolean {
+    return this.issuesForbidden;
+  }
+
   /**
    * Popup refreshes run at most once per POPUP_THROTTLE_MS; refreshes run one at a time. `needsKeys`: look up only the
    * rules of these needs keys (rule keys, or recipe ids for all their rules), e.g. those whose level kind changed
@@ -363,6 +384,13 @@ export class SourceService {
         await this.fetchPrs(connection, rs, background, now, (r, kind, d) => this.fallBack(r.key, byKey.get(r.key)!, kinds, kind, d, now));
         continue;
       }
+      if (query === 'github.issue') {
+        // As for PRs: an issue the API cannot read reads its page instead (the rule's fallback adapter), else fails.
+        const reqOf = new Map(rs.map((r) => [issueKey((r.target as { ghIssue: IssueRef }).ghIssue), r]));
+        await this.fetchGhIssues(connection, [...reqOf.values()].map((r) => (r.target as { ghIssue: IssueRef }).ghIssue), background, now,
+          (ref, kind, d) => { const r = reqOf.get(issueKey(ref))!; return this.fallBack(r.key, byKey.get(r.key)!, kinds, kind, d, now); });
+        continue;
+      }
       // M3-R110: the API answers for its own site only; a same-key issue on another site is another ticket. Such a
       // ticket's rules run at their level without this connection (#30): its page where granted, else titles. Without a
       // page read it is not-found (M4-R3): the connection cannot see that ticket, as for an unreadable PR repo.
@@ -405,10 +433,13 @@ export class SourceService {
     return e.via === 'api' && !e.stale && now - e.fetchedAt < SOURCE_QUERIES[query].ttlMs;
   }
 
-  /** A failed lookup (SourceCache.fail); a PR's `none` entry holds the PR with state 'unknown'. */
+  /** A failed lookup (SourceCache.fail); a PR's or GitHub issue's `none` entry holds it with state 'unknown'. */
   private fail(key: string, target: Target | undefined, error: ConnErrorKind, d: IssueFailureDetail, now: number): void {
     const data = target && 'pr' in target
-      ? { ...target.pr, state: 'unknown', url: `https://github.com/${target.pr.owner}/${target.pr.repo}/pull/${target.pr.number}` } : undefined;
+      ? { ...target.pr, state: 'unknown', url: `https://github.com/${target.pr.owner}/${target.pr.repo}/pull/${target.pr.number}` }
+      : target && 'ghIssue' in target
+        ? { ...target.ghIssue, state: 'unknown', url: `https://github.com/${target.ghIssue.owner}/${target.ghIssue.repo}/issues/${target.ghIssue.number}` }
+        : undefined;
     this.cache.fail(key, error, d, now, data);
   }
 
@@ -422,6 +453,8 @@ export class SourceService {
       const parsed = a.parse(page.extracts) as Partial<PrInfo & JiraIssue>;
       if ('pr' in r.target) {
         if (parsed.state !== undefined && parsed.state !== 'unknown') return { ...r.target.pr, url: r.url, ...parsed };
+      } else if ('ghIssue' in r.target) {
+        if (Object.keys(parsed).length) return { ...r.target.ghIssue, url: r.url, ...parsed };
       } else if (Object.keys(parsed).length) return { key: r.target.issue, url: r.url, ...parsed };
     }
     return undefined;
@@ -439,17 +472,45 @@ export class SourceService {
   /** `failed`: what a PR the API answered for without its data becomes (default: a failed lookup). */
   private async fetchPrs(connection: string, rs: SourceRequest[], background: boolean, now: number,
     failed: (r: SourceRequest, kind: ConnErrorKind, d: IssueFailureDetail) => Promise<void> = async (r, kind, d) => this.fail(r.key, r.target, kind, d, now)): Promise<void> {
-    for (const batch of chunks(rs, SOURCE_QUERIES['github.pull_request'].batch)) {
-      const q = buildPrStateQuery(batch.map((r) => (r.target as { pr: PrRef }).pr));
+    const prOf = (r: SourceRequest) => (r.target as { pr: PrRef }).pr;
+    const post = async (prs: PrRef[], closing: boolean) => {
+      const q = buildPrStateQuery(prs, { closing });
       const res = await this.send(connection, { method: 'POST', path: '/graphql', json: { query: q.query, variables: q.variables } }, background);
+      return res?.ok ? { res, parsed: parsePrStateResponse(res.data, q.aliases) } : { res };
+    };
+    for (const batch of chunks(rs, SOURCE_QUERIES['github.pull_request'].batch)) {
+      const { res, parsed } = await post(batch.map(prOf), true);
       if (!res) return; // background budget spent: leave the rest as they are
       if (!res.ok) {
         for (const r of batch) this.fail(r.key, r.target, res.kind, detailOf(res), now); // keeps retryAt (rate limits)
         continue;
       }
-      const parsed = parsePrStateResponse(res.data, q.aliases);
+      if (!parsed) continue; // never: an ok answer is parsed
+      // GitHub may null a PR (or all data) for its refused closingIssuesReferences rather than the field alone: without
+      // the Issues permission PR state must still be read, so the PRs it lost are asked once more without that field.
+      // The PRs read the first time keep that answer (and their closingIssues).
+      const skip = new Set<string>();
+      if (parsed.closingLost) {
+        const lost = new Set(parsed.closingLost);
+        const again = await post(batch.map(prOf).filter((p) => lost.has(prKey(p))), false);
+        if (!again.res || !again.res.ok) {
+          for (const r of batch) {
+            if (!lost.has(prKey(prOf(r)))) continue;
+            skip.add(r.key); // refused: left as they are; failed: a failed lookup (keeps retryAt)
+            if (again.res && !again.res.ok) this.fail(r.key, r.target, again.res.kind, detailOf(again.res), now);
+          }
+        } else if (again.parsed) {
+          for (const [k, info] of again.parsed.prs) parsed.prs.set(k, info);
+          parsed.errors = [...parsed.errors.filter((e) => !lost.has(e.key)), ...again.parsed.errors];
+          // a PR read: the refusal counts
+          if (parsed.closingFailed === 'forbidden' && again.parsed.prs.size > again.parsed.errors.length) parsed.issuesForbidden = true;
+        }
+      }
+      if (parsed.issuesForbidden) this.issuesForbidden = true;
+      else if ([...parsed.prs.values()].some((p) => p.closingIssues !== undefined)) this.issuesForbidden = false;
       const errors = new Map(parsed.errors.map((e) => [e.key, e]));
       for (const r of batch) {
+        if (skip.has(r.key)) continue;
         const id = prKey((r.target as { pr: PrRef }).pr);
         const err = errors.get(id);
         const info = parsed.prs.get(id);
@@ -462,6 +523,33 @@ export class SourceService {
           this.unreadable.delete(repo);
           this.cache.put(r.key, { data: info, via: 'api', fetchedAt: now, final: SOURCE_QUERIES['github.pull_request'].final(info), stale: false }, now);
         }
+      }
+    }
+  }
+
+  /**
+   * github.issue lookups of `refs` in batches; stops when the background budget is spent. `failed`: what an issue the API answered for without its data becomes (default: a failed lookup).
+   */
+  private async fetchGhIssues(connection: string, refs: IssueRef[], background: boolean, now: number,
+    failed: (ref: IssueRef, kind: ConnErrorKind, d: IssueFailureDetail) => Promise<void> = async (ref, kind, d) => this.fail(cacheKey(connection, 'github.issue', issueKey(ref)), { ghIssue: ref }, kind, d, now)): Promise<void> {
+    for (const batch of chunks(refs, SOURCE_QUERIES['github.issue'].batch)) {
+      const q = buildIssueQuery(batch);
+      const res = await this.send(connection, { method: 'POST', path: '/graphql', json: { query: q.query, variables: q.variables } }, background);
+      if (!res) return; // background budget spent: leave the rest as they are
+      const key = (ref: IssueRef) => cacheKey(connection, 'github.issue', issueKey(ref));
+      if (!res.ok) {
+        for (const ref of batch) this.fail(key(ref), { ghIssue: ref }, res.kind, detailOf(res), now); // keeps retryAt (rate limits)
+        continue;
+      }
+      const parsed = parseIssueResponse(res.data, q.aliases);
+      if (parsed.issuesForbidden) this.issuesForbidden = true;
+      else if (parsed.issues.size > parsed.errors.length) this.issuesForbidden = false;
+      const errors = new Map(parsed.errors.map((e) => [e.key, e]));
+      for (const ref of batch) {
+        const err = errors.get(issueKey(ref));
+        const info = parsed.issues.get(issueKey(ref));
+        if (err || !info) await failed(ref, err?.kind ?? 'not-found', detailOf(err ?? {}));
+        else this.cache.put(key(ref), { data: info, via: 'api', fetchedAt: now, final: SOURCE_QUERIES['github.issue'].final(info), stale: false }, now);
       }
     }
   }
@@ -558,6 +646,44 @@ export class SourceService {
       for (const k of valid) {
         const e = this.cache.get(key(k));
         if (e) out.set(k, publicOf(e) as SourceEntry<JiraIssue>);
+      }
+      return out;
+    });
+  }
+
+  /**
+   * github.issue entries per issue key (`owner/repo#N`; shared with issue tabs' lookups; 5 min TTL), keyed as given.
+   * Keys that do not parse are skipped.
+   */
+  githubIssues(keys: string[]): Promise<Map<string, SourceEntry<GithubIssueInfo>>> {
+    return this.serial(async () => {
+      await this.ensureLoaded();
+      const now = this.now();
+      const given = new Map<string, string>(); // key as given -> issueKey (lower-cased)
+      const refs = new Map<string, IssueRef>();
+      for (const k of keys) {
+        const ref = parseIssueKey(k);
+        if (!ref) continue;
+        given.set(k, issueKey(ref));
+        refs.set(issueKey(ref), ref);
+      }
+      const key = (id: string) => cacheKey(GITHUB, 'github.issue', id);
+      // A fresh page reading (an issue tab the API cannot read) is as good as an API one here: failing it would mark it
+      // stale until the tab's next lookup reads the page again, and each flip cancels or re-arms close prompts (M3-R92).
+      const freshPage = (e: CacheEntry | undefined) => e?.via === 'page' && !e.stale && now - e.fetchedAt < SOURCE_QUERIES['github.issue'].ttlMs;
+      const failed = async (ref: IssueRef, kind: ConnErrorKind, d: IssueFailureDetail) => {
+        const e = this.cache.get(key(issueKey(ref)));
+        if (!(e?.via === 'page' && !e.stale)) this.fail(key(issueKey(ref)), { ghIssue: ref }, kind, d, now);
+      };
+      // Settled: tab rules read these entries too.
+      await this.settling(async () => {
+        const due = (await this.due(GITHUB, [...refs.keys()], 'github.issue', key, now)).filter((id) => !freshPage(this.cache.get(key(id))));
+        await this.fetchGhIssues(GITHUB, due.map((id) => refs.get(id)!), false, now, failed);
+      });
+      const out = new Map<string, SourceEntry<GithubIssueInfo>>();
+      for (const [k, id] of given) {
+        const e = this.cache.get(key(id));
+        if (e) out.set(k, publicOf(e) as SourceEntry<GithubIssueInfo>);
       }
       return out;
     });

@@ -1,0 +1,37 @@
+{
+  "_comment": "Hand-written: r0 holds an open issue with one open and one merged PR plus a closed NOT_PLANNED issue; r1 is behind SAML; r2 is not found.",
+  "data": {
+    "r0": {
+      "i0": {
+        "title": "Dark mode",
+        "state": "OPEN",
+        "stateReason": null,
+        "url": "https://github.com/acme/web/issues/179",
+        "closedByPullRequestsReferences": {
+          "nodes": [
+            { "number": 10, "title": "Add dark mode", "url": "https://github.com/acme/web/pull/10", "state": "OPEN", "isDraft": false, "merged": false, "mergedAt": null, "headRefName": "feat/179-dark-mode", "repository": { "owner": { "login": "Acme" }, "name": "Web" } },
+            { "number": 11, "title": "Dark mode tokens", "url": "https://github.com/acme/web/pull/11", "state": "MERGED", "isDraft": false, "merged": true, "mergedAt": "2026-11-03T10:00:00Z", "headRefName": "feat/179-tokens", "repository": { "owner": { "login": "acme" }, "name": "web" } },
+            { "number": 12, "title": "Draft attempt", "url": "https://github.com/acme/web/pull/12", "state": "OPEN", "isDraft": true, "merged": false, "mergedAt": null, "headRefName": "wip", "repository": { "owner": { "login": "acme" }, "name": "web" } },
+            { "number": 13, "title": "Abandoned", "url": "https://github.com/acme/web/pull/13", "state": "CLOSED", "isDraft": false, "merged": false, "mergedAt": null, "headRefName": "old", "repository": { "owner": { "login": "acme" }, "name": "web" } }
+          ]
+        }
+      },
+      "i1": {
+        "title": "Won't fix",
+        "state": "CLOSED",
+        "stateReason": "NOT_PLANNED",
+        "url": "https://github.com/acme/web/issues/180",
+        "closedByPullRequestsReferences": { "nodes": [] }
+      },
+      "i2": null
+    },
+    "r1": null,
+    "r2": null,
+    "rateLimit": { "cost": 1, "remaining": 4990, "limit": 5000, "resetAt": "2026-11-10T01:00:00Z" }
+  },
+  "errors": [
+    { "type": "NOT_FOUND", "path": ["r0", "i2"], "message": "Could not resolve to an Issue with the number of 999." },
+    { "type": "FORBIDDEN", "path": ["r1"], "extensions": { "saml_failure": true }, "message": "Resource protected by organization SAML enforcement." },
+    { "type": "NOT_FOUND", "path": ["r2"], "message": "Could not resolve to a Repository with the name 'acme/nope'." }
+  ]
+}

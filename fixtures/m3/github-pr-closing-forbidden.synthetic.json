@@ -1,0 +1,10 @@
+{
+  "_comment": "Hand-written: a GitHub App without the Issues permission. closingIssuesReferences is FORBIDDEN (path length 3) while the rest of the PR resolves.",
+  "data": {
+    "r0": { "p0": { "state": "OPEN", "merged": false, "mergedAt": null, "isDraft": false, "title": "Open one", "headRefName": "feat/x", "reviewDecision": "REVIEW_REQUIRED", "url": "https://github.com/acme/web/pull/10", "closingIssuesReferences": null } },
+    "rateLimit": { "cost": 1, "remaining": 4000, "limit": 5000, "resetAt": "2026-11-10T01:00:00Z" }
+  },
+  "errors": [
+    { "type": "FORBIDDEN", "path": ["r0", "p0", "closingIssuesReferences"], "message": "Resource not accessible by integration" }
+  ]
+}

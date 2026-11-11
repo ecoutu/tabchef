@@ -73,6 +73,24 @@ describe('Connections page', () => {
     expect(note.textContent).toMatch(/install the Tabchef GitHub App|personal access token/);
   });
 
+  it('says why GitHub issue data is missing when the GitHub App lacks the Issues permission, with where to accept it', async () => {
+    status = [st({ state: 'ok' })];
+    send.mockImplementation(async (req: { type: string }) => (req.type === 'connections.list'
+      ? { ok: true, data: { defs, status, missingIssues: true } }
+      : { ok: true, data: null }));
+    await open();
+    const card = screen.getByRole('region', { name: 'GitHub' });
+    const note = within(card).getByText(/can't read GitHub issues yet/).closest('p')!;
+    expect(note.textContent).toContain('Issues (read-only) permission');
+    expect(within(note).getByRole('link').getAttribute('href')).toBe('https://github.com/settings/installations');
+  });
+
+  it('no Issues permission note while issue data is readable', async () => {
+    status = [st({ state: 'ok' })];
+    await open();
+    expect(screen.queryByText(/can't read GitHub issues yet/)).toBeNull();
+  });
+
   it('lists GitHub with its badge; Connect GitHub when not connected', async () => {
     await open();
     expect(screen.getByRole('region', { name: 'GitHub' })).toBeTruthy();
@@ -199,6 +217,8 @@ describe('Connections page', () => {
     const form = screen.getByText('Use a personal access token instead').closest('details')!;
     expect(form.textContent).toContain('Fine-grained token (recommended)');
     expect(form.textContent).toMatch(/Pull requests.*Metadata/);
+    expect(form.textContent).toMatch(/Pull requests, Issues and Metadata/); // Issues: GitHub issue projects
+    expect(form.innerHTML).toContain('Issues: Read-only');
     expect(form.textContent).toMatch(/classic.*repo/);
     const input = screen.getByLabelText('Personal access token') as HTMLInputElement;
     expect(input.type).toBe('password');

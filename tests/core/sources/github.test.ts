@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import batch from '../../../fixtures/m3/gh-pr-batch.synthetic.json?raw';
 import saml from '../../../fixtures/m3/gh-pr-batch-saml.synthetic.json?raw';
 import notFound from '../../../fixtures/m3/gh-pr-batch-notfound.synthetic.json?raw';
+import forbidden from '../../../fixtures/m3/github-pr-closing-forbidden.synthetic.json?raw';
 import search from '../../../fixtures/m3/gh-search.synthetic.json?raw';
 import schema from '../../../src/core/lang/rule.schema.json';
 import { buildKeySearchQuery, buildPrStateQuery, parseKeySearchResponse, parsePrStateResponse } from '../../../src/core/sources/github';
@@ -119,6 +120,68 @@ describe('key search', () => {
     for (const body of [{ errors: [{ type: 'RATE_LIMITED' }] }, { data: null, errors: [{ type: 'RATE_LIMITED' }] }]) {
       expect(parseKeySearchResponse(body, aliases).errors).toEqual([{ key: 'ABC-1', kind: 'rate-limited' }, { key: 'ABC-2', kind: 'rate-limited' }]);
     }
+  });
+});
+
+describe('closingIssuesReferences', () => {
+  it('asks for it in the PR query', () => {
+    expect(buildPrStateQuery([pr('acme', 'web', 10)]).query).toContain('closingIssuesReferences(first: 5)');
+  });
+  it('maps it to lower-cased issue keys in GitHub order', () => {
+    const body = { data: { r0: { p0: { state: 'OPEN', url: 'u', closingIssuesReferences: { nodes: [{ number: 7, repository: { owner: { login: 'Acme' }, name: 'API' } }, { number: 2, repository: { owner: { login: 'acme' }, name: 'web' } }] } } } } };
+    const { prs } = parsePrStateResponse(body, new Map([['r0', 'acme/web'], ['p0', 'acme/web#10']]));
+    expect(prs.get('acme/web#10')!.closingIssues).toEqual(['acme/api#7', 'acme/web#2']);
+  });
+  it('parses the PR without closingIssues when the app lacks the Issues permission, with no error', () => {
+    const { prs, errors } = parsePrStateResponse(JSON.parse(forbidden), new Map([['r0', 'acme/web'], ['p0', 'acme/web#10']]));
+    const p = prs.get('acme/web#10')!;
+    expect(p).toMatchObject({ state: 'open', headRefName: 'feat/x' });
+    expect(p.closingIssues).toBeUndefined();
+    expect(errors).toEqual([]);
+  });
+  it('flags the missing Issues permission only for a non-SAML "not accessible by integration" FORBIDDEN on closingIssuesReferences', () => {
+    const aliases = new Map([['r0', 'acme/web'], ['p0', 'acme/web#10']]);
+    expect(parsePrStateResponse(JSON.parse(forbidden), aliases).issuesForbidden).toBe(true);
+    const body = (e: Record<string, unknown>) => ({ data: { r0: { p0: { state: 'OPEN', url: 'u', closingIssuesReferences: null } } }, errors: [e] });
+    const path = ['r0', 'p0', 'closingIssuesReferences'];
+    for (const e of [
+      { type: 'FORBIDDEN', path, message: 'Resource protected by organization SAML enforcement.' },
+      { type: 'FORBIDDEN', path, message: 'Resource not accessible by integration', extensions: { saml_failure: true } },
+      { type: 'FORBIDDEN', path: ['r0', 'p0', 'title'], message: 'Resource not accessible by integration' },
+      { type: 'NOT_FOUND', path, message: 'Resource not accessible by integration' },
+    ]) expect(parsePrStateResponse(body(e), aliases).issuesForbidden).toBeFalsy();
+  });
+  it('leaves it out with { closing: false }, the rest of the PR fields kept', () => {
+    const q = buildPrStateQuery([pr('acme', 'web', 10)], { closing: false }).query;
+    expect(q).not.toContain('closingIssuesReferences');
+    for (const f of ['state', 'merged', 'mergedAt', 'isDraft', 'title', 'headRefName', 'reviewDecision', 'url']) expect(q).toContain(f);
+  });
+  it('flags the missing Issues permission only for a PR that was read; an unread one only says the field failed (closingFailed)', () => {
+    const aliases = new Map([['r0', 'acme/web'], ['p0', 'acme/web#10']]);
+    const error = { type: 'FORBIDDEN', path: ['r0', 'p0', 'closingIssuesReferences'], message: 'Resource not accessible by integration' };
+    for (const body of [{ data: { r0: { p0: null } }, errors: [error] }, { data: null, errors: [error] }]) {
+      const r = parsePrStateResponse(body, aliases);
+      expect(r.issuesForbidden).toBeFalsy();
+      expect(r.closingFailed).toBe('forbidden');
+      expect(r.errors).toEqual([{ key: 'acme/web#10', kind: 'not-found' }]);
+    }
+    const read = parsePrStateResponse(JSON.parse(forbidden), aliases);
+    expect(read).toMatchObject({ issuesForbidden: true, closingFailed: 'forbidden', errors: [] });
+    expect(parsePrStateResponse({ data: { r0: { p0: null } }, errors: [{ ...error, type: 'NOT_FOUND' }] }, aliases).closingFailed).toBe('error');
+    expect(parsePrStateResponse({ data: { r0: { p0: null } }, errors: [{ ...error, path: ['r0', 'p0'] }] }, aliases).closingFailed).toBeUndefined();
+  });
+  it('closingLost: the unread PRs a closingIssuesReferences error may have lost (every unread PR when data is null)', () => {
+    const aliases = new Map([['r0', 'acme/web'], ['p0', 'acme/web#10'], ['p1', 'acme/web#11'], ['p2', 'acme/web#12']]);
+    const error = { type: 'FORBIDDEN', path: ['r0', 'p1', 'closingIssuesReferences'], message: 'Resource not accessible by integration' };
+    const gone = { type: 'NOT_FOUND', path: ['r0', 'p2'], message: 'Could not resolve' };
+    const partial = parsePrStateResponse({ data: { r0: { p0: { state: 'OPEN', url: 'u' }, p1: null, p2: null } }, errors: [error, gone] }, aliases);
+    expect(partial.closingLost).toEqual(['acme/web#11']);
+    expect(parsePrStateResponse({ data: null, errors: [error] }, aliases).closingLost).toEqual(['acme/web#10', 'acme/web#11', 'acme/web#12']);
+    expect(parsePrStateResponse({ data: { r0: { p0: null } }, errors: [gone] }, aliases).closingLost).toBeUndefined();
+  });
+  it('ignores an error on a present item', () => {
+    const body = { data: { r0: { p0: { state: 'OPEN', url: 'u' } } }, errors: [{ type: 'FORBIDDEN', path: ['r0', 'p0'], message: 'x' }] };
+    expect(parsePrStateResponse(body, new Map([['r0', 'acme/web'], ['p0', 'acme/web#10']])).errors).toEqual([]);
   });
 });
 

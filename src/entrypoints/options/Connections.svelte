@@ -14,7 +14,7 @@
   import type { ConnectionDef, ConnectionStatus } from '../../core/connections/types';
 
   const NEEDS_HOSTS = 'Tabchef needs access to github.com and api.github.com to connect GitHub.';
-  const TOKEN_HELP = 'Fine-grained token (recommended): choose the repositories, then Repository permissions → Pull requests: Read-only (Metadata: Read-only is added automatically). Classic token: the repo scope, which also grants write access. Tabchef only reads.';
+  const TOKEN_HELP = 'Fine-grained token (recommended): choose the repositories, then Repository permissions → Pull requests: Read-only, Issues: Read-only (Metadata: Read-only is added automatically). Classic token: the repo scope, which also grants write access. Tabchef only reads.';
   const JIRA_TOKENS_URL = 'https://id.atlassian.com/manage-profile/security/api-tokens';
   const JIRA_SESSION_LABEL = 'Use my browser session instead (read-only, best effort)';
   const JIRA_HELP = {
@@ -61,6 +61,8 @@
 
   /** Repos of open PR tabs the GitHub connection cannot read (connections.list). */
   let unreadable = $state<{ repo: string; error: string }[]>([]);
+  /** GitHub issue data is missing for lack of the GitHub App's Issues permission (connections.list). */
+  let missingIssues = $state(false);
 
   async function load(): Promise<void> {
     const r = await send({ type: 'connections.list' });
@@ -68,6 +70,7 @@
     defs = r.data.defs;
     status = r.data.status;
     unreadable = r.data.unreadable ?? [];
+    missingIssues = r.data.missingIssues === true;
     loaded = true;
     prefillJira();
     scheduleUnblock();
@@ -345,6 +348,13 @@
             : 'Ask an organization owner to install the Tabchef GitHub App on these repositories, or connect with a personal access token that can read them.'}
         </p>
       {/if}
+      {#if github.state === 'ok' && missingIssues}
+        <p class="warn" role="status">
+          Tabchef can't read GitHub issues yet: accept the new Issues (read-only) permission for the Tabchef GitHub App in
+          <a href="https://github.com/settings/installations" target="_blank" rel="noopener noreferrer">your GitHub App installations</a>.
+          Until then, an issue's state comes from its open page only, and pull requests find their issue from the branch name.
+        </p>
+      {/if}
 
       {#if flow}
         <div class="flow">
@@ -382,7 +392,7 @@
         <form onsubmit={saveToken}>
           <p class="help">
             <strong>Fine-grained token (recommended):</strong> pick the repositories and grant read-only
-            <em>Pull requests</em> and <em>Metadata</em>. A <strong>classic</strong> token needs the <code>repo</code> scope.
+            <em>Pull requests</em>, <em>Issues</em> and <em>Metadata</em>. A <strong>classic</strong> token needs the <code>repo</code> scope.
             <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener noreferrer">Create a token</a>
           </p>
           <div class="row">

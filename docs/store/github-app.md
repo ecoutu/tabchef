@@ -29,16 +29,18 @@ with their Jira tickets.
 The text for the app's **Description** field, shown on its public page.
 
 Tabchef is a Chrome extension that groups, de-duplicates and closes your tabs with recipes. This app lets Tabchef
-read the pull requests in your open tabs from GitHub's API.
+read the pull requests and issues in your open tabs from GitHub's API.
 
 WHAT IT DOES
 - Merged PRs: lists your open pull request tabs that have merged, so you can close them in one click, or have them
   close on their own.
 - Jira ticket projects: finds the pull requests that name a Jira ticket's key in their title or branch, and shows
   them with the ticket.
+- GitHub issue projects: groups an issue's tab with the pull requests that close it, and shows the issue's title and
+  state.
 
 PERMISSIONS
-Read-only access to pull requests and repository metadata. Tabchef never writes to GitHub.
+Read-only access to pull requests, issues and repository metadata. Tabchef never writes to GitHub.
 
 PRIVACY
 Tabchef has no servers. Requests go straight from your browser to GitHub, and your token stays in your browser.
@@ -61,6 +63,7 @@ request's state and branch from its open page on github.com, when the user grant
 | Merged pull requests: the popup's Merged tab, and closing merged pull request tabs on their own | Merged PRs | The state of each pull request open in a tab |
 | A pull request's branch, to match it to a Jira key | Jira ticket projects (PR branch), Jira ticket projects (PR title or branch) | The same pull request state, which includes the branch |
 | A Jira ticket's linked pull requests (Projects page and side panel) | The Jira ticket projects recipes | A search for pull requests naming the ticket's key |
+| A GitHub issue's project: its title, state and the pull requests that close it | GitHub issue projects | An issue's title, state and linked pull requests; the issues a pull request closes |
 | The account shown on the Connections page | none | Who the token belongs to |
 
 Grouping tabs by repository (the GitHub pull requests recipe) reads only tab addresses and never calls GitHub.
@@ -74,6 +77,7 @@ have exactly these (verify on the app settings page).
 | Permission | Access | Why |
 |---|---|---|
 | Repository → Pull requests | Read-only | Read a pull request's state, whether it merged and when, draft flag, title, branch, review decision and address; and search pull requests by Jira key. |
+| Repository → Issues | Read-only | Read an issue's title, state and the pull requests that close it, and the issues a pull request closes. |
 | Repository → Metadata | Read-only | Required by GitHub for every app. Lets the API resolve the repository of each pull request and of each search result. |
 | Every other repository permission | No access | Not used. |
 | Organization permissions | No access | Not used. |
@@ -81,11 +85,17 @@ have exactly these (verify on the app settings page).
 
 Tabchef never writes: it sends only `GET /user` and GraphQL queries, never a mutation.
 
+Installs without the Issues permission (approved before it was added) keep working: pull request state is read as
+before, an issue's state comes at best from its open page on github.com, and pull requests find their issue from the
+number in their branch. The Connections page says why issue data is missing, with a link to accept the new permission
+(https://github.com/settings/installations).
+
 ## Events and webhooks
 
 None. Tabchef has no server to receive them, so **Webhook → Active** is off and the app subscribes to no events
-(verify on the app settings page). Tabchef refreshes pull request state on its own schedule instead: a pull request
-is looked up again after 5 minutes (never again once merged), a Jira key's search after 15 minutes.
+(verify on the app settings page). Tabchef refreshes pull request and issue state on its own schedule instead: a pull
+request is looked up again after 5 minutes (never again once merged), an issue after 5 minutes, a Jira key's search
+after 15 minutes.
 
 ## Requests and data
 
@@ -99,10 +109,11 @@ clicked.
 | `POST https://github.com/login/oauth/access_token` | The client id, and the device code or the refresh token | The tokens (see below) |
 | `GET https://api.github.com/user` | The token | The login, shown as "Signed in as …" |
 | `POST https://api.github.com/graphql`, pull request state | Owner, repository and number of the pull requests in open tabs, up to 50 per query | State, merged time, draft flag, title, branch, review decision, address |
+| `POST https://api.github.com/graphql`, issues | Owner, repository and number of the issues in open tabs and projects, up to 50 per query | Title, state, state reason, address, and the pull requests that close it |
 | `POST https://api.github.com/graphql`, linked pull requests | Up to 10 Jira keys per query, each searched in pull request titles and branch names, within the organizations of the project's open pull request tabs and the recipe's organization list, or else among pull requests involving the user | Number, title, address, state, merged time, branch, repository owner and name of each match |
 
-Search text travels only in GraphQL variables; the query text is fixed. Pull request results are cached in the
-browser's local storage, are never synced and are never in backups. Nothing is sent to the developer; Tabchef has no
+Search text travels only in GraphQL variables; the query text is fixed. Pull request and issue results are cached in
+the browser's local storage, are never synced and are never in backups. Nothing is sent to the developer; Tabchef has no
 servers and no analytics.
 
 ## Tokens
@@ -187,7 +198,7 @@ The fields of https://github.com/settings/apps/tabchef, top to bottom.
 - [ ] **Enable Device Flow:** on. Sign-in fails without it.
 - [ ] **Setup URL:** none.
 - [ ] **Webhook → Active:** off; no webhook URL or secret.
-- [ ] **Permissions:** Repository → Pull requests: Read-only and Metadata: Read-only; every other permission: No access.
+- [ ] **Permissions:** Repository → Pull requests: Read-only, Issues: Read-only and Metadata: Read-only; every other permission: No access.
 - [ ] **Subscribe to events:** none.
 - [ ] **Where can this GitHub App be installed?** Any account ([#51](https://github.com/ecoutu/tabchef/issues/51)).
 - [ ] **Client secrets:** none needed; never put one in the extension or the repository.

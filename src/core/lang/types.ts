@@ -53,7 +53,7 @@ export type Action =
  */
 export interface RecipeNeeds { hosts?: string[]; permissions?: string[]; connections?: string[]; anyOf?: RecipeNeeds[] }
 /** The source queries a rule's `source` may name (= T8's SOURCE_QUERIES keys, M3-R29). */
-export type SourceQueryKind = 'github.pull_request' | 'github.search_prs_by_key' | 'jira.issue' | 'jira.projects';
+export type SourceQueryKind = 'github.pull_request' | 'github.search_prs_by_key' | 'github.issue' | 'jira.issue' | 'jira.projects';
 /**
  * A recipe rule's data source (M3, recipe rules only, M3-R15): `query` run on `connection` with `args` (templates
  * rendered with the rule's vars); `fields` maps a field name (read as `source.<name>`) to a dot path into the result.
