@@ -111,6 +111,14 @@ actions:
   is the group named by `group` (a name or a number), else the first group, else the whole match.
 - `{selector: 'h1'}` reads the text of the first element the CSS selector finds on the page, and `attr` reads one of
   its attributes instead. Like `pageText`, this needs access to the site.
+- `{from: url | title | source.<field>, githubIssue: {}}` finds a GitHub issue and gives its key, `owner/repo#N`
+  (lower case). By default the text is an issue URL or a reference like `acme/web#5`. With `pattern` (a regular
+  expression, case-insensitive) it reads a branch name or other text instead: the group `n` is the issue number, and
+  optional groups `owner` and `repo` name the repository (they default to the repository of the tab's own URL).
+  `allow` and `ignore` are lists of `owner/repo` globs (`*` matches within one part) that limit which repositories count.
+
+For example, `{from: source.headRefName, githubIssue: {pattern: '^fix/#?(?<n>\d+)(?=-|$)'}}` turns the branch `fix/9-login`
+of a pull request in `acme/web` into `acme/web#9`.
 
 The built-in recipes also use `jiraKey` (finds a Jira issue key in the URL, the title or a value from a connection)
 and `adapter` (a value Tabchef reads from a GitHub pull request page or a Jira issue page).

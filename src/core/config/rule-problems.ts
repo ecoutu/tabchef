@@ -194,6 +194,16 @@ export function ruleProblems(rule: Rule, tables?: Tables): Problem[] {
   for (const [name, x] of Object.entries(rule.extract ?? {})) {
     if (name.length > MAX_EXTRACT_NAME) out.push({ path: `/extract/${name}`, message: `extract name too long (max ${MAX_EXTRACT_NAME} characters)` });
     if ('regex' in x) { const m = regexProblem(x.regex, undefined, true); if (m) out.push({ path: `/extract/${name}/regex`, message: m }); }
+    if ('githubIssue' in x) {
+      if (x.from.startsWith('source.') && !Object.prototype.hasOwnProperty.call(rule.source?.fields ?? {}, x.from.slice(7))) {
+        out.push({ path: `/extract/${name}/from`, message: `rule has no source field "${x.from.slice(7)}"` });
+      }
+      if (x.githubIssue.pattern !== undefined) {
+        // The issue number is the match's named group n: a pattern without one never finds an issue.
+        const m = regexProblem(x.githubIssue.pattern, undefined, true) ?? (/\(\?<n>/.test(x.githubIssue.pattern) ? undefined : 'pattern needs a named group n for the issue number, like (?<n>\\d+)');
+        if (m) out.push({ path: `/extract/${name}/githubIssue/pattern`, message: m });
+      }
+    }
     if ('adapter' in x) {
       const fields = Object.keys(adapterOf(x.adapter)?.selectors ?? {});
       if (!fields.includes(x.field)) out.push({ path: `/extract/${name}/field`, message: `${x.adapter} has no field "${x.field}" (${fields.join(', ')})` });

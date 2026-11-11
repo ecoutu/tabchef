@@ -331,6 +331,15 @@ describe('M3 T1: sources, fields, keys and projects', () => {
     expect(validateRule(rule({ extract: { a: { from: 'page', jiraKey: {} } } })).ok).toBe(false);
     expect(at(validateRule(rule({ extract: { a: { from: 'url', jiraKey: { pattern: '((' } } } })), '/extract/a/jiraKey/pattern').length).toBe(1);
   });
+  it('accepts a githubIssue extract from url, title or a source field; rejects unknown keys and a bad pattern', () => {
+    const ok = rule({ source: src(), extract: { a: { from: 'url', githubIssue: {} }, b: { from: 'source.merged', githubIssue: { pattern: '(?<n>\\d+)', allow: ['acme/*'], ignore: ['acme/x'] } } } });
+    expect(errorsOf(validateRule(ok))).toEqual([]);
+    expect(validateRule(rule({ extract: { a: { from: 'url', githubIssue: { bogus: 1 } } } })).ok).toBe(false);
+    expect(at(validateRule(rule({ extract: { a: { from: 'source.x', githubIssue: {} } } })), '/extract/a/from').length).toBe(1);
+    expect(at(validateRule(rule({ extract: { a: { from: 'url', githubIssue: { pattern: '((' } } } })), '/extract/a/githubIssue/pattern').length).toBe(1);
+    const noGroup = at(validateRule(rule({ extract: { a: { from: 'url', githubIssue: { pattern: '^fix/(\\d+)' } } } })), '/extract/a/githubIssue/pattern');
+    expect(noGroup.map((e) => e.message)).toEqual([expect.stringContaining('named group n')]);
+  });
   it('accepts an {adapter, field} extract (T10, M3-R58); the adapter must exist and have that field', () => {
     expect(errorsOf(validateRule(rule({ extract: { a: { adapter: 'github.prPage', field: 'state' }, b: { adapter: 'jira.issuePage', field: 'summary' } } })))).toEqual([]);
     expect(errorsOf(validateRecipe(recipe({ rules: [rule({ extract: { a: { adapter: 'github.prPage', field: 'branch' } } })] })))).toEqual([]);

@@ -633,6 +633,45 @@
             }
           },
           {
+            "type": "object",
+            "required": [
+              "from",
+              "githubIssue"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "from": {
+                "type": "string",
+                "pattern": "^(url|title|source\\.[A-Za-z_][A-Za-z0-9_]*)$"
+              },
+              "githubIssue": {
+                "$comment": "GitHub issue keys (owner/repo#N) from an issue URL, a branch (with pattern) or a source field.",
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "pattern": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "allow": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "ignore": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
             "$comment": "M3 T10 (M3-R58): one field of a page adapter (src/core/adapters). Its fields per adapter are checked in TS (ruleProblems).",
             "type": "object",
             "required": [

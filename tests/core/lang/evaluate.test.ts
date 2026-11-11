@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { compileProgram } from '../../../src/core/lang/compile';
 import { evaluateTab } from '../../../src/core/lang/evaluate';
 import { defaultConfig } from '../../../src/core/config/defaults';
+import { DEFAULT_BRANCH_PATTERN } from '../../../src/core/keys/github-issue';
 import type { Action, ExtractFrom, Recipe, RecipeRef, Rule, TabFacts } from '../../../src/core/lang/types';
 import type { Config, TabSnap } from '../../../src/core/types';
 
@@ -294,5 +295,15 @@ describe('evaluateTab: M3 T1 fields and projects', () => {
     expect(run('title', facts({ title: 'no key' }))).toBeUndefined();
     expect(run('title', facts({ title: 'ABC-12 DEF-3 fix' }))).toMatchObject([{ key: 'ABC-12' }]);
     expect(run('source.headRefName', facts({}, { source: { 'p/a': { data: { headRefName: 'feature/def-3_x' } } } }))).toMatchObject([{ key: 'DEF-3' }]);
+  });
+  it('a githubIssue extract reads an issue URL or a branch name into owner/repo#N', () => {
+    const run = (x: object, f: TabFacts) => {
+      const b = { p: recipe('p', [rule('a', { url: 'github.com/*' }, [assign('{k}')], { source: { connection: 'gh', query: 'github.pull_request', args: {}, fields: { headRefName: 'headRefName' } }, extract: { k: x as never } })], { project }) };
+      return ev(config({ recipes: [ref('p')] }), f, b).project;
+    };
+    expect(run({ from: 'url', githubIssue: {} }, facts({ url: 'https://github.com/acme/web/issues/5' }))).toMatchObject([{ key: 'acme/web#5' }]);
+    expect(run({ from: 'url', githubIssue: {} }, facts({ url: 'https://github.com/acme/web/pull/5' }))).toBeUndefined();
+    expect(run({ from: 'source.headRefName', githubIssue: { pattern: DEFAULT_BRANCH_PATTERN } }, facts({ url: 'https://github.com/acme/web/pull/3' }, { source: { 'p/a': { data: { headRefName: 'fix/9-x' } } } }))).toMatchObject([{ key: 'acme/web#9' }]);
+    expect(run({ from: 'url', githubIssue: { ignore: ['acme/*'] } }, facts({ url: 'https://github.com/acme/web/issues/5' }))).toBeUndefined();
   });
 });

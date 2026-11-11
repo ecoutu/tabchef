@@ -16,10 +16,13 @@ export type Cond =
 export type ExtractFrom = 'url' | 'title' | `source.${string}`;
 /** Jira issue key extraction (M3; the value is computed by T2, until then it is undefined, M3-R21). */
 export interface JiraKeySpec { pattern?: string; allow?: string[]; ignore?: string[] }
+/** GitHub issue key extraction: yields `owner/repo#N` from an issue URL, a branch name (with `pattern`) or a source field. */
+export interface GithubIssueSpec { pattern?: string; allow?: string[]; ignore?: string[] }
 export type ExtractSpec =
   | { from: 'url' | 'title'; regex: string; group?: string }
   | { selector: string; attr?: string }
   | { from: ExtractFrom; jiraKey: JiraKeySpec }
+  | { from: ExtractFrom; githubIssue: GithubIssueSpec }
   /** M3 T10: one field of a page adapter (core/adapters), read from the page facts and parsed by the adapter. */
   | { adapter: AdapterId; field: string };
 export type Extract = Record<string, ExtractSpec>;

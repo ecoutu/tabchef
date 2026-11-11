@@ -9,6 +9,7 @@
 // groups); evaluation continues to the next matching rule with a group action.
 import { COLORS } from '../config/schema';
 import { adapterValue } from '../adapters';
+import { extractGithubIssue } from '../keys/github-issue';
 import { extractJiraKeys } from '../keys/jira-key';
 import { MAX_MATCH_INPUT } from '../match/pattern';
 import { renderTemplate } from '../match/template';
@@ -95,6 +96,12 @@ function extractValue(key: string, name: string, x: ExtractSpec, f: TabFacts): s
       : x.from === 'title' ? f.tab.title
       : sourceText(f, key, x.from.slice('source.'.length));
     return extractJiraKeys(text, { ...x.jiraKey, branch: x.from.endsWith('headRefName') })[0]; // first key = prefer order (M3-R21)
+  }
+  if ('githubIssue' in x) {
+    const text = x.from === 'url' ? (f.tab.pendingUrl ?? f.tab.url)
+      : x.from === 'title' ? f.tab.title
+      : sourceText(f, key, x.from.slice('source.'.length));
+    return extractGithubIssue(text, { ...x.githubIssue, tabUrl: f.tab.pendingUrl ?? f.tab.url });
   }
   const re = regex(x.regex);
   if (!re) return undefined;

@@ -863,6 +863,69 @@
             }
           },
           {
+            "type": "object",
+            "required": [
+              "from",
+              "githubIssue"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "from": {
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^(url|title|source\\.[A-Za-z_][A-Za-z0-9_]*)$"
+                  },
+                  {
+                    "$ref": "recipe.json#/$defs/placeholder"
+                  }
+                ]
+              },
+              "githubIssue": {
+                "$comment": "GitHub issue keys (owner/repo#N) from an issue URL, a branch (with pattern) or a source field.",
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "pattern": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500
+                  },
+                  "allow": {
+                    "oneOf": [
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2048
+                        }
+                      },
+                      {
+                        "$ref": "recipe.json#/$defs/placeholder"
+                      }
+                    ]
+                  },
+                  "ignore": {
+                    "oneOf": [
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2048
+                        }
+                      },
+                      {
+                        "$ref": "recipe.json#/$defs/placeholder"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          {
             "$comment": "M3 T10 (M3-R58): one field of a page adapter (src/core/adapters). Its fields per adapter are checked in TS (ruleProblems).",
             "type": "object",
             "required": [
