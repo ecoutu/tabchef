@@ -24,7 +24,11 @@ export interface CondResult {
  * extract values computed before the match (`vars`). `pageVars` names the selector extracts whose value comes from
  * page facts: while `f.page` is undefined, an `extract.<name>` field on one of them needs the page.
  */
-export interface CondScope { ruleKey: string; vars?: Record<string, string>; pageVars?: ReadonlySet<string> }
+export interface CondScope {
+  ruleKey: string; vars?: Record<string, string>; pageVars?: ReadonlySet<string>;
+  /** The resolved param values of the rule's recipe, read by `params.<name>` fields (foldParams). */
+  params?: Readonly<Record<string, unknown>>;
+}
 
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x);
 const no = (needsPage = false, unknown = false): CondResult =>
@@ -159,6 +163,7 @@ function fieldValue(name: string, f: TabFacts, scope: CondScope): unknown {
     return isObj(data) && own(data) ? data[n] : undefined;
   }
   if (kind === 'extract') return scope.vars && own(scope.vars) ? scope.vars[n] : undefined;
+  if (kind === 'params') return scope.params && own(scope.params) ? scope.params[n] : undefined;
   return undefined; // project.<name>: no producer until T15 (compile rejects them, M3-R11)
 }
 
@@ -195,6 +200,43 @@ function evalField(v: unknown, f: TabFacts, now: number, scope: CondScope | unde
     return no(false, true);
   }
   return bool(compare(c, value));
+}
+
+const ALWAYS: Cond = { all: [] };
+const NEVER: Cond = { any: [] };
+const NO_FACTS = {} as TabFacts;
+const isParamField = (c: Cond): boolean => 'field' in c && isObj(c.field) && typeof c.field.field === 'string' && c.field.field.startsWith('params.');
+
+function hasParamField(c: Cond): boolean {
+  if (!isObj(c)) return false;
+  if ('field' in c) return isParamField(c);
+  if ('all' in c) return Array.isArray(c.all) && c.all.some(hasParamField);
+  if ('any' in c) return Array.isArray(c.any) && c.any.some(hasParamField);
+  if ('not' in c) return hasParamField(c.not);
+  if ('opener' in c) return hasParamField(c.opener);
+  return false;
+}
+
+/**
+ * `c` with each `params.<name>` field condition replaced by its verdict for the recipe's resolved `params`, compared as
+ * a view's `params.*` show field is (evalField; a missing or non-scalar value never matches). A param is the recipe's
+ * setting, not a fact of a tab, so it holds the same for every tab (and for an `opener`): compileProgram folds these
+ * once, and the compiled rule holds the constants `{all: []}` (always) and `{any: []}` (never) in their place, which
+ * every reader of a compiled match (evaluation, explain, source and page-fact planning) already handles. `c` itself
+ * is returned when it has no params field.
+ */
+export function foldParams(c: Cond, params: Readonly<Record<string, unknown>>): Cond {
+  if (!hasParamField(c)) return c;
+  const fold = (x: Cond): Cond => {
+    // A params field reads only the scope's params, never the tab facts or the time.
+    if (isParamField(x)) return evalField((x as { field: unknown }).field, NO_FACTS, 0, { ruleKey: '', params }).ok ? ALWAYS : NEVER;
+    if ('all' in x) return { all: x.all.map(fold) };
+    if ('any' in x) return { any: x.any.map(fold) };
+    if ('not' in x) return { not: fold(x.not) };
+    if ('opener' in x) return { opener: fold(x.opener) };
+    return x;
+  };
+  return fold(c);
 }
 
 function condUsesAge(c: Cond): boolean {

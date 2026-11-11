@@ -154,7 +154,7 @@
           "additionalProperties": false,
           "properties": {
             "field": {
-              "$comment": "M3: source.<name> (a field of the rule's source), extract.<name> (an extract of the rule) or project.<name> (rejected by compileProgram until T15, M3-R11). `value` may be {ago: <duration>} with < or >. Missing data is unknown (M3-R8).",
+              "$comment": "M3: source.<name> (a field of the rule's source), extract.<name> (an extract of the rule), params.<name> (a param of the rule's recipe; recipe rules only, the name must be declared) or project.<name> (rejected by compileProgram until T15, M3-R11). `value` may be {ago: <duration>} with < or >. Missing data is unknown (M3-R8).",
               "type": "object",
               "required": [
                 "field",
@@ -165,7 +165,7 @@
               "properties": {
                 "field": {
                   "type": "string",
-                  "pattern": "^(source|extract|project)\\.[A-Za-z_][A-Za-z0-9_]*$"
+                  "pattern": "^(source|extract|params|project)\\.[A-Za-z_][A-Za-z0-9_]*$"
                 },
                 "op": {
                   "enum": [

@@ -90,10 +90,13 @@ export function matchPatternProblem(p: string): string | undefined {
   return undefined;
 }
 
-/** One rule: schema, then the post-checks (patterns, regexes, durations, colors, titles; tables when given). */
-export function validateRule(x: unknown): RuleResult {
+/**
+ * One rule: schema, then the post-checks (patterns, regexes, durations, colors, titles; tables when given). `params`:
+ * the param names of a recipe rule's recipe (its `params.<name>` fields must name one); without it they are unchecked.
+ */
+export function validateRule(x: unknown, params?: ReadonlySet<string>): RuleResult {
   if (!ruleShape(x)) return { ok: false, errors: shapeProblems(ruleShape.errors) };
-  const errors = ruleProblems(x as unknown as Rule);
+  const errors = ruleProblems(x as unknown as Rule, undefined, params);
   return errors.length ? { ok: false, errors } : { ok: true, rule: x as unknown as Rule };
 }
 
@@ -240,7 +243,7 @@ export function validateRecipe(x: unknown): RecipeResult {
         out.push({ path: `/rules/${i}`, message: e.message });
         return;
       }
-      const res = validateRule(sub);
+      const res = validateRule(sub, new Set(Object.keys(params)));
       if (!res.ok) for (const p of res.errors) out.push({ path: `/rules/${i}${p.path === '/' ? '' : p.path}`, message: p.message });
       else needsHosts(res.rule.needs, `/rules/${i}/needs`);
     });

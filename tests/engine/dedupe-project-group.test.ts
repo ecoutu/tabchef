@@ -96,7 +96,7 @@ describe('duplicates of a Jira ticket inside its project group (#179)', () => {
 
   it('the ticket open on a board (?selectedIssue=) is another page: a /browse/<KEY> copy stays open', async () => {
     const r = await openSecondCopy(`${SITE}/jira/software/projects/ABC/boards/1?selectedIssue=ABC-1`, TICKET);
-    expect(r.keys).toEqual({ 1: 'ABC-1', 2: 'ABC-1' });
+    expect(r.keys).toEqual({ 1: undefined, 2: 'ABC-1' }); // a board showing a ticket is not the ticket's tab by default (#194)
     expect(r.open).toEqual([1, 2]);
   });
 

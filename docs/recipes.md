@@ -189,6 +189,9 @@ turns on. If you turn down access that only one rule needs, the recipe still tur
 "Paused: needs access to meet.google.com". **Disable** turns it off again.
 
 Only one of the three Jira ticket projects recipes can be on at a time. Enabling one turns the others off.
+A ticket's own page (`/browse/ABC-123`) joins its group. A Jira board showing a ticket in its popup stays where it is
+unless you turn on **Group a board when it shows a ticket**; then the board joins the ticket's group while the popup is
+open and leaves it when you close the popup.
 GitHub issue projects can be on together with any of them. When a pull request could join both a Jira ticket's
 project and a GitHub issue's, the rule higher on the Rules page wins.
 
@@ -201,6 +204,27 @@ Inside a recipe, a rule refers to a param as `{params.<name>}`. A list param, su
 patterns, fills the whole list. Finished's redirect rule has an empty list by default, so it does nothing until you add
 patterns; the Rules page marks it as inactive.
 
+A rule's match can also test a param with a `field` condition, so an on/off setting can turn part of a match on or off.
+The Jira ticket recipes match a board that shows a ticket only when **Group a board when it shows a ticket** is on:
+
+```yaml
+params:
+  boardPopups:
+    type: boolean
+    default: false
+    label: Group a board when it shows a ticket
+rules:
+  - id: ticket
+    match:
+      any:
+        - url: '{params.jiraSite}/browse/*'
+        - all:
+            - url: '{params.jiraSite}/*selectedIssue=*'
+            - field: {field: params.boardPopups, op: '==', value: true}
+```
+
+The param must be one the recipe declares. Your own rules have no params, so they cannot use `params.<name>`.
+
 ### Recipe rules are read-only
 
 You cannot edit a recipe's rules, but on the Rules page you can:
@@ -212,9 +236,9 @@ You cannot edit a recipe's rules, but on the Rules page you can:
   placed just above the original, so it wins, and you can edit it like any of your rules. **Edit copy** takes you back
   to it later.
 
-Some parts of the rule language work only inside recipes: `needs`, `source` (data read from GitHub or Jira) and
-`assignProject`. Customize leaves out `needs`. A copy that keeps `source` or `assignProject` reports an error instead
-of running, so remove them from your copy.
+Some parts of the rule language work only inside recipes: `needs`, `source` (data read from GitHub or Jira),
+`assignProject` and `params.<name>` fields. Customize leaves out `needs`. A copy that keeps `source`, `assignProject` or a `params.<name>` field
+reports an error instead of running, so remove them from your copy.
 
 ## Group titles and colors
 

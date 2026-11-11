@@ -49,12 +49,12 @@ function mergedPrsRecipe(origin: string, over: Pick<RecipeRef, 'params' | 'ruleE
  * (a user rule cannot assign a project, M3-R15, so the recipe's own rule is repointed, as for Merged PRs). The Jira side
  * is the shipped rule with `jiraSite` set to the mock host.
  */
-function jiraRecipe(origin: string): RecipeRef {
+function jiraRecipe(origin: string, params: Record<string, unknown> = {}): RecipeRef {
   const shipped = parseYaml(readFileSync(join(ROOT, 'src/recipes/builtin/jira-ticket-either.yaml'), 'utf8')) as Recipe;
   const host = new URL(origin).host;
   const body = JSON.parse(JSON.stringify(shipped).replaceAll('github.com/:owner/:repo/pull/', `${host}/:owner/:repo/pull/`)) as Recipe;
   body.recipe = JIRA_RECIPE_ID;
-  return { id: JIRA_RECIPE_ID, enabled: true, source: 'user', body, params: { jiraSite: host } };
+  return { id: JIRA_RECIPE_ID, enabled: true, source: 'user', body, params: { jiraSite: host, ...params } };
 }
 
 test.describe('M3 with mocked services', () => {
@@ -325,7 +325,7 @@ test.describe('M3 with mocked services', () => {
   test('(j) #179: a board copy from a shared link (&atlOrigin=) closes into the board tab, before Jira strips the param', async () => {
     mock.jira.setIssue('SCRUM-1', issue('Login', 'In Progress'));
     await send(h, { type: 'connections.disconnect', id: 'jira' });
-    await setConfig(h, withRecipe(jiraRecipe(mock.origin)));
+    await setConfig(h, withRecipe(jiraRecipe(mock.origin, { boardPopups: true }))); // the board joins SCRUM-1's group
     await waitPastStartupGrace(h);
     const boardUrl = `${mock.origin}/jira/software/projects/SCRUM/boards/1?filter=&groupBy=none&selectedIssue=SCRUM-1`;
     const board = await openTab(h, boardUrl);
@@ -338,6 +338,25 @@ test.describe('M3 with mocked services', () => {
     const kept = await h.sw.evaluate(async (id) => { const t = await chrome.tabs.get(id); return { url: t.url, active: t.active }; }, board);
     expect(kept).toEqual({ url: boardUrl, active: true });
     expect(await recentUrls()).toContain(sharedUrl);
+  });
+
+  test('(k) #194: a board showing a ticket stays out of its group by default, and joins it with boardPopups on', async () => {
+    mock.jira.setIssue('BRD-1', issue('Board popup', 'In Progress'));
+    await send(h, { type: 'connections.disconnect', id: 'jira' });
+    await setConfig(h, withRecipe(jiraRecipe(mock.origin)));
+    await waitPastStartupGrace(h);
+    const ticket = await openTab(h, `${mock.origin}/browse/BRD-1`);
+    const board = await openTab(h, `${mock.origin}/jira/software/projects/BRD/boards/1?selectedIssue=BRD-1`);
+    const titleOf = async (id: number) => {
+      const t = await tabById(id);
+      return t && t.groupId >= 0 ? (await groups(h)).find((g) => g.id === t.groupId)?.title ?? null : null;
+    };
+    await expect.poll(() => titleOf(ticket), { timeout: 10_000 }).toBe('BRD-1');
+    await new Promise((r) => setTimeout(r, 2000)); // a reconcile pass that would have grouped the board has run
+    expect(await titleOf(board)).toBeNull();
+
+    await setConfig(h, withRecipe(jiraRecipe(mock.origin, { boardPopups: true })));
+    await expect.poll(() => titleOf(board), { timeout: 10_000 }).toBe('BRD-1');
   });
 
   test('(c) a 401 marks the connection needs-reauth; the merged row stays, stale, and its due auto-close is skipped', async () => {

@@ -17,6 +17,12 @@
 // Substitution runs before anything compiles; afterwards every rule goes through the same checks as a user rule
 // (validateRule + ruleProblems).
 //
+// Params fields (#194): a recipe rule's match may compare a param, `field: {field: params.<name>, op, value}`, so a
+// boolean setting can turn part of a match on or off. The name must be declared by the recipe (else an error, as for an
+// unknown placeholder). A user rule has no params, so one with a params field is reported and skipped (like `source`).
+// A param is the same for every tab, so once the rule is valid each params field is folded to its verdict (foldParams,
+// core/lang/cond.ts).
+//
 // Needs (R5, T10): `Program.needs` has an entry per enabled recipe, keyed by recipe id (recipe-level needs, empty
 // lists when none), plus one per enabled recipe rule that declares `needs`, keyed by rule key. "Enabled" is effective
 // (R56): RecipeRef.ruleEnabled[ruleId] overrides the body's `enabled` in both directions. Paused recipes and
@@ -41,6 +47,7 @@
 import { globHost } from '../match/pattern';
 import { formatSchemaError, regexProblem, ruleProblems, type Tables } from '../config/rule-problems';
 import { validateRule } from '../config/validate-config.generated.js';
+import { foldParams } from './cond';
 import { DURATION, parseDuration } from './duration';
 import type { Config, DedupeSettings } from '../types';
 import type { CompiledRule, Cond, NeedsAlt, NeedsEntry, ParamDef, Program, Recipe, RecipeLevel, RecipeNeeds, RecipeRef, Rule } from './types';
@@ -239,13 +246,13 @@ function nestedNeeds(n: unknown): string | undefined {
   return n.anyOf.some((a) => isObj(a) && own(a, 'anyOf')) ? 'needs.anyOf: an alternative cannot have its own anyOf' : undefined;
 }
 
-function usesProjectField(c: Cond): boolean {
+function usesField(c: Cond, kind: 'project' | 'params'): boolean {
   if (!isObj(c)) return false;
-  if ('field' in c) return isObj(c.field) && typeof c.field.field === 'string' && c.field.field.startsWith('project.');
-  if ('all' in c) return Array.isArray(c.all) && c.all.some(usesProjectField);
-  if ('any' in c) return Array.isArray(c.any) && c.any.some(usesProjectField);
-  if ('not' in c) return usesProjectField(c.not);
-  if ('opener' in c) return usesProjectField(c.opener);
+  if ('field' in c) return isObj(c.field) && typeof c.field.field === 'string' && c.field.field.startsWith(`${kind}.`);
+  if ('all' in c) return Array.isArray(c.all) && c.all.some((x) => usesField(x, kind));
+  if ('any' in c) return Array.isArray(c.any) && c.any.some((x) => usesField(x, kind));
+  if ('not' in c) return usesField(c.not, kind);
+  if ('opener' in c) return usesField(c.opener, kind);
   return false;
 }
 
@@ -256,17 +263,21 @@ function m3Problems(r: Rule, recipe: Pick<Recipe, 'project'> | undefined): strin
   if (!recipe) {
     if (own(r, 'source')) out.push('source: only recipe rules can read a source');
     if (assigns) out.push('assignProject: only recipe rules can assign projects');
+    if (usesField(r.match, 'params')) out.push('params fields: only recipe rules have params');
   } else if (assigns && !isObj(recipe.project)) out.push('assignProject: the recipe declares no project');
-  if (usesProjectField(r.match)) out.push('project fields are not supported yet');
+  if (usesField(r.match, 'project')) out.push('project fields are not supported yet');
   const n = nestedNeeds(r.needs);
   if (n) out.push(n);
   return out;
 }
 
-/** Schema + post-check problems of one rule, as "<path> <message>" strings (empty when valid). Reported joined, one entry per rule. */
-function ruleErrors(rule: unknown, tables: Tables): string[] {
+/**
+ * Schema + post-check problems of one rule, as "<path> <message>" strings (empty when valid). Reported joined, one entry
+ * per rule. `params`: the declared param names of a recipe rule's recipe; undefined for a user rule.
+ */
+function ruleErrors(rule: unknown, tables: Tables, params?: ReadonlySet<string>): string[] {
   if (!validateRule(rule)) return (validateRule.errors ?? []).map(formatSchemaError);
-  return ruleProblems(rule as Rule, tables).map((p) => `${p.path} ${p.message}`);
+  return ruleProblems(rule as Rule, tables, params).map((p) => `${p.path} ${p.message}`);
 }
 
 interface Candidate { id: string; source: RecipeRef['source']; body: Recipe; ref: RecipeRef; values: Record<string, unknown>; defs: Record<string, ParamDef> }
@@ -405,6 +416,7 @@ export function compileProgram(
     const errs: CompileError[] = [];
     const ids = new Set<string>();
     const rules: Rule[] = [];
+    const declared = new Set(Object.keys(c.defs));
     c.body.rules.forEach((raw, i) => {
       const key = `${c.id}/${isObj(raw) && typeof raw.id === 'string' ? raw.id : `#${i}`}`;
       if (!isObj(raw) || !ruleOn(c.ref, raw)) return; // effectively off (R56): no needs, never compiled
@@ -412,14 +424,17 @@ export function compileProgram(
       // compiled as a copy with `enabled: true`. Nothing is filled in (a body rule without `enabled` stays invalid).
       const turnedOn = raw.enabled === false;
       const r: Rule = turnedOn ? { ...raw, enabled: true } : raw;
-      const es = ruleErrors(r, checkTables);
+      const es = ruleErrors(r, checkTables, declared);
       if (!es.length) es.push(...m3Problems(r, c.body));
       if (ids.has(r.id)) es.push('duplicate rule id');
       ids.add(r.id);
       // An invalid body rule is the author's error and skips the recipe; a rule only the user turned on that does not
       // compile is reported for its key and skipped alone (R57), so the toggle cannot break the rest of the recipe.
       if (es.length) (turnedOn ? errors : errs).push({ key, error: es.join('; ') });
-      else rules.push(r);
+      else {
+        const match = foldParams(r.match, c.values); // validated first: the folded constants are runtime-only
+        rules.push(match === r.match ? r : { ...r, match });
+      }
     });
     if (errs.length) errors.push(...errs);
     else recipes.push({ c, rules });

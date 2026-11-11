@@ -48,13 +48,20 @@ params:
     default: []
     label: GitHub organizations to search for linked pull requests
     help: One per line. With the GitHub connection, the Projects tab lists pull requests that mention the key in these organizations (and those of the project's open pull requests). Empty searches pull requests involving you.
+  boardPopups:
+    type: boolean
+    default: false
+    label: Group a board when it shows a ticket
+    help: When on, a Jira board with a ticket open in its popup (?selectedIssue= in its address) joins that ticket's group while the popup is open, and leaves it when you close the popup. When off, only the ticket's own page joins.
 project: {key: '{key}', title: '{params.titleFormat}', color: '{params.color}', container: group, join: [rules, manual]}
 conflicts: [jira-ticket-title, jira-ticket-branch]
 # A ticket's /browse/<KEY> page opened with Jira's own query or fragment (?atlOrigin= from a shared link,
 # ?focusedCommentId= from a notification) is the same tab as the ticket (#179). {params.jiraSite} right after :// renders
 # as a host glob (with its context path, if any) and the match ignores case, so the fold covers the same sites as the
 # ticket rule when jiraSite is *.<host> or a host (with an optional :port and path); any other * in it (mid-host, a
-# port or path wildcard, a bare *) drops the fold. A board's ?selectedIssue= page stays its own tab.
+# port or path wildcard, a bare *) drops the fold. A board's ?selectedIssue= page is never folded into the ticket: it
+# stays its own tab. The ticket rule joins it to the ticket's project only with boardPopups on (#194, off by default);
+# otherwise the board would move into the ticket's group when a ticket's popup opens and back out when it closes.
 # On any other page of the site, Jira's atlOrigin tracking param (a shared link's) is dropped, so a shared board link
 # is the open board (Jira strips it with history.replaceState, too late for a new tab). The key's params are sorted;
 # the first transform drops it when another param follows, the second when it ends the query.
@@ -87,7 +94,9 @@ rules:
     match:
       any:
         - url: '{params.jiraSite}/browse/*'
-        - url: '{params.jiraSite}/*selectedIssue=*'
+        - all:
+            - url: '{params.jiraSite}/*selectedIssue=*'
+            - field: {field: params.boardPopups, op: '==', value: true}
     extract:
       key: {from: url, jiraKey: {pattern: '{params.keyPattern}', allow: '{params.projectPrefixes}', ignore: '{params.ignoredPrefixes}'}}
       summary: {from: title, regex: '^\[[^\]]+\]\s*(?<s>.+?)\s*-\s*Jira$', group: s}

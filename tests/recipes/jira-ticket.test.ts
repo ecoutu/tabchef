@@ -75,7 +75,7 @@ describe('jira-ticket recipes: shape', () => {
 
   it('ship the plan params with help text', () => {
     const p = body('title').params!;
-    expect(Object.keys(p)).toEqual(['jiraSite', 'keyPattern', 'projectPrefixes', 'ignoredPrefixes', 'titleFormat', 'color', 'githubOrgs']);
+    expect(Object.keys(p)).toEqual(['jiraSite', 'keyPattern', 'projectPrefixes', 'ignoredPrefixes', 'titleFormat', 'color', 'githubOrgs', 'boardPopups']);
     expect(p.jiraSite).toEqual(expect.objectContaining({ type: 'string', default: '*.atlassian.net' }));
     expect(p.keyPattern).toEqual(expect.objectContaining({ type: 'regex', default: DEFAULT_KEY_PATTERN }));
     expect(p.projectPrefixes).toEqual(expect.objectContaining({ type: 'string[]', default: [] }));
@@ -83,6 +83,8 @@ describe('jira-ticket recipes: shape', () => {
     expect(p.titleFormat).toEqual(expect.objectContaining({ type: 'string', default: '{key}', enum: ['{key}', '{key} · {summary}'] }));
     expect(p.color).toEqual(expect.objectContaining({ type: 'string', default: 'blue' }));
     expect(p.githubOrgs).toEqual(expect.objectContaining({ type: 'string[]', default: [] }));
+    expect(p.boardPopups).toEqual(expect.objectContaining({ type: 'boolean', default: false, label: 'Group a board when it shows a ticket' }));
+    for (const v of VARIANTS) expect(body(v).params!.boardPopups, v).toEqual(p.boardPopups);
     for (const d of Object.values(p)) expect(d.help).toEqual(expect.any(String));
   });
 
@@ -91,7 +93,12 @@ describe('jira-ticket recipes: shape', () => {
     expect(b.project).toEqual({ key: '{key}', title: '{params.titleFormat}', color: '{params.color}', container: 'group', join: ['rules', 'manual'] });
     expect(b.views).toEqual([{ id: 'projects', tab: 'Projects', kind: 'projects', actions: [] }]);
     const t = rule('title', 'ticket');
-    expect(t.match).toEqual({ any: [{ url: '{params.jiraSite}/browse/*' }, { url: '{params.jiraSite}/*selectedIssue=*' }] });
+    for (const v of VARIANTS) {
+      expect(rule(v, 'ticket').match, v).toEqual({ any: [
+        { url: '{params.jiraSite}/browse/*' },
+        { all: [{ url: '{params.jiraSite}/*selectedIssue=*' }, { field: { field: 'params.boardPopups', op: '==', value: true } }] },
+      ] });
+    }
     expect(t.extract).toEqual({
       key: { from: 'url', jiraKey: JK },
       summary: { from: 'title', regex: '^\\[[^\\]]+\\]\\s*(?<s>.+?)\\s*-\\s*Jira$', group: 's' },
@@ -160,8 +167,29 @@ describe('jira-ticket: the ticket rule', () => {
   it('a /browse/ tab: key from the URL, summary from the loaded title', () => {
     expect(evalTicket(TICKET, '[ABC-1] Login fails - Jira')).toEqual([{ key: 'ABC-1', ruleKey: 'jira-ticket-title/ticket', index: expect.any(Number), create: true, summary: 'Login fails' }]);
   });
-  it('a board ?selectedIssue= tab gives the key too', () => {
-    expect(evalTicket('https://acme.atlassian.net/jira/software/projects/ABC/boards/1?selectedIssue=ABC-7', 'Board - Jira')?.map((c) => c.key)).toEqual(['ABC-7']);
+  // #194: a board tab with a ticket's popup open (?selectedIssue=KEY) joins the ticket only with boardPopups on, so by
+  // default opening and closing a popup no longer moves the board in and out of the ticket's group.
+  const BOARD = 'https://acme.atlassian.net/jira/software/projects/ABC/boards/1?selectedIssue=ABC-7';
+  it.each(VARIANTS.flatMap((v) => [[v, {}, undefined], [v, { boardPopups: false }, undefined], [v, { boardPopups: true }, ['ABC-7']]] as const))(
+    '%s, params %j: a board ?selectedIssue= tab gives the key %j', (v, params, want) => {
+      const p = program(v, params);
+      expect(evaluateTab(p, { tab: tab(1, BOARD, 'Board - Jira') }, NOW).project?.map((c) => c.key)).toEqual(want);
+      expect(evaluateTab(p, { tab: tab(1, TICKET, 'x') }, NOW).project?.map((c) => c.key)).toEqual(['ABC-1']); // /browse/ always
+    });
+  it.each(VARIANTS)('%s: with the ticket open, the board stays out of its project unless boardPopups is on', (v) => {
+    const t = [tab(1, 'https://acme.atlassian.net/browse/ABC-7', '[ABC-7] x - Jira'), tab(2, BOARD, 'Board - Jira')];
+    expect(keys(program(v), t).byTab).toEqual({ 1: 'ABC-7' });
+    expect(keys(program(v, { boardPopups: true }), t).byTab).toEqual({ 1: 'ABC-7', 2: 'ABC-7' });
+  });
+  it.each(VARIANTS)('%s: no Jira lookup for a board tab unless boardPopups is on', (v) => {
+    const svc = new SourceService({
+      conn: { fetch: vi.fn(), status: async () => [], defs: async () => [] }, getProgram: () => program(v), levelFor: () => undefined,
+      port: { snapshot: async () => snapOf(), hasPermission: async () => true }, facts: { get: () => undefined },
+      local: { get: async () => ({}), set: async () => {} }, now: () => NOW, onUpdated: () => {},
+    } as unknown as ConstructorParameters<typeof SourceService>[0]);
+    const snap = snapOf(tab(1, BOARD, 'Board - Jira'));
+    expect(svc.requestsFor(snap, program(v)).map((r) => r.ruleKey)).toEqual([]);
+    expect(svc.requestsFor(snap, program(v, { boardPopups: true })).map((r) => r.ruleKey)).toEqual([`${id(v)}/ticket`]);
   });
   it('M3-R102: the SPA shell titled just "Jira": the key from the URL, no summary (no error, no bogus summary)', () => {
     const c = evalTicket(TICKET, 'Jira');

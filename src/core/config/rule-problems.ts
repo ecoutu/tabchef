@@ -88,16 +88,18 @@ function titleRegexGroups(c: Cond): string[] {
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x);
 
 /**
- * A `field` condition (M3): `source.<n>` must name one of the rule's source fields and `extract.<n>` one of its
- * extracts; `{ago: d}` goes with `<` / `>` and a duration; `in` takes a list, `matches` a regex (capped, must compile).
+ * A `field` condition (M3): `source.<n>` must name one of the rule's source fields, `extract.<n>` one of its
+ * extracts and `params.<n>` a param its recipe declares (when `params` is given: a recipe rule's check);
+ * `{ago: d}` goes with `<` / `>` and a duration; `in` takes a list, `matches` a regex (capped, must compile).
  */
-function fieldProblems(rule: Rule, c: Comparison, path: string, out: Problem[]): void {
+function fieldProblems(rule: Rule, c: Comparison, path: string, out: Problem[], params: ReadonlySet<string> | undefined): void {
   const dot = c.field.indexOf('.');
   const kind = c.field.slice(0, dot);
   const name = c.field.slice(dot + 1);
   const has = (o: object | undefined) => o !== undefined && Object.prototype.hasOwnProperty.call(o, name);
   if (kind === 'source' && !has(rule.source?.fields)) out.push({ path: `${path}/field`, message: `rule has no source field "${name}"` });
   if (kind === 'extract' && !has(rule.extract)) out.push({ path: `${path}/field`, message: `rule has no extract "${name}"` });
+  if (kind === 'params' && params && !params.has(name)) out.push({ path: `${path}/field`, message: `unknown param: params.${name}` });
   const v = c.value;
   if (isObj(v) && 'ago' in v) {
     if (Object.keys(v).length !== 1) out.push({ path: `${path}/value`, message: 'must be {ago: <duration>}' });
@@ -113,7 +115,7 @@ function fieldProblems(rule: Rule, c: Comparison, path: string, out: Problem[]):
   }
 }
 
-function condProblems(c: Cond, path: string, out: Problem[], rule?: Rule): void {
+function condProblems(c: Cond, path: string, out: Problem[], rule?: Rule, params?: ReadonlySet<string>): void {
   if ('url' in c) {
     if (Array.isArray(c.url)) c.url.forEach((p, i) => { const m = patternProblem(p); if (m) out.push({ path: `${path}/url/${i}`, message: m }); });
     else { const m = patternProblem(c.url); if (m) out.push({ path: `${path}/url`, message: m }); }
@@ -135,11 +137,11 @@ function condProblems(c: Cond, path: string, out: Problem[], rule?: Rule): void 
     if (Array.isArray(c.pageText)) c.pageText.forEach((n, i) => { if (long(n)) out.push({ path: `${path}/pageText/${i}`, message: PAGE_TEXT_MSG }); });
     else if (long(c.pageText)) out.push({ path: `${path}/pageText`, message: PAGE_TEXT_MSG });
   } else if ('field' in c) {
-    if (rule) fieldProblems(rule, c.field, `${path}/field`, out);
-  } else if ('opener' in c) condProblems(c.opener, `${path}/opener`, out, rule);
-  else if ('not' in c) condProblems(c.not, `${path}/not`, out, rule);
-  else if ('all' in c) c.all.forEach((x, i) => condProblems(x, `${path}/all/${i}`, out, rule));
-  else if ('any' in c) c.any.forEach((x, i) => condProblems(x, `${path}/any/${i}`, out, rule));
+    if (rule) fieldProblems(rule, c.field, `${path}/field`, out, params);
+  } else if ('opener' in c) condProblems(c.opener, `${path}/opener`, out, rule, params);
+  else if ('not' in c) condProblems(c.not, `${path}/not`, out, rule, params);
+  else if ('all' in c) c.all.forEach((x, i) => condProblems(x, `${path}/all/${i}`, out, rule, params));
+  else if ('any' in c) c.any.forEach((x, i) => condProblems(x, `${path}/any/${i}`, out, rule, params));
 }
 
 /**
@@ -184,10 +186,12 @@ export function ruleTitleProblems(rule: Rule, tables?: Tables): string[] {
 /**
  * Post-schema problems of a structurally valid rule: patterns, regexes, durations, colors and titles (and the
  * `{var}`s titles and colors use). Shared by validateConfig, repairConfig and the compiler (src/core/lang/compile.ts).
+ * `params` names the params a recipe rule's recipe declares; without it `params.<name>` names are not checked (a user
+ * rule's are rejected by compileProgram, as its `source` and `assignProject` are).
  */
-export function ruleProblems(rule: Rule, tables?: Tables): Problem[] {
+export function ruleProblems(rule: Rule, tables?: Tables, params?: ReadonlySet<string>): Problem[] {
   const out: Problem[] = [];
-  condProblems(rule.match, '/match', out, rule);
+  condProblems(rule.match, '/match', out, rule, params);
   if (rule.trigger?.every !== undefined && !DURATION.test(rule.trigger.every)) out.push({ path: '/trigger/every', message: DURATION_MSG });
   // Uniqueness is checked here, not with JSON-schema uniqueItems: ajv's standalone code for it needs a runtime require().
   rule.trigger?.on.forEach((k, j, all) => { if (all.indexOf(k) !== j) out.push({ path: `/trigger/on/${j}`, message: `duplicate trigger: ${k}` }); });
