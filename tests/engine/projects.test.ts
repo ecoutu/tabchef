@@ -8,7 +8,7 @@ import { toLive, toRuntime } from '../../src/engine/state';
 import { FakeBrowserPort } from '../../src/platform/fake-port';
 import type { Program, Recipe } from '../../src/core/lang/types';
 import type { Project } from '../../src/core/projects/types';
-import type { JiraIssue, PrInfo, SourceEntry } from '../../src/core/sources/types';
+import type { GithubIssueInfo, JiraIssue, PrInfo, SourceEntry } from '../../src/core/sources/types';
 import type { Config, TabSnap } from '../../src/core/types';
 
 const NOW = 1_800_000_000_000;
@@ -81,6 +81,7 @@ function harness(o: {
     issues: vi.fn<(keys: string[]) => Promise<Map<string, SourceEntry<JiraIssue>>>>(async () => new Map()),
     linkedFor: vi.fn<(keys: string[], orgs: string[]) => Promise<Map<string, PrInfo[]>>>(async () => new Map()),
     jiraSite: vi.fn<() => Promise<string | undefined>>(async () => 'acme.atlassian.net'),
+    githubIssues: vi.fn<(keys: string[]) => Promise<Map<string, SourceEntry<GithubIssueInfo>>>>(async () => new Map()),
   };
   const schedule = vi.fn();
   const toast = vi.fn();
@@ -861,5 +862,120 @@ describe('ProjectService: project status fixes (#30)', () => {
       await h.r.flush();
       expect((await h.store.list()).map((p) => p.site)).toEqual(['acme.atlassian.net']);
     }
+  });
+});
+
+describe('GitHub issue projects (key owner/repo#N)', () => {
+  beforeEach(() => { fakeBrowser.reset(); });
+  const GH = 'github-issue';
+  const ghRecipe = (title = '#{num} · {summary}'): Recipe => ({
+    recipe: GH, version: 1, name: 'GitHub issue', description: 'x',
+    project: { key: '{key}', title, color: 'purple', container: 'group', join: ['rules', 'manual'] },
+    rules: [{
+      id: 'issue', name: 'GitHub issue', enabled: true, match: { url: 'github.com/:owner/:repo/issues/*' },
+      extract: { key: { from: 'url', githubIssue: {} } },
+      actions: [{ assignProject: { key: '{key}', create: true } }],
+    }],
+  });
+  function ghProgram(title?: string): Program {
+    const c: Config = { ...defaultConfig(), recipes: [{ id: GH, enabled: true, params: {}, source: 'builtin' }] };
+    const { program: p, errors } = compileProgram(c, { [GH]: ghRecipe(title) });
+    expect(errors).toEqual([]);
+    return p;
+  }
+  const ISSUE = 'https://github.com/acme/web/issues/5';
+  const entry = (data: GithubIssueInfo, o: Partial<SourceEntry<GithubIssueInfo>> = {}): SourceEntry<GithubIssueInfo> => ({ data, via: 'api', fetchedAt: NOW, final: false, stale: false, ...o });
+  const closed: GithubIssueInfo = {
+    owner: 'acme', repo: 'web', number: 5, summary: 'Fix login', state: 'closed', status: 'Closed', statusCategory: 'done', url: ISSUE,
+    linkedPrs: [{ owner: 'acme', repo: 'web', number: 9, state: 'merged', title: 'Fix login (#5)', url: PR2 }],
+  };
+
+  it('Review Focus 2: acme/a#12 and acme/b#12 open → two groups a#12 and b#12; closing b\'s tab renames a\'s group back to #12', async () => {
+    const h = harness({ program: ghProgram() });
+    h.f.addTab(tab(1, 'https://github.com/acme/a/issues/12', 'a'));
+    h.f.addTab(tab(2, 'https://github.com/acme/b/issues/12', 'b'));
+    await h.r.flush();
+    expect(h.f.state.groups.map((g) => g.title).sort()).toEqual(['a#12', 'b#12']);
+    expect(h.groupOf(1)).toBe('a#12');
+    expect(h.groupOf(2)).toBe('b#12');
+    const aGroup = h.f.state.tabs.find((t) => t.id === 1)!.groupId;
+    expect((await h.svc.cards()).map((c) => c.title).sort()).toEqual(['a#12', 'b#12']);
+    await h.f.closeTab(2);
+    await h.r.flush();
+    expect(h.f.state.groups.map((g) => [g.id, g.title])).toEqual([[aGroup, '#12']]);
+    expect((await h.svc.cards()).map((c) => c.title)).toEqual(['#12']);
+  });
+
+  it('a {repo}#{num} title: acme/web#12 alone is web#12; with other/web#12 open, acme/web#12 and other/web#12; one closes → web#12 again, same group', async () => {
+    const h = harness({ program: ghProgram('{repo}#{num}') });
+    h.f.addTab(tab(1, 'https://github.com/acme/web/issues/12', 'a'));
+    await h.r.flush();
+    expect(h.groupOf(1)).toBe('web#12');
+    h.f.addTab(tab(2, 'https://github.com/other/web/issues/12', 'b'));
+    await h.r.flush();
+    expect(h.f.state.groups.map((g) => g.title).sort()).toEqual(['acme/web#12', 'other/web#12']);
+    expect(h.groupOf(1)).toBe('acme/web#12');
+    expect(h.groupOf(2)).toBe('other/web#12');
+    const aGroup = h.f.state.tabs.find((t) => t.id === 1)!.groupId;
+    expect((await h.svc.cards()).map((c) => c.title).sort()).toEqual(['acme/web#12', 'other/web#12']);
+    await h.f.closeTab(2);
+    await h.r.flush();
+    expect(h.f.state.groups.map((g) => [g.id, g.title])).toEqual([[aGroup, 'web#12']]);
+    expect((await h.svc.cards()).map((c) => c.title)).toEqual(['web#12']);
+  });
+
+  it('Review Focus 5: cards read the issue from githubIssues (never the Jira lookups), and list its linked PRs', async () => {
+    const h = harness({ program: ghProgram() });
+    h.f.addTab(tab(1, ISSUE, 'Fix login · Issue #5 · acme/web'));
+    await h.r.flush();
+    h.sources.githubIssues.mockResolvedValue(new Map([['acme/web#5', entry(closed)]]));
+    const [card] = await h.svc.cards();
+    expect(card).toMatchObject({
+      key: 'acme/web#5', title: '#5 · Fix login', summary: 'Fix login', status: { name: 'Closed', category: 'done', via: 'api' }, done: true,
+      linked: [{ url: PR2, title: 'Fix login (#5)', state: 'merged' }],
+    });
+    expect(h.sources.githubIssues).toHaveBeenCalledWith(['acme/web#5']);
+    expect(h.sources.issues.mock.calls.flat(2)).not.toContain('acme/web#5');
+    expect(h.sources.linkedFor.mock.calls.flatMap(([keys]) => keys)).not.toContain('acme/web#5');
+  });
+
+  it('a stale closed issue shows its status but is not done', async () => {
+    const h = harness({ program: ghProgram() });
+    h.f.addTab(tab(1, ISSUE, 'Fix login · Issue #5 · acme/web'));
+    await h.r.flush();
+    h.sources.githubIssues.mockResolvedValue(new Map([['acme/web#5', entry(closed, { stale: true })]]));
+    const [card] = await h.svc.cards();
+    expect(card).toMatchObject({ status: { name: 'Closed', category: 'done', via: 'api' }, done: false });
+  });
+
+  it('cards look the issue up once per render, its linked PRs included (an unreadable issue costs one lookup, not two)', async () => {
+    const h = harness({ program: ghProgram() });
+    h.f.addTab(tab(1, 'https://github.com/acme/web/issues/42', 'Issue #42'));
+    await h.r.flush();
+    const unknown: GithubIssueInfo = { owner: 'acme', repo: 'web', number: 42, state: 'unknown', url: 'https://github.com/acme/web/issues/42' };
+    h.sources.githubIssues.mockResolvedValue(new Map([['acme/web#42', entry(unknown, { via: 'none', error: 'not-found' })]]));
+    for (let i = 0; i < 3; i++) {
+      h.sources.githubIssues.mockClear();
+      h.clock.now += LINKED_REFRESH_MS; // the linked PRs are due on every render
+      await h.svc.cards();
+      expect(h.sources.githubIssues).toHaveBeenCalledTimes(1);
+    }
+    h.sources.githubIssues.mockClear();
+    h.sources.githubIssues.mockResolvedValue(new Map([['acme/web#42', entry({ ...closed, number: 42 })]]));
+    h.clock.now += LINKED_REFRESH_MS;
+    const [card] = await h.svc.cards();
+    expect(h.sources.githubIssues).toHaveBeenCalledTimes(1);
+    expect(card).toMatchObject({ linked: [{ url: PR2, title: 'Fix login (#5)', state: 'merged' }] });
+  });
+
+  it('a stored issue project with API status confirms no Jira prefix: a PR titled MY-123 creates no project', async () => {
+    const h = harness();
+    const issue = { status: { name: 'Open', category: 'new' as const, via: 'api' as const } };
+    await h.store.put(stored({ id: `${GH}:my-org/web#12`, recipeId: GH, key: 'my-org/web#12', ...issue }));
+    h.f.addTab(tab(1, PR, 'MY-123: fix login'));
+    expect((await h.svc.targets(await h.f.snapshot())).get(1)).toBeFalsy();
+    // Control: a Jira project with API status does confirm its prefix.
+    await h.store.put(stored({ id: `${RID}:MY-5`, key: 'MY-5', ...issue }));
+    expect((await h.svc.targets(await h.f.snapshot())).get(1)?.title).toBe('MY-123');
   });
 });

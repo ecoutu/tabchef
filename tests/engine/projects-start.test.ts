@@ -61,7 +61,7 @@ function harness(p: Program = program()) {
   const store = new ProjectStore(memoryArea());
   const schedule = vi.fn();
   const sources = {
-    factsFor: () => undefined, issues: async () => new Map(), linkedFor: async () => new Map(), jiraSite: async () => undefined,
+    factsFor: () => undefined, issues: async () => new Map(), linkedFor: async () => new Map(), jiraSite: async () => undefined, githubIssues: async () => new Map(),
   };
   // eslint-disable-next-line prefer-const -- the service reads the reconciler's state lazily
   let r: Reconciler;

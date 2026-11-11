@@ -628,6 +628,7 @@ describe('jira-ticket: ProjectService (cards, done prompt, why-log)', () => {
       issues: vi.fn<(ks: string[]) => Promise<Map<string, SourceEntry<JiraIssue>>>>(async () => new Map()),
       linkedFor: vi.fn<(ks: string[], orgs: string[]) => Promise<Map<string, PrInfo[]>>>(async () => new Map()),
       jiraSite: vi.fn<() => Promise<string | undefined>>(async () => 'acme.atlassian.net'),
+      githubIssues: vi.fn(async () => new Map()),
     };
     // eslint-disable-next-line prefer-const -- the service reads the reconciler's state lazily
     let r: Reconciler;

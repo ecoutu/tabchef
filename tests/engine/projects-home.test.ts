@@ -63,6 +63,7 @@ function harness(o: { recipeName?: (id: string) => Promise<string | undefined> }
     issues: vi.fn<(keys: string[]) => Promise<Map<string, SourceEntry<JiraIssue>>>>(async () => new Map()),
     linkedFor: vi.fn<(keys: string[], orgs: string[]) => Promise<Map<string, PrInfo[]>>>(async () => new Map()),
     jiraSite: vi.fn<() => Promise<string | undefined>>(async () => 'acme.atlassian.net'),
+    githubIssues: vi.fn(async () => new Map()),
   };
   const store = new ProjectStore(memoryArea());
   // eslint-disable-next-line prefer-const -- the service reads the reconciler's state lazily

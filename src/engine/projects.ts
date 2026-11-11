@@ -8,12 +8,13 @@
 import { liveProgram } from '../core/lang/dry-run';
 import { managedGroupIds } from '../core/group/plan';
 import { keyOf } from '../core/projects/url-key';
-import { projectGroupTitle, projectTargets, resolveProjects, type ResolveResult, type StickyMap } from '../core/projects/resolve';
+import { issueTitlePrefixes, projectGroupTitle, projectTargets, resolveProjects, type ResolveResult, type StickyMap } from '../core/projects/resolve';
+import { parseIssueKey } from '../core/keys/github-issue';
 import type { RecentlyClosed } from '../core/safety/recently-closed';
 import type { GroupTarget } from '../core/group/evaluate';
 import type { Program, TabFacts } from '../core/lang/types';
 import type { NamedProject, Project, ProjectAssignment, ProjectCardData, ProjectDef, ProjectHomeData, ProjectImportResult, SavedProjectData, SavedTab } from '../core/projects/types';
-import type { JiraIssue, PrInfo, PrState, SourceEntry } from '../core/sources/types';
+import type { GithubIssueInfo, JiraIssue, PrInfo, PrState, SourceEntry } from '../core/sources/types';
 import type { GroupColor, GroupSnap, Snapshot, TabSnap } from '../core/types';
 import { normalizeUrl } from '../core/url/normalize';
 import type { BrowserPort } from '../platform/browser-port';
@@ -228,7 +229,7 @@ export interface ProjectServiceDeps {
   store: ProjectStore;
   port: Pick<BrowserPort, 'snapshot' | 'createTab' | 'closeTab' | 'ungroup'>;
   getProgram: () => Promise<Program>;
-  sources: Pick<SourceService, 'factsFor' | 'issues' | 'linkedFor' | 'jiraSite'>;
+  sources: Pick<SourceService, 'factsFor' | 'issues' | 'linkedFor' | 'jiraSite' | 'githubIssues'>;
   facts: Pick<PageFacts, 'get'>;
   log: WhyLog;
   recentlyClosed: Pick<RecentlyClosed, 'add'>;
@@ -323,8 +324,8 @@ export class ProjectService {
         return { ...(page && { page }), ...(source && { source }) };
       },
       allowPrefixes: (program.projects ?? []).flatMap((d) => strings(program.params?.[d.recipeId]?.projectPrefixes)),
-      // A key the Jira API answered for confirms its prefix (Review Focus #5).
-      knownPrefixes: new Set(stored.filter((p) => p.status?.via === 'api').map((p) => p.key.slice(0, Math.max(0, p.key.lastIndexOf('-'))))),
+      // A key the Jira API answered for confirms its prefix (Review Focus #5); a GitHub issue key confirms none.
+      knownPrefixes: new Set(stored.filter((p) => p.status?.via === 'api' && !parseIssueKey(p.key)).map((p) => p.key.slice(0, Math.max(0, p.key.lastIndexOf('-'))))),
     }), archived);
   }
 
@@ -420,9 +421,10 @@ export class ProjectService {
     this.lastOpen = open;
     // Under global dry run only stored projects are listed: addTab takes no unstored one.
     // Tombstones are never offered (addTab rejects them); under dry run none was revived.
+    const prefixes = openPrefixes(projects, open);
     this.deps.onProjectsChanged?.((full.dryRun ? stored.filter((p) => !isTomb(p)) : projects).flatMap((p) => {
       const def = defOf.get(p.recipeId);
-      return def && open.has(p.id) ? [{ id: p.id, title: projectGroupTitle(def, p) }] : [];
+      return def && open.has(p.id) ? [{ id: p.id, title: projectGroupTitle(def, p, prefixes) }] : [];
     }));
     return { program, defs, projects, assignments: r.assignments, held: r.held };
   }
@@ -524,7 +526,8 @@ export class ProjectService {
       const open = await this.resolve(snap);
       const defOf = new Map(open.defs.map((d) => [d.recipeId, d]));
       const openIds = new Set([...open.assignments.values()].map((a) => a.projectId));
-      const titleOf = (q: Project): string => { const def = defOf.get(q.recipeId); return def ? projectGroupTitle(def, q) : (q.name ?? q.key); };
+      const prefixes = openPrefixes(open.projects, openIds);
+      const titleOf = (q: Project): string => { const def = defOf.get(q.recipeId); return def ? projectGroupTitle(def, q, prefixes) : (q.name ?? q.key); };
       const fix = existing ? 'Rename the group first, then save it.' : 'Open it, or pick another name.';
       const clash = open.projects.find((q) => listedAs(q, openIds) && titleOf(q) === title);
       if (clash) throw new Error(`A project named “${title}” already exists (${listedAs(clash, openIds)}). ${fix}`);
@@ -563,7 +566,8 @@ export class ProjectService {
       // A group named like an open project is the name clash createLocked reports, not a rule's group.
       const defOf = new Map(open.defs.map((d) => [d.recipeId, d]));
       const openIds = new Set([...open.assignments.values()].map((a) => a.projectId));
-      const named = new Set(open.projects.flatMap((q) => { const d = defOf.get(q.recipeId); return d && openIds.has(q.id) ? [projectGroupTitle(d, q)] : []; }));
+      const prefixes = openPrefixes(open.projects, openIds);
+      const named = new Set(open.projects.flatMap((q) => { const d = defOf.get(q.recipeId); return d && openIds.has(q.id) ? [projectGroupTitle(d, q, prefixes)] : []; }));
       if (!named.has(g.title) && (await this.managedGroups(snap, open)).has(groupId)) throw new Error('This group is managed by a rule. Save one of your own groups.');
       return this.createLocked(MANUAL_RECIPE, g.title, tabs.map((t) => t.id), g);
     });
@@ -629,10 +633,11 @@ export class ProjectService {
     return this.serial(async () => {
       const [program, stored] = await Promise.all([this.deps.getProgram(), this.deps.store.list()]);
       const defOf = new Map((program.projects ?? []).map((d) => [d.recipeId, d]));
+      const prefixes = openPrefixes(stored, this.lastOpen);
       return stored.flatMap((p) => {
         const def = defOf.get(p.recipeId);
         const listed = (this.lastOpen.has(p.id) || p.keep === true) && (!isTomb(p) || p.keep === true) && !isArchived(p);
-        return def?.join.includes('manual') && listed ? [{ id: p.id, title: projectGroupTitle(def, p) }] : [];
+        return def?.join.includes('manual') && listed ? [{ id: p.id, title: projectGroupTitle(def, p, prefixes) }] : [];
       });
     });
   }
@@ -719,7 +724,8 @@ export class ProjectService {
     if (!p) throw new Error('unknown project');
     if (isArchived(p)) throw new Error('this project is archived');
     const def = defs.find((d) => d.recipeId === p.recipeId);
-    const title = def ? projectGroupTitle(def, p) : (p.name ?? p.key); // as its card names it (a Manual one: its name)
+    const prefixes = openPrefixes(projects, new Set([...assignments.values()].map((a) => a.projectId)));
+    const title = def ? projectGroupTitle(def, p, prefixes) : (p.name ?? p.key); // as its card names it (a Manual one: its name)
     const ids: string[] = [];
     let skipped = 0;
     const members = snap.tabs.filter((x) => assignments.get(x.id)?.projectId === projectId);
@@ -856,11 +862,13 @@ export class ProjectService {
     plan: (stored: Project[], open: Set<string>, unsynced: Set<string>, ownTitle: (p: Project) => string) => T,
   ): Promise<T> {
     return this.serial(async () => {
-      const { assignments, defs } = await this.resolve(await this.deps.port.snapshot());
+      const { assignments, defs, projects } = await this.resolve(await this.deps.port.snapshot());
       const defOf = new Map(defs.map((d) => [d.recipeId, d]));
+      const open = new Set([...assignments.values()].map((a) => a.projectId));
+      const prefixes = openPrefixes(projects, open);
       // A project's own group title, as its card names it (a Manual one: its name): its saved tabs carry it (toSynced).
-      const ownTitle = (p: Project): string => { const def = defOf.get(p.recipeId); return def ? projectGroupTitle(def, p) : (p.name ?? p.key); };
-      const r = plan(await this.deps.store.list(), new Set([...assignments.values()].map((a) => a.projectId)), await this.deps.store.unreadableSaved(), ownTitle);
+      const ownTitle = (p: Project): string => { const def = defOf.get(p.recipeId); return def ? projectGroupTitle(def, p, prefixes) : (p.name ?? p.key); };
+      const r = plan(await this.deps.store.list(), open, await this.deps.store.unreadableSaved(), ownTitle);
       if (r.put.length) await this.deps.store.put(...r.put);
       if (r.remove.length) await this.deps.store.remove(...r.remove);
       if (r.put.length || r.remove.length) this.deps.schedule?.('project');
@@ -1129,12 +1137,18 @@ export class ProjectService {
       }
       const defOf = new Map(defs.map((d) => [d.recipeId, d]));
       const open = projects.filter((p) => (only === undefined || p.id === only) && tabsOf.has(p.id) && defOf.has(p.recipeId));
-      return { snap, program, defOf, tabsOf, sites: ticketSites(program, snap, assignments), open, held };
+      // Titled as the planner titles their groups: against every open project, not only the one asked for.
+      const prefixes = openPrefixes(projects, new Set(tabsOf.keys()));
+      return { snap, program, defOf, tabsOf, sites: ticketSites(program, snap, assignments), open, held, prefixes };
     });
-    const { snap, program, defOf, tabsOf, sites, open, held } = plan;
+    const { snap, program, defOf, tabsOf, sites, open, held, prefixes } = plan;
     if (open.length === 0) return { cards: [], snap, open, defOf, held };
     const now = this.now();
-    const [linked, { issues, asked }] = await Promise.all([this.fetchLinked(program, open, tabsOf, now), this.fetchIssues(open, tabsOf, sites)]);
+    // One GitHub issue lookup per pass: the cards' status and the linked PRs both read it.
+    const gh = this.fetchGhIssues(open);
+    const [linked, { issues, asked }, ghIssues] = await Promise.all([
+      this.fetchLinked(program, open, tabsOf, now, gh), this.fetchIssues(open, tabsOf, sites), gh,
+    ]);
     return this.serial(async () => {
       const current = new Map((await this.deps.store.list()).map((p) => [p.id, p]));
       const factsOf = (t: TabSnap): SourceEntry<Record<string, unknown>>[] => Object.values(this.deps.sources.factsFor(t.id, urlOf(t)) ?? {});
@@ -1151,7 +1165,7 @@ export class ProjectService {
           p.linkedFetchedAt = now;
           if (l.prs) p.linked = l.prs.map((x) => ({ url: x.url, title: x.title ?? x.url, state: x.state }));
         }
-        const issue = asked.has(p.id) ? issues.get(p.key) : undefined;
+        const issue = asked.has(p.id) ? issues.get(p.key) : ghIssues.get(p.key);
         // A fresh lookup (via api or page, not stale) keeps the summary current when the ticket is renamed; a stale or
         // unread one only fills a missing summary. Not a user change, so no updatedAt bump (M4-R31). A `{summary}`
         // group title follows on the next pass, through the reconciler's rename (M3-R41).
@@ -1167,7 +1181,7 @@ export class ProjectService {
         if (JSON.stringify(p) !== before) changed.push(p);
         const openUrls = new Set(tabs.map((t) => this.norm(program, urlOf(t))));
         return [{
-          id: p.id, key: p.key, title: projectGroupTitle(defOf.get(p.recipeId)!, p), ...(p.summary !== undefined && { summary: p.summary }), ...prTitleOf(p),
+          id: p.id, key: p.key, title: projectGroupTitle(defOf.get(p.recipeId)!, p, prefixes), ...(p.summary !== undefined && { summary: p.summary }), ...prTitleOf(p),
           ...(status && { status }), done,
           tabs: tabs.map((t) => {
             const pr = factsOf(t).find((e) => PILLS.has(e.data?.state as PrState));
@@ -1187,27 +1201,37 @@ export class ProjectService {
   }
 
   /**
-   * Ticket status through SourceService.issues for the projects on the Jira connection's site only (M3-R110): a ticket
+   * Ticket status through SourceService.issues for the Jira projects (not GitHub issue keys) on the Jira connection's site only (M3-R110): a ticket
    * tab (`/browse/<key>`) on that site, else the project's ticket site (stored, else its ticket tab's now) is it, or
    * none is known (a PR-only project). Any other page of that site (a dashboard) says nothing about the ticket. A
    * same-key ticket on another site is another issue: its status comes from its own tab's page.
    */
   private async fetchIssues(open: Project[], tabsOf: Map<string, TabSnap[]>, sites: Map<string, string>): Promise<{ issues: Map<string, SourceEntry<JiraIssue>>; asked: Set<string> }> {
     const site = await this.deps.sources.jiraSite();
-    const on = site === undefined ? [] : open.filter((p) => tabsOf.get(p.id)!.some((t) => hostOf(urlOf(t)) === site && isTicketOf(urlOf(t), p.key)) || (p.site ?? sites.get(p.id) ?? site) === site);
+    const on = site === undefined ? [] : open.filter((p) => !parseIssueKey(p.key)).filter((p) => tabsOf.get(p.id)!.some((t) => hostOf(urlOf(t)) === site && isTicketOf(urlOf(t), p.key)) || (p.site ?? sites.get(p.id) ?? site) === site);
     const issues = on.length ? await this.deps.sources.issues(on.map((p) => p.key)) : new Map<string, SourceEntry<JiraIssue>>();
     return { issues, asked: new Set(on.map((p) => p.id)) };
   }
 
+  /** The GitHub issue (summary, status, linked PRs) of each open project whose key is one (`owner/repo#N`). */
+  private async fetchGhIssues(open: Project[]): Promise<Map<string, SourceEntry<GithubIssueInfo>>> {
+    const keys = open.filter((p) => parseIssueKey(p.key)).map((p) => p.key);
+    return keys.length ? this.deps.sources.githubIssues(keys) : new Map();
+  }
+
   /**
    * Linked PRs of projects not searched for LINKED_REFRESH_MS, through SourceService.linkedFor: in the orgs of the
-   * project's open PR tabs plus its recipe's `githubOrgs`. Every searched project is returned (`prs` undefined: no
-   * results known, the previous list stays), so the 15-minute cap holds for keys without results too.
+   * project's open PR tabs plus its recipe's `githubOrgs`; a GitHub issue project's (`owner/repo#N`) from its issue's
+   * `linkedPrs` in `ghIssues` (the pass's fetchGhIssues). Every searched project is returned (`prs` undefined: no results
+   * known, the previous list stays), so the 15-minute cap holds for keys without results too.
    */
-  private async fetchLinked(program: Program, open: Project[], tabsOf: Map<string, TabSnap[]>, now: number): Promise<Map<string, { prs?: PrInfo[] }>> {
+  private async fetchLinked(program: Program, open: Project[], tabsOf: Map<string, TabSnap[]>, now: number,
+    ghIssueEntries: Promise<Map<string, SourceEntry<GithubIssueInfo>>>): Promise<Map<string, { prs?: PrInfo[] }>> {
     const byOrgs = new Map<string, Project[]>();
+    const ghIssues: Project[] = [];
     for (const p of open) {
       if (p.linkedFetchedAt !== undefined && now - p.linkedFetchedAt < LINKED_REFRESH_MS) continue;
+      if (parseIssueKey(p.key)) { ghIssues.push(p); continue; }
       const orgs = [...tabsOf.get(p.id)!.flatMap((t) => PR_OWNER.exec(urlOf(t))?.[1] ?? []), ...strings(program.params?.[p.recipeId]?.githubOrgs)];
       const k = [...new Set(orgs.map((o) => o.toLowerCase()))].sort().join(',');
       byOrgs.set(k, [...(byOrgs.get(k) ?? []), p]);
@@ -1217,8 +1241,21 @@ export class ProjectService {
       const found = await this.deps.sources.linkedFor(ps.map((p) => p.key), k ? k.split(',') : []);
       for (const p of ps) out.set(p.id, { ...(found.has(p.key) && { prs: found.get(p.key)! }) });
     }
+    // A GitHub issue's linked PRs are the ones GitHub links to it (closing references), not a key search.
+    if (ghIssues.length) {
+      const found = await ghIssueEntries;
+      for (const p of ghIssues) {
+        const prs = found.get(p.key)?.data?.linkedPrs;
+        out.set(p.id, { ...(prs && { prs }) });
+      }
+    }
     return out;
   }
+}
+
+/** issueTitlePrefixes of the projects in `open` (those with tabs): their group titles as projectTargets renders them. */
+function openPrefixes(projects: Project[], open: ReadonlySet<string>): Map<string, string> {
+  return issueTitlePrefixes(projects.filter((p) => open.has(p.id)));
 }
 
 /** ProjectCardData.prTitle: the first linked PR's own title, for a project with no ticket summary and no name. */

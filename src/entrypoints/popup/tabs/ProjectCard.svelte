@@ -11,7 +11,10 @@
 
   let { card, prompt, collapsed = false, onToggle, onFocus, onOpenLinked, onCloseGroup, onCloseAndArchive, onKeep, onOpenProject }: {
     card: ProjectCard;
-    /** Show "Ticket is done. Close this group?" (the card is done and the prompt was not dismissed). */
+    /**
+     * Show "Ticket is done. Close this group?", or "Issue is closed. Close this group?" for a GitHub issue (`card.issue`)
+     * (the card is done and the prompt was not dismissed).
+     */
     prompt: boolean;
     /** Only the header shows (#151). */
     collapsed?: boolean;
@@ -35,7 +38,9 @@
   const modified = (e: MouseEvent): boolean => e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey;
   const uid = $props.id();
   const bodyId = `${uid}-body`;
-  const PROMPT = 'Ticket is done. Close this group?';
+  // GitHub calls them issues, closed rather than done; a Jira card keeps the ticket wording.
+  const DONE = $derived(card.issue ? 'Issue is closed' : 'Ticket is done');
+  const PROMPT = $derived(`${DONE}. Close this group?`);
 </script>
 
 <article class="card">
@@ -53,11 +58,13 @@
   </header>
   <div id={bodyId} hidden={collapsed}>
   {#if prompt}
-    <div class="prompt" role="group" aria-label="Ticket is done">
+    <div class="prompt" role="group" aria-label={DONE}>
       <span>{PROMPT}</span>
-      <button type="button" class="act" onclick={onCloseGroup}>Close group</button>
-      <button type="button" class="act" onclick={onCloseAndArchive}>Close and archive</button>
-      <button type="button" class="act" onclick={onKeep}>Keep</button>
+      <div class="prompt-actions">
+        <button type="button" class="act" onclick={onCloseGroup}>Close group</button>
+        <button type="button" class="act" onclick={onCloseAndArchive}>Close and archive</button>
+        <button type="button" class="act" onclick={onKeep}>Keep</button>
+      </div>
     </div>
   {/if}
   <ul>
@@ -100,7 +107,10 @@
   /* White on the Chrome group green (#188038, as in the options page): 5.0:1 in both themes (WCAG AA at 11px). */
   .badge { color: #fff; background: #188038; border-color: #188038; font-weight: 600; }
   .prompt { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 4px 12px; padding: 6px 8px; border-radius: 6px; background: var(--surface); }
-  .prompt span { flex: 1; }
+  /* The buttons wrap as one unit below the text when the row is too narrow (the side panel): with a zero basis the text
+     squeezed to one word per line beside them. 12em keeps the wide popup's single row. */
+  .prompt span { flex: 1 1 12em; }
+  .prompt-actions { display: flex; flex-wrap: wrap; gap: 6px; }
   ul { list-style: none; margin: 0; padding: 0; }
   .row { display: flex; align-items: center; gap: 8px; padding: 4px 12px; }
   .row:focus-within, .row:hover { background: var(--hover); }

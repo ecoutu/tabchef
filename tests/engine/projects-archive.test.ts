@@ -64,7 +64,7 @@ function harness(o: { program?: Program; local?: ReturnType<typeof memoryArea> }
   let r: Reconciler;
   const svc = new ProjectService({
     store, port: f, getProgram: async () => p,
-    sources: { factsFor: () => undefined, issues: async () => new Map(), linkedFor: async () => new Map(), jiraSite: async () => undefined },
+    sources: { factsFor: () => undefined, issues: async () => new Map(), linkedFor: async () => new Map(), jiraSite: async () => undefined, githubIssues: async () => new Map() },
     facts: { get: () => undefined }, log: { add: () => {} },
     recentlyClosed: { add: (e) => { closed.push(e); return `rc${closed.length}`; } },
     safety: { isProtected: (t) => t.pinned }, state: () => r.liveState(), schedule: vi.fn(), now: () => clock.now,

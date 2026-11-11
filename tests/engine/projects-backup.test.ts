@@ -42,7 +42,7 @@ function harness(stored: Project[] = []) {
   let r: Reconciler;
   const svc = new ProjectService({
     store, port: f, getProgram: async () => p,
-    sources: { factsFor: () => undefined, issues: async () => new Map(), linkedFor: async () => new Map(), jiraSite: async () => undefined },
+    sources: { factsFor: () => undefined, issues: async () => new Map(), linkedFor: async () => new Map(), jiraSite: async () => undefined, githubIssues: async () => new Map() },
     facts: { get: () => undefined }, log: { add: () => {} }, recentlyClosed: { add: () => 'rc' },
     safety: { isProtected: (t) => t.pinned }, state: () => r.liveState(), schedule, now: () => NOW,
   });

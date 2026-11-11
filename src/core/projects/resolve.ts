@@ -6,6 +6,7 @@
 // that resolves wins. A `create: false` candidate (a PR) resolves only into a project that exists (stored or created in
 // pass 1/2) or whose key prefix is confirmed (`allowPrefixes` ∪ `knownPrefixes`, Review Focus #5).
 import { COLORS } from '../config/schema';
+import { parseIssueKey, type IssueRef } from '../keys/github-issue';
 import { evaluateTab, type ProjectCandidate } from '../lang/evaluate';
 import { renderTemplate } from '../match/template';
 import { normalizeUrl } from '../url/normalize';
@@ -175,19 +176,83 @@ export function resolveProjects(input: ResolveInput): ResolveResult {
   return { assignments, created, summaries, sticky };
 }
 
-/** The project's group title: `def.title` rendered with `{key, summary, name}`; with no summary or name, just the key. */
-export function projectGroupTitle(def: ProjectDef, p: Project): string {
-  return p.summary || p.name ? renderTemplate(def.title, templateVars(p)) : p.key;
+/** An issue's title forms, least to most specific: `#N`, `repo#N`, `owner/repo#N`. */
+const issueForms = (r: IssueRef): string[] => [`#${r.number}`, `${r.repo}#${r.number}`, `${r.owner}/${r.repo}#${r.number}`];
+
+/**
+ * The base form of an issue title template (an index into issueForms): `owner/repo#N` (the key, so never escalated)
+ * when it starts with `{owner}/{repo}#{num}`, `repo#N` when it starts with `{repo}#{num}`, else `#N`.
+ */
+const baseForm = (template: string): number => (template.startsWith('{owner}/{repo}#{num}') ? 2 : template.startsWith('{repo}#{num}') ? 1 : 0);
+
+/**
+ * An issue project's title prefix: the base form of `def.title`, or the more specific `prefix` (issueTitlePrefixes)
+ * when two open projects would otherwise share it.
+ */
+function issueHead(def: ProjectDef, r: IssueRef, prefix: string | undefined): string {
+  const forms = issueForms(r);
+  return forms[Math.max(baseForm(def.title), prefix === undefined ? 0 : forms.indexOf(prefix))]!;
 }
 
-/** A project's values for its recipe's title and color templates: `{key}`, `{summary}` and (M4 T6) `{name}`. */
+/**
+ * The project's group title: `def.title` rendered with `{key, summary, name}` (and an issue key's `{owner, repo, num}`);
+ * with no summary or name, just the key, or for a GitHub issue key the template's base form (`#N`, `repo#N` for a
+ * `{repo}#{num}` template, `owner/repo#N` for an `{owner}/{repo}#{num}` one). `prefixes` (issueTitlePrefixes of the
+ * open projects) replaces an issue title's leading base form with a more specific one (`repo#N`, `owner/repo#N`) when
+ * two open projects would collide.
+ */
+export function projectGroupTitle(def: ProjectDef, p: Project, prefixes?: ReadonlyMap<string, string>): string {
+  const r = parseIssueKey(p.key);
+  if (!r) return p.summary || p.name ? renderTemplate(def.title, templateVars(p)) : p.key;
+  const base = issueForms(r)[baseForm(def.title)]!;
+  const head = issueHead(def, r, prefixes?.get(p.id));
+  if (!(p.summary || p.name)) return head;
+  const t = renderTemplate(def.title, templateVars(p));
+  return t.startsWith(base) && !/\d/.test(t.charAt(base.length)) ? head + t.slice(base.length) : t;
+}
+
+/**
+ * The least specific group title prefix each GitHub issue project in `projects` (the open ones, those with tabs) can
+ * use: `#N`, or, when two of them have the same number, `repo#N`, or `owner/repo#N` when their repo names are the same
+ * too. A `{repo}#{num}` template never goes below `repo#N`, an `{owner}/{repo}#{num}` one never below `owner/repo#N`
+ * (projectGroupTitle). The check spans every open project, whatever its window: the planner matches groups by title,
+ * so two projects must never share one (Review Focus 2).
+ */
+export function issueTitlePrefixes(projects: Iterable<Project>): Map<string, string> {
+  const byNumber = new Map<number, { id: string; owner: string; repo: string }[]>();
+  const seen = new Set<string>();
+  for (const p of projects) {
+    const r = parseIssueKey(p.key);
+    if (!r || seen.has(p.id)) continue;
+    seen.add(p.id);
+    byNumber.set(r.number, [...(byNumber.get(r.number) ?? []), { id: p.id, owner: r.owner, repo: r.repo }]);
+  }
+  const out = new Map<string, string>();
+  for (const [n, list] of byNumber) {
+    for (const x of list) {
+      const sameRepo = list.filter((y) => y.repo === x.repo).length;
+      out.set(x.id, list.length === 1 ? `#${n}` : sameRepo === 1 ? `${x.repo}#${n}` : `${x.owner}/${x.repo}#${n}`);
+    }
+  }
+  return out;
+}
+
+/** A project's values for its recipe's title and color templates: `{key}`, `{summary}`, (M4 T6) `{name}`, and an issue key's `{owner}`, `{repo}`, `{num}`. */
 function templateVars(p: Project): Record<string, string> {
-  return { key: p.key, summary: p.summary ?? '', name: p.name ?? '' };
+  const r = parseIssueKey(p.key);
+  return { key: p.key, summary: p.summary ?? '', name: p.name ?? '', ...(r && { owner: r.owner, repo: r.repo, num: String(r.number) }) };
 }
 
-/** True when a group titled `title` is the project `key`'s: exactly the key, or `<key> · …`. */
-export function titleBelongsToProject(title: string, key: string): boolean {
-  return title === key || title.startsWith(`${key} · `);
+/**
+ * True when a group titled `title` is the project `key`'s: exactly the key, or `<key> · …`. For a GitHub issue key, the
+ * project's title `prefix` (its group title's head; default `#N`) or a more specific one of its own (`repo#N`,
+ * `owner/repo#N`): a project titled `web#12` never takes a bare `#12` group, which may be another repo's.
+ */
+export function titleBelongsToProject(title: string, key: string, prefix?: string): boolean {
+  const r = parseIssueKey(key);
+  const forms = r ? issueForms(r) : [key];
+  const from = r && prefix !== undefined ? Math.max(0, forms.indexOf(prefix)) : 0;
+  return forms.slice(from).some((h) => title === h || title.startsWith(`${h} · `));
 }
 
 /**
@@ -198,6 +263,8 @@ export function projectTargets(assignments: Map<number, ProjectAssignment>, proj
   const byId = new Map(projects.map((p) => [p.id, p]));
   const defOf = new Map(defs.map((d) => [d.recipeId, d]));
   const out = new Map<number, GroupTarget>();
+  const assigned = new Set([...assignments.values()].map((a) => a.projectId));
+  const prefixes = issueTitlePrefixes(projects.filter((p) => assigned.has(p.id)));
   for (const [tabId, a] of assignments) {
     const p = byId.get(a.projectId);
     const def = p && defOf.get(p.recipeId);
@@ -205,13 +272,15 @@ export function projectTargets(assignments: Map<number, ProjectAssignment>, proj
     const rendered = p.color ?? renderTemplate(def.color, templateVars(p));
     const valid = COLORS.has(rendered);
     const ruleId = a.ruleKey ?? `${p.recipeId}/project`;
+    const issue = parseIssueKey(p.key);
+    const prefix = issue ? issueHead(def, issue, prefixes.get(p.id)) : undefined;
     // Manual-only (a saved group): its group is the user's, so it is not strict (a tab Chrome or the user puts into it
     // stays) and has no place in the order pass (M4-R16).
     const manualOnly = def.join.length === 1 && def.join[0] === 'manual';
     out.set(tabId, {
-      key: ruleId, ruleId, index: a.index, ruleIndex: a.index, title: projectGroupTitle(def, p),
+      key: ruleId, ruleId, index: a.index, ruleIndex: a.index, title: projectGroupTitle(def, p, prefixes),
       color: (valid ? rendered : 'grey') as GroupColor, collapsed: false, sortGroups: 'creation', strict: !manualOnly, merge: false,
-      dryRun: false, anchors: [], titleMatches: (t) => titleBelongsToProject(t, p.key),
+      dryRun: false, anchors: [], titleMatches: (t) => titleBelongsToProject(t, p.key, prefix),
       ...(manualOnly ? { unordered: true as const } : {}),
       ...(valid ? {} : { invalidColor: true as const }),
     });

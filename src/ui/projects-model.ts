@@ -1,6 +1,7 @@
 // Projects tab cards (M3 T17): ProjectCardData (projects.list) shaped for the popup and the side panel.
 import type { ProjectCardData } from '../core/projects/types';
 import type { PrState } from '../core/sources/types';
+import { parseIssueKey } from '../core/keys/github-issue';
 
 /** A PR state shown as a pill: never `unknown` (M3-R45). */
 export type ShownPrState = Exclude<PrState, 'unknown'>;
@@ -17,8 +18,13 @@ export interface ProjectCard {
   tabs: { tabId: number; title: string; url: string; favIconUrl?: string; pill?: ShownPrState; stale?: boolean }[];
   /** Linked PRs not open in the project (greyed, "Open ↗"). */
   linked: { url: string; title: string; state?: ShownPrState }[];
-  /** The ticket is Done by fresh data (ProjectCardData.done, M3-R90): "Ticket is done. Close this group?". */
+  /**
+   * The ticket is Done by fresh data (ProjectCardData.done, M3-R90): "Ticket is done. Close this group?", or for a GitHub
+   * issue (`issue`) "Issue is closed. Close this group?".
+   */
   showClose: boolean;
+  /** The project's key is a GitHub issue (`owner/repo#N`): the Done prompt speaks of a closed issue, not a done ticket. */
+  issue?: true;
 }
 
 const TONES: Record<NonNullable<ProjectCardData['status']>['category'], StatusTone> = { new: 'todo', indeterminate: 'progress', done: 'done' };
@@ -61,6 +67,7 @@ export function buildProjectCards(data: ProjectCardData[]): ProjectCard[] {
         const state = shown(l.state);
         return { url: l.url, title: l.title, ...(state && { state }) };
       }),
+      ...(parseIssueKey(c.key) && { issue: true as const }),
       showClose: c.done, // fresh Done only (M3-R90): a stale or stored Done still shows as the status, without the prompt
     };
   });

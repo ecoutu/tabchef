@@ -1494,7 +1494,7 @@ describe('preview.change with project recipes (T15 fix N1)', () => {
     const svc = new ProjectService({
       store: new ProjectStore({ get: async (k) => (local.has(k as string) ? { [k as string]: local.get(k as string) } : {}), set: async (o) => { for (const [k, v] of Object.entries(o)) local.set(k, v); } }),
       port: new FakeBrowserPort(), getProgram: async () => compileProgram(current, builtins).program,
-      sources: { factsFor: () => undefined, issues: async () => new Map(), linkedFor: async () => new Map(), jiraSite: async () => undefined },
+      sources: { factsFor: () => undefined, issues: async () => new Map(), linkedFor: async () => new Map(), jiraSite: async () => undefined, githubIssues: async () => new Map() },
       facts: { get: () => undefined }, log: { add: () => {} }, recentlyClosed: { add: () => 'x' }, safety: { isProtected: () => false },
       state: async () => toLive(undefined),
     });

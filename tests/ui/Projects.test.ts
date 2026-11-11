@@ -104,6 +104,15 @@ describe('Projects tab (M3 T17)', () => {
     expect(send).toHaveBeenCalledWith({ type: 'projects.setKeep', projectId: 'jira:ABC-1', keep: true });
   });
 
+  it('a closed GitHub issue: the prompt says the issue is closed, not the ticket done', async () => {
+    cards = [{ ...done, id: 'github-issue:acme/api#7', key: 'acme/api#7', title: 'acme/api#7 · Login fails',
+      status: { name: 'Closed', category: 'done', via: 'api' } }];
+    render(Projects);
+    expect(await screen.findByText('Issue is closed. Close this group?')).toBeTruthy();
+    expect(screen.getByRole('group', { name: 'Issue is closed' })).toBeTruthy();
+    expect(screen.queryByText('Ticket is done. Close this group?')).toBeNull();
+  });
+
   it('no prompt for a project that is not done', async () => {
     cards = [{ ...done, status: { name: 'In Progress', category: 'indeterminate', via: 'api' }, done: false }];
     render(Projects);

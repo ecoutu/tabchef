@@ -3,7 +3,7 @@ import { compileProgram } from '../../../src/core/lang/compile';
 import { defaultConfig } from '../../../src/core/config/defaults';
 import { planGroups, type PlanContext } from '../../../src/core/group/plan';
 import {
-  projectGroupTitle, projectTargets, resolveProjects, titleBelongsToProject, type ResolveInput, type StickyMap,
+  issueTitlePrefixes, projectGroupTitle, projectTargets, resolveProjects, titleBelongsToProject, type ResolveInput, type StickyMap,
 } from '../../../src/core/projects/resolve';
 import type { Project, ProjectDef } from '../../../src/core/projects/types';
 import type { Program, Recipe, Rule, TabFacts } from '../../../src/core/lang/types';
@@ -273,5 +273,102 @@ describe('priority: a project wins over a group rule only when its rule is earli
   });
   it('ordered after → the PR joins the project', () => {
     expect(titles([`${RID}/ticket`, `${RID}/pr`, 'user/acme'])).toEqual([['ABC-1 · Login fails', [1, 2]]]);
+  });
+});
+
+describe('GitHub issue projects: #N titles, disambiguated when two would collide', () => {
+  const GH = 'github-issue';
+  const ghDef: ProjectDef = { ...def, recipeId: GH, title: '#{num} · {summary}', color: 'purple' };
+  const issue = (key: string, o: Partial<Project> = {}): Project => ({
+    id: `${GH}:${key}`, recipeId: GH, key, createdAt: 1, updatedAt: 1, manual: [], excluded: [], linked: [], ...o,
+  });
+  const assign = (...keys: string[]) => new Map(keys.map((k, i) => [i + 1, { projectId: `${GH}:${k}`, key: k, via: 'rule' as const, ruleKey: `${GH}/issue`, index: 0 }]));
+
+  it('projectGroupTitle: #N · summary, or #N without one; {owner}/{repo}/{num} are template vars', () => {
+    expect(projectGroupTitle(ghDef, issue('acme/web#12', { summary: 'Fix login' }))).toBe('#12 · Fix login');
+    expect(projectGroupTitle(ghDef, issue('acme/web#12'))).toBe('#12');
+    expect(projectGroupTitle({ ...ghDef, title: '{owner}/{repo} {num}' }, issue('acme/web#12', { summary: 'x' }))).toBe('acme/web 12');
+    expect(projectGroupTitle(def, project('ABC-1'))).toBe('ABC-1'); // Jira unchanged
+  });
+  it('titleBelongsToProject: an issue key matches #N (or the prefix given), never another number', () => {
+    expect(titleBelongsToProject('#12', 'acme/web#12')).toBe(true);
+    expect(titleBelongsToProject('#12 · Fix login', 'acme/web#12')).toBe(true);
+    expect(titleBelongsToProject('#123', 'acme/web#12')).toBe(false);
+    expect(titleBelongsToProject('acme/web#12', 'acme/web#12')).toBe(true);
+    expect(titleBelongsToProject('#12', 'acme/web#12', 'web#12')).toBe(false);
+    expect(titleBelongsToProject('web#12 · x', 'acme/web#12', 'web#12')).toBe(true);
+  });
+  it('issueTitlePrefixes: #N alone; repo#N when the number collides; owner/repo#N when the repo name does too', () => {
+    const ps = [issue('acme/a#12'), issue('acme/b#12'), issue('other/b#12'), issue('acme/a#7'), project('ABC-1')];
+    expect(issueTitlePrefixes(ps)).toEqual(new Map([
+      [`${GH}:acme/a#12`, 'a#12'], [`${GH}:acme/b#12`, 'acme/b#12'], [`${GH}:other/b#12`, 'other/b#12'], [`${GH}:acme/a#7`, '#7'],
+    ]));
+    expect(projectGroupTitle(ghDef, issue('acme/a#12', { summary: 'Fix login' }), issueTitlePrefixes(ps))).toBe('a#12 · Fix login');
+    expect(projectGroupTitle(ghDef, issue('acme/a#12'), issueTitlePrefixes(ps))).toBe('a#12');
+  });
+  it('Review Focus 2: projectTargets gives acme/a#12 and acme/b#12 their own titles; neither accepts a bare #12', () => {
+    const t = projectTargets(assign('acme/a#12', 'acme/b#12'), [issue('acme/a#12'), issue('acme/b#12')], [ghDef]);
+    expect([t.get(1)?.title, t.get(2)?.title]).toEqual(['a#12', 'b#12']);
+    expect(t.get(1)?.titleMatches?.('#12')).toBe(false);
+    expect(t.get(1)?.titleMatches?.('a#12')).toBe(true);
+    expect(t.get(1)?.titleMatches?.('acme/a#12 · x')).toBe(true);
+    expect(t.get(1)?.titleMatches?.('b#12')).toBe(false);
+    // Only projects with tabs count: alone, acme/a#12 is #12 again, and adopts its a#12 group.
+    const alone = projectTargets(assign('acme/a#12'), [issue('acme/a#12'), issue('acme/b#12')], [ghDef]).get(1)!;
+    expect(alone.title).toBe('#12');
+    expect(alone.titleMatches?.('a#12')).toBe(true);
+    expect(alone.titleMatches?.('b#12')).toBe(false);
+  });
+
+  describe('a {repo}#{num} title template: base repo#N, owner/repo#N on a collision', () => {
+    const repoDef: ProjectDef = { ...ghDef, title: '{repo}#{num} · {summary}' };
+    it('projectGroupTitle: repo#N with no summary (never the full key), repo#N · summary with one', () => {
+      expect(projectGroupTitle(repoDef, issue('acme/web#12'))).toBe('web#12');
+      expect(projectGroupTitle({ ...repoDef, title: '{repo}#{num}' }, issue('acme/web#12', { summary: 'x' }))).toBe('web#12');
+      expect(projectGroupTitle(repoDef, issue('acme/web#12', { summary: 'Fix login' }))).toBe('web#12 · Fix login');
+    });
+    it('projectTargets: acme/web#12 alone → web#12; never takes a bare #12', () => {
+      const t = projectTargets(assign('acme/web#12'), [issue('acme/web#12')], [repoDef]).get(1)!;
+      expect(t.title).toBe('web#12');
+      expect(t.titleMatches?.('web#12 · Fix login')).toBe(true);
+      expect(t.titleMatches?.('acme/web#12')).toBe(true);
+      expect(t.titleMatches?.('#12')).toBe(false);
+    });
+    it('acme/web#12 and acme/api#12 keep web#12 and api#12 (no collision)', () => {
+      const t = projectTargets(assign('acme/web#12', 'acme/api#12'), [issue('acme/web#12'), issue('acme/api#12')], [repoDef]);
+      expect([t.get(1)?.title, t.get(2)?.title]).toEqual(['web#12', 'api#12']);
+    });
+    it('acme/web#12 and other/web#12 → acme/web#12 and other/web#12; neither accepts web#12; alone again → web#12, adopting its old group', () => {
+      const ps = [issue('acme/web#12', { summary: 'Fix login' }), issue('other/web#12')];
+      const t = projectTargets(assign('acme/web#12', 'other/web#12'), ps, [repoDef]);
+      expect([t.get(1)?.title, t.get(2)?.title]).toEqual(['acme/web#12 · Fix login', 'other/web#12']);
+      expect(t.get(1)?.titleMatches?.('web#12')).toBe(false);
+      expect(t.get(1)?.titleMatches?.('other/web#12')).toBe(false);
+      const alone = projectTargets(assign('acme/web#12'), ps, [repoDef]).get(1)!;
+      expect(alone.title).toBe('web#12 · Fix login');
+      expect(alone.titleMatches?.('acme/web#12 · Fix login')).toBe(true);
+    });
+    it('Jira keys are unchanged', () => {
+      expect(projectGroupTitle(def, project('ABC-1'))).toBe('ABC-1');
+      expect(projectGroupTitle(def, project('ABC-1', { summary: 'x' }))).toBe('ABC-1 · x');
+    });
+  });
+
+  describe('a {owner}/{repo}#{num} title template: always the full key, never escalated', () => {
+    const ownerDef: ProjectDef = { ...ghDef, title: '{owner}/{repo}#{num} · {summary}' };
+    it('projectGroupTitle: owner/repo#N with no summary, owner/repo#N · summary with one', () => {
+      expect(projectGroupTitle(ownerDef, issue('acme/web#12'))).toBe('acme/web#12');
+      expect(projectGroupTitle(ownerDef, issue('acme/web#12', { summary: 'Fix login' }))).toBe('acme/web#12 · Fix login');
+      expect(projectGroupTitle({ ...ownerDef, title: '{owner}/{repo}#{num}' }, issue('acme/web#12', { summary: 'x' }))).toBe('acme/web#12');
+    });
+    it('projectTargets: acme/web#12 and other/web#12 keep their keys; neither takes web#12 or #12', () => {
+      const ps = [issue('acme/web#12', { summary: 'Fix login' }), issue('other/web#12')];
+      const t = projectTargets(assign('acme/web#12', 'other/web#12'), ps, [ownerDef]);
+      expect([t.get(1)?.title, t.get(2)?.title]).toEqual(['acme/web#12 · Fix login', 'other/web#12']);
+      const alone = projectTargets(assign('acme/web#12'), ps, [ownerDef]).get(1)!;
+      expect(alone.title).toBe('acme/web#12 · Fix login');
+      for (const g of ['#12', 'web#12', 'web#12 · Fix login']) expect(alone.titleMatches?.(g)).toBe(false);
+      expect(alone.titleMatches?.('acme/web#12')).toBe(true);
+    });
   });
 });
