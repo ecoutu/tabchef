@@ -1,3 +1,16 @@
+# [1.8.0](https://github.com/ecoutu/tabchef/compare/v1.7.0...v1.8.0) (2026-11-11)
+
+
+### Bug Fixes
+
+* **dedupe:** close a second copy of a Jira ticket opened from a link with extra parameters ([346075d](https://github.com/ecoutu/tabchef/commit/346075d15f54e7f674efe28d33c29d0435267b43)), closes [#179](https://github.com/ecoutu/tabchef/issues/179)
+* **github-prs:** treat a pull request's new Files changed page as the pull request ([eee893c](https://github.com/ecoutu/tabchef/commit/eee893cd9353cfd1a7df95fa5d2e4380a7868596)), closes [#179](https://github.com/ecoutu/tabchef/issues/179)
+
+
+### Features
+
+* **projects:** show breadcrumbs on project pages, with Projects as the way back ([9bfe62e](https://github.com/ecoutu/tabchef/commit/9bfe62e62fcbfae8a79f8e1f31072b54ceeeace7)), closes [#180](https://github.com/ecoutu/tabchef/issues/180)
+
 # [1.7.0](https://github.com/ecoutu/tabchef/compare/v1.6.0...v1.7.0) (2026-11-08)
 
 
