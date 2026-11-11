@@ -7,6 +7,8 @@ import { browser } from 'wxt/browser';
 import { fakeBrowser } from 'wxt/testing/fake-browser';
 import { builtinConnectionDefs, jiraDef } from '../../src/core/connections/builtin';
 import type { ConnectionDef, ConnectionStatus } from '../../src/core/connections/types';
+import { defaultConfig } from '../../src/core/config/defaults';
+import type { Config } from '../../src/core/types';
 
 const send = vi.fn();
 vi.mock('../../src/ui/send', () => ({ send: (r: unknown) => send(r) }));
@@ -53,8 +55,8 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-async function open() {
-  const r = render(Connections);
+async function open(props: { config?: Config | null } = {}) {
+  const r = render(Connections, { props });
   await flush();
   return r;
 }
@@ -73,16 +75,35 @@ describe('Connections page', () => {
     expect(note.textContent).toMatch(/install the Tabchef GitHub App|personal access token/);
   });
 
+  /** The default config with the github-issue recipe on or off. */
+  const withIssueRecipe = (enabled: boolean): Config => {
+    const c = defaultConfig();
+    return { ...c, recipes: c.recipes.map((r) => (r.id === 'github-issue' ? { ...r, enabled } : r)) };
+  };
+
   it('says why GitHub issue data is missing when the GitHub App lacks the Issues permission, with where to accept it', async () => {
     status = [st({ state: 'ok' })];
     send.mockImplementation(async (req: { type: string }) => (req.type === 'connections.list'
       ? { ok: true, data: { defs, status, missingIssues: true } }
       : { ok: true, data: null }));
-    await open();
+    await open({ config: withIssueRecipe(true) });
     const card = screen.getByRole('region', { name: 'GitHub' });
     const note = within(card).getByText(/can't read GitHub issues yet/).closest('p')!;
     expect(note.textContent).toContain('Issues (read-only) permission');
     expect(within(note).getByRole('link').getAttribute('href')).toBe('https://github.com/settings/installations');
+  });
+
+  it('no Issues permission note while the GitHub issue projects recipe is off (or the config is not loaded yet)', async () => {
+    status = [st({ state: 'ok' })];
+    send.mockImplementation(async (req: { type: string }) => (req.type === 'connections.list'
+      ? { ok: true, data: { defs, status, missingIssues: true } }
+      : { ok: true, data: null }));
+    for (const config of [withIssueRecipe(false), null]) {
+      await open({ config });
+      expect(screen.getByRole('region', { name: 'GitHub' })).toBeTruthy();
+      expect(screen.queryByText(/can't read GitHub issues yet/)).toBeNull();
+      cleanup();
+    }
   });
 
   it('no Issues permission note while issue data is readable', async () => {

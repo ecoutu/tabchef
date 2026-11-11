@@ -8,7 +8,7 @@ import type { ConnectionDef } from '../../src/core/connections/types';
 import { CONNECTIONS_KEY, secretKey } from '../../src/engine/connections/secret-store';
 
 export interface MockIssue { summary: string; status: string; category: 'new' | 'indeterminate' | 'done' }
-export interface MockPr { state: 'OPEN' | 'CLOSED' | 'MERGED'; title: string; mergedAt?: string }
+export interface MockPr { state: 'OPEN' | 'CLOSED' | 'MERGED'; title: string; mergedAt?: string; headRefName?: string }
 
 /** The dummy token stored for the github connection. The mock answers 401 to anything else. */
 export const MOCK_TOKEN = 'ghp_e2eDummyToken0000000000000000000000';
@@ -20,7 +20,7 @@ export const MOCK_LOGIN = 'e2e-user';
 
 /** The mock's key for a pull request: 'owner/repo#number'. */
 export const prKey = (repo: string, n: number): string => `${repo}#${n}`;
-export const openPr = (title: string): MockPr => ({ state: 'OPEN', title });
+export const openPr = (title: string, headRefName?: string): MockPr => ({ state: 'OPEN', title, ...(headRefName !== undefined && { headRefName }) });
 /** `mergedAt`: an ISO time, or a Date. */
 export const mergedPr = (title: string, mergedAt: string | Date): MockPr =>
   ({ state: 'MERGED', title, mergedAt: typeof mergedAt === 'string' ? mergedAt : mergedAt.toISOString() });

@@ -97,6 +97,15 @@ describe('normalizeUrl', () => {
     const bad = { ...base, urlTransforms: [{ pattern: '(', replacement: '' }, { pattern: 'A', replacement: 'b', flags: 'i' }] };
     expect(key('https://a.com/x', bad)).toBe('https://b.com/x');
   });
+  it('a urlTransform replacement lower-cases what follows \\L, up to \\E', () => {
+    const s = (replacement: string) => ({ ...base, urlTransforms: [{ pattern: '^(https://a\\.com/)([^/]+)/([^/]+)$', replacement }] });
+    expect(key('https://a.com/AbC/DeF', s('\\L$1$2/$3'))).toBe('https://a.com/abc/def');
+    expect(key('https://a.com/AbC/DeF', s('$1\\L$2\\E/$3'))).toBe('https://a.com/abc/DeF');
+    expect(key('https://a.com/AbC/DeF', s('$1$2/$3'))).toBe('https://a.com/AbC/DeF');
+    // Only the replaced text: the rest of the key keeps its case.
+    const partial = { ...base, urlTransforms: [{ pattern: '^(https://a\\.com/)([^/]+)', replacement: '$1\\L$2' }] };
+    expect(key('https://a.com/AbC/DeF', partial)).toBe('https://a.com/abc/DeF');
+  });
   it('returns null and never throws', () => {
     expect(normalizeUrl('chrome://newtab', base)).toBeNull();
     expect(normalizeUrl('not a url', base)).toBeNull();

@@ -202,7 +202,7 @@
       <div class="crumbs"><Breadcrumbs crumbs={projectCrumbs(project)} /></div>
       {#key matched.params.id}<ProjectHome id={matched.params.id ?? ''} onTitle={(t) => { project = t; }} />{/key}
     {:else if current.page === 'connections'}
-      <Connections />
+      <Connections config={saved} />
     {:else if current.page === 'backups'}
       {#if saved}<Backups saved={saved!} {dirty} onApplied={loadConfig} />{/if}
     {:else if current.page === 'recipes'}

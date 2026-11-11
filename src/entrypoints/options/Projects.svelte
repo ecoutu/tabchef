@@ -226,7 +226,7 @@
   {/if}
   {#if cards === undefined && !error}<p class="muted" role="status">Loading projects…</p>{/if}
   {#if empty}
-    <p class="muted">No projects yet. Create one with New project, or turn on a Jira ticket recipe and open a Jira ticket.</p>
+    <p class="muted">No projects yet. Create one with New project, or turn on a Jira ticket or GitHub issue recipe and open a ticket or issue.</p>
   {/if}
   {#if cards && cards.length > 0}
     <section aria-labelledby="projects-open">

@@ -123,7 +123,7 @@ describe('Projects tab (M3 T17)', () => {
   it('the empty state', async () => {
     cards = [];
     render(Projects);
-    expect(await screen.findByText('No projects yet. Turn on a Jira ticket recipe, then open a Jira ticket.')).toBeTruthy();
+    expect(await screen.findByText('No projects yet. Turn on a Jira ticket or GitHub issue recipe, then open a ticket or issue.')).toBeTruthy();
   });
 
   it('M3-R83: opening the tab sends sources.refresh, then lists again once it answers', async () => {
@@ -312,7 +312,7 @@ describe('collapsing project cards (#151)', () => {
   it('no Collapse all without cards', async () => {
     cards = [];
     render(Projects);
-    await screen.findByText('No projects yet. Turn on a Jira ticket recipe, then open a Jira ticket.');
+    await screen.findByText('No projects yet. Turn on a Jira ticket or GitHub issue recipe, then open a ticket or issue.');
     expect(screen.queryByRole('button', { name: 'Collapse all' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Expand all' })).toBeNull();
   });

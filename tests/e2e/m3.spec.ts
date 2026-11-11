@@ -3,7 +3,7 @@
 // connection layer use a localhost apiBaseUrl, M3-R35 / M3-R86). Under plain `npm run e2e` the mocked tests skip; the
 // production-build guard (e) runs in both.
 // (b) Jira ticket grouping at the Titles level (no connection), (b2) the Done prompt with a Jira token connection on the mock.
-import { expect, test } from '@playwright/test';
+import { expect, test, type Route } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -22,6 +22,7 @@ interface WhyEntry { tabId?: number; ruleId?: string; action: string; detail: st
 const ROOT = resolve(import.meta.dirname, '../..');
 const RECIPE_ID = 'merged-prs-e2e';
 const JIRA_RECIPE_ID = 'jira-ticket-e2e';
+const GH_ISSUE_RECIPE_ID = 'github-issue';
 const manifestOf = (dir: string) => JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')) as { host_permissions?: string[] };
 const isE2eBuild = (() => {
   try {
@@ -169,6 +170,50 @@ test.describe('M3 with mocked services', () => {
       ['ABC-3', { name: 'In Progress', via: 'api', done: false }],
     ]);
     expect(await tabById(id)).toBeDefined(); // prompting only: nothing is closed
+  });
+
+  test('(j) a GitHub issue tab and a PR whose branch names it share one acme/api#7 group', async () => {
+    // The shipped, off-by-default recipe as it is. Its URL conditions and key extraction only know https://github.com, so
+    // the tabs are on github.com and the browser context answers those pages itself (no request leaves the machine).
+    // The PR's branch comes from the mock API (the connection); the PR title names no issue. PR 8: nothing cached for it.
+    const page = (title: string) => (route: Route) => route.fulfill({ contentType: 'text/html; charset=utf-8', body: `<!doctype html><title>${title}</title><p>tabchef e2e mock</p>` });
+    await h.context.route('https://github.com/acme/api/issues/7', page('Fix login · Issue #7 · acme/api · GitHub'));
+    await h.context.route('https://github.com/acme/api/pull/8', page('Repair sign-in by Someone · Pull Request #8 · acme/api · GitHub'));
+    try {
+      mock.github.setPr(prKey('acme/api', 8), openPr('Repair sign-in', 'fix/7-x'));
+      const base = config([]);
+      const recipes = base.recipes.some((r) => r.id === GH_ISSUE_RECIPE_ID)
+        ? base.recipes.map((r) => (r.id === GH_ISSUE_RECIPE_ID ? { ...r, enabled: true } : r))
+        : [...base.recipes, { id: GH_ISSUE_RECIPE_ID, enabled: true, params: {}, source: 'builtin' as const }];
+      await send(h, { type: 'connections.disconnect', id: 'github' });
+      await h.sw.evaluate(async ([items, rateKey]) => {
+        await chrome.storage.session.remove(rateKey);
+        await chrome.storage.local.set(items);
+      }, [connectionItems([mockGithubDef(mock.origin)]), RATE_KEY] as const);
+      expect((await send<{ login?: string }>(h, { type: 'connections.test', id: 'github' }))).toEqual({ login: MOCK_LOGIN });
+      await setConfig(h, { ...base, recipes });
+      const issueTab = await openTab(h, 'https://github.com/acme/api/issues/7');
+      const pr = await openTab(h, 'https://github.com/acme/api/pull/8');
+
+      const state = async () => {
+        const gs = await groups(h);
+        const ts = (await tabs(h)).filter((t) => t.id === issueTab || t.id === pr);
+        return { groups: gs.map((g) => g.title), members: ts.map((t) => gs.find((g) => g.id === t.groupId)?.title ?? null) };
+      };
+      // The default title is acme/api#7 · <summary>, or acme/api#7 while the summary is not known yet.
+      const isTitle = (t: string | null | undefined) => t === 'acme/api#7' || (t ?? '').startsWith('acme/api#7 · ');
+      await expect.poll(async () => {
+        const s = await state();
+        return s.groups.length === 1 && isTitle(s.groups[0]) && s.members.every((m) => m === s.groups[0]);
+      }, { timeout: 10_000 }).toBe(true);
+      const cards = await send<{ id: string; title: string; tabs: { tabId: number }[] }[]>(h, { type: 'projects.list' });
+      expect(cards.map((c) => ({ id: c.id, tabs: c.tabs.map((t) => t.tabId).sort() })))
+        .toEqual([{ id: `${GH_ISSUE_RECIPE_ID}:acme/api#7`, tabs: [issueTab, pr].sort() }]);
+      expect(isTitle(cards[0]!.title)).toBe(true);
+    } finally {
+      await h.context.unroute('https://github.com/acme/api/issues/7');
+      await h.context.unroute('https://github.com/acme/api/pull/8');
+    }
   });
 
   test('(g) the popup project card opens the project home, which shows the ticket and PR tabs and follows a tab closing', async () => {

@@ -42,7 +42,7 @@ const trigger = (m: unknown) => (fakeBrowser.runtime.onMessage as unknown as { t
 describe('side panel page (M3 T17)', () => {
   it('renders the Projects view', async () => {
     render(Panel);
-    expect(await screen.findByText('No projects yet. Turn on a Jira ticket recipe, then open a Jira ticket.')).toBeTruthy();
+    expect(await screen.findByText('No projects yet. Turn on a Jira ticket or GitHub issue recipe, then open a ticket or issue.')).toBeTruthy();
   });
 
   it('re-fetches projects.list on config.changed', async () => {
@@ -142,7 +142,7 @@ describe('popup "Open in side panel" (M3-R82)', () => {
   it('no button without a projects view; the projects view renders the Projects tab', async () => {
     setup();
     render(Popup);
-    expect(await screen.findByText('No projects yet. Turn on a Jira ticket recipe, then open a Jira ticket.')).toBeTruthy();
+    expect(await screen.findByText('No projects yet. Turn on a Jira ticket or GitHub issue recipe, then open a ticket or issue.')).toBeTruthy();
     cleanup();
     views = [{ id: 'finished', tab: 'Finished', kind: 'list', actions: ['focus'], count: 0 }];
     render(Popup);

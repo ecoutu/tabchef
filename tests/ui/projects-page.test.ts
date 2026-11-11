@@ -50,7 +50,7 @@ describe('Projects page (M4 T3)', () => {
   it('says so when there are no projects', async () => {
     send.mockImplementation(async () => ({ ok: true, data: [] }));
     render(Projects);
-    expect(await screen.findByText(/No projects yet/)).toBeTruthy();
+    expect(await screen.findByText('No projects yet. Create one with New project, or turn on a Jira ticket or GitHub issue recipe and open a ticket or issue.')).toBeTruthy();
   });
 });
 

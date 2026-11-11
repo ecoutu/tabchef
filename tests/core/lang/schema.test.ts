@@ -287,6 +287,13 @@ describe('M3 T1: sources, fields, keys and projects', () => {
     expect(at(validateRecipe(recipe({ rules: [rule({ source: src({ fields: { x: 'a[0]()' } }) })] })), '/rules/0/source/fields/x').length).toBeGreaterThan(0);
     expect(validateRecipe(recipe({ rules: [rule({ source: src({ fields: { x: 'head.repo.name' } }) })] })).ok).toBe(true);
   });
+  it('a field path may index a list after its first segment (closingIssues.0), never start with or hold a padded index', () => {
+    expect(errorsOf(validateRecipe(recipe({ rules: [rule({ source: src({ fields: { x: 'closingIssues.0' } }) })] })))).toEqual([]);
+    expect(errorsOf(validateRecipe(recipe({ rules: [rule({ source: src({ fields: { x: 'a.12.b' } }) })] })))).toEqual([]);
+    for (const bad of ['0', '0.a', 'a.01', 'a.-1', 'a.0x']) {
+      expect(at(validateRecipe(recipe({ rules: [rule({ source: src({ fields: { x: bad } }) })] })), '/rules/0/source/fields/x').length).toBeGreaterThan(0);
+    }
+  });
   it('accepts a source fallback page adapter (M3-R59) and rejects an unknown one or extra keys', () => {
     expect(errorsOf(validateRecipe(recipe({ rules: [rule({ source: src({ fallback: { adapter: 'github.prPage' } }) })] })))).toEqual([]);
     expect(at(validateRecipe(recipe({ rules: [rule({ source: src({ fallback: { adapter: 'gitlab.mrPage' } }) })] })), '/rules/0/source/fallback/adapter').length).toBeGreaterThan(0);

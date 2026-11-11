@@ -1,0 +1,97 @@
+# GitHub issue projects: one project per GitHub issue, keyed `owner/repo#N` (lower-cased). An issue tab creates the
+# project (key from the URL); a pull request joins it, or starts it, by its head branch (`fix/12-login`: the number is
+# an issue in the PR's own repo, so a fork's `someone:fix/12-x` still means this repo's #12), else by the first issue
+# GitHub says it closes (assignProject.fallbackKey; the reverse of jira-ticket-either, where the title comes first).
+# The issue rule's needs end with an empty alternative: without the GitHub connection or github.com access it still
+# runs at the Titles level (key from the URL, summary from the title). The PR rule needs one of the two: at Page details
+# only the branch is known (the closing link is not read from the page), with the connection both. No conflicts with
+# the jira-ticket-* recipes: when a PR is a candidate for both, rule priority decides.
+recipe: github-issue
+version: 1
+name: GitHub issue projects
+description: Groups each GitHub issue tab with the pull requests whose branch names its number or that close it, one group per issue.
+params:
+  branchPattern:
+    type: regex
+    default: '^(?:feat|fix|perf|refactor|test|docs|build|ci|chore|style|revert|bugfix|hotfix|issue)/#?(?<n>[1-9]\d{0,9})(?=-|$)'
+    label: Branch name pattern
+    help: A regular expression for a branch that names an issue, with the issue number in the group n, e.g. fix/12 or feat/12-dark-mode. Optional groups owner and repo name the repository; without them the issue is in the pull request's own repository.
+  repos:
+    type: string[]
+    default: []
+    label: Repositories
+    help: One per line, as owner/repo; * matches any part of a name, e.g. acme/*. Only issues in these repositories get a group. Empty means every repository.
+  ignoredRepos:
+    type: string[]
+    default: []
+    label: Ignored repositories
+    help: One per line, as owner/repo; * matches any part of a name, e.g. acme/*. Issues in these repositories never get a group, and no pull request joins one.
+  titleFormat:
+    type: string
+    default: '{owner}/{repo}#{num} · {summary}'
+    enum: ['{owner}/{repo}#{num}', '{owner}/{repo}#{num} · {summary}', '{repo}#{num}', '{repo}#{num} · {summary}', '#{num}', '#{num} · {summary}']
+    label: Group title
+    help: "{owner}/{repo}#{num} shows the owner, repository and issue number (acme/web#12); {repo}#{num} leaves out the owner (web#12); #{num} shows the number alone (#12); · {summary} adds the issue's title once it is known. When two open issues would get the same shorter title, the repository is added to tell them apart, then the owner."
+  color:
+    type: string
+    default: purple
+    enum: [grey, blue, red, yellow, green, pink, purple, cyan, orange]
+    label: Group color
+    help: The color of each issue's tab group.
+project: {key: '{key}', title: '{params.titleFormat}', color: '{params.color}', container: group, join: [rules, manual]}
+# An issue's /owner/repo/issues/N page opened with a query (GitHub's notification links add ?notification_referrer_id=,
+# timeline links ?timeline_page=) or with owner/repo in other letter case (GitHub ignores it) is the same tab as the
+# issue: the query is dropped and the URL lower-cased (\L), as the jira-ticket-* recipes fold a ticket's links (#179).
+# The fragment is not part of the key unless a fragment override keeps it; then it stays.
+dedupe:
+  urlTransforms:
+    - pattern: '^(https?://github\.com/[^/?#]+/[^/?#]+/issues/\d+)(?:\?[^#]*)?(?=#|$)'
+      replacement: '\L$1'
+rules:
+  - id: issue
+    name: Issue tab
+    enabled: true
+    needs:
+      anyOf:
+        - connections: [github]
+        - hosts: ['https://github.com/*']
+        - {}
+    source:
+      connection: github
+      query: github.issue
+      args: {owner: '{owner}', repo: '{repo}', number: '{num}'}
+      fields: {status: status, statusCategory: statusCategory, summary: summary}
+      fallback: {adapter: github.issuePage}
+    match:
+      url: 'github.com/:owner/:repo/issues/:num*'
+    extract:
+      key: {from: url, githubIssue: {allow: '{params.repos}', ignore: '{params.ignoredRepos}'}}
+      summary: {from: title, regex: '^(?<s>.+?) · Issue #\d+ · ', group: s}
+    actions:
+      - assignProject: {key: '{key}', create: true}
+  - id: pr
+    name: PR by branch or closing link
+    enabled: true
+    needs:
+      anyOf:
+        - connections: [github]
+        - hosts: ['https://github.com/*']
+    source:
+      connection: github
+      query: github.pull_request
+      args: {owner: '{owner}', repo: '{repo}', number: '{num}'}
+      fields: {headRefName: headRefName, state: state, closes: closingIssues.0}
+      fallback: {adapter: github.prPage}
+    match:
+      url: 'github.com/:owner/:repo/pull/:num*'
+    extract:
+      branchIssue: {from: source.headRefName, githubIssue: {pattern: '{params.branchPattern}', allow: '{params.repos}', ignore: '{params.ignoredRepos}'}}
+      linkIssue: {from: source.closes, githubIssue: {allow: '{params.repos}', ignore: '{params.ignoredRepos}'}}
+    actions:
+      - assignProject: {key: '{branchIssue}', fallbackKey: '{linkIssue}', create: true}
+levels:
+  - {id: titles, label: Titles, rules: [issue]}
+  - {id: page, label: Page details, rules: [issue, pr]}
+  - {id: connections, label: Connections, rules: [issue, pr]}
+views:
+  - {id: projects, tab: Projects, kind: projects, actions: []}

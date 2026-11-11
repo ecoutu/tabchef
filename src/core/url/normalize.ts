@@ -45,6 +45,29 @@ function shouldStrip(name: string, patterns: string[]): boolean {
   return patterns.some((p) => (p.endsWith('*') ? name.startsWith(p.slice(0, -1)) : name === p));
 }
 
+// Case-conversion markers for a urlTransform replacement's `\L` and `\E`: private-use characters, which a URL's href
+// never holds (the URL parser percent-encodes them).
+const LOWER = '\uE000';
+const END = '\uE001';
+
+/**
+ * `key` with `re` replaced by `replacement`. As in sed or an editor's regex replace, `\L` in the replacement lower-cases
+ * the text that follows it, up to `\E` or the end of the replacement (a recipe folds a case-insensitive part of a URL,
+ * such as GitHub's owner/repo). Only the replaced text changes case; the rest of the key keeps it.
+ */
+function applyTransform(key: string, re: RegExp, replacement: string): string {
+  if (!replacement.includes('\\L')) return key.replace(re, replacement);
+  const marked = `${replacement.replaceAll('\\L', LOWER).replaceAll('\\E', END)}${END}`;
+  let out = '';
+  let lower = false;
+  for (const ch of key.replace(re, marked)) {
+    if (ch === LOWER) lower = true;
+    else if (ch === END) lower = false;
+    else out += lower ? ch.toLowerCase() : ch;
+  }
+  return out;
+}
+
 /**
  * Dedupe key of `url` and its #fragment, or null for exempt/unparseable URLs. Whether the fragment stays in the key
  * (T18↔T6), decided on the original `url` before canonicalizers and urlTransforms: the per-rule `o.keepFragment`
@@ -87,7 +110,7 @@ export function normalizeUrl(
       } catch {
         continue;
       }
-      key = key.replace(re, t.replacement);
+      key = applyTransform(key, re, t.replacement);
     }
     return { key, fragment };
   } catch {

@@ -178,7 +178,7 @@
     <p class="loading" role="status"><span class="spinner" aria-hidden="true"></span>Loading projects…</p>
   {/if}
   {#if cards && cards.length === 0}
-    <p class="empty">No projects yet. Turn on a Jira ticket recipe, then open a Jira ticket.</p>
+    <p class="empty">No projects yet. Turn on a Jira ticket or GitHub issue recipe, then open a ticket or issue.</p>
   {/if}
   {#each cards ?? [] as c (c.id)}
     <ProjectCard card={c} prompt={c.showClose && !kept.includes(c.id)}

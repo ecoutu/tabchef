@@ -27,7 +27,7 @@ export interface DedupeSettings {
   alwaysSwitchSites: string[];                // url patterns that skip the ask prompt and always switch (ask mode)
   includeIncognito: boolean;
   scope: 'all-windows' | 'same-window';       // default 'all-windows' (Tab Deduper dedupAllWindows)
-  urlTransforms: { pattern: string; replacement: string; flags?: string }[];  // regex replace applied to the dedupe key, after canonicalizers
+  urlTransforms: { pattern: string; replacement: string; flags?: string }[];  // regex replace applied to the dedupe key, after canonicalizers; \L in a replacement lower-cases what follows, up to \E
   fragmentOverrides: { pattern: string; keepFragment: boolean }[];  // per-URL-pattern override of stripFragment (M2 T18)
   matchTitle: boolean;                                              // duplicates must also have equal titles (M2 T18)
   titleOverrides: { pattern: string; matchTitle: boolean }[];       // per-URL-pattern override of matchTitle (M2 T18)

@@ -177,8 +177,8 @@ did. For any open tab, **Why is this tab here?** in its right-click menu shows w
 ## Recipes
 
 A recipe is a set of rules you turn on with one switch. The built-in recipes are Duplicates, GitHub pull requests,
-Finished, Merged PRs, three Jira ticket projects variants (PR title, PR branch, or PR title or branch), and Manual
-projects, which has no rules: it lets you create a named project ("Add to project › New project…" on a tab, or New
+Finished, Merged PRs, three Jira ticket projects variants (PR title, PR branch, or PR title or branch), GitHub issue
+projects, and Manual projects, which has no rules: it lets you create a named project ("Add to project › New project…" on a tab, or New
 project on the Projects page) and add tabs to it by hand.
 
 ### Turning one on
@@ -189,6 +189,8 @@ turns on. If you turn down access that only one rule needs, the recipe still tur
 "Paused: needs access to meet.google.com". **Disable** turns it off again.
 
 Only one of the three Jira ticket projects recipes can be on at a time. Enabling one turns the others off.
+GitHub issue projects can be on together with any of them. When a pull request could join both a Jira ticket's
+project and a GitHub issue's, the rule higher on the Rules page wins.
 
 ### Params
 
@@ -270,16 +272,16 @@ exist is an error when you save.
 
 ## Levels and connections
 
-Some recipes do more the more access you give Tabchef. The Jira ticket projects cards on the Recipes page list their
-levels, each "available" or "locked" with what it needs. Other recipes show what they need on their card and next to
+Some recipes do more the more access you give Tabchef. The Jira ticket projects and GitHub issue projects cards on the
+Recipes page list their levels, each "available" or "locked" with what it needs. Other recipes show what they need on their card and next to
 each rule. **Allow access** asks Chrome for the sites a locked level needs; **Set up a connection** opens the
 Connections page, where you sign in to GitHub or Jira.
 
 - **Titles:** with no extra access, Tabchef sees each tab's URL and title. Grouping, Duplicates, Finished's OAuth and
-  redirect rules, and GitHub pull requests all work from these alone.
+  redirect rules, GitHub pull requests, and the groups of GitHub issue tabs all work from these alone.
 - **Page details:** with access to a site, Tabchef can read text and details on its pages: Finished's Meet rule reads
-  "You left the meeting", Merged PRs reads a pull request's state from its page, and the Jira recipes read a ticket's
-  status from the ticket's own page.
+  "You left the meeting", Merged PRs reads a pull request's state from its page, the Jira recipes read a ticket's
+  status from the ticket's own page, and GitHub issue projects read an issue's state from the issue's own page.
 - **Connections:** with GitHub or Jira connected, Tabchef asks those services directly for the state of the pull
   requests and tickets in your open tabs.
 
@@ -293,6 +295,7 @@ What each recipe needs:
 | Jira ticket projects (PR title) | ticket tabs and pull requests whose title names the key | ticket status from the ticket's own page | ticket status from Jira |
 | Jira ticket projects (PR branch) | ticket tabs only | pull requests join by the branch on their page (github.com) | pull requests join by the branch from GitHub; ticket status from Jira |
 | Jira ticket projects (PR title or branch) | ticket tabs and pull requests whose title names the key | the branch from the pull request page | the branch from GitHub; ticket status from Jira |
+| GitHub issue projects | issue tabs only | pull requests join by the branch on their page; issue state from the issue's own page | pull requests join by the branch, else by the issue they close; issue state from GitHub |
 
 A rule declares what it needs with `needs`. `anyOf` lists alternatives, best first, and the rule runs at the first one
 you have. An empty alternative (`{}`) means the rule also runs with titles only. When none is met, the rule is paused,
@@ -479,3 +482,60 @@ Step by step:
    from a ticket the Jira connection answered for.
 5. `needs` lists the GitHub connection first and github.com access second. With neither, the rule is paused, which is
    why the Titles level lists only the ticket rule.
+
+### 4. Group a GitHub issue with its pull requests
+
+From GitHub issue projects. The recipe makes one project per GitHub issue, keyed by its repository and number
+(`acme/web#12`), shown as a tab group titled `acme/web#12 · Fix login` by default (`acme/web#12` until the issue's
+title is known). The **Group title** setting can leave out the issue's title (`acme/web#12`), the owner (`web#12`) or
+the whole repository (`#12`). When two open issues would get the same shorter title, the repository is added to tell
+them apart, then the owner: `web#12` and `api#12`, or `acme/web#12` and `other/web#12`.
+
+<!-- example: github-issue -->
+```yaml
+project: {key: '{key}', title: '{params.titleFormat}', color: '{params.color}', container: group, join: [rules, manual]}
+levels:
+  - {id: titles, label: Titles, rules: [issue]}
+  - {id: page, label: Page details, rules: [issue, pr]}
+  - {id: connections, label: Connections, rules: [issue, pr]}
+```
+
+Its issue rule starts a project for each issue tab. It reads the key in the URL, and the summary in the title. This
+rule adds pull requests:
+
+<!-- example: github-issue/pr -->
+```yaml
+id: pr
+name: PR by branch or closing link
+enabled: true
+needs:
+  anyOf:
+    - connections: [github]
+    - hosts: ['https://github.com/*']
+source:
+  connection: github
+  query: github.pull_request
+  args: {owner: '{owner}', repo: '{repo}', number: '{num}'}
+  fields: {headRefName: headRefName, state: state, closes: closingIssues.0}
+  fallback: {adapter: github.prPage}
+match:
+  url: 'github.com/:owner/:repo/pull/:num*'
+extract:
+  branchIssue: {from: source.headRefName, githubIssue: {pattern: '{params.branchPattern}', allow: '{params.repos}', ignore: '{params.ignoredRepos}'}}
+  linkIssue: {from: source.closes, githubIssue: {allow: '{params.repos}', ignore: '{params.ignoredRepos}'}}
+actions:
+  - assignProject: {key: '{branchIssue}', fallbackKey: '{linkIssue}', create: true}
+```
+
+Step by step:
+
+1. `source` reads the pull request's branch and, with the GitHub connection, the issues it closes (a `Closes #12`
+   in its description, or an issue linked in its sidebar). `closingIssues.0` is the first of them. Without the
+   connection, `fallback` reads only the branch, from the pull request page.
+2. `branchIssue` reads an issue number from the branch with the **Branch name pattern** setting: `fix/12-login` or
+   `feat/#12` means issue 12 of the pull request's own repository, even when the branch comes from a fork.
+3. `linkIssue` is the issue the pull request closes, which may be in another repository.
+4. `assignProject` joins the branch's issue first, else the one it closes. With `create: true`, a pull request starts
+   its issue's project even before the issue tab is open.
+5. Both extracts skip issues outside **Repositories** (when set) or inside **Ignored repositories**, so such a pull
+   request joins nothing.

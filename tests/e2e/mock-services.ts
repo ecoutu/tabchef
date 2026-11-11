@@ -53,7 +53,7 @@ function answerPrQuery(query: string, variables: Record<string, unknown>, prs: M
     (data[repo.alias] as Record<string, unknown>)[m[4]!] = pr
       ? {
           number: n, title: pr.title, url: `https://github.com/${repo.key}/pull/${n}`, state: pr.state,
-          isDraft: false, merged: pr.state === 'MERGED', mergedAt: pr.mergedAt ?? null,
+          isDraft: false, merged: pr.state === 'MERGED', mergedAt: pr.mergedAt ?? null, headRefName: pr.headRefName ?? null,
         }
       : null;
   }
