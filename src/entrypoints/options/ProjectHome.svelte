@@ -14,10 +14,11 @@
   import PrPill from '../../ui/PrPill.svelte';
   import ProjectTitle from '../../ui/ProjectTitle.svelte';
   import Help from './Help.svelte';
+  import type { CrumbTitle } from '../../ui/Breadcrumbs.svelte';
 
-  /** backLink: a "Projects" link above the project. The side panel has no other way back; the options page turns it off,
-   *  since its Projects tab already goes back. */
-  let { id, backLink = true }: { id: string; backLink?: boolean } = $props();
+  /** onTitle: the project's title once loaded (undefined while loading or gone), for the breadcrumbs (#180) of the page
+   *  around it: the dashboard's and the side panel's header both lead back to Projects. */
+  let { id, onTitle }: { id: string; onTitle?: (t: CrumbTitle | undefined) => void } = $props();
   const uid = $props.id();
   /** undefined: loading; null: the project is unknown, closed or has no tab. */
   let view = $state<ProjectHomeView | null | undefined>(undefined);
@@ -63,6 +64,8 @@
     if (await actions.remove(id)) window.location.hash = '#/projects';
   }
 
+  $effect(() => { onTitle?.(view ? { title: view.title, subtitle: view.subtitle } : undefined); });
+
   let stopLive: (() => void) | undefined;
 
   onMount(() => {
@@ -74,7 +77,6 @@
 </script>
 
 <section class="home">
-  {#if backLink}<p class="back"><a href="#/projects">Projects</a></p>{/if}
   {#if error}<p class="error" role="alert">{error}</p>{/if}
   {#if toast}
     {@const t = toast}
@@ -200,7 +202,6 @@
 
 <style>
   .home { padding: 0 12px 12px; }
-  .back { margin: 8px 0; }
   a { color: var(--accent); }
   header { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 4px 0 12px; }
   h2 { font-size: 16px; margin: 0; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

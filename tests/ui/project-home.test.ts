@@ -65,7 +65,6 @@ describe('Project home (M4 T4)', () => {
     for (let i = 1; i < order.length; i++) {
       expect(order[i - 1]!.compareDocumentPosition(order[i]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     }
-    expect((screen.getByRole('link', { name: 'Projects' }) as HTMLAnchorElement).getAttribute('href')).toBe('#/projects');
   });
 
   it('open tabs grouped in tab-bar order; a tab title focuses it; a stale pill says why', async () => {
@@ -124,10 +123,16 @@ describe('Project home (M4 T4)', () => {
     expect(details.textContent).toContain('Jira ticket');
   });
 
-  it('backLink={false} (the options page, whose Projects tab already goes back): no Projects link above the project', async () => {
-    render(ProjectHome, { id: ID, backLink: false });
+  it('#180: reports its title for the breadcrumbs around it (undefined while loading or gone), with no link of its own', async () => {
+    const onTitle = vi.fn();
+    render(ProjectHome, { id: ID, onTitle });
     await screen.findByRole('heading', { level: 2, name: 'ABC-1 · Login fails' });
+    expect(onTitle).toHaveBeenNthCalledWith(1, undefined);
+    expect(onTitle).toHaveBeenLastCalledWith({ title: 'ABC-1 · Login fails', subtitle: undefined });
     expect(screen.queryByRole('link', { name: 'Projects' })).toBeNull();
+    data = null;
+    await fireEvent.click(screen.getByRole('button', { name: 'Close group' }));
+    await waitFor(() => expect(onTitle).toHaveBeenLastCalledWith(undefined));
   });
 
   it('an unknown id: "This project is no longer open" with a link to the projects list', async () => {

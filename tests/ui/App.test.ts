@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/svelte';
+import { within, render, screen, fireEvent, cleanup, waitFor } from '@testing-library/svelte';
 import { fakeBrowser } from 'wxt/testing/fake-browser';
 import type { Config } from '../../src/core/types';
 import { withGroupRules } from '../helpers/config';
@@ -226,7 +226,7 @@ describe('App routing (R28, M2 T14)', () => {
 });
 
 describe('App: #/project/<id>', () => {
-  it('a project shows only the Projects tab as the way back, not a second Projects link above it', async () => {
+  it('#180: a project shows breadcrumbs, Projects › <project>, whose Projects goes back to the list', async () => {
     const base = send.getMockImplementation()!;
     send.mockImplementation(async (req: { type: string }) => (req.type === 'projects.home'
       ? { ok: true, data: { id: 'repo:acme/web', key: 'acme/web', title: 'acme/web', done: false, tabs: [], linked: [], groups: [] } }
@@ -234,9 +234,10 @@ describe('App: #/project/<id>', () => {
     window.location.hash = '#/project/repo%3Aacme%2Fweb';
     render(App);
     expect(await screen.findByRole('heading', { level: 2, name: 'acme/web' })).toBeTruthy();
-    const back = screen.getAllByRole('link', { name: 'Projects' });
-    expect(back).toHaveLength(1);
-    expect(back[0]!.closest('nav')).toBeTruthy();
+    const crumbs = screen.getByRole('navigation', { name: 'Breadcrumb' });
+    const back = within(crumbs).getByRole('link', { name: 'Projects' }) as HTMLAnchorElement;
+    expect(back.getAttribute('href')).toBe('#/projects');
+    expect(crumbs.querySelector('[aria-current="page"]')!.textContent).toBe('acme/web');
   });
 });
 

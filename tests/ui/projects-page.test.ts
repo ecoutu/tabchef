@@ -250,10 +250,10 @@ describe('Projects page: Open / Saved / Archived (M4 T9)', () => {
 });
 
 describe('Project home', () => {
-  it('shows the project and links back to the list', async () => {
+  it('shows the project; the way back is the breadcrumbs of the page around it (#180), not a link of its own', async () => {
     render(ProjectHome, { id: 'repo:acme/web' });
     expect(await screen.findByRole('heading', { name: 'acme/web' })).toBeTruthy();
-    expect((screen.getByRole('link', { name: 'Projects' }) as HTMLAnchorElement).getAttribute('href')).toBe('#/projects');
+    expect(screen.queryByRole('link', { name: 'Projects' })).toBeNull();
   });
 });
 
@@ -291,7 +291,7 @@ describe('card title links', () => {
     expect(ev.defaultPrevented).toBe(false);
     expect(onOpenProject).not.toHaveBeenCalled();
   });
-  it('panel: the link navigates within the panel, and ProjectHome links back to the list', async () => {
+  it('panel: the link navigates within the panel, and the breadcrumbs lead back to the list', async () => {
     render(Panel);
     (await screen.findByRole('link', { name: 'acme/web' })).click();
     await waitFor(() => expect(window.location.hash).toBe('#/project/repo%3Aacme%2Fweb'));

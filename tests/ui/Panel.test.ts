@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // The side panel (M3 T17): an unlisted page with the Projects view, and the popup's "Open in side panel" button.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/svelte';
+import { render, screen, fireEvent, cleanup, waitFor, within } from '@testing-library/svelte';
 import { fakeBrowser } from 'wxt/testing/fake-browser';
 import { browser } from 'wxt/browser';
 
@@ -20,6 +20,10 @@ beforeEach(() => {
   send.mockImplementation(async (req: { type: string }) => {
     switch (req.type) {
       case 'projects.list': return { ok: true, data: [] };
+      case 'projects.home': {
+        const id = (req as unknown as { id: string }).id;
+        return { ok: true, data: { id, key: id.slice(5), title: id.slice(5), done: false, tabs: [], linked: [], groups: [] } };
+      }
       case 'views.list': return { ok: true, data: views };
       case 'view.data': return { ok: true, data: { kind: 'list', rows: [] } };
       case 'safety.status': return { ok: true, data: { paused: false, locked: [] } };
@@ -30,7 +34,7 @@ beforeEach(() => {
     }
   });
 });
-afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); });
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); window.location.hash = ''; });
 
 const lists = () => send.mock.calls.filter((c) => (c[0] as { type: string }).type === 'projects.list').length;
 const trigger = (m: unknown) => (fakeBrowser.runtime.onMessage as unknown as { trigger: (m: unknown) => Promise<unknown> }).trigger(m);
@@ -64,6 +68,44 @@ describe('side panel page (M3 T17)', () => {
     expect(lists()).toBe(start + 2); // shown again: at once, not on the next tick
     await vi.advanceTimersByTimeAsync(5000);
     expect(lists()).toBe(start + 3);
+  });
+});
+
+describe('side panel breadcrumbs (#180)', () => {
+  it('the list: a plain Projects heading, no breadcrumbs', async () => {
+    render(Panel);
+    expect(screen.getByRole('heading', { level: 1, name: 'Projects' })).toBeTruthy();
+    expect(screen.queryByRole('navigation', { name: 'Breadcrumb' })).toBeNull();
+  });
+
+  it("a project: the header is Projects › <project>; Projects goes back to the list, and the project's own link is gone", async () => {
+    window.location.hash = '#/project/repo%3Aacme%2Fweb';
+    render(Panel);
+    expect(await screen.findByRole('heading', { level: 2, name: 'acme/web' })).toBeTruthy();
+    const crumbs = screen.getByRole('navigation', { name: 'Breadcrumb' });
+    expect(crumbs.closest('header')).toBeTruthy();
+    await waitFor(() => expect(crumbs.querySelector('[aria-current="page"]')!.textContent).toBe('acme/web'));
+    const links = screen.getAllByRole('link', { name: 'Projects' });
+    expect(links).toHaveLength(1);
+    expect(links[0]).toBe(within(crumbs).getByRole('link', { name: 'Projects' }));
+    expect(links[0]!.getAttribute('href')).toBe('#/projects');
+    window.location.hash = '#/projects';
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    expect(await screen.findByRole('heading', { level: 1, name: 'Projects' })).toBeTruthy();
+    expect(screen.queryByRole('navigation', { name: 'Breadcrumb' })).toBeNull();
+  });
+});
+
+describe('side panel breadcrumbs, switching projects (#180)', () => {
+  it("going from one project to another, the crumbs follow to the second one's title", async () => {
+    window.location.hash = '#/project/repo%3Aacme%2Fweb';
+    render(Panel);
+    const crumbs = await screen.findByRole('navigation', { name: 'Breadcrumb' });
+    await waitFor(() => expect(crumbs.querySelector('[aria-current="page"]')!.textContent).toBe('acme/web'));
+    window.location.hash = '#/project/repo%3Aacme%2Fapi';
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    await waitFor(() => expect(screen.getByRole('navigation', { name: 'Breadcrumb' }).querySelector('[aria-current="page"]')!.textContent).toBe('acme/api'));
+    expect(screen.getByRole('heading', { level: 1, name: 'Projects' })).toBeTruthy();
   });
 });
 

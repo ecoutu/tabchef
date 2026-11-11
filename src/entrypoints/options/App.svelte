@@ -18,6 +18,7 @@
   import Connections from './Connections.svelte';
   import Projects from './Projects.svelte';
   import ProjectHome from './ProjectHome.svelte';
+  import Breadcrumbs, { projectCrumbs, type CrumbTitle } from '../../ui/Breadcrumbs.svelte';
   import PreviewDialog from './PreviewDialog.svelte';
   import { previewThenApply } from '../../ui/preview-flow';
   import type { PreviewResult } from '../../core/lang/preview';
@@ -34,6 +35,8 @@
   const parseHash = () => matchRoute(ROUTES, window.location.hash);
 
   let matched = $state(parseHash());
+  /** The open project's title, for its breadcrumbs (#180). */
+  let project = $state<CrumbTitle | undefined>(undefined);
   const route = $derived(matched.path);
   let saved = $state<Config | null>(null);
   let draft = $state<Config | null>(null);
@@ -196,7 +199,8 @@
     {:else if current.page === 'projects'}
       {#key matched.params.new}<Projects newTab={matched.params.new} initialError={matched.params.error} />{/key}
     {:else if current.page === 'projectHome'}
-      {#key matched.params.id}<ProjectHome id={matched.params.id ?? ''} backLink={false} />{/key}
+      <div class="crumbs"><Breadcrumbs crumbs={projectCrumbs(project)} /></div>
+      {#key matched.params.id}<ProjectHome id={matched.params.id ?? ''} onTitle={(t) => { project = t; }} />{/key}
     {:else if current.page === 'connections'}
       <Connections />
     {:else if current.page === 'backups'}
@@ -250,5 +254,6 @@
   .banner { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; border: 1px solid var(--accent); border-radius: 8px; padding: 6px 10px; margin-bottom: 8px; }
   .banner.warn { border-color: var(--danger); }
   .err { color: var(--danger); }
+  .crumbs { padding: 0 12px; } /* lined up with Project home's padding */
   .ok { color: var(--accent); }
 </style>
