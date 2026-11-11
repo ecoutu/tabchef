@@ -1,6 +1,6 @@
 // SourceService (M3 T11): a fake ConnectionManager (GraphQL / Jira responses from tables) and a fake clock.
 import { describe, expect, it, vi } from 'vitest';
-import { CACHE_MAX, POPUP_THROTTLE_MS, SOURCE_CACHE_KEY, SourceService, type SourceServiceDeps } from '../../src/engine/sources';
+import { CACHE_MAX, freshnessMs, POPUP_THROTTLE_MS, SOURCE_CACHE_KEY, SourceService, type SourceServiceDeps } from '../../src/engine/sources';
 import type { ApiRequest, ApiResult, ConnectionDef, ConnectionState } from '../../src/core/connections/types';
 import type { CompiledRule, Program, Rule, SourceSpec, TabFacts } from '../../src/core/lang/types';
 import type { Snapshot, TabSnap } from '../../src/core/types';
@@ -78,6 +78,8 @@ interface Setup {
   fetch?: (id: string, req: ApiRequest) => Promise<ApiResult>;
   /** Per rule key, the kind of alternative it runs at (PermissionsManager.levelFor); default: every rule at its connection. */
   levels?: Record<string, NeedsKind | undefined>;
+  /** Program.refreshEvery (the recipes' "check every" settings), by recipe id; none: the default period. */
+  refreshEvery?: Record<string, string>;
 }
 function setup(o: Setup = {}) {
   let now = Date.parse('2026-11-02T10:00:00Z');
@@ -96,7 +98,7 @@ function setup(o: Setup = {}) {
       defs: vi.fn(async () => [GITHUB, JIRA]),
     },
     limiter: { canSend },
-    getProgram: async () => program(...(o.rules ?? [prRule])),
+    getProgram: async () => ({ ...program(...(o.rules ?? [prRule])), ...(o.refreshEvery && { refreshEvery: o.refreshEvery }) }),
     levelFor: vi.fn(async (k: string) => (o.levels && Object.hasOwn(o.levels, k) ? o.levels[k] : 'connection')),
     port: { snapshot: vi.fn(async () => structuredClone(snap)), hasPermission: vi.fn(async () => o.granted ?? false) },
     facts,
@@ -145,6 +147,54 @@ describe('SourceService: batching', () => {
 });
 
 describe('SourceService: cache and refresh', () => {
+  it("#198: with 'check every' at 1 min, an open PR older than 1 min is refetched on the alarm refresh; a merged one never", async () => {
+    const t = setup({ tabs: [prTab(1), prTab(2)], states: new Map([['acme/api#1', 'MERGED']]), refreshEvery: { 'merged-prs': '1m' } });
+    await t.svc.refresh('alarm');
+    expect(t.fetch).toHaveBeenCalledTimes(1);
+    t.advance(30_000);
+    await t.svc.refresh('alarm');
+    expect(t.fetch).toHaveBeenCalledTimes(1); // still fresh
+    for (let i = 0; i < 10; i++) {
+      t.advance(MIN);
+      await t.svc.refresh('alarm');
+    }
+    expect(t.fetch).toHaveBeenCalledTimes(11);
+    expect(t.fetch.mock.calls.slice(1).every(([, req]) => prsIn(req) === 1 && (req.json as { variables: Record<string, unknown> }).variables.k0 === 2)).toBe(true);
+  });
+
+  it('#198: an alarm firing a moment early still refetches what the last one fetched (no skipped period)', async () => {
+    const t = setup({ tabs: [prTab(1)], refreshEvery: { 'merged-prs': '1m' } });
+    await t.svc.refresh('alarm');
+    t.advance(MIN - 500);
+    await t.svc.refresh('alarm');
+    expect(t.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('#198: without a "check every" setting, an open PR is still reused for 5 min', async () => {
+    const t = setup({ tabs: [prTab(1)] });
+    await t.svc.refresh('alarm');
+    t.advance(MIN);
+    await t.svc.refresh('alarm');
+    t.advance(3 * MIN);
+    await t.svc.refresh('alarm');
+    expect(t.fetch).toHaveBeenCalledTimes(1);
+    t.advance(MIN);
+    await t.svc.refresh('alarm');
+    expect(t.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("#198: freshnessMs caps the status lookups at the 'check every' period, not the key search or Jira projects", () => {
+    const p = (refreshEvery?: Record<string, string>) => ({ ...program(prRule), ...(refreshEvery && { refreshEvery }) });
+    for (const q of ['github.pull_request', 'github.issue', 'jira.issue'] as const) {
+      expect(freshnessMs(q, p())).toBe(5 * MIN);
+      expect(freshnessMs(q, p({ a: '1m' }))).toBe(MIN);
+      expect(freshnessMs(q, p({ a: '2m', b: '30m' }))).toBe(2 * MIN);
+      expect(freshnessMs(q, p({ a: '30m' }))).toBe(5 * MIN); // never longer than the query's own TTL
+    }
+    expect(freshnessMs('github.search_prs_by_key', p({ a: '1m' }))).toBe(15 * MIN);
+    expect(freshnessMs('jira.projects', p({ a: '1m' }))).toBe(24 * 60 * MIN);
+  });
+
   it('a merged PR is fetched once and never refetched over 1 h of alarms; an open PR is refetched after 5 min', async () => {
     const t = setup({ tabs: [prTab(1), prTab(2)], states: new Map([['acme/api#1', 'MERGED']]) });
     await t.svc.refresh('alarm');
@@ -529,6 +579,23 @@ describe('SourceService: Jira', () => {
     expect(stateOf(t.svc, 2, 'rec/issue')).toMatchObject({ via: 'api', data: { status: 'In Progress', cat: 'indeterminate' }, stale: false });
   });
 
+  it("#198: with 'check every' at 1 min, a ticket tab and issues() refetch a ticket older than 1 min", async () => {
+    const t = setup({
+      tabs: [tab(1, 'https://acme.atlassian.net/browse/ABC-1')], rules: [issueRule], refreshEvery: { 'merged-prs': '1m' },
+      fetch: async (_id, req) => ({ ok: true, status: 200, data: issues(jql(req)) }),
+    });
+    await t.svc.refresh('alarm');
+    expect(t.fetch).toHaveBeenCalledTimes(1);
+    t.advance(MIN);
+    await t.svc.refresh('alarm');
+    expect(t.fetch).toHaveBeenCalledTimes(2);
+    await t.svc.issues(['ABC-1']); // just fetched: fresh
+    expect(t.fetch).toHaveBeenCalledTimes(2);
+    t.advance(MIN);
+    await t.svc.issues(['ABC-1']);
+    expect(t.fetch).toHaveBeenCalledTimes(3);
+  });
+
   it('issues() returns entries per key and bisects a bad request', async () => {
     const t = setup({
       fetch: async (_id, req) => (jql(req).includes('BAD-1') && jql(req).length > 1 ? { ok: false, kind: 'bad-request', status: 400, message: 'x' }
@@ -615,6 +682,14 @@ describe('SourceService: linkedFor', () => {
     t.advance(2 * MIN);
     await t.svc.linkedFor(['ABC-1'], ['acme']);
     expect(t.fetch).toHaveBeenCalledTimes(3);
+  });
+
+  it("#198: the key search keeps its 15 min, whatever the 'check every' setting", async () => {
+    const t = setup({ fetch: async (_id, req) => searchResponse(req), refreshEvery: { 'merged-prs': '1m' } });
+    await t.svc.linkedFor(['ABC-1'], ['acme']);
+    t.advance(14 * MIN);
+    await t.svc.linkedFor(['ABC-1'], ['acme']);
+    expect(t.fetch).toHaveBeenCalledTimes(1);
   });
 
   it('returns cached results without a fetch while the connection is not ok', async () => {
@@ -716,6 +791,19 @@ describe('SourceService: GitHub issues', () => {
     await t.svc.refresh('alarm');
     expect(t.fetch).toHaveBeenCalledTimes(1);
     expect(stateOf(t.svc, 1, 'rec/ghissue')).toMatchObject({ via: 'api', data: { summary: 'T acme/web#5' } });
+  });
+
+  it("#198: with 'check every' at 1 min, an issue tab and githubIssues() refetch an issue older than 1 min", async () => {
+    const t = setup({ tabs: [issueTab(1, 'acme/web/issues/5')], rules: [ghIssueRule], refreshEvery: { 'merged-prs': '1m' }, fetch: async (_id, req) => issueResponse(req) });
+    await t.svc.refresh('alarm');
+    t.advance(MIN);
+    await t.svc.refresh('alarm');
+    expect(t.fetch).toHaveBeenCalledTimes(2);
+    await t.svc.githubIssues(['acme/web#5']);
+    expect(t.fetch).toHaveBeenCalledTimes(2);
+    t.advance(MIN);
+    await t.svc.githubIssues(['acme/web#5']);
+    expect(t.fetch).toHaveBeenCalledTimes(3);
   });
 
   it('githubIssues() skips malformed keys and sends nothing for them', async () => {

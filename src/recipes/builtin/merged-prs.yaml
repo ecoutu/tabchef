@@ -5,7 +5,7 @@
 # connection it is paused ("Paused: needs the GitHub connection") instead of silently never firing.
 # M3-R77: `source.*` fields are rule-scoped (M3-R10), so auto-close-merged carries its own copy of pr-state's
 # source and trigger. Both render the same cache key, so a PR is looked up once.
-# refreshEvery sets the period of the `sources.refresh` alarm (M3-R75).
+# refreshEvery sets the period of the `sources.refresh` alarm (M3-R75) and caps how long a looked-up status is reused.
 recipe: merged-prs
 version: 1
 name: Merged PRs

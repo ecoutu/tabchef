@@ -2,7 +2,7 @@
 // ConnectionManager, caches results (SourceCache: storage.local `sourceCache`, LRU), falls back to the page adapters when there
 // is no usable connection, and reports tabs whose data changed so rules re-evaluate.
 //
-// Resolution per lookup: 1. the cache (a `final` entry is never refetched, a fresh one not within its TTL unless the
+// Resolution per lookup: 1. the cache (a `final` entry is never refetched, a fresh one (freshnessMs) not unless the
 // tab's page shows another state, e.g. an issue closed there: then once per such page reading); 2. the
 // API, when a rule asking for it runs at its connection alternative (`levelFor`, M3-R65) and the connection is `ok`;
 // 3. the page adapter (`fallback`) of a loaded, live tab on a granted host, for rules whose level allows page access
@@ -48,6 +48,24 @@ export function refreshPeriodMinutes(p: Program): number {
   const periods = Object.values(p.refreshEvery ?? {}).flatMap((d) => (DURATION.test(d) ? [parseDuration(d) / 60_000] : []));
   return periods.length ? Math.max(SOURCES_MIN_PERIOD_MINUTES, Math.min(...periods)) : SOURCES_PERIOD_MINUTES;
 }
+/** The lookups whose answer is a status the `refreshEvery` setting checks (#198): their reuse is capped by its period. */
+const STATUS_QUERIES: ReadonlySet<SourceQueryKind> = new Set(['github.pull_request', 'github.issue', 'jira.issue']);
+/**
+ * How early a status entry counts as due (#198): an alarm firing a moment sooner after the last one than that one did
+ * after its own alarm still refetches what the last one fetched, instead of skipping a whole period.
+ */
+const DUE_SLACK_MS = 5_000;
+
+/**
+ * How long a `query` answer from the API is reused (#198): a status lookup (PR, GitHub issue, Jira ticket) for at most
+ * the `sources.refresh` period, so a shorter "check every" setting really checks that often; never longer than the
+ * query's own TTL. The key search (linked PRs) and Jira projects are no statuses and keep their TTL.
+ */
+export function freshnessMs(query: SourceQueryKind, p: Program): number {
+  const ttl = SOURCE_QUERIES[query].ttlMs;
+  return STATUS_QUERIES.has(query) ? Math.min(ttl, refreshPeriodMinutes(p) * 60_000) : ttl;
+}
+
 /** The connection ids linkedFor / issues use (the built-in GitHub and Jira connections). */
 const GITHUB = 'github';
 const JIRA = 'jira';
@@ -184,6 +202,8 @@ export class SourceService {
    */
   private challenged = new Map<string, string>();
   private chain: Promise<unknown> = Promise.resolve();
+  /** The program last read (getProgram): its `refreshEvery` caps how long a status is reused (freshnessMs). */
+  private latest?: Program;
   private readonly now: () => number;
   /** The cache loaded and the open tabs indexed (no network): factsFor answers from here on. */
   readonly ready: Promise<void>;
@@ -197,7 +217,7 @@ export class SourceService {
   private async load(): Promise<void> {
     await this.cache.load();
     try {
-      this.index(await this.deps.port.snapshot(), await this.deps.getProgram());
+      this.index(await this.deps.port.snapshot(), await this.readProgram());
       this.reported = this.dataByTab();
     } catch (e) {
       console.warn('[tabchef] source index failed; the next refresh indexes', e);
@@ -350,7 +370,7 @@ export class SourceService {
 
   private async run(reason: RefreshReason, needsKeys?: readonly string[]): Promise<void> {
     await this.ensureLoaded();
-    const [p, snap] = [await this.deps.getProgram(), await this.deps.port.snapshot()];
+    const [p, snap] = [await this.readProgram(), await this.deps.port.snapshot()];
     const reqs = this.index(snap, p);
     const only = needsKeys && reqs.filter((r) => needsKeys.some((k) => r.ruleKey === k || r.ruleKey.startsWith(`${k}/`)));
     await this.settling(() => this.resolve(only ?? reqs, reason));
@@ -464,8 +484,19 @@ export class SourceService {
     return out;
   }
 
+  private async readProgram(): Promise<Program> {
+    this.latest = await this.deps.getProgram();
+    return this.latest;
+  }
+
+  /** Whether `e` is young enough to reuse for `query` (freshnessMs, less DUE_SLACK_MS for a status): every check goes here. */
+  private young(e: CacheEntry, query: SourceQueryKind, now: number): boolean {
+    const window = this.latest ? freshnessMs(query, this.latest) : SOURCE_QUERIES[query].ttlMs;
+    return now - e.fetchedAt < window - (STATUS_QUERIES.has(query) ? DUE_SLACK_MS : 0);
+  }
+
   private fresh(e: CacheEntry, query: SourceQueryKind, now: number): boolean {
-    return e.via === 'api' && !e.stale && now - e.fetchedAt < SOURCE_QUERIES[query].ttlMs;
+    return e.via === 'api' && !e.stale && this.young(e, query, now);
   }
 
   /** A failed lookup (SourceCache.fail); a PR's or GitHub issue's `none` entry holds it with state 'unknown'. */
@@ -664,12 +695,13 @@ export class SourceService {
   }
 
   /**
-   * jira.issue entries per key on the Jira connection's site (shared with that site's tabs' lookups; 5 min TTL).
+   * jira.issue entries per key on the Jira connection's site (shared with that site's tabs' lookups; reused for freshnessMs).
    * Malformed keys are skipped; nothing is known without a site.
    */
   issues(keys: string[]): Promise<Map<string, SourceEntry<JiraIssue>>> {
     return this.serial(async () => {
       await this.ensureLoaded();
+      await this.readProgram();
       const now = this.now();
       const site = await this.jiraSite();
       if (!site) return new Map<string, SourceEntry<JiraIssue>>();
@@ -687,12 +719,13 @@ export class SourceService {
   }
 
   /**
-   * github.issue entries per issue key (`owner/repo#N`; shared with issue tabs' lookups; 5 min TTL), keyed as given.
+   * github.issue entries per issue key (`owner/repo#N`; shared with issue tabs' lookups; reused for freshnessMs), keyed as given.
    * Keys that do not parse are skipped.
    */
   githubIssues(keys: string[]): Promise<Map<string, SourceEntry<GithubIssueInfo>>> {
     return this.serial(async () => {
       await this.ensureLoaded();
+      await this.readProgram();
       const now = this.now();
       const given = new Map<string, string>(); // key as given -> issueKey (lower-cased)
       const refs = new Map<string, IssueRef>();
@@ -705,7 +738,7 @@ export class SourceService {
       const key = (id: string) => cacheKey(GITHUB, 'github.issue', id);
       // A fresh page reading (an issue tab the API cannot read) is as good as an API one here: failing it would mark it
       // stale until the tab's next lookup reads the page again, and each flip cancels or re-arms close prompts (M3-R92).
-      const freshPage = (e: CacheEntry | undefined) => e?.via === 'page' && !e.stale && now - e.fetchedAt < SOURCE_QUERIES['github.issue'].ttlMs;
+      const freshPage = (e: CacheEntry | undefined) => e?.via === 'page' && !e.stale && this.young(e, 'github.issue', now);
       const failed = async (ref: IssueRef, kind: ConnErrorKind, d: IssueFailureDetail) => {
         const e = this.cache.get(key(issueKey(ref)));
         if (!(e?.via === 'page' && !e.stale)) this.fail(key(issueKey(ref)), { ghIssue: ref }, kind, d, now);
