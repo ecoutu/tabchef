@@ -8,6 +8,7 @@ vi.mock('../../src/ui/send', () => ({ send: (r: unknown) => send(r) }));
 
 import ListView from '../../src/entrypoints/popup/tabs/ListView.svelte';
 import type { ViewRow, ViewSummary } from '../../src/engine/views';
+import type { DoneProject } from '../../src/core/projects/types';
 
 const finished: ViewSummary = { id: 'finished', tab: 'Finished', kind: 'list', actions: ['focus', 'close', 'keep'], count: 1 };
 const row = (tabId: number, o: Partial<ViewRow> = {}): ViewRow => ({
@@ -107,5 +108,65 @@ describe('ListView: Merged PRs (M3 T13)', () => {
       await fireEvent.click(screen.getByRole('button', { name: 'Connect GitHub' }));
       expect(create).toHaveBeenCalledWith({ url: expect.stringMatching(/\/options\.html#\/connections$/) });
     });
+  });
+});
+
+describe('ListView: done projects in the Finished view (#195)', () => {
+  const issue: DoneProject = {
+    id: 'github-issue:acme/web#12', key: 'acme/web#12', title: 'acme/web#12 · Fix login', summary: 'Fix login',
+    status: { name: 'Closed', category: 'done', via: 'api' }, tabCount: 2,
+  };
+  const ticket: DoneProject = {
+    id: 'jira-ticket-title:ABC-1', key: 'ABC-1', title: 'ABC-1', summary: 'Login fails', status: { name: 'Done', category: 'done', via: 'api' }, tabCount: 1,
+  };
+
+  it('one row per done project: title, why, status pill, tab count and the three prompt buttons', () => {
+    render(ListView, { view: { ...finished, count: 3 }, rows: [sug(3)], projects: [issue, ticket], onChange: vi.fn() });
+    const rows = screen.getAllByRole('group');
+    expect(rows.map((r) => r.getAttribute('aria-label'))).toEqual(['acme/web#12 · Fix login', 'ABC-1']);
+    // each row stays a list item of its list; the group is inside it (R5-M3)
+    for (const r of rows) expect(r.tagName).not.toBe('LI');
+    expect(rows.map((r) => r.closest('li')?.parentElement?.tagName)).toEqual(['UL', 'UL']);
+    expect(rows[0]!.textContent).toContain('Issue is closed');
+    expect(rows[0]!.textContent).toContain('Closed');
+    expect(rows[0]!.textContent).toContain('2 tabs');
+    expect(rows[1]!.textContent).toContain('Ticket is done');
+    expect(rows[1]!.textContent).toContain('Login fails');
+    expect(rows[1]!.textContent).toContain('1 tab');
+    for (const name of ['Close group', 'Close and archive', 'Keep']) {
+      expect(screen.getByRole('button', { name: `${name} acme/web#12 · Fix login` }).textContent).toBe(name);
+    }
+    expect(screen.getByText('Tab 3')).toBeTruthy(); // the tab suggestions stay listed
+    expect(screen.queryByText('Nothing here.')).toBeNull();
+  });
+
+  it('Close group and Close and archive send the card prompt\'s requests, show the undo toast and refresh', async () => {
+    const onChange = vi.fn();
+    send.mockImplementation(async (r: { type: string }) => (r.type.startsWith('projects.close')
+      ? { ok: true, data: { closed: 2, skipped: 0, ids: ['rc-1', 'rc-2'] } } : { ok: true, data: null }));
+    render(ListView, { view: finished, rows: [], projects: [issue], onChange });
+    await fireEvent.click(screen.getByRole('button', { name: 'Close group acme/web#12 · Fix login' }));
+    expect(send).toHaveBeenCalledWith({ type: 'projects.closeGroup', projectId: issue.id });
+    expect((await screen.findByRole('status')).textContent).toContain('Closed 2 tabs');
+    await fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
+    expect(send).toHaveBeenCalledWith({ type: 'recent.undo', id: 'rc-1' });
+    await fireEvent.click(screen.getByRole('button', { name: 'Close and archive acme/web#12 · Fix login' }));
+    expect(send).toHaveBeenCalledWith({ type: 'projects.closeAndArchive', projectId: issue.id });
+    expect(onChange).toHaveBeenCalled();
+  });
+
+  it('Keep sends projects.keepDone (the card prompt\'s Keep) and refreshes', async () => {
+    const onChange = vi.fn();
+    render(ListView, { view: finished, rows: [], projects: [issue], onChange });
+    await fireEvent.click(screen.getByRole('button', { name: 'Keep acme/web#12 · Fix login' }));
+    expect(send.mock.calls.map((c) => c[0])).toEqual([{ type: 'projects.keepDone', projectId: issue.id }]);
+    expect(onChange).toHaveBeenCalledTimes(1);
+  });
+
+  it('a failed action shows its error', async () => {
+    send.mockResolvedValue({ ok: false, error: 'unknown project' });
+    render(ListView, { view: finished, rows: [], projects: [issue], onChange: vi.fn() });
+    await fireEvent.click(screen.getByRole('button', { name: 'Keep acme/web#12 · Fix login' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('unknown project');
   });
 });

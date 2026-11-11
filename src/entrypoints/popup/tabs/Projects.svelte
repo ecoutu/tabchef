@@ -21,7 +21,10 @@
   let { live = false, onChange, onOpenProject }: { live?: boolean; onChange?: () => void; onOpenProject?: (id: string) => void } = $props();
   let cards = $state<Card[] | undefined>(undefined);
   let error = $state('');
-  /** Done prompts the user answered Keep to (this page only); Keep also keeps the project (projects.setKeep). */
+  /**
+   * Done prompts the user answered Keep to, hidden at once; Keep (projects.keepDone) also keeps the project and
+   * dismisses the prompt everywhere (the card's `doneKept`, and the popup's Finished tab, #195).
+   */
   let kept = $state<string[]>([]);
   /** After Close group: the closed tabs' recently-closed entries, which Undo reopens (M1 undo, recent.undo). */
   let toast = $state<Toast | undefined>(undefined);
@@ -141,7 +144,7 @@
     getToast: () => toast,
     setToast: (t) => { toast = t; },
   });
-  const { focus, openLinked, closeGroup, closeAndArchive, setKeep, undo } = actions;
+  const { focus, openLinked, closeGroup, closeAndArchive, keepDone, undo } = actions;
 
   let stopLive: (() => void) | undefined;
 
@@ -185,7 +188,7 @@
       collapsed={collapsed.includes(c.id)} onToggle={() => setIds([c.id], !collapsed.includes(c.id))}
       onFocus={focus} onOpenLinked={(url) => openLinked(c.id, url)} onCloseGroup={() => closeGroup(c.id)}
       onCloseAndArchive={() => closeAndArchive(c.id)}
-      onKeep={() => { kept = [...kept, c.id]; void setKeep(c.id, true); }} onOpenProject={onOpenProject ? () => onOpenProject(c.id) : undefined} />
+      onKeep={() => { kept = [...kept, c.id]; void keepDone(c.id); }} onOpenProject={onOpenProject ? () => onOpenProject(c.id) : undefined} />
   {/each}
 </section>
 

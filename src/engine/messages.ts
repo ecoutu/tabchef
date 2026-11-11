@@ -25,7 +25,7 @@ import type { ProjectSync, SyncStatus } from './project-sync';
 import type { SourceService } from './sources';
 import type { Project, ProjectCardData, ProjectHomeData, ProjectImportResult, SavedProjectData } from '../core/projects/types';
 import { dedupeDecision, openerOf } from './dedupe-handler';
-import { readViews, samePage, type ViewData, type ViewsDeps, type ViewSummary } from './views';
+import { isSuggestionsView, readViews, samePage, type ViewData, type ViewsDeps, type ViewSummary } from './views';
 import { builtinConnectionDefs } from '../core/connections/builtin';
 import { redact } from '../core/connections/redact';
 import type { ConnErrorKind, ConnectionDef, ConnectionStatus } from '../core/connections/types';
@@ -242,6 +242,8 @@ export type Request =
   | { type: 'projects.reopen'; projectId: string }
   /** M4 T7: Keep (never pruned, synced) on or off. */
   | { type: 'projects.setKeep'; projectId: string; keep: boolean }
+  /** #195: Keep on a Done prompt (a card's or the Finished tab's): keeps the project and dismisses the prompt in both. */
+  | { type: 'projects.keepDone'; projectId: string }
   /** M4 T8: the open groups no project holds, for the dashboard's "Save a group" list. */
   | { type: 'projects.groups' }
   /** M4 T8: saves a Chrome group as a kept Manual project, unchanged (no regroup, retitle or recolor); answers `{ id }`. */
@@ -394,6 +396,7 @@ export interface ResponseData {
   'projects.closeAndSave': { closed: number; skipped: number; ids: string[] };
   'projects.reopen': { opened: number; failed?: number };
   'projects.setKeep': null;
+  'projects.keepDone': null;
   'projects.groups': { id: number; title: string; color: GroupColor; tabCount: number }[];
   'projects.saveGroup': { id: string };
   'projects.archive': null;
@@ -529,6 +532,7 @@ export function isRequest(m: unknown): m is Request {
     case 'projects.closeAndSave': case 'projects.reopen': case 'projects.archive': case 'projects.closeAndArchive':
     case 'projects.unarchive': case 'projects.delete': return str(x.projectId);
     case 'projects.setKeep': return str(x.projectId) && typeof x.keep === 'boolean';
+    case 'projects.keepDone': return str(x.projectId);
     case 'projects.saveGroup': return num(x.groupId);
     case 'projects.import': return Array.isArray(x.projects) && Array.isArray(x.overwrite) && x.overwrite.every(str)
       && (x.dryRun === undefined || typeof x.dryRun === 'boolean');
@@ -600,7 +604,7 @@ export interface HandlerDeps {
   /** connections.* (M3 T7, the Connections page). Without it they fail. */
   connections?: ConnectionsDeps;
   /** projects.* (M3 T15). Without it they fail. */
-  projects?: Pick<ProjectService, 'cards' | 'addTab' | 'removeTab' | 'openLinked' | 'closeGroup' | 'home' | 'create' | 'start' | 'closeAndSave' | 'reopen' | 'setKeep' | 'saveGroup' | 'unmanagedGroups'
+  projects?: Pick<ProjectService, 'cards' | 'addTab' | 'removeTab' | 'openLinked' | 'closeGroup' | 'home' | 'create' | 'start' | 'closeAndSave' | 'reopen' | 'setKeep' | 'keepDone' | 'saveGroup' | 'unmanagedGroups'
     | 'archive' | 'closeAndArchive' | 'unarchive' | 'remove' | 'savedLists' | 'exportProjects' | 'importProjects'>;
   /** projects.sync.* (M4 T14). Without it they fail. */
   projectSync?: Pick<ProjectSync, 'status' | 'setEnabled' | 'dismiss'>;
@@ -1109,6 +1113,7 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
       case 'projects.closeAndSave': return ok(await p.closeAndSave(req.projectId));
       case 'projects.reopen': return ok(await p.reopen(req.projectId));
       case 'projects.setKeep': await p.setKeep(req.projectId, req.keep); return ok(null);
+      case 'projects.keepDone': await p.keepDone(req.projectId); return ok(null);
       case 'projects.groups': return ok(await p.unmanagedGroups());
       case 'projects.saveGroup': return ok({ id: await p.saveGroup(req.groupId) });
       case 'projects.archive': await p.archive(req.projectId); return ok(null);
@@ -1146,7 +1151,7 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
       }
       case 'projects.list': case 'projects.addTab': case 'projects.removeTab': case 'projects.openLinked': case 'projects.closeGroup':
       case 'projects.home': case 'projects.create': case 'projects.start': case 'projects.closeAndSave': case 'projects.reopen':
-      case 'projects.setKeep': case 'projects.groups': case 'projects.saveGroup': case 'projects.archive': case 'projects.closeAndArchive':
+      case 'projects.setKeep': case 'projects.keepDone': case 'projects.groups': case 'projects.saveGroup': case 'projects.archive': case 'projects.closeAndArchive':
       case 'projects.unarchive': case 'projects.delete': case 'projects.savedLists': case 'projects.export': case 'projects.import':
         return deps.projects ? runProjects(req, deps.projects) : fail('projects unavailable');
       case 'projects.sync.status': return deps.projectSync ? ok(await deps.projectSync.status()) : fail('project sync unavailable');
@@ -1223,7 +1228,13 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
       case 'config.status': return ok(await deps.store.status());
       case 'tabs.list': return ok((await deps.port.snapshot()).tabs);
       case 'dupes.list': return ok(await dupesData());
-      case 'views.list': return deps.views ? ok((await listViews(deps.views)).views.map((v) => v.summary)) : fail('views unavailable');
+      case 'views.list': {
+        if (!deps.views) return fail('views unavailable');
+        const { views } = await listViews(deps.views);
+        // #195: the popup is open: refresh the done projects the Finished view lists (it refreshes again when they change).
+        if (views.some((v) => isSuggestionsView(v.view))) deps.views.refreshDone?.();
+        return ok(views.map((v) => v.summary));
+      }
       case 'view.data': {
         if (!deps.views) return fail('views unavailable');
         const v = (await listViews(deps.views, req.viewId)).views[0];

@@ -5,11 +5,13 @@
   import { buildPopupModel, parsePopupPrefs, POPUP_PREFS_KEY, type PopupPrefs } from '../../ui/popup-model';
   import type { ViewData, ViewSummary } from '../../engine/views';
   import { CLOSE_SUGGESTIONS_KEY } from '../../engine/close-executor';
+  import { DONE_PROJECTS_KEY } from '../../engine/done-projects';
   import type { PauseDuration } from '../../engine/safety';
   import Duplicates from './tabs/Duplicates.svelte';
   import ListView from './tabs/ListView.svelte';
   import Projects from './tabs/Projects.svelte';
   import { projectHomeHash } from '../../ui/routes';
+  import { startLiveRefresh } from '../../ui/project-actions';
 
   /** Recipe-declared views (M2 T17): one popup tab each, the rest under More ▾. */
   let views = $state<ViewSummary[]>([]);
@@ -57,9 +59,12 @@
     await loadData(model.activeTab);
   }
 
-  /** The Finished view reads CloseExecutor's persisted suggestions: refresh when they change (T9→T17). */
+  /**
+   * The Finished view reads CloseExecutor's persisted suggestions (T9→T17) and the done projects (#195): refresh when
+   * they change.
+   */
   const onStorage = (changes: Record<string, unknown>, area: string) => {
-    if (area === 'session' && CLOSE_SUGGESTIONS_KEY in changes) void refresh();
+    if (area === 'session' && (CLOSE_SUGGESTIONS_KEY in changes || DONE_PROJECTS_KEY in changes)) void refresh();
   };
 
   onMount(async () => {
@@ -78,6 +83,17 @@
     await refresh();
   });
   onDestroy(() => { browser.storage.onChanged.removeListener(onStorage); });
+
+  /**
+   * A list view (Finished, Duplicates, ...) re-lists every LIVE_MS while the popup is visible, like the Projects views.
+   * refresh() sends views.list, which starts a fresh project listing when a Finished view exists (#195), so the done
+   * projects follow too; lookups stay within their cache TTL. The Projects tab lists projects itself: no poll here.
+   */
+  const polls = $derived(activeView !== undefined && activeView.kind !== 'projects');
+  $effect(() => {
+    if (!polls) return;
+    return startLiveRefresh(refresh);
+  });
 
   async function selectTab(id: string): Promise<void> {
     lastTab = id;
@@ -205,7 +221,7 @@
       {#if data.data.kind === 'duplicates'}
         <Duplicates data={{ sets: data.data.sets, pending: data.data.pending, locked }} onChange={refresh} />
       {:else if data.data.kind === 'list'}
-        <ListView view={activeView} rows={data.data.rows} onChange={refresh} />
+        <ListView view={activeView} rows={data.data.rows} projects={data.data.projects ?? []} onChange={refresh} />
       {/if}
     {/if}
   </div>

@@ -237,7 +237,7 @@
             <a href={projectHomeHash(c.id)}><ProjectTitle title={c.title} subtitle={c.subtitle} /></a>
             {#if c.status}<span class="status">{c.status.label}</span>{/if}
             <span class="muted">{c.tabCount} {c.tabCount === 1 ? 'tab' : 'tabs'}</span>
-            {#if c.showClose}
+            {#if c.done}
               <button type="button" aria-label={`Close and archive ${c.title}`} onclick={() => closeAndArchive(c.id)}>Close and archive</button>
             {/if}
           </li>

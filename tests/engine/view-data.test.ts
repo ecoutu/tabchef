@@ -8,6 +8,7 @@ import { FakeBrowserPort } from '../../src/platform/fake-port';
 import type { Config, RecipeRef } from '../../src/core/types';
 import type { Recipe, Rule, View } from '../../src/core/lang/types';
 import type { CloseSuggestion } from '../../src/engine/close-executor';
+import type { DoneProject } from '../../src/core/projects/types';
 import { builtinRecipes } from '../../src/recipes/load';
 import { compileProgram } from '../../src/core/lang/compile';
 
@@ -26,7 +27,10 @@ const userRecipe = (id: string, rules: Rule[], views: View[], over: Partial<Reci
   id, enabled: true, params: {}, source: 'user', body: { recipe: id, version: 1, name: id, description: id, rules, views, ...over },
 });
 
-function setup(o: { suggestions?: CloseSuggestion[]; granted?: (origin: string) => boolean; views?: boolean; beforeClose?: () => Promise<void> } = {}) {
+function setup(o: {
+  suggestions?: CloseSuggestion[]; granted?: (origin: string) => boolean; views?: boolean; beforeClose?: () => Promise<void>;
+  done?: DoneProject[]; refreshDone?: () => void;
+} = {}) {
   const port = new FakeBrowserPort();
   port.addWindow(1, { focused: true });
   const mk = (id: number, url: string, x = {}) =>
@@ -72,6 +76,8 @@ function setup(o: { suggestions?: CloseSuggestion[]; granted?: (origin: string) 
           },
         },
         closes: { ready: Promise.resolve(), suggestions: () => o.suggestions ?? [], exempt },
+        ...(o.done && { doneProjects: async () => o.done! }),
+        ...(o.refreshDone && { refreshDone: o.refreshDone }),
       },
     }),
   };
@@ -448,5 +454,84 @@ describe('M3-R78: a Finished suggestion is closable from the view even when the 
     expect(await s.handle({ type: 'view.close', viewId: 'finished', tabId: 3 }, ui)).toEqual({ ok: true, data: null });
     expect(await s.handle({ type: 'view.close', viewId: 'finished', tabId: 4 }, ui)).toEqual({ ok: true, data: null });
     expect((await s.port.snapshot()).tabs).toEqual([]);
+  });
+});
+
+describe('#195: done projects in the Finished view', () => {
+  const ids = async (s: ReturnType<typeof setup>) =>
+    (((await s.handle({ type: 'views.list' }, ui)) as Loose).data as { id: string }[]).map((v) => v.id);
+  const issue: DoneProject = {
+    id: 'github-issue:acme/web#12', key: 'acme/web#12', title: 'acme/web#12 · Fix login', summary: 'Fix login',
+    status: { name: 'Closed', category: 'done', via: 'api' }, tabCount: 2,
+  };
+
+  it('Finished shows, with no suggestion and the finished recipe off, when a recipe whose projects can be done is on', async () => {
+    for (const id of ['github-issue', 'jira-ticket-title', 'jira-ticket-branch', 'jira-ticket-either']) {
+      const s = setup();
+      await s.setCfg(enable(defaultConfig(), id)); // finished is off by default
+      expect(await ids(s)).toEqual(['duplicates', 'finished', 'projects']);
+    }
+  });
+
+  it('the Finished tab keeps its place (the finished recipe\'s place in the recipe list) whether that recipe is on or off', async () => {
+    const on = setup();
+    const base = enable(enable(defaultConfig(), 'merged-prs'), 'github-issue');
+    await on.setCfg(enable(base, 'finished'));
+    const off = setup();
+    await off.setCfg(base);
+    expect(await ids(off)).toEqual(await ids(on));
+    expect(await ids(off)).toEqual(['duplicates', 'finished', 'merged', 'projects']);
+    // R59 (a suggestion with the recipe off) uses the same place.
+    const sugg = setup({ suggestions: [oauth] });
+    await sugg.setCfg(enable(defaultConfig(), 'merged-prs'));
+    sugg.mk(3, CB);
+    expect(await ids(sugg)).toEqual(['duplicates', 'finished', 'merged']);
+  });
+
+  it('Manual projects alone (no project can be done) shows no Finished view', async () => {
+    const s = setup();
+    expect(defaultConfig().recipes.find((r) => r.id === 'manual-project')?.enabled).toBe(true);
+    expect(await ids(s)).not.toContain('finished');
+  });
+
+  it('view.data lists the done projects beside the suggestions; the tab count, popup total and badge include them', async () => {
+    const s = setup({ suggestions: [oauth], done: [issue] });
+    await s.setCfg(enable(enable(defaultConfig(), 'finished'), 'github-issue'));
+    s.mk(3, CB);
+    const views = ((await s.handle({ type: 'views.list' }, ui)) as Loose).data as { id: string; count: number }[];
+    expect(views.find((v) => v.id === 'finished')?.count).toBe(2);
+    const r = (await s.handle({ type: 'view.data', viewId: 'finished' }, ui)) as Loose;
+    expect(r.data).toEqual({ kind: 'list', rows: [expect.objectContaining({ tabId: 3, suggested: true })], projects: [issue] });
+    await refreshBadge({ ...s.deps, getConfig: s.deps.store.get, isLocked: () => false });
+    expect(s.port.badge).toBe('2');
+  });
+
+  it('with the finished recipe off, the Finished view lists only the done projects', async () => {
+    const s = setup({ done: [issue] });
+    await s.setCfg(enable(defaultConfig(), 'github-issue'));
+    const views = ((await s.handle({ type: 'views.list' }, ui)) as Loose).data as { id: string; count: number }[];
+    expect(views.find((v) => v.id === 'finished')?.count).toBe(1);
+    expect(((await s.handle({ type: 'view.data', viewId: 'finished' }, ui)) as Loose).data).toEqual({ kind: 'list', rows: [], projects: [issue] });
+    await refreshBadge({ ...s.deps, getConfig: s.deps.store.get, isLocked: () => false });
+    expect(s.port.badge).toBe('1');
+  });
+
+  it('other list views never carry done projects', async () => {
+    const s = setup({ done: [issue] });
+    const view: View = { id: 'mine', tab: 'Mine', kind: 'list', actions: ['close'] };
+    await s.setCfg({ ...enable(defaultConfig(), 'github-issue'), recipes: [...enable(defaultConfig(), 'github-issue').recipes, userRecipe('u', [], [view])] });
+    expect(((await s.handle({ type: 'view.data', viewId: 'mine' }, ui)) as Loose).data).toEqual({ kind: 'list', rows: [] });
+  });
+
+  it('views.list (the popup opening) asks for a fresh project listing while Finished is listed; the badge never does', async () => {
+    const refreshDone = vi.fn();
+    const s = setup({ done: [issue], refreshDone });
+    await s.handle({ type: 'views.list' }, ui); // no recipe whose projects can be done: no Finished view
+    expect(refreshDone).not.toHaveBeenCalled();
+    await s.setCfg(enable(defaultConfig(), 'github-issue'));
+    await refreshBadge({ ...s.deps, getConfig: s.deps.store.get, isLocked: () => false });
+    expect(refreshDone).not.toHaveBeenCalled();
+    await s.handle({ type: 'views.list' }, ui);
+    expect(refreshDone).toHaveBeenCalledTimes(1);
   });
 });

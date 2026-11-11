@@ -1249,6 +1249,7 @@ describe('projects.* (M3 T15)', () => {
     closeAndSave: vi.fn(async () => ({ closed: 2, skipped: 1, ids: ['rc-1', 'rc-2'] })),
     reopen: vi.fn(async () => ({ opened: 2 })),
     setKeep: vi.fn(async () => {}),
+    keepDone: vi.fn(async () => {}),
     saveGroup: vi.fn(async () => 'manual-project:taxes'),
     archive: vi.fn(async () => {}),
     closeAndArchive: vi.fn(async () => ({ closed: 1, skipped: 0, ids: ['rc-1'] })),
@@ -1394,6 +1395,17 @@ describe('projects.* (M3 T15)', () => {
     expect(await s.handle({ type: 'projects.saveGroup', groupId: 5 }, content)).toEqual({ ok: false, error: 'forbidden' });
     expect(await s.handle({ type: 'projects.groups' }, content)).toEqual({ ok: false, error: 'forbidden' });
     expect(p.saveGroup).toHaveBeenCalledTimes(2);
+  });
+
+  it('#195: projects.keepDone validates, reaches the ProjectService, and is refused from content scripts', async () => {
+    expect(isRequest({ type: 'projects.keepDone', projectId: 'r:ABC-1' })).toBe(true);
+    expect(isRequest({ type: 'projects.keepDone' })).toBe(false);
+    const p = projects();
+    const s = setup({ projects: p });
+    expect(await s.handle({ type: 'projects.keepDone', projectId: 'r:ABC-1' }, ui)).toEqual({ ok: true, data: null });
+    expect(p.keepDone).toHaveBeenCalledWith('r:ABC-1');
+    expect(await s.handle({ type: 'projects.keepDone', projectId: 'r:ABC-1' }, content)).toEqual({ ok: false, error: 'forbidden' });
+    expect(p.keepDone).toHaveBeenCalledTimes(1);
   });
 
   it('M4 T7: projects.closeAndSave / reopen / setKeep reach the ProjectService; all refused from content scripts', async () => {

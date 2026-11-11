@@ -50,7 +50,7 @@ export function createProjectActions(host: ProjectActionsHost) {
   const closeAndArchive = (projectId: string) => closeTabs('projects.closeAndArchive', projectId);
 
   /** Runs a lifecycle request, then reloads when it succeeded. Resolves to whether it did. */
-  async function lifecycle(req: Extract<Request, { type: 'projects.setKeep' | 'projects.archive' | 'projects.unarchive' | 'projects.delete' }>): Promise<boolean> {
+  async function lifecycle(req: Extract<Request, { type: 'projects.setKeep' | 'projects.keepDone' | 'projects.archive' | 'projects.unarchive' | 'projects.delete' }>): Promise<boolean> {
     if (!(await act(() => send(req)))) return false;
     await host.reload();
     return true;
@@ -68,6 +68,8 @@ export function createProjectActions(host: ProjectActionsHost) {
     return true;
   }
   const setKeep = (projectId: string, keep: boolean) => lifecycle({ type: 'projects.setKeep', projectId, keep });
+  /** Keep on a Done prompt (#195): keeps the project and dismisses the prompt on its card and in the Finished tab. */
+  const keepDone = (projectId: string) => lifecycle({ type: 'projects.keepDone', projectId });
   const archive = (projectId: string) => lifecycle({ type: 'projects.archive', projectId });
   const unarchive = (projectId: string) => lifecycle({ type: 'projects.unarchive', projectId });
   /** Delete for good (M4 T9): the caller asks first (M4-R9). */
@@ -83,7 +85,7 @@ export function createProjectActions(host: ProjectActionsHost) {
     await host.reload();
   }
 
-  return { act, focus, openLinked, closeGroup, closeAndSave, closeAndArchive, reopen, setKeep, archive, unarchive, remove, undo };
+  return { act, focus, openLinked, closeGroup, closeAndSave, closeAndArchive, reopen, setKeep, keepDone, archive, unarchive, remove, undo };
 }
 
 /** Calls `load` on config.changed, on becoming visible and every LIVE_MS while visible. Returns the stop function. */

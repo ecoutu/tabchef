@@ -1,5 +1,5 @@
 // Projects tab cards (M3 T17): ProjectCardData (projects.list) shaped for the popup and the side panel.
-import type { ProjectCardData } from '../core/projects/types';
+import type { DoneProject, ProjectCardData } from '../core/projects/types';
 import type { PrState } from '../core/sources/types';
 import { parseIssueKey } from '../core/keys/github-issue';
 
@@ -20,9 +20,14 @@ export interface ProjectCard {
   linked: { url: string; title: string; state?: ShownPrState }[];
   /**
    * The ticket is Done by fresh data (ProjectCardData.done, M3-R90): "Ticket is done. Close this group?", or for a GitHub
-   * issue (`issue`) "Issue is closed. Close this group?".
+   * issue (`issue`) "Issue is closed. Close this group?". Not once the prompt was answered Keep (`doneKept`, #195).
    */
   showClose: boolean;
+  /**
+   * Done by fresh data (M3-R90), kept or not: the options Projects page offers Close and archive on it, as Project home
+   * does. Keep (#195) dismisses only the prompt (`showClose`) and the Finished tab row.
+   */
+  done: boolean;
   /** The project's key is a GitHub issue (`owner/repo#N`): the Done prompt speaks of a closed issue, not a done ticket. */
   issue?: true;
 }
@@ -68,7 +73,23 @@ export function buildProjectCards(data: ProjectCardData[]): ProjectCard[] {
         return { url: l.url, title: l.title, ...(state && { state }) };
       }),
       ...(parseIssueKey(c.key) && { issue: true as const }),
-      showClose: c.done, // fresh Done only (M3-R90): a stale or stored Done still shows as the status, without the prompt
+      // Fresh Done only (M3-R90): a stale or stored Done still shows as the status, without the prompt; nor once kept (#195).
+      showClose: c.done && !c.doneKept, done: c.done,
+    };
+  });
+}
+
+/** A done project row of the popup's Finished tab (#195): the card's header, with the card prompt's actions. */
+export type DoneRow = Pick<ProjectCard, 'id' | 'title' | 'subtitle' | 'status' | 'tabCount' | 'issue'>;
+
+/** The Finished tab's done project rows, in the order listed. */
+export function buildDoneRows(done: DoneProject[]): DoneRow[] {
+  return done.map((d) => {
+    const subtitle = projectSubtitle(d);
+    return {
+      id: d.id, title: d.title, ...(subtitle && { subtitle }),
+      ...(d.status && { status: { label: d.status.name, tone: TONES[d.status.category] } }),
+      tabCount: d.tabCount, ...(parseIssueKey(d.key) && { issue: true as const }),
     };
   });
 }

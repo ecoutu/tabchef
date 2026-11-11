@@ -13,7 +13,10 @@
 //   popup header total leave them out.
 // - Which views: every enabled recipe's views (paused ones too, faded with their reason, R45), the first declaration
 //   of an id winning; plus the built-in Duplicates view while global dedupe is active (R58) and the built-in Finished
-//   view while close suggestions exist, whichever rule made them (R59).
+//   view while close suggestions exist, whichever rule made them (R59), or while a recipe whose projects can be done is
+//   on (#195).
+// - #195: the Finished view also lists the done projects (ProjectService.doneProjects: Done by fresh data at the last
+//   listing, prompt not answered Keep) as `projects`, counted with its rows (the badge and the popup header total too).
 import { tabUrl } from '../core/dedupe/find';
 import { evalShow } from '../core/lang/cond';
 import { compileProgram } from '../core/lang/compile';
@@ -21,6 +24,7 @@ import { liveProgram } from '../core/lang/dry-run';
 import { evaluateTab, type EvalResult } from '../core/lang/evaluate';
 import { alternativesOf, hostOf } from '../core/lang/needs';
 import type { Program, Recipe, TabFacts, View } from '../core/lang/types';
+import type { DoneProject } from '../core/projects/types';
 import type { Config, Snapshot, TabSnap } from '../core/types';
 import { normalizeUrl } from '../core/url/normalize';
 import type { PendingAsk } from './ask';
@@ -62,7 +66,8 @@ export interface ViewSummary {
 
 export type ViewData =
   | { kind: 'duplicates'; sets: DupeSetView[]; pending: PendingAsk[] }
-  | { kind: 'list'; rows: ViewRow[] }
+  /** `projects` (#195): the Finished view's done projects, each with the card prompt's actions. */
+  | { kind: 'list'; rows: ViewRow[]; projects?: DoneProject[] }
   | { kind: 'projects' };
 
 export interface ViewsDeps {
@@ -82,6 +87,13 @@ export interface ViewsDeps {
   connections?: () => Promise<{ id: string; label: string }[]>;
   /** How many projects are open (ProjectService, as of its last pass): a projects view's count. Default: 0. */
   projectCount?: () => number;
+  /** #195: the done projects the Finished view lists (ProjectService.doneProjects). Default: none. */
+  doneProjects?: () => Promise<DoneProject[]>;
+  /**
+   * #195: start a fresh project listing (ProjectService.cards) without waiting for it; it updates doneProjects, and the
+   * popup refreshes when that changes. Called by views.list while the Finished view is listed, never by the badge.
+   */
+  refreshDone?: () => void;
 }
 
 export interface ViewsInput {
@@ -104,23 +116,42 @@ export function samePage(a: string, b: string, p: Program): boolean {
   return (normalizeUrl(a, p.dedupe)?.key ?? a) === (normalizeUrl(b, p.dedupe)?.key ?? b);
 }
 
-/** The Finished recipe's view: it also lists CloseExecutor.suggestions() (T9→T17). */
-const isSuggestionsView = (v: DeclaredView): boolean => v.recipeId === 'finished' && v.id === 'finished';
+/** The Finished recipe's view: it also lists CloseExecutor.suggestions() (T9→T17) and the done projects (#195). */
+export const isSuggestionsView = (v: { recipeId: string; id: string }): boolean => v.recipeId === 'finished' && v.id === 'finished';
 
 /**
- * The views the popup lists, in Program (recipe) order; R58's Duplicates view first, R59's Finished view (shown while
- * `hasSuggestions` even with the finished recipe disabled) last.
+ * #195: an enabled recipe's projects can be done: it declares a project and one of its rules reads a status category
+ * (a source field `statusCategory`, as github-issue and the jira-ticket-* recipes do). The Finished view then lists them.
+ */
+export function canFinishProjects(p: Program): boolean {
+  const withProjects = new Set((p.projects ?? []).map((d) => d.recipeId));
+  return p.rules.some((r) => r.recipeId !== undefined && withProjects.has(r.recipeId)
+    && r.rule.source !== undefined && Object.hasOwn(r.rule.source.fields, 'statusCategory'));
+}
+
+/**
+ * The views the popup lists, in Program (recipe) order; R58's Duplicates view first. R59's Finished view (shown while
+ * `hasSuggestions` even with the finished recipe disabled, and while canFinishProjects, #195) takes the finished
+ * recipe's place in config.recipes, as when that recipe is on.
  */
 export function declaredViews(
   p: Program, config: Config | undefined, builtins: Record<string, Recipe>, hasSuggestions = false,
 ): DeclaredView[] {
+  const showFinished = hasSuggestions || canFinishProjects(p);
   const out: DeclaredView[] = [];
   const seen = new Set<string>();
   const builtinViews = (id: string) => (Object.hasOwn(builtins, id) ? builtins[id]?.views ?? [] : []);
   // View ids are global (showInView names an id only): the first declaration of an id wins, later ones are dropped.
   for (const v of p.views) if (!seen.has(v.id)) { seen.add(v.id); out.push(v); }
-  if (hasSuggestions && !out.some(isSuggestionsView)) {
-    for (const v of builtinViews('finished')) if (!seen.has(v.id)) { seen.add(v.id); out.push({ ...v, recipeId: 'finished' }); }
+  if (showFinished && !out.some(isSuggestionsView)) {
+    // The place the finished recipe's view has when it is on (its place in config.recipes), so the tab does not move
+    // when the recipe is turned off; last without a config (the toolbar badge, where order does not matter).
+    const rank = new Map((Array.isArray(config?.recipes) ? config.recipes : []).map((r, i) => [r.id, i] as const));
+    const own = rank.get('finished');
+    const at = own === undefined ? -1 : out.findIndex((v) => (rank.get(v.recipeId) ?? Infinity) > own);
+    const add = builtinViews('finished').filter((v) => !seen.has(v.id)).map((v) => ({ ...v, recipeId: 'finished' }));
+    for (const v of add) seen.add(v.id);
+    out.splice(at < 0 ? out.length : at, 0, ...add);
   }
   if (config && config.dedupe.mode !== 'off') {
     const dup = builtinViews('duplicates').filter((v) => !seen.has(v.id));
@@ -278,13 +309,17 @@ export async function readViews(d: ViewsDeps, input: ViewsInput): Promise<Comput
   };
   const full = config && d.permissions && !input.noStatus ? compileProgram(config, d.builtins).program : undefined;
   const dupes = views.some((v) => v.kind === 'duplicates') ? await input.dupes!() : undefined;
+  const done = d.doneProjects && views.some(isSuggestionsView) ? await d.doneProjects() : [];
   const out: ComputedView[] = [];
   for (const v of views) {
     const data: ViewData = v.kind === 'projects' ? { kind: 'projects' }
       : v.kind === 'duplicates' && dupes ? { kind: 'duplicates', ...dupes }
-      : { kind: 'list', rows: listRows(v, snap, p, evalOf, suggestions, (t) => extraOf(t).source) };
+      : {
+        kind: 'list', rows: listRows(v, snap, p, evalOf, suggestions, (t) => extraOf(t).source),
+        ...(isSuggestionsView(v) && done.length > 0 && { projects: done }),
+      };
     const count = data.kind === 'duplicates' ? data.sets.reduce((n, s) => n + s.closable, 0) + data.pending.length
-      : data.kind === 'list' ? data.rows.length : d.projectCount?.() ?? 0;
+      : data.kind === 'list' ? data.rows.length + (data.projects?.length ?? 0) : d.projectCount?.() ?? 0;
     const pause = full && d.permissions ? await pauseOf(v, full, d) : {};
     out.push({ view: v, data, summary: { id: v.id, tab: v.tab, kind: v.kind, actions: [...v.actions], count, ...pause } });
   }

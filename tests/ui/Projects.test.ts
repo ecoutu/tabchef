@@ -101,7 +101,15 @@ describe('Projects tab (M3 T17)', () => {
     await fireEvent.click(await screen.findByRole('button', { name: 'Keep' }));
     expect(screen.queryByText('Ticket is done. Close this group?')).toBeNull();
     expect(types()).not.toContain('projects.closeGroup');
-    expect(send).toHaveBeenCalledWith({ type: 'projects.setKeep', projectId: 'jira:ABC-1', keep: true });
+    expect(send).toHaveBeenCalledWith({ type: 'projects.keepDone', projectId: 'jira:ABC-1' });
+    expect(types()).not.toContain('projects.setKeep'); // keepDone keeps the project itself
+  });
+
+  it('#195: a project whose Done prompt was kept elsewhere (the Finished tab) shows no prompt', async () => {
+    cards = [{ ...done, doneKept: true }];
+    render(Projects);
+    await screen.findByRole('heading', { name: 'ABC-1 · Login fails' });
+    expect(screen.queryByText('Ticket is done. Close this group?')).toBeNull();
   });
 
   it('a closed GitHub issue: the prompt says the issue is closed, not the ticket done', async () => {

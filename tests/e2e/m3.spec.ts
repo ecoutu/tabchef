@@ -170,6 +170,17 @@ test.describe('M3 with mocked services', () => {
       ['ABC-3', { name: 'In Progress', via: 'api', done: false }],
     ]);
     expect(await tabById(id)).toBeDefined(); // prompting only: nothing is closed
+    // #195: the Finished view (the finished recipe is off) lists the done project; Keep there takes it off the list and
+    // off the card's prompt.
+    const finished = async () => (await send<{ id: string; count: number }[]>(h, { type: 'views.list' })).find((v) => v.id === 'finished');
+    const doneIds = async () => ((await send<{ projects?: { id: string }[] }>(h, { type: 'view.data', viewId: 'finished' })).projects ?? []).map((p) => p.id);
+    await expect.poll(finished, { timeout: 10_000 }).toMatchObject({ count: 1 });
+    expect(await doneIds()).toEqual([`${JIRA_RECIPE_ID}:ABC-2`]);
+    await send(h, { type: 'projects.keepDone', projectId: `${JIRA_RECIPE_ID}:ABC-2` });
+    expect(await doneIds()).toEqual([]);
+    const kept = (await send<{ id: string; doneKept?: boolean }[]>(h, { type: 'projects.list' })).find((c) => c.id === `${JIRA_RECIPE_ID}:ABC-2`);
+    expect(kept?.doneKept).toBe(true);
+    expect(await tabById(id)).toBeDefined();
   });
 
   test('(j) a GitHub issue tab and a PR whose branch names it share one acme/api#7 group', async () => {

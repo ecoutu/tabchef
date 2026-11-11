@@ -156,10 +156,98 @@ describe('Popup', () => {
     await waitFor(() => expect(screen.getByRole('tab', { name: /Duplicates/ }).textContent).toContain('2'));
   });
 
+  it('#195: the Finished view lists done projects; Keep there refreshes the popup', async () => {
+    views = [dupView, { ...finView, count: 2 }];
+    const project = { id: 'github-issue:acme/web#12', key: 'acme/web#12', title: 'acme/web#12 · Fix login', status: { name: 'Closed', category: 'done', via: 'api' }, tabCount: 2 };
+    const base = send.getMockImplementation()!;
+    send.mockImplementation(async (req: { type: string; viewId?: string }) => {
+      if (req.type === 'view.data' && req.viewId === 'finished') return { ok: true, data: { kind: 'list', rows: [], projects: [project] } };
+      if (req.type === 'projects.keepDone') { views = [dupView, { ...finView, count: 0 }]; return { ok: true, data: null }; }
+      return base(req);
+    });
+    await browser.storage.local.set({ 'popup.lastTab': 'finished' });
+    render(Popup);
+    expect(await screen.findByRole('group', { name: 'acme/web#12 · Fix login' })).toBeTruthy();
+    await fireEvent.click(screen.getByRole('button', { name: 'Keep acme/web#12 · Fix login' }));
+    expect(send).toHaveBeenCalledWith({ type: 'projects.keepDone', projectId: project.id });
+    await waitFor(() => expect(screen.getByRole('tab', { name: /Finished/ }).textContent).toContain('0'));
+  });
+
+  it('#195: refreshes when the done projects change (storage.session projects.done)', async () => {
+    render(Popup);
+    await waitFor(() => expect(send.mock.calls.filter((c) => c[0].type === 'views.list')).toHaveLength(1));
+    await browser.storage.session.set({ 'projects.done': { projects: [], kept: [] } });
+    await waitFor(() => expect(send.mock.calls.filter((c) => c[0].type === 'views.list')).toHaveLength(2));
+  });
+
   it('refreshes when the Finished suggestions change (storage.session closeSuggestions)', async () => {
     render(Popup);
     await waitFor(() => expect(send.mock.calls.filter((c) => c[0].type === 'views.list')).toHaveLength(1));
     await browser.storage.session.set({ closeSuggestions: [{ tabId: 3 }] });
     await waitFor(() => expect(send.mock.calls.filter((c) => c[0].type === 'views.list')).toHaveLength(2));
+  });
+});
+
+describe('Popup live refresh of the list views', () => {
+  const calls = (type: string, viewId?: string) =>
+    send.mock.calls.filter((c) => c[0].type === type && (viewId === undefined || c[0].viewId === viewId)).length;
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('the Finished tab re-lists every 5 s while visible (views.list refreshes the done projects), not while hidden', async () => {
+    vi.useFakeTimers();
+    views = [finView];
+    render(Popup);
+    await vi.advanceTimersByTimeAsync(0);
+    const lists = calls('views.list');
+    const data = calls('view.data', 'finished');
+    expect(data).toBeGreaterThan(0);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(calls('views.list')).toBe(lists + 1);
+    expect(calls('view.data', 'finished')).toBe(data + 1);
+    const vis = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(calls('views.list')).toBe(lists + 1);
+    vis.mockReturnValue('visible');
+    document.dispatchEvent(new Event('visibilitychange'));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calls('views.list')).toBe(lists + 2);
+  });
+
+  it('the Duplicates tab re-lists too', async () => {
+    vi.useFakeTimers();
+    render(Popup);
+    await vi.advanceTimersByTimeAsync(0);
+    const data = calls('view.data', 'duplicates');
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(calls('view.data', 'duplicates')).toBe(data + 2);
+  });
+
+  it('stops when the popup closes', async () => {
+    vi.useFakeTimers();
+    views = [finView];
+    render(Popup);
+    await vi.advanceTimersByTimeAsync(0);
+    cleanup();
+    const lists = calls('views.list');
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(calls('views.list')).toBe(lists);
+  });
+
+  it('does not poll on the Projects tab (it lists projects itself), and starts again on a list tab', async () => {
+    vi.useFakeTimers();
+    const projView: V = { id: 'projects', tab: 'Projects', kind: 'projects', actions: [], count: 0 };
+    views = [projView, finView];
+    const base = send.getMockImplementation()!;
+    send.mockImplementation(async (req: { type: string }) => (req.type === 'projects.list' ? { ok: true, data: [] } : base(req)));
+    render(Popup);
+    await vi.advanceTimersByTimeAsync(0);
+    const lists = calls('views.list');
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(calls('views.list')).toBe(lists);
+    await fireEvent.click(screen.getByRole('tab', { name: /Finished/ }));
+    await vi.advanceTimersByTimeAsync(0);
+    const after = calls('views.list');
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(calls('views.list')).toBe(after + 1);
   });
 });

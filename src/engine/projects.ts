@@ -13,7 +13,7 @@ import { parseIssueKey } from '../core/keys/github-issue';
 import type { RecentlyClosed } from '../core/safety/recently-closed';
 import type { GroupTarget } from '../core/group/evaluate';
 import type { Program, TabFacts } from '../core/lang/types';
-import type { NamedProject, Project, ProjectAssignment, ProjectCardData, ProjectDef, ProjectHomeData, ProjectImportResult, SavedProjectData, SavedTab } from '../core/projects/types';
+import type { DoneProject, NamedProject, Project, ProjectAssignment, ProjectCardData, ProjectDef, ProjectHomeData, ProjectImportResult, SavedProjectData, SavedTab } from '../core/projects/types';
 import type { GithubIssueInfo, JiraIssue, PrInfo, PrState, SourceEntry } from '../core/sources/types';
 import type { GroupColor, GroupSnap, Snapshot, TabSnap } from '../core/types';
 import { normalizeUrl } from '../core/url/normalize';
@@ -22,6 +22,7 @@ import type { PageFacts } from './page-facts';
 import type { WhyLog } from './reconciler';
 import type { SafetyService } from './safety';
 import type { SourceService } from './sources';
+import { DoneProjects } from './done-projects';
 import { ProjectClock } from './project-clock';
 import { parseProject, type ProjectStore } from './project-store';
 import { saveState, type LiveState } from './state';
@@ -275,10 +276,13 @@ export class ProjectService {
   private membersRead = false;
   /** The projects with a tab at the last pass (what onProjectsChanged reports): the submenu lists them (`menuItems`). */
   private lastOpen = new Set<string>();
+  /** #195: the done projects of the last listing and the kept Done prompts (storage.session). */
+  private readonly done: DoneProjects;
 
   constructor(private readonly deps: ProjectServiceDeps) {
     this.now = deps.now ?? Date.now;
     this.clock = new ProjectClock(deps.session, this.now);
+    this.done = new DoneProjects(deps.session);
   }
 
   /** One at a time: every method reads and writes the store and the sticky map. Never held across the network. */
@@ -340,6 +344,7 @@ export class ProjectService {
     const defs = program.projects ?? [];
     if (defs.length === 0) {
       this.lastOpen = new Set();
+      await this.done.retain(this.lastOpen);
       this.deps.onProjectsChanged?.([]);
       return { program, defs, projects: [], assignments: new Map(), held: new Map() };
     }
@@ -419,6 +424,7 @@ export class ProjectService {
     }
     const defOf = new Map(defs.map((d) => [d.recipeId, d]));
     this.lastOpen = open;
+    await this.done.retain(open); // a project with no open tab leaves the Finished tab (#195)
     // Under global dry run only stored projects are listed: addTab takes no unstored one.
     // Tombstones are never offered (addTab rejects them); under dry run none was revived.
     const prefixes = openPrefixes(projects, open);
@@ -769,6 +775,7 @@ export class ProjectService {
       await this.deps.store.put(p);
     } else if (save) await this.deps.store.put(p);
     else if (skipped === 0 && !p.keep) await this.deps.store.remove(projectId); // nothing open: nothing to undo
+    await this.done.drop(projectId); // off the Finished tab at once; a listing lists it again while tabs of it stay open
     this.deps.schedule?.('project');
     if (ids.length > 0 && this.deps.toast) {
       const after = await this.deps.port.snapshot();
@@ -886,6 +893,20 @@ export class ProjectService {
       p.updatedAt = this.now();
       await this.deps.store.put(p);
     });
+  }
+
+  /**
+   * Keep on a Done prompt (#195), the card's or the popup Finished tab's: keeps the project (setKeep) and dismisses its
+   * prompt in both places for this browser session, until fresh data says it is not done (reopened).
+   */
+  async keepDone(projectId: string): Promise<void> {
+    await this.setKeep(projectId, true);
+    await this.done.keep(projectId);
+  }
+
+  /** #195: the projects Done by fresh data at the last listing, still open and not kept: the Finished tab's rows. */
+  doneProjects(): Promise<DoneProject[]> {
+    return this.done.list();
   }
 
   /**
@@ -1068,7 +1089,11 @@ export class ProjectService {
    * linked PRs are fetched outside it (a reconcile never waits on the network), then written under it again.
    */
   async cards(): Promise<ProjectCardData[]> {
-    return (await this.collect()).cards;
+    const since = this.done.generation(); // a project dropped while this listing runs is not listed again (R5-M1)
+    const { cards } = await this.collect();
+    // #195: the done ones feed the Finished tab; a Done prompt answered Keep is not shown again.
+    const kept = await this.done.noteListing(cards, since);
+    return cards.map((c) => (c.done && kept.has(c.id) ? { ...c, doneKept: true as const } : c));
   }
 
   /**

@@ -158,6 +158,13 @@ one per Jira ticket. The tab joins the project named by `key`, else the one name
 lets it start a new project. Projects show in the popup's Projects tab and in the side panel. Only
 recipe rules can assign projects.
 
+Once a project's Jira ticket is done or its GitHub issue is closed, its card asks whether to close its group, with
+**Close group**, **Close and archive** and **Keep**, and the popup's Finished tab lists the project with the same
+buttons, above the tabs it suggests closing. The Finished tab shows while the Finished recipe is on, or a recipe whose
+projects can be done: GitHub issue projects, the Jira ticket projects, or your own recipe with a project and a rule
+whose `source` picks a `statusCategory` field. **Keep** keeps the project and stops asking, on the card and in the
+Finished tab, until you restart the browser or the ticket or issue is reopened.
+
 ### Priority order and sections
 
 The Rules page lists your own rules and the rules of the recipes you turned on, in one list. **Order is priority.** For

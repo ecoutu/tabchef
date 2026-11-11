@@ -10,6 +10,7 @@ import {
 } from '../engine/messages';
 import { listPendingAsks } from '../engine/ask';
 import { afterConfigChange, CLOSE_ALARM_PREFIX, CLOSE_SUGGESTIONS_KEY, CloseExecutor } from '../engine/close-executor';
+import { DONE_PROJECTS_KEY } from '../engine/done-projects';
 import { DedupeHandler } from '../engine/dedupe-handler';
 import { AGE_TICK_ALARM, TabAges } from '../engine/tab-ages';
 import { usesAge } from '../core/lang/cond';
@@ -483,6 +484,9 @@ export default defineBackground(() => {
       permissions,
       connections: () => connectionInfo(),
       projectCount: () => openProjects,
+      // #195: the done projects the Finished view lists, as of the last listing; the popup opening starts a new one.
+      doneProjects: () => projects.doneProjects(),
+      refreshDone: () => { projects.cards().catch(warn('done projects')); },
       closes: {
         ready: closeExecutor.ready,
         suggestions: () => closeExecutor.suggestions(),
@@ -498,10 +502,11 @@ export default defineBackground(() => {
   for (const ev of [browser.tabs.onCreated, browser.tabs.onRemoved, browser.tabs.onUpdated, browser.tabs.onReplaced, browser.tabs.onAttached]) {
     ev.addListener(scheduleBadge);
   }
-  // Finished suggestions are counted in the badge: recount when CloseExecutor stores a change to them. A change to the
+  // Finished suggestions and done projects (#195) are counted in the badge: recount when CloseExecutor or ProjectService
+  // stores a change to them. A change to the
   // stored projects schedules a project sync (a no-op while it is off) and refreshes the "Add to project" submenu.
   browser.storage.onChanged.addListener((changes, area) => {
-    if (area === 'session' && CLOSE_SUGGESTIONS_KEY in changes) scheduleBadge();
+    if (area === 'session' && (CLOSE_SUGGESTIONS_KEY in changes || DONE_PROJECTS_KEY in changes)) scheduleBadge();
     if (area === 'local' && PROJECTS_KEY in changes) { projectSync.schedule(); refreshProjectMenu(); }
   });
   scheduleBadge();

@@ -2,15 +2,30 @@
   // A recipe-declared `list` view (M2 T17), e.g. Finished: rows from view.data, buttons from the view's `actions`.
   // M3 T13: a row's source state as a pill (and a stale marker), and the locked state of a view whose rules all
   // wait for a connection or host access (Connect opens #/connections; Allow requests in the click handler).
+  // #195: the Finished view's done projects (`projects`) come first, one row each with the card prompt's actions (Close
+  // group, Close and archive, Keep), sent as the card sends them; Close group's toast offers Undo as the card's does.
   import { browser } from 'wxt/browser';
   import { send } from '../../../ui/send';
   import { requestNeeds } from '../../../ui/permissions';
+  import { createProjectActions, type Toast } from '../../../ui/project-actions';
+  import { buildDoneRows } from '../../../ui/projects-model';
   import PrPill from '../../../ui/PrPill.svelte';
+  import ProjectTitle from '../../../ui/ProjectTitle.svelte';
   import type { ViewRow, ViewSummary } from '../../../engine/views';
+  import type { DoneProject } from '../../../core/projects/types';
 
-  let { view, rows, onChange }: { view: ViewSummary; rows: ViewRow[]; onChange: () => void } = $props();
+  let { view, rows, projects = [], onChange }: { view: ViewSummary; rows: ViewRow[]; projects?: DoneProject[]; onChange: () => void } = $props();
   let error = $state('');
   let status = $state('');
+  /** After Close group or Close and archive: the closed tabs' recently-closed entries, which Undo reopens. */
+  let toast = $state<Toast | undefined>(undefined);
+  const done = $derived(buildDoneRows(projects));
+  const projectActions = createProjectActions({
+    reload: async () => { onChange(); },
+    setError: (e) => { error = e; },
+    getToast: () => toast,
+    setToast: (t) => { toast = t; },
+  });
 
   const can = (a: ViewSummary['actions'][number]): boolean => view.actions.includes(a);
   /** Rows split into runs of the same `group` (rows arrive grouped and sorted). */
@@ -72,7 +87,36 @@
     </div>
   {:else}
     {#if view.paused ?? view.notice}<p class="paused">{view.paused ?? view.notice}</p>{/if}
-    {#if rows.length === 0}<p class="empty">Nothing here.</p>{/if}
+    {#if rows.length === 0 && done.length === 0}<p class="empty">Nothing here.</p>{/if}
+  {/if}
+
+  {#if toast}
+    {@const t = toast}
+    <p class="toast" role="status">
+      {t.text}
+      {#if t.ids.length > 0}<button type="button" class="act" onclick={() => projectActions.undo(t.ids)}>Undo</button>{/if}
+    </p>
+  {/if}
+  {#if done.length > 0}
+    <ul>
+      {#each done as d (d.id)}
+        <li>
+          <div class="row project" role="group" aria-label={d.title}>
+            <span class="text">
+              <span class="title"><ProjectTitle title={d.title} subtitle={d.subtitle} /></span>
+              <span class="reason">{d.issue ? 'Issue is closed' : 'Ticket is done'}</span>
+            </span>
+            {#if d.status}<span class={`status tone-${d.status.tone}`}>{d.status.label}</span>{/if}
+            <span class="count">{d.tabCount} {d.tabCount === 1 ? 'tab' : 'tabs'}</span>
+            <span class="project-actions">
+              <button type="button" class="act" aria-label={`Close group ${d.title}`} onclick={() => projectActions.closeGroup(d.id)}>Close group</button>
+              <button type="button" class="act" aria-label={`Close and archive ${d.title}`} onclick={() => projectActions.closeAndArchive(d.id)}>Close and archive</button>
+              <button type="button" class="act" aria-label={`Keep ${d.title}`} onclick={() => projectActions.keepDone(d.id)}>Keep</button>
+            </span>
+          </div>
+        </li>
+      {/each}
+    </ul>
   {/if}
 
   {#each groups as g, gi (gi)}
@@ -130,6 +174,15 @@
   .error { color: var(--danger); margin: 6px 12px; font-size: 12px; }
   .paused { color: var(--muted); margin: 6px 12px; font-size: 12px; }
   .empty { color: var(--muted); padding: 12px; margin: 0; }
+  /* A done project (#195): the card header's status pill and tab count; the buttons wrap below when narrow. */
+  .project { flex-wrap: wrap; }
+  .count { color: var(--muted); font-size: 11px; flex: none; }
+  .status { flex: none; font-size: 11px; border-radius: 999px; padding: 1px 8px; border: 1px solid var(--border); color: var(--muted); }
+  .tone-progress { color: var(--accent); border-color: var(--accent); }
+  .tone-done { color: var(--ok, #1e8e3e); border-color: var(--ok, #1e8e3e); }
+  .project-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+  .toast { display: flex; align-items: center; gap: 8px; margin: 6px 12px; padding: 6px 8px; border-radius: 6px; background: var(--surface); }
+  .toast .act { background: var(--bg); }
   .locked { padding: 12px; }
   .locked-text { margin: 0 0 8px; font-weight: 600; }
   .locked-actions { display: flex; flex-wrap: wrap; gap: 8px; }

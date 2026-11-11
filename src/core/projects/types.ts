@@ -120,9 +120,24 @@ export interface ProjectCardData {
   status?: NonNullable<Project['status']>;
   /** The status is Done by fresh data (via api or page, not stale, M3-R90); a stale or stored Done is only shown. */
   done: boolean;
+  /**
+   * #195: the user answered Keep to its Done prompt (keepDone, this browser session): the card no longer prompts, and the
+   * popup's Finished tab no longer lists it. Cleared once fresh data says it is not done (the ticket was reopened).
+   */
+  doneKept?: true;
   tabs: { tabId: number; windowId: number; title: string; url: string; favIconUrl?: string; lastAccessed?: number; pill?: PrState; stale?: boolean }[];
   /** Linked PRs not open in the project. */
   linked: Project['linked'];
+}
+
+/**
+ * A project Done by fresh data (M3-R90) whose prompt was not answered Keep, as of the last listing (#195): the popup's
+ * Finished tab lists it, with the card prompt's actions.
+ */
+export interface DoneProject {
+  id: string; key: string; title: string; summary?: string; prTitle?: string;
+  status?: ProjectCardData['status'];
+  tabCount: number;
 }
 
 /** One project's home page (`projects.home`, M4 T4): its card data plus its groups, settings and recipe's name. */

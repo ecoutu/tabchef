@@ -17,7 +17,8 @@ on `chrome://extensions` (Developer mode on).
   Commits and Checks pages count as the pull request itself.
 - **Close finished tabs** (the Finished recipe): OAuth callback pages, redirect pages you list, and Google Meet tabs
   after the call ends. Pinned and locked tabs are never closed, and a tab with unsaved form edits is never closed
-  without asking.
+  without asking. The popup's Finished tab also lists projects whose Jira ticket is done or whose GitHub issue is
+  closed, so you can close their group.
 - **Recipes** bundle rules you turn on with one switch: Duplicates, Finished, GitHub pull requests, Merged PRs, the
   Jira ticket projects and Manual projects (a named project you add tabs to by hand). Recipe rules are read-only;
   Customize copies one into your own rules.

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { buildProjectCards, projectSubtitle, staleText } from '../../src/ui/projects-model';
-import type { ProjectCardData } from '../../src/core/projects/types';
+import { buildDoneRows, buildProjectCards, projectSubtitle, staleText } from '../../src/ui/projects-model';
+import type { DoneProject, ProjectCardData } from '../../src/core/projects/types';
 
 const TICKET = 'https://acme.atlassian.net/browse/ABC-1';
 const PR = 'https://github.com/acme/api/pull/7';
@@ -93,5 +93,23 @@ describe('projectSubtitle: the ticket title shown beside the project key in list
     const [c] = buildProjectCards([card({ title: 'ABC-1', summary: 'Login fails' })]);
     expect(c!.subtitle).toBe('Login fails');
     expect(buildProjectCards([card()])[0]).not.toHaveProperty('subtitle');
+  });
+});
+
+describe('#195: a Done prompt answered Keep, and the Finished view\'s done project rows', () => {
+  it('a card whose Done prompt was kept (doneKept) shows the Done status without the prompt', () => {
+    const [c] = buildProjectCards([{ id: 'a', key: 'ABC-1', title: 'ABC-1', status: { name: 'Done', category: 'done', via: 'api' }, done: true, doneKept: true, tabs: [], linked: [] }]);
+    expect(c).toMatchObject({ showClose: false, status: { label: 'Done', tone: 'done' } });
+  });
+
+  it('buildDoneRows: title, subtitle, status pill, tab count, and whether it is a GitHub issue', () => {
+    const done: DoneProject[] = [
+      { id: 'jira:ABC-1', key: 'ABC-1', title: 'ABC-1', summary: 'Login fails', status: { name: 'Done', category: 'done', via: 'api' }, tabCount: 1 },
+      { id: 'gh:acme/web#12', key: 'acme/web#12', title: 'acme/web#12 · Fix login', summary: 'Fix login', status: { name: 'Closed', category: 'done', via: 'page' }, tabCount: 3 },
+    ];
+    expect(buildDoneRows(done)).toEqual([
+      { id: 'jira:ABC-1', title: 'ABC-1', subtitle: 'Login fails', status: { label: 'Done', tone: 'done' }, tabCount: 1 },
+      { id: 'gh:acme/web#12', title: 'acme/web#12 · Fix login', status: { label: 'Closed', tone: 'done' }, tabCount: 3, issue: true },
+    ]);
   });
 });

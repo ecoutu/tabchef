@@ -216,6 +216,13 @@ describe('Projects page: Open / Saved / Archived (M4 T9)', () => {
     expect(calls('projects.closeAndArchive')).toEqual([{ type: 'projects.closeAndArchive', projectId: 'jira-ticket-either:ABC-1' }]);
   });
 
+  it('#195: Keep on the Done prompt does not take Close and archive off this page (R5-M4)', async () => {
+    open = [{ ...open[0]!, doneKept: true }];
+    render(Projects);
+    const o = await section('Open');
+    expect(within(o).getByRole('button', { name: 'Close and archive ABC-1' })).toBeTruthy();
+  });
+
   it('Saved: Reopen and Archive; Archived: "Archived: reopen?" when a rule assigns its key, Reopen and Unarchive', async () => {
     render(Projects);
     const s = await section('Saved');
