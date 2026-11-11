@@ -12,7 +12,7 @@ import { parse as parseYaml } from 'yaml';
 import type { ConnectionStatus } from '../../src/core/connections/types';
 import type { Recipe, RecipeRef } from '../../src/core/lang/types';
 import { RATE_KEY } from '../../src/engine/connections/rate-limiter';
-import { config, EXT_PATH, groups, launch, openTab, reset, send, setConfig, tabs, type Harness } from './helpers';
+import { config, EXT_PATH, groups, launch, openTab, reset, send, setConfig, tabs, waitPastStartupGrace, type Harness } from './helpers';
 import { connectionItems, issue, MOCK_LOGIN, mergedPr, mockGithubDef, mockJiraDef, openPr, prKey } from '../helpers/demo';
 import { startMockServices, type MockServices } from './mock-services';
 
@@ -254,6 +254,45 @@ test.describe('M3 with mocked services', () => {
     } finally {
       await panel.close();
     }
+  });
+
+  test('(i) #179: a second copy of the ticket from a shared link (?atlOrigin=) closes into the ticket tab in its group', async () => {
+    mock.jira.setIssue('ABC-1', issue('Login', 'In Progress'));
+    mock.github.setPr(prKey('acme/api', 1), openPr('ABC-1 fix'));
+    await send(h, { type: 'connections.disconnect', id: 'github' });
+    await send(h, { type: 'connections.disconnect', id: 'jira' });
+    await setConfig(h, withRecipe(jiraRecipe(mock.origin)));
+    await waitPastStartupGrace(h);
+    const ticketUrl = `${mock.origin}/browse/ABC-1`;
+    const ticket = await openTab(h, ticketUrl);
+    const pr = await openTab(h, prUrl(1));
+    await expect.poll(async () => (await tabs(h)).filter((t) => t.id === ticket || t.id === pr).map((t) => t.groupId).filter((g) => g >= 0).length, { timeout: 10_000 })
+      .toBe(2);
+    await new Promise((r) => setTimeout(r, 11_000)); // both tabs older than NEW_TAB_AGE_MS: only the copy is new
+
+    const copy = await openTab(h, `${ticketUrl}?atlOrigin=eyJpIjoiMTIzIn0`);
+    await expect.poll(() => tabById(copy), { timeout: 8000 }).toBeUndefined();
+    const kept = await h.sw.evaluate(async (id) => { const t = await chrome.tabs.get(id); return { url: t.url, active: t.active }; }, ticket);
+    expect(kept).toEqual({ url: ticketUrl, active: true }); // focused, its URL unchanged
+    expect(await recentUrls()).toContain(`${ticketUrl}?atlOrigin=eyJpIjoiMTIzIn0`);
+  });
+
+  test('(j) #179: a board copy from a shared link (&atlOrigin=) closes into the board tab, before Jira strips the param', async () => {
+    mock.jira.setIssue('SCRUM-1', issue('Login', 'In Progress'));
+    await send(h, { type: 'connections.disconnect', id: 'jira' });
+    await setConfig(h, withRecipe(jiraRecipe(mock.origin)));
+    await waitPastStartupGrace(h);
+    const boardUrl = `${mock.origin}/jira/software/projects/SCRUM/boards/1?filter=&groupBy=none&selectedIssue=SCRUM-1`;
+    const board = await openTab(h, boardUrl);
+    await expect.poll(async () => (await tabById(board))?.groupId ?? -1, { timeout: 10_000 }).toBeGreaterThanOrEqual(0);
+    await new Promise((r) => setTimeout(r, 11_000)); // the board tab is older than NEW_TAB_AGE_MS: only the copy is new
+
+    const sharedUrl = `${boardUrl}&atlOrigin=test`;
+    const copy = await openTab(h, sharedUrl);
+    await expect.poll(() => tabById(copy), { timeout: 8000 }).toBeUndefined(); // the mock strips &atlOrigin= only at 12 s
+    const kept = await h.sw.evaluate(async (id) => { const t = await chrome.tabs.get(id); return { url: t.url, active: t.active }; }, board);
+    expect(kept).toEqual({ url: boardUrl, active: true });
+    expect(await recentUrls()).toContain(sharedUrl);
   });
 
   test('(c) a 401 marks the connection needs-reauth; the merged row stays, stale, and its due auto-close is skipped', async () => {

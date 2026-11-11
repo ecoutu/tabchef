@@ -49,6 +49,25 @@ params:
     help: One per line. With the GitHub connection, the Projects tab lists pull requests that mention the key in these organizations (and those of the project's open pull requests). Empty searches pull requests involving you.
 project: {key: '{key}', title: '{params.titleFormat}', color: '{params.color}', container: group, join: [rules, manual]}
 conflicts: [jira-ticket-title, jira-ticket-either]
+# A ticket's /browse/<KEY> page opened with Jira's own query or fragment (?atlOrigin= from a shared link,
+# ?focusedCommentId= from a notification) is the same tab as the ticket (#179). {params.jiraSite} right after :// renders
+# as a host glob (with its context path, if any) and the match ignores case, so the fold covers the same sites as the
+# ticket rule when jiraSite is *.<host> or a host (with an optional :port and path); any other * in it (mid-host, a
+# port or path wildcard, a bare *) drops the fold. A board's ?selectedIssue= page stays its own tab.
+# On any other page of the site, Jira's atlOrigin tracking param (a shared link's) is dropped, so a shared board link
+# is the open board (Jira strips it with history.replaceState, too late for a new tab). The key's params are sorted;
+# the first transform drops it when another param follows, the second when it ends the query.
+dedupe:
+  urlTransforms:
+    - pattern: '^(https?://{params.jiraSite}/browse/[A-Za-z][A-Za-z0-9_]*-\d+)/?(?:[?#].*)?$'
+      replacement: '$1'
+      flags: i
+    - pattern: '^(https?://{params.jiraSite}/[^?#]*\?(?:[^#]*&)?)atlOrigin=[^&#]*&'
+      replacement: '$1'
+      flags: i
+    - pattern: '^(https?://{params.jiraSite}/[^?#]*)(?:\?atlOrigin=[^&#]*|(\?[^#]*)&atlOrigin=[^&#]*)(?=#|$)'
+      replacement: '$1$2'
+      flags: i
 rules:
   - id: ticket
     name: Ticket tab

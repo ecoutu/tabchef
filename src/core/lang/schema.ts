@@ -11,7 +11,7 @@ import ruleSchema from './rule.schema.json';
 import { validateRecipe as recipeShape, validateRule as ruleShape } from '../config/validate-config.generated.js';
 import { COLORS, regexProblem, ruleProblems, schemaProblem, templateProblem, type Problem } from '../config/rule-problems';
 import { templateVars } from '../match/template';
-import { boundProblem, ParamError, paramProblem, placeholderNames, substitute } from './compile';
+import { boundProblem, ParamError, paramProblem, placeholderNames, stringParams, substitute } from './compile';
 import { altKind, kindRank, LEVEL_KINDS, type NeedsKind } from './needs';
 import type { Comparison, ParamDef, Recipe, RecipeNeeds, Rule, Show } from './types';
 
@@ -215,7 +215,14 @@ export function validateRecipe(x: unknown): RecipeResult {
     }));
   }
   r.dedupe?.urlTransforms?.forEach((t, i) => {
-    const m = regexProblem(t.pattern, t.flags, true);
+    // Checked as compileProgram renders it with the param defaults: a string param right after `://` is a host glob,
+    // any other placeholder interpolates plainly (#179). A transform the defaults drop is not checked; one whose
+    // placeholders fail to substitute (reported above) is checked as written.
+    let rendered: unknown[] | undefined;
+    try { rendered = substitute([t], defaults, ['dedupe', 'urlTransforms'], stringParams(r.params)) as unknown[]; } catch { /* a placeholder problem: reported above */ }
+    if (rendered?.length === 0) return; // dropped, as compileProgram drops it
+    const first = rendered?.[0];
+    const m = regexProblem(isObj(first) && typeof first.pattern === 'string' ? first.pattern : t.pattern, t.flags, true);
     if (m) out.push({ path: `/dedupe/urlTransforms/${i}/pattern`, message: m });
   });
   r.views?.forEach((v, i) => { if (v.show) showProblems(v.show, `/views/${i}/show`, out); });

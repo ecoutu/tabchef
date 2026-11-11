@@ -140,6 +140,15 @@ export async function startMockServices(): Promise<MockServices> {
       json(404, { errorMessages: ['Not found'] });
       return;
     }
+    // A Jira board page: like Jira's SPA, it drops &atlOrigin= (a shared link's tracking param) from its URL with
+    // history.replaceState, here 12 s after load: later than a new tab stays new for duplicate detection.
+    if (/^\/jira\/software\/projects\/[^/]+\/boards\/\d+$/.test(url.pathname)) {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      res.end(`<!doctype html><title>SCRUM board - Agile Board - Jira</title><p>tabchef e2e mock board</p><script>
+setTimeout(() => { const u = new URL(location.href); u.searchParams.delete('atlOrigin'); history.replaceState(history.state, '', u); }, 12000);
+</script>`);
+      return;
+    }
     // Jira issue pages: /browse/<KEY> is titled like a real one.
     const b = /^\/browse\/([A-Z][A-Z0-9]*-\d+)/.exec(url.pathname);
     if (b) {

@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { compileProgram, indexByKey } from '../../../src/core/lang/compile';
+import { validateRecipe } from '../../../src/core/lang/schema';
+import { compilePattern } from '../../../src/core/match/pattern';
 import { defaultConfig } from '../../../src/core/config/defaults';
 import type { Recipe, RecipeRef, Rule } from '../../../src/core/lang/types';
 import type { Config } from '../../../src/core/types';
@@ -221,6 +223,125 @@ describe('compileProgram: tables, dedupe, views, needs', () => {
     const { program, errors } = compileProgram(c, { r: recipe('r', [rule('x')], { dedupe: { urlTransforms: [{ pattern: '(', replacement: '' }] } }) });
     expect(errors.map((e) => e.key)).toEqual(['r']);
     expect(program.rules).toEqual([]);
+  });
+  describe('a {params.<name>} placeholder in a recipe urlTransform pattern is a host glob (#179)', () => {
+    const withSite = (site: unknown, extra: { pattern: string; replacement: string }[] = []) => {
+      const body = recipe('r', [rule('x')], {
+        params: { site: { type: 'string', default: 'x.example.com', label: 'Site' } },
+        dedupe: { urlTransforms: [{ pattern: '^(https?://{params.site}/t/\\d+)\\?.*$', replacement: '$1' }, ...extra] },
+      });
+      return compileProgram(config({ recipes: [ref('r', { params: { site } })] }), { r: body });
+    };
+    const apply = (p: { program: { dedupe: { urlTransforms: { pattern: string; replacement: string; flags?: string }[] } } }, u: string) =>
+      p.program.dedupe.urlTransforms.reduce((k, t) => k.replace(new RegExp(t.pattern, t.flags), t.replacement), u);
+
+    it('inserts the value regex-escaped', () => {
+      const r = withSite('a+b.example.com');
+      expect(r.errors).toEqual([]);
+      expect(r.program.dedupe.urlTransforms).toEqual([{ pattern: '^(https?://a\\+b\\.example\\.com/t/\\d+)\\?.*$', replacement: '$1' }]);
+      expect(apply(r, 'https://a+b.example.com/t/1?x=1')).toBe('https://a+b.example.com/t/1');
+      expect(apply(r, 'https://aab.example.com/t/1?x=1')).toBe('https://aab.example.com/t/1?x=1');
+      expect(apply(r, 'https://a+bxexample.com/t/1?x=1')).toBe('https://a+bxexample.com/t/1?x=1');
+    });
+
+    it('`*` matches within the host only, as in a URL pattern\'s host', () => {
+      const r = withSite('*.example.com');
+      expect(r.program.dedupe.urlTransforms[0]?.pattern).toBe('^(https?://(?:[^/?#]*\\.)?example\\.com/t/\\d+)\\?.*$');
+      expect(apply(r, 'https://acme.example.com/t/1?x=1')).toBe('https://acme.example.com/t/1');
+      expect(apply(r, 'https://evil.com/x.example.com/t/1?x=1')).toBe('https://evil.com/x.example.com/t/1?x=1');
+    });
+
+    it('an unset or unusable value drops that transform only (never one that matches every host); no error', () => {
+      const other = { pattern: 'a', replacement: 'b' };
+      for (const site of [
+        '', '*', '*.*', '*/b', 'a?b', 'a#b', 'u@host', 'a b', 'a\\b', 'a/b c', '**.example.com', 'a.*.example.com',
+        '*.*.*.*.example.com', 'x.example.com*', '*:8080', 'example.com:*', '*.example.com:', 'x.example.com/a*',
+        'x.example.com/*', '*.example.com/a*b', '*.', '123', 'example.com:0080',
+      ]) {
+        const r = withSite(site, [other]);
+        expect(r.errors, site).toEqual([]);
+        expect(r.program.dedupe.urlTransforms, site).toEqual([other]);
+      }
+    });
+
+    it('a value with a path keeps it, regex-escaped; the host is lowercased (a URL\'s host always is)', () => {
+      const r = withSite('X.Example.com/App+1/v2');
+      expect(r.errors).toEqual([]);
+      expect(r.program.dedupe.urlTransforms[0]?.pattern).toBe('^(https?://x\\.example\\.com/App\\+1/v2/t/\\d+)\\?.*$');
+      expect(apply(r, 'https://x.example.com/App+1/v2/t/1?x=1')).toBe('https://x.example.com/App+1/v2/t/1');
+    });
+
+    it('a port is kept after the host, a leading `*.` or not', () => {
+      expect(withSite('*.example.com:8443').program.dedupe.urlTransforms[0]?.pattern).toBe('^(https?://(?:[^/?#]*\\.)?example\\.com:8443/t/\\d+)\\?.*$');
+      const r = withSite('jira.example.com:8443');
+      expect(apply(r, 'https://jira.example.com:8443/t/1?x=1')).toBe('https://jira.example.com:8443/t/1');
+      expect(apply(r, 'https://jira.example.com/t/1?x=1')).toBe('https://jira.example.com/t/1?x=1');
+    });
+
+    it('accepts only the hosts the rule\'s URL glob accepts: *:8080 never matches every host on :8080', () => {
+      expect(() => compilePattern('*:8080/t/*')).toThrow();
+      const r = withSite('*:8080');
+      expect(r.errors).toEqual([]);
+      expect(apply(r, 'https://anything.test:8080/t/1?q=1')).toBe('https://anything.test:8080/t/1?q=1');
+    });
+
+    it('never renders more than one host `*` (a mid-host `*` the URL glob rejects drops the transform)', () => {
+      expect(() => compilePattern('*.*.*.*.example.com/t/*')).toThrow();
+      const ts = withSite('*.*.*.*.example.com').program.dedupe.urlTransforms;
+      expect(ts.filter((t) => (t.pattern.match(/\[\^\/\?#\]\*/g) ?? []).length > 1)).toEqual([]);
+    });
+
+    // Only a placeholder right after `://` is a host glob; anywhere else it interpolates verbatim (as before #179).
+    const plain = (params: Recipe['params'], pattern: string) => recipe('r', [rule('x')], { params, dedupe: { urlTransforms: [{ pattern, replacement: '$1' }] } });
+    const compiledPlain = (b: Recipe) => compileProgram(config({ recipes: [ref('r')] }), { r: b });
+
+    it('a placeholder outside the host interpolates verbatim: a regex param stays a regex', () => {
+      const b = plain({ re: { type: 'regex', default: 'item\\d+', label: 'Re' } }, '^(https://x\\.test/{params.re})\\?.*$');
+      expect(validateRecipe(b).ok).toBe(true);
+      const r = compiledPlain(b);
+      expect(r.errors).toEqual([]);
+      expect(r.program.dedupe.urlTransforms).toEqual([{ pattern: '^(https://x\\.test/item\\d+)\\?.*$', replacement: '$1' }]);
+      expect(apply(r, 'https://x.test/item42?ref=1')).toBe('https://x.test/item42');
+    });
+
+    it('a placeholder outside the host is never dropped, whatever its value', () => {
+      const b = plain({ seg: { type: 'string', default: 'a/b', label: 'Seg' } }, '^(https://x\\.test/{params.seg}/t/\\d+)\\?.*$');
+      const r = compiledPlain(b);
+      expect(r.errors).toEqual([]);
+      expect(apply(r, 'https://x.test/a/b/t/1?q=1')).toBe('https://x.test/a/b/t/1');
+    });
+
+    it('a string param holding a host and path after `://` folds that path', () => {
+      const b = plain({ base: { type: 'string', default: 'x.test/app', label: 'Base' } }, '^(https://{params.base}/t/\\d+)\\?.*$');
+      const r = compiledPlain(b);
+      expect(r.errors).toEqual([]);
+      expect(r.program.dedupe.urlTransforms).toHaveLength(1);
+      expect(apply(r, 'https://x.test/app/t/1?q=1')).toBe('https://x.test/app/t/1');
+    });
+
+    it('only a `type: string` param after `://` is a host glob: a regex param there interpolates as written', () => {
+      const b = plain({ host: { type: 'regex', default: '(?:www\\.)?example\\.com', label: 'Host' } }, '^(https://{params.host}/item/\\d+)\\?.*$');
+      const r = compiledPlain(b);
+      expect(r.errors).toEqual([]);
+      expect(r.program.dedupe.urlTransforms).toEqual([{ pattern: '^(https://(?:www\\.)?example\\.com/item/\\d+)\\?.*$', replacement: '$1' }]);
+      expect(apply(r, 'https://www.example.com/item/1?ref=x')).toBe('https://www.example.com/item/1');
+      expect(apply(r, 'https://example.com/item/1?ref=x')).toBe('https://example.com/item/1');
+    });
+
+    it('a string param after `://` written pre-escaped (`example\\.com`) is no host: the transform is dropped', () => {
+      const b = plain({ host: { type: 'string', default: 'example\\.com', label: 'Host' } }, '^(https://{params.host}/item/\\d+)\\?.*$');
+      const r = compiledPlain(b);
+      expect(r.errors).toEqual([]);
+      expect(r.program.dedupe.urlTransforms).toEqual([]);
+    });
+
+    it('a list param in a pattern or an unknown placeholder is a recipe error', () => {
+      const body = (pattern: string) => recipe('r', [rule('x')], { params: { l: { type: 'string[]', default: ['a'], label: 'L' } }, dedupe: { urlTransforms: [{ pattern, replacement: '' }] } });
+      for (const p of ['^{params.l}/', '^{params.nope}/']) {
+        const { errors } = compileProgram(config({ recipes: [ref('r')] }), { r: body(p) });
+        expect(errors.map((e) => e.key), p).toEqual(['r']);
+      }
+    });
   });
   it('views carry their recipe id; needs default to empty lists', () => {
     const v = { id: 'finished', tab: 'Finished', kind: 'list' as const, actions: ['focus' as const] };

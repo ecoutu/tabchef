@@ -211,6 +211,28 @@ describe('validateRecipe: dedupe and tables', () => {
     expect(at(t('a'.repeat(501)), '/dedupe/urlTransforms/1/pattern').length).toBeGreaterThan(0);
     expect(at(t('a'), '/dedupe/urlTransforms/1/pattern')).toEqual([]);
   });
+  it('a urlTransform pattern with a placeholder is checked with the param default rendered as a host glob', () => {
+    const t = (pattern: string) => validateRecipe(recipe({
+      params: { site: { type: 'string', default: '*.example.com', label: 'Site' } }, dedupe: { urlTransforms: [{ pattern, replacement: '' }] },
+    }));
+    expect(t('^https://{params.site}/x').ok).toBe(true);
+    // Elsewhere in the pattern the default interpolates plainly: 485 + 13 characters, under the cap.
+    expect(t(`${'a'.repeat(485)}{params.site}`).ok).toBe(true);
+    expect(at(t('^(https://{params.site}/x'), '/dedupe/urlTransforms/0/pattern').map((e) => e.message)).toEqual([expect.stringMatching(/invalid regex/)]);
+    // 496 characters as written, 504 rendered (`*.` is `[^/?#]*\.`): over the cap.
+    expect(at(t(`${'a'.repeat(475)}https://{params.site}`), '/dedupe/urlTransforms/0/pattern').map((e) => e.message)).toEqual([expect.stringMatching(/too long/)]);
+  });
+  it('a urlTransform whose default renders to dropped is not checked, as compileProgram drops it silently', () => {
+    const t = (pattern: string, flags?: string) => validateRecipe(recipe({
+      params: { site: { type: 'string', default: '*', label: 'Site' } },
+      dedupe: { urlTransforms: [{ pattern, replacement: '$1', ...(flags ? { flags } : {}) }] },
+    }));
+    expect(t('^(https?://{params.site}/x)\\?.*$', 'u').ok).toBe(true);
+    // A placeholder that fails to substitute is reported, and the pattern as written is still checked.
+    expect(at(t('^(https://{params.nope}/x'), '/dedupe/urlTransforms/0/pattern').map((e) => e.message)).toEqual([
+      'unknown param: {params.nope}', expect.stringMatching(/invalid regex/),
+    ]);
+  });
   it('tables map names to string entries', () => {
     expect(validateRecipe(recipe({ tables: { owners: { acme: 'Acme' } } })).ok).toBe(true);
     expect(validateRecipe(recipe({ tables: { owners: { acme: 1 } } })).ok).toBe(false);

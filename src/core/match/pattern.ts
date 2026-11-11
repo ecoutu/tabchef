@@ -207,6 +207,23 @@ function pathBranches(toks: Tok[]): { pathname: string; search: string; hash: st
   return out;
 }
 
+/**
+ * A URL glob host the dedupe fold can mirror (#179): `*.host[:port]` or an exact canonical `host[:port]`, parsed as
+ * compileGlob parses them; null for anything else (`*`, `host:*`, a `*` elsewhere, userinfo, a non-canonical host).
+ */
+export function globHost(a: string): { sub: boolean; host: string; port?: string } | null {
+  const sub = a.startsWith('*.');
+  const rest = sub ? a.slice(2) : a;
+  if (!rest || /[*@]/.test(rest)) return null;
+  try {
+    const hp = sub ? hostPort(rest) : exactHostPort(rest, 'https');
+    if (!hp || !hp.host || hp.port === '') return null;
+    return { sub, ...hp };
+  } catch {
+    return null;
+  }
+}
+
 function compileGlob(p: string): Matcher {
   if (/[(){}]/.test(p)) throw new PatternError('URL globs do not support ( ) or { } groups; use a /regex/ pattern');
   const names = new Set<string>();

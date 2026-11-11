@@ -12,8 +12,10 @@
 // array, an exact placeholder holding an array is spliced in (`url: ['a/*', '{params.more}']`). So a `string[]`
 // param fills an array-typed field (`url`, `pageText`, `anchors`, `needs.hosts`) as the whole array, never as one
 // element; an empty list stays empty (a `url: []` cond never matches). A placeholder inside a larger string
-// (`'PR {params.prefix}'`) is plain string interpolation. Substitution runs before anything compiles; afterwards
-// every rule goes through the same checks as a user rule (validateRule + ruleProblems).
+// (`'PR {params.prefix}'`) is plain string interpolation, except right after `://` in a `dedupe.urlTransforms` pattern,
+// where the value is a regex-escaped host glob and an unusable value drops the transform (renderUrlTransforms, #179).
+// Substitution runs before anything compiles; afterwards every rule goes through the same checks as a user rule
+// (validateRule + ruleProblems).
 //
 // Needs (R5, T10): `Program.needs` has an entry per enabled recipe, keyed by recipe id (recipe-level needs, empty
 // lists when none), plus one per enabled recipe rule that declares `needs`, keyed by rule key. "Enabled" is effective
@@ -36,6 +38,7 @@
 // Pattern matchers are compiled once per pattern string and cached by compilePattern / compileTextPattern
 // (src/core/match/pattern.ts); validation here warms the URL pattern cache. Memoizing whole Programs is the
 // engine's job (ProgramCache, T6).
+import { globHost } from '../match/pattern';
 import { formatSchemaError, regexProblem, ruleProblems, type Tables } from '../config/rule-problems';
 import { validateRule } from '../config/validate-config.generated.js';
 import { DURATION, parseDuration } from './duration';
@@ -145,7 +148,8 @@ const isTemplateField = (path: string[]) => path.length >= 2 && path[path.length
  * R37: a string value landing in a template field must not contain `{` or `}` (it would become template structure,
  * and the template language has no escape), so it is a param error.
  */
-export function substitute(x: unknown, values: Record<string, unknown>, path: string[] = []): unknown {
+export function substitute(x: unknown, values: Record<string, unknown>, path: string[] = [], hostParams: ReadonlySet<string> = new Set()): unknown {
+  if (Array.isArray(x) && path.length === 2 && path[0] === 'dedupe' && path[1] === 'urlTransforms') return renderUrlTransforms(x, values, hostParams);
   const lookup = (name: string): unknown => {
     if (!own(values, name)) throw new ParamError(`unknown param: {params.${name}}`);
     const v = values[name];
@@ -171,15 +175,60 @@ export function substitute(x: unknown, values: Record<string, unknown>, path: st
         const v = lookup(m[1] as string);
         return Array.isArray(v) ? [...v] : [v];
       }
-      return [substitute(el, values, path)];
+      return [substitute(el, values, path, hostParams)];
     });
   }
   if (isObj(x)) {
     const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(x)) out[k] = substitute(v, values, [...path, k]);
+    for (const [k, v] of Object.entries(x)) out[k] = substitute(v, values, [...path, k], hostParams);
     return out;
   }
   return x;
+}
+
+/**
+ * A param value as a host glob inside a regex (#179), accepting exactly the hosts a URL glob's host accepts (globHost):
+ * a leading `*.` is the bare host or any run of host characters then a dot (`(?:[^/?#]*\.)?`), as in a URL glob, the rest an exact canonical `host[:port]`,
+ * lowercased (a URL's host always is) and regex-escaped. A path after the host (a context path, `example.com/jira`)
+ * is kept, regex-escaped. Undefined for a value that is no such host glob: a `*` anywhere else (mid-host, `*:8080`,
+ * `host:*`) or in the path, `? # @ \` or whitespace in the path, or a host no canonical URL has.
+ */
+export function hostGlobRegex(v: string): string | undefined {
+  const cut = v.search(/[/?#]/);
+  const g = globHost(cut < 0 ? v : v.slice(0, cut));
+  const path = cut < 0 ? '' : v.slice(cut);
+  if (!g || /[*?#@\\\s]/.test(path)) return undefined;
+  const esc = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return (g.sub ? '(?:[^/?#]*\\.)?' : '') + esc(g.host.toLowerCase()) + (g.port ? `:${g.port}` : '') + esc(path);
+}
+
+/**
+ * A recipe's dedupe.urlTransforms with params substituted (#179). In a `pattern`, a `{params.<name>}` of a
+ * `type: string` param (`hostParams`) right after `://` is a host glob (hostGlobRegex), so a rule's
+ * `{params.jiraSite}` scopes its fold the way it scopes the rule's url match; a transform with an unusable host value
+ * is dropped rather than left to match every host. Any other placeholder in the pattern (another param type, or
+ * anywhere else), and every other field, substitutes as anywhere else (plain interpolation).
+ */
+function renderUrlTransforms(list: unknown[], values: Record<string, unknown>, hostParams: ReadonlySet<string>): unknown[] {
+  return list.flatMap((t) => {
+    if (!isObj(t) || typeof t.pattern !== 'string') return [substitute(t, values)];
+    let usable = true;
+    const pattern = t.pattern.replace(INNER, (_s, name: string, at: number, all: string) => {
+      if (!own(values, name)) throw new ParamError(`unknown param: {params.${name}}`);
+      const v = values[name];
+      if (typeof v !== 'string' && typeof v !== 'number' && typeof v !== 'boolean') throw new ParamError(`{params.${name}} is a list and cannot be part of a larger string`);
+      if (all.slice(at - 3, at) !== '://' || !hostParams.has(name)) return String(v);
+      const re = hostGlobRegex(String(v));
+      if (re === undefined) usable = false;
+      return re ?? '';
+    });
+    return usable ? [{ ...(substitute(t, values) as Record<string, unknown>), pattern }] : [];
+  });
+}
+
+/** Names of a recipe's `type: string` params: the ones a urlTransform host placeholder renders as a host glob. */
+export function stringParams(params: unknown): Set<string> {
+  return new Set(isObj(params) ? Object.entries(params).filter(([, d]) => isObj(d) && d.type === 'string').map(([n]) => n) : []);
 }
 
 // ---- rules ----
@@ -253,7 +302,7 @@ function resolveRecipes(config: Config, builtins: Record<string, Recipe>, errors
     delete rest.params; // param defaults are values, never substituted
     let body: Recipe;
     try {
-      body = substitute(rest, values) as Recipe;
+      body = substitute(rest, values, [], stringParams(raw.params)) as Recipe;
     } catch (e) {
       if (!(e instanceof ParamError)) throw e;
       errors.push({ key: id, error: e.message });

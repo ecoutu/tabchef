@@ -5,6 +5,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fakeBrowser } from 'wxt/testing/fake-browser';
 import { compileProgram } from '../../src/core/lang/compile';
 import { evaluateTab } from '../../src/core/lang/evaluate';
+import { normalizeUrl } from '../../src/core/url/normalize';
+import { compilePattern } from '../../src/core/match/pattern';
 import { defaultConfig } from '../../src/core/config/defaults';
 import { DEFAULT_IGNORED_PREFIXES, DEFAULT_KEY_PATTERN } from '../../src/core/keys/jira-key';
 import { resolveProjects } from '../../src/core/projects/resolve';
@@ -174,6 +176,265 @@ describe('jira-ticket: the ticket rule', () => {
     const p = program('title', { jiraSite: 'other.atlassian.net' });
     expect(evaluateTab(p, { tab: tab(1, TICKET, 'x') }, NOW).project).toBeUndefined();
     expect(evaluateTab(p, { tab: tab(1, 'https://other.atlassian.net/browse/ABC-1', 'x') }, NOW).project?.map((c) => c.key)).toEqual(['ABC-1']);
+  });
+});
+
+describe('jira-ticket: dedupe key of a ticket tab (#179)', () => {
+  const keyOf = (v: Variant, params: Record<string, unknown> = {}) => (u: string) => normalizeUrl(u, program(v, params).dedupe)?.key;
+
+  it('a /browse/<KEY> URL with Jira\'s own query or fragment is the ticket itself, in every variant', () => {
+    for (const v of VARIANTS) {
+      const key = keyOf(v);
+      for (const u of [
+        TICKET, `${TICKET}?atlOrigin=eyJpIjoiMTIzIn0`, `${TICKET}?focusedCommentId=10001`, `${TICKET}?focusedCommentId=1&page=x#c`,
+        `${TICKET}/`, 'http://acme.atlassian.net/browse/ABC-1?a=1',
+      ]) expect(key(u), `${v}: ${u}`).toBe(u.startsWith('http:') ? 'http://acme.atlassian.net/browse/ABC-1' : TICKET);
+    }
+  });
+
+  it('folds a ticket\'s #fragment even when duplicate detection keeps fragments', () => {
+    for (const v of VARIANTS) {
+      const c = config(v);
+      const { program: p } = compileProgram({ ...c, dedupe: { ...c.dedupe, stripFragment: false } }, builtinRecipes());
+      expect(normalizeUrl(`${TICKET}#comment-1`, p.dedupe)?.key, v).toBe(TICKET);
+      expect(normalizeUrl('https://acme.atlassian.net/wiki#x', p.dedupe)?.key, v).toBe('https://acme.atlassian.net/wiki#x');
+    }
+  });
+
+  it('another ticket, a board with ?selectedIssue=, a /browse/<PROJECT> page and other hosts keep their own key', () => {
+    const key = keyOf('title');
+    expect(key('https://acme.atlassian.net/browse/ABC-2?atlOrigin=x')).toBe('https://acme.atlassian.net/browse/ABC-2');
+    const board = 'https://acme.atlassian.net/jira/software/projects/ABC/boards/1?selectedIssue=ABC-1';
+    expect(key(board)).toBe(board);
+    expect(key('https://acme.atlassian.net/browse/ABC?selectedTab=x')).toBe('https://acme.atlassian.net/browse/ABC?selectedTab=x');
+    expect(key('https://example.com/browse/ABC-1?atlOrigin=x')).toBe('https://example.com/browse/ABC-1?atlOrigin=x');
+    expect(key('https://acme.atlassian.net.evil.com/browse/ABC-1?a=1')).toBe('https://acme.atlassian.net.evil.com/browse/ABC-1?a=1');
+    expect(key('https://a.com/?u=https://acme.atlassian.net/browse/ABC-1')).toBe('https://a.com/?u=https%3A%2F%2Facme.atlassian.net%2Fbrowse%2FABC-1');
+  });
+
+  it('is scoped to jiraSite: a self-hosted site folds, the default *.atlassian.net no longer does', () => {
+    const key = keyOf('title', { jiraSite: 'jira.acme.com:8443' });
+    expect(key('https://jira.acme.com:8443/browse/ABC-1?atlOrigin=x')).toBe('https://jira.acme.com:8443/browse/ABC-1');
+    expect(key(`${TICKET}?atlOrigin=x`)).toBe(`${TICKET}?atlOrigin=x`);
+    expect(key('https://jiraxacme.com:8443/browse/ABC-1?a=1')).toBe('https://jiraxacme.com:8443/browse/ABC-1?a=1'); // `.` is escaped
+  });
+
+  it('an empty or unusable jiraSite drops the fold: it never folds every host', () => {
+    for (const jiraSite of ['', '*', '*.*', 'a b', '*:8080', 'acme.com:*', '*.*.*.*.atlassian.net', '*.x/a*b*c*d']) {
+      const { program: p } = compileProgram(config('title', { jiraSite }), builtinRecipes());
+      expect(p.dedupe.urlTransforms.filter((t) => t.pattern.includes('/browse/')), jiraSite).toEqual([]);
+      expect(normalizeUrl(`${TICKET}?atlOrigin=x`, p.dedupe)?.key, jiraSite).toBe(`${TICKET}?atlOrigin=x`);
+    }
+    expect(compileProgram(config('title', { jiraSite: '*' }), builtinRecipes()).errors).toEqual([]); // the rules still run
+  });
+});
+
+describe('jira-ticket: a jiraSite of *.<host>, a host or a host with a path folds its ticket URLs (#179)', () => {
+  const CASES = [
+    { jiraSite: 'Acme.atlassian.net', ticket: 'https://acme.atlassian.net/browse/ABC-1' },
+    { jiraSite: '*.Atlassian.net', ticket: 'https://acme.atlassian.net/browse/ABC-1' },
+    { jiraSite: 'example.com/jira', ticket: 'https://example.com/jira/browse/ABC-1' },
+    { jiraSite: 'jira.example.com:8443/jira', ticket: 'https://jira.example.com:8443/jira/browse/ABC-1' },
+    { jiraSite: 'example.com/Jira', ticket: 'https://example.com/jira/browse/ABC-1' }, // a path differing only in case
+  ];
+  for (const { jiraSite, ticket } of CASES) {
+    for (const v of VARIANTS) {
+      it(`${v}: ${jiraSite}`, () => {
+        const p = program(v, { jiraSite }); // compiles with this value: recipes.setParams would accept it
+        expect(JSON.stringify(evaluateTab(p, { tab: tab(1, `${ticket}?atlOrigin=x`, '[ABC-1] Login fails - Jira') } as never, 0))).toContain(`${id(v)}/ticket`);
+        expect(normalizeUrl(`${ticket}?atlOrigin=x`, p.dedupe)?.key).toBe(ticket);
+        expect(normalizeUrl(`${ticket}?focusedCommentId=1#c`, p.dedupe)?.key).toBe(ticket);
+      });
+    }
+  }
+});
+
+describe('jira-ticket: a jiraSite with a path or upper case folds nothing outside the ticket rule (#179)', () => {
+  const keyOf = (jiraSite: string) => {
+    const p = program('title', { jiraSite });
+    return (u: string) => normalizeUrl(u, p.dedupe)?.key;
+  };
+  it('example.com/jira folds only <host>/jira/browse/<KEY>', () => {
+    const key = keyOf('example.com/jira');
+    for (const u of [
+      'https://example.com/jira-evil/browse/ABC-1?a=1', 'https://example.com/x/jira/browse/ABC-1?a=1',
+      'https://example.com.evil.com/jira/browse/ABC-1?a=1', 'https://evil.com/example.com/jira/browse/ABC-1?a=1',
+      'https://example.com/browse/ABC-1?a=1', 'https://example.com/jira/browse/ABC?a=1',
+    ]) expect(key(u), u).toBe(u);
+  });
+  it('a host that is only wildcards never folds, even with a path', () => {
+    for (const jiraSite of ['*/jira', '*.*/jira', '/jira', '**/jira']) {
+      const { program: p } = compileProgram(config('title', { jiraSite }), builtinRecipes());
+      expect(p.dedupe.urlTransforms.filter((t) => t.pattern.includes('/browse/')), jiraSite).toEqual([]);
+    }
+  });
+  it('Acme.atlassian.net folds only acme.atlassian.net', () => {
+    const key = keyOf('Acme.atlassian.net');
+    expect(key('https://other.atlassian.net/browse/ABC-1?a=1')).toBe('https://other.atlassian.net/browse/ABC-1?a=1');
+    expect(key('https://acme.atlassian.net.evil.com/browse/ABC-1?a=1')).toBe('https://acme.atlassian.net.evil.com/browse/ABC-1?a=1');
+  });
+});
+
+describe('jira-ticket: the fold stays fast on a page-controlled URL, whatever jiraSite (#179)', () => {
+  const timed = (c: Config, u: string) => {
+    const { program: p, errors } = compileProgram(c, builtinRecipes());
+    expect(errors).toEqual([]);
+    const t0 = performance.now();
+    normalizeUrl(u, p.dedupe);
+    return performance.now() - t0;
+  };
+  it('the default *.atlassian.net folds a long, adversarial URL quickly', () => {
+    const c = config('title', { jiraSite: '*.atlassian.net' });
+    expect(compileProgram(c, builtinRecipes()).program.dedupe.urlTransforms.some((t) => t.pattern.includes('/browse/'))).toBe(true);
+    expect(timed(c, `https://${'a.'.repeat(1000)}x.atlassian.ne/browse/ABC-1?x`)).toBeLessThan(200);
+    expect(timed(c, `https://${'a.'.repeat(1000)}atlassian.net/browse/ABC-1?${'x'.repeat(2000)}`)).toBeLessThan(200);
+  });
+  it('a *.<host> with a path folds a long, adversarial URL quickly', () => {
+    const c = config('title', { jiraSite: '*.example.com/jira' });
+    expect(compileProgram(c, builtinRecipes()).program.dedupe.urlTransforms.some((t) => t.pattern.includes('/browse/'))).toBe(true);
+    expect(timed(c, `https://${'a.'.repeat(1000)}example.co/jira/browse/ABC-1?x`)).toBeLessThan(200);
+  });
+});
+
+describe('jira-ticket: *.<host> folds the bare host too, as the ticket rule matches it (#179)', () => {
+  it('*.example.com: example.com/browse/ABC-1?atlOrigin=x folds; another host ending in example.com does not', () => {
+    const { program } = compileProgram(config('title', { jiraSite: '*.example.com' }), builtinRecipes());
+    expect(compilePattern('*.example.com/browse/*')('https://example.com/browse/ABC-1')).not.toBeNull();
+    expect(normalizeUrl('https://example.com/browse/ABC-1?atlOrigin=x', program.dedupe)?.key).toBe('https://example.com/browse/ABC-1');
+    expect(normalizeUrl('https://a.b.example.com/browse/ABC-1?atlOrigin=x', program.dedupe)?.key).toBe('https://a.b.example.com/browse/ABC-1');
+    expect(normalizeUrl('https://evilexample.com/browse/ABC-1?a=1', program.dedupe)?.key).toBe('https://evilexample.com/browse/ABC-1?a=1');
+  });
+});
+
+describe('jira-ticket: :443 and IDN jiraSite values match no ticket, so neither folds (#179)', () => {
+  it('the ticket rule itself never matches them', () => {
+    expect(compilePattern('acme.atlassian.net:443/browse/*')('https://acme.atlassian.net/browse/ABC-1')).toBeNull();
+    expect(compilePattern('bücher.example/browse/*')('https://xn--bcher-kva.example/browse/ABC-1')).toBeNull();
+    expect(() => compilePattern('*.bücher.example/browse/*')).toThrow();
+    for (const jiraSite of ['acme.atlassian.net:443', 'bücher.example', '*.bücher.example']) {
+      const { program: p } = compileProgram(config('title', { jiraSite }), builtinRecipes());
+      expect(p.dedupe.urlTransforms.filter((t) => t.pattern.includes('/browse/')), jiraSite).toEqual([]);
+    }
+  });
+});
+
+describe('jira-ticket: Jira\'s ?atlOrigin= tracking param is dropped on any page of the site (#179)', () => {
+  const SITE = 'https://acme.atlassian.net';
+  const BOARD = `${SITE}/jira/software/projects/SCRUM/boards/1`;
+  const keyOf = (v: Variant, params: Record<string, unknown> = {}, stripFragment = true) => {
+    const c = config(v, params);
+    const { program: p, errors } = compileProgram({ ...c, dedupe: { ...c.dedupe, stripFragment } }, builtinRecipes());
+    expect(errors).toEqual([]);
+    return (u: string) => normalizeUrl(u, p.dedupe)?.key;
+  };
+  const atl = (p: Program) => p.dedupe.urlTransforms.filter((t) => /atlOrigin/i.test(t.pattern));
+
+  it('a shared board link is the board itself, in every variant', () => {
+    for (const v of VARIANTS) {
+      const key = keyOf(v);
+      expect(key(`${BOARD}?filter=&groupBy=none&selectedIssue=SCRUM-1&atlOrigin=test`), v)
+        .toBe(`${BOARD}?filter=&groupBy=none&selectedIssue=SCRUM-1`);
+    }
+  });
+
+  it('wherever it sorts among the params: only, first, middle, last', () => {
+    const key = keyOf('title');
+    for (const [u, k] of [
+      [`${BOARD}?atlOrigin=x`, BOARD],
+      [`${BOARD}?z=1&atlOrigin=x`, `${BOARD}?z=1`], // atlOrigin sorts first
+      [`${BOARD}?z=2&atlOrigin=x&a=1`, `${BOARD}?a=1&z=2`], // middle
+      [`${BOARD}?atlOrigin=x&ab=1&Z=1`, `${BOARD}?Z=1&ab=1`], // last (upper case and "ab" sort before it)
+      [`${BOARD}?atlOrigin=`, BOARD], // empty value
+      [`${BOARD}?atlOrigin=eyJpIjoiMTIzIn0%3D&a=1`, `${BOARD}?a=1`],
+      [`${SITE}/?atlOrigin=x`, `${SITE}/`],
+      [`${SITE}/wiki/spaces/A/pages/1?atlOrigin=x`, `${SITE}/wiki/spaces/A/pages/1`], // Confluence on the same site
+      [`${SITE}/browse/ABC?atlOrigin=x&selectedTab=y`, `${SITE}/browse/ABC?selectedTab=y`], // a project page keeps its tab
+      [`${TICKET}?atlOrigin=x&focusedCommentId=1`, TICKET], // the ticket fold still applies
+    ] as const) expect(key(u), u).toBe(k);
+  });
+
+  it('ignores the param name\'s case, as the site match does', () => {
+    const key = keyOf('title');
+    expect(key(`${BOARD}?ATLORIGIN=x&a=1`)).toBe(`${BOARD}?a=1`);
+    expect(key(`HTTPS://ACME.atlassian.net/jira/x?atlorigin=x`)).toBe(`${SITE}/jira/x`);
+  });
+
+  it('keeps a #fragment when duplicate detection keeps fragments', () => {
+    const key = keyOf('title', {}, false);
+    expect(key(`${BOARD}?atlOrigin=x#f`)).toBe(`${BOARD}#f`);
+    expect(key(`${BOARD}?a=1&atlOrigin=x#f`)).toBe(`${BOARD}?a=1#f`);
+    expect(key(`${BOARD}?z=1&atlOrigin=x#f`)).toBe(`${BOARD}?z=1#f`);
+    expect(key(`${BOARD}#atlOrigin=x`)).toBe(`${BOARD}#atlOrigin=x`); // in the fragment: not a query param
+    expect(key(`${BOARD}?a=1#x&atlOrigin=y`)).toBe(`${BOARD}?a=1#x&atlOrigin=y`);
+  });
+
+  it('keeps a param that only contains atlOrigin, and atlOrigin text in a value', () => {
+    const key = keyOf('title');
+    for (const u of [
+      `${BOARD}?xatlOrigin=1`, `${BOARD}?a=1&xatlOrigin=1`, `${BOARD}?atlOriginX=1`, `${BOARD}?atlOrigin_=1`,
+      `${BOARD}?q=atlOrigin%3D1`, `${BOARD}?q=a%26atlOrigin%3D1`,
+    ]) expect(key(u), u).toBe(u);
+    expect(key(`${BOARD}?q=atlOrigin=1`)).toBe(`${BOARD}?q=atlOrigin%3D1`); // the value is encoded, then kept
+  });
+
+  it('touches only the query: a path ending in & or holding &atlOrigin= is kept', () => {
+    const key = keyOf('title');
+    for (const u of [`${SITE}/a&`, `${SITE}/a&atlOrigin=x`, `${SITE}/a&?b=1`]) expect(key(u), u).toBe(u);
+    expect(key(`${SITE}/a&atlOrigin=x?atlOrigin=y`)).toBe(`${SITE}/a&atlOrigin=x`);
+  });
+
+  it('other hosts keep it', () => {
+    const key = keyOf('title');
+    for (const u of [
+      'https://example.com/x?atlOrigin=1', 'https://acme.atlassian.net.evil.com/x?atlOrigin=1', 'https://atlassian.com/x?atlOrigin=1',
+      'https://evil.com/acme.atlassian.net/x?atlOrigin=1', 'https://a.com/?u=https%3A%2F%2Facme.atlassian.net%2F%3FatlOrigin%3D1',
+    ]) expect(key(u), u).toBe(u);
+  });
+
+  it('is scoped to jiraSite, its port and context path', () => {
+    const key = keyOf('title', { jiraSite: 'jira.acme.com:8443' });
+    expect(key('https://jira.acme.com:8443/secure/RapidBoard.jspa?atlOrigin=x&rapidView=1')).toBe('https://jira.acme.com:8443/secure/RapidBoard.jspa?rapidView=1');
+    expect(key(`${BOARD}?atlOrigin=x`)).toBe(`${BOARD}?atlOrigin=x`);
+    expect(key('https://jira.acme.com/x?atlOrigin=x')).toBe('https://jira.acme.com/x?atlOrigin=x');
+    const ctx = keyOf('title', { jiraSite: 'example.com/jira' });
+    expect(ctx('https://example.com/jira/secure/x?atlOrigin=1&a=1')).toBe('https://example.com/jira/secure/x?a=1');
+    for (const u of ['https://example.com/other?atlOrigin=1', 'https://example.com/jira-evil/x?atlOrigin=1']) expect(ctx(u), u).toBe(u);
+  });
+
+  it('runs after the ticket fold, and every variant ships the same transforms', () => {
+    for (const v of VARIANTS) {
+      const t = body(v).dedupe!.urlTransforms!;
+      expect(t[0]!.pattern, v).toContain('/browse/');
+      expect(t.slice(1).map((x) => x.pattern), v).toEqual(body('title').dedupe!.urlTransforms!.slice(1).map((x) => x.pattern));
+      expect(t.slice(1).length, v).toBe(2);
+    }
+  });
+
+  it('an empty or unusable jiraSite drops it too: it never strips on every host', () => {
+    expect(atl(program('title'))).toHaveLength(2);
+    for (const jiraSite of ['', '*', '*.*', 'a b', '*:8080', 'acme.com:*', '*/jira', 'acme.atlassian.net:443', '*.bücher.example']) {
+      const { program: p } = compileProgram(config('title', { jiraSite }), builtinRecipes());
+      expect(atl(p), jiraSite).toEqual([]);
+      expect(normalizeUrl(`${BOARD}?atlOrigin=x`, p.dedupe)?.key, jiraSite).toBe(`${BOARD}?atlOrigin=x`);
+    }
+  });
+
+  it('stays fast on a long, adversarial URL', () => {
+    const timed = (jiraSite: string, u: string) => {
+      const { program: p } = compileProgram(config('title', { jiraSite }), builtinRecipes());
+      expect(atl(p)).toHaveLength(2);
+      const t0 = performance.now();
+      normalizeUrl(u, p.dedupe);
+      return performance.now() - t0;
+    };
+    const host = `${'a.'.repeat(1000)}atlassian.net`;
+    for (const u of [
+      `https://${host}/${'x/'.repeat(2000)}?${'a=1&'.repeat(2000)}xatlOrigin=1`,
+      `https://${host}/x?${'atlOrigin'.repeat(500)}=1&${'b=atlOrigin&'.repeat(2000)}c=1`,
+      `https://${'a.'.repeat(1000)}x.atlassian.ne/${'x/'.repeat(2000)}?${'a=1&'.repeat(2000)}atlOrigin=1`,
+      `https://${host}/x?${'a=1&'.repeat(4000)}atlOrigin=1#${'&'.repeat(4000)}`,
+    ]) expect(timed('*.atlassian.net', u), u.slice(0, 40)).toBeLessThan(200);
+    expect(timed('*.example.com/jira', `https://${'a.'.repeat(1000)}example.com/jira/${'x/'.repeat(2000)}?${'a=1&'.repeat(2000)}z=1`)).toBeLessThan(200);
   });
 });
 
