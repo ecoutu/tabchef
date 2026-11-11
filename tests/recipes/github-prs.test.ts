@@ -31,9 +31,28 @@ describe('github-prs recipe: PR canonicalization via p.dedupe', () => {
     expect(normalizeUrl(`${PR}#discussion_r456`, programOf(withPrs(true)).dedupe)?.fragment).toBe('discussion_r456');
   });
 
-  it('keeps the query (as M1 did) and leaves non-PR paths and other hosts alone', () => {
+  it('a query (notification and timeline links) and owner/repo letter case fold into the PR URL', () => {
     const key = keyWith(withPrs(true));
-    expect(key(`${PR}/files?diff=split`)).toBe(`${PR}?diff=split`);
+    for (const u of [
+      `${PR}?notification_referrer_id=NT_kwDOABC`, `${PR}?timeline_page=1`, `${PR}/files?diff=split`, `${PR}/commits?w=1`, `${PR}/?a=1&b=2`,
+      'https://github.com/O/R/pull/123', 'https://github.com/O/r/pull/123/changes?notification_referrer_id=x', 'https://github.com/o/R/pull/123/files/ABC',
+    ]) expect(key(u), u).toBe(PR);
+    expect(normalizeUrl(`https://github.com/O/R/pull/123?x=1#discussion_r456`, programOf(withPrs(true)).dedupe)?.fragment).toBe('discussion_r456');
+    expect(key('https://github.com/o/r/pull/124?x=1')).toBe('https://github.com/o/r/pull/124');
+    expect(key('https://github.com/O/R/pull/124')).not.toBe(PR);
+  });
+
+  it('with github-prs disabled, a query or letter case makes another tab', () => {
+    const key = keyWith(withPrs(false));
+    expect(key(`${PR}?notification_referrer_id=x`)).not.toBe(key(PR));
+    expect(key('https://github.com/O/R/pull/123')).not.toBe(key(PR));
+  });
+
+  it('leaves non-PR paths and other hosts alone', () => {
+    const key = keyWith(withPrs(true));
+    for (const u of ['https://github.com/O/R/pulls?q=is%3Aopen', 'https://github.com/O/R/pull/new/main?x=1', 'https://github.com/O/R/issues/123?x=1', 'https://github.com/O/R?x=1']) {
+      expect(key(u), u).toBe(keyWith(withPrs(false))(u));
+    }
     expect(key(`${PR}/other`)).toBe(`${PR}/other`);
     expect(key(`${PR}/filesx`)).toBe(`${PR}/filesx`);
     expect(key('https://example.com/o/r/pull/123/files')).toBe('https://example.com/o/r/pull/123/files');

@@ -1,7 +1,7 @@
-// Duplicates of a GitHub issue opened from a link with extra parameters: GitHub's notification links add
-// ?notification_referrer_id=, timeline links ?timeline_page=, and a link typed by hand may differ in owner/repo letter
-// case. The github-issue recipe's dedupe urlTransform folds them into the issue URL, so a new copy closes into the open
-// issue tab (as #179 does for Jira tickets).
+// Duplicates of a GitHub issue or pull request opened from a link with extra parameters: GitHub's notification links
+// add ?notification_referrer_id=, timeline links ?timeline_page=, and a link typed by hand may differ in owner/repo
+// letter case. The github-issue and github-prs recipes' dedupe urlTransforms fold them into the issue or PR URL, so a
+// new copy closes into the open tab (as #179 does for Jira tickets).
 import { describe, expect, it, vi } from 'vitest';
 import { DedupeHandler, type DedupeDeps } from '../../src/engine/dedupe-handler';
 import { defaultConfig } from '../../src/core/config/defaults';
@@ -72,6 +72,38 @@ describe('a GitHub issue opened again from a link with extra parameters (github-
 
   it('with github-issue off, a notification link stays open next to the issue', async () => {
     const r = await openSecondCopy(cfgWith([]), ISSUE, `${ISSUE}?notification_referrer_id=NT_x`, ISSUE_TITLE);
+    expect(r.map((x) => x.id)).toEqual([1, 2]);
+  });
+});
+
+describe('a pull request opened again from a link with extra parameters (github-prs on, the default)', () => {
+  const PR = 'https://github.com/ecoutu/tabchef-fixtures/pull/3';
+  const PR_TITLE = 'Fix login by emma · Pull Request #3 · ecoutu/tabchef-fixtures';
+  const cfg = defaultConfig();
+  for (const copy of [
+    `${PR}?notification_referrer_id=NT_kwDOABC`,
+    `${PR}?timeline_page=1`,
+    'https://github.com/ECOUTU/Tabchef-Fixtures/pull/3',
+    'https://github.com/Ecoutu/tabchef-fixtures/pull/3/files?notification_referrer_id=NT_x',
+  ]) {
+    it(`${copy}: the copy closes and the PR tab is focused, its URL unchanged`, async () => {
+      expect(await openSecondCopy(cfg, PR, copy, PR_TITLE)).toEqual([{ id: 1, url: PR, active: true }]);
+    });
+  }
+
+  it('inside its issue\'s project group (github-issue on): a notification link closes', async () => {
+    const r = await openSecondCopy(cfgWith(['github-issue']), PR, `${PR}?notification_referrer_id=NT_x`, PR_TITLE);
+    expect(r).toEqual([{ id: 1, url: PR, active: true }]);
+  });
+
+  it('another pull request of the same repository stays open', async () => {
+    const r = await openSecondCopy(cfg, PR, 'https://github.com/ECOUTU/tabchef-fixtures/pull/4?notification_referrer_id=NT_x', PR_TITLE);
+    expect(r.map((x) => x.id)).toEqual([1, 2]);
+  });
+
+  it('with github-prs off, a notification link stays open next to the PR', async () => {
+    const off: Config = { ...cfg, recipes: cfg.recipes.map((r) => (r.id === 'github-prs' ? { ...r, enabled: false } : r)) };
+    const r = await openSecondCopy(off, PR, `${PR}?notification_referrer_id=NT_x`, PR_TITLE);
     expect(r.map((x) => x.id)).toEqual([1, 2]);
   });
 });

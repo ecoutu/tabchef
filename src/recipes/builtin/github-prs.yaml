@@ -1,14 +1,17 @@
 # GitHub pull requests: a PR's sub-pages (files, changes, commits, checks) de-duplicate to the PR itself.
 # Replaces M1's built-in `githubPr` canonicalizer (M2 T6). The pattern is anchored to the github.com host, as M1
-# checked the hostname exactly; the query is kept (strip params such as `w` with dedupe.stripParams).
+# checked the hostname exactly. A PR link's query (GitHub's notification links add ?notification_referrer_id=,
+# timeline links ?timeline_page=) and owner/repo letter case (GitHub ignores it) fold too: the query is dropped and the
+# URL lower-cased (\L), as the github-issue recipe folds an issue's links. The fragment is not part of the key unless a
+# fragment override keeps it; then it stays.
 recipe: github-prs
 version: 1
 name: GitHub pull requests
-description: Treats a pull request's Files, Commits and Checks pages as the same tab as the pull request.
+description: Treats a pull request's Files, Commits and Checks pages, and its links from notifications, as the same tab as the pull request.
 dedupe:
   urlTransforms:
-    - pattern: '^(https?://github\.com/[^/?#]+/[^/?#]+/pull/\d+)(?:/(?:files|changes|commits|checks)(?:/[^?#]*)?)?/?(?=[?#]|$)'
-      replacement: '$1'
+    - pattern: '^(https?://github\.com/[^/?#]+/[^/?#]+/pull/\d+)(?:/(?:files|changes|commits|checks)(?:/[^?#]*)?)?/?(?:\?[^#]*)?(?=#|$)'
+      replacement: '\L$1'
 rules:
   - id: group-by-repo
     name: Group GitHub tabs by repository
