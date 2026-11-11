@@ -1,3 +1,11 @@
+## [1.9.1](https://github.com/ecoutu/tabchef/compare/v1.9.0...v1.9.1) (2026-11-11)
+
+
+### Bug Fixes
+
+* **projects:** say what the Keep button does and show when a project is saved ([1bec63c](https://github.com/ecoutu/tabchef/commit/1bec63c2dcfd6f530541cb59e7af99edbc6d4aea))
+* **projects:** stop reopened projects from taking tabs you opened elsewhere ([5e6dd79](https://github.com/ecoutu/tabchef/commit/5e6dd795c10f044edae95bc43cc46f8280b43089)), closes [#150](https://github.com/ecoutu/tabchef/issues/150)
+
 # [1.9.0](https://github.com/ecoutu/tabchef/compare/v1.8.0...v1.9.0) (2026-11-11)
 
 
