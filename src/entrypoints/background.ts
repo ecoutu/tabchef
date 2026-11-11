@@ -69,7 +69,8 @@ export default defineBackground(() => {
   }), {
     // Connection states feed the capability levels (M3 T12). Lazy: the manager is built below; syncs run after start.
     connections: () => connectionInfo(),
-    // M3-R107: a rule whose level kind changed (no pause or resume, so no new Program) looks its sources up now.
+    // M3-R107: a rule whose level kind changed (no pause or resume, so no new Program) looks its sources up now; so does
+    // one that newly runs (#192).
     onKindsChanged: (keys) => { sources.refresh('manual', keys).catch(warn('source refresh')); },
     onPausedChanged: () => {
       reconciler.schedule('permissions');

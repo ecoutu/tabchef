@@ -57,7 +57,8 @@ export interface PermissionsOptions {
   onPausedChanged?: () => void;
   /**
    * The kind some needs keys run at changed while they stayed unpaused (e.g. GitHub connected: page → connection), so
-   * the paused set and the Program did not (M3-R107): their source lookups are due now, not at the next alarm.
+   * the paused set and the Program did not (M3-R107), or they newly run (a recipe or rule turned on, or resumed by a
+   * grant; not on the first sync, #192): their source lookups are due now, not at the next alarm.
    */
   onKindsChanged?: (keys: string[]) => void;
   /** Default: console.warn. */
@@ -349,7 +350,7 @@ export class PermissionsManager {
       this.warn('[tabchef] permission status failed', e);
       return;
     }
-    const before = this.last ? this.kinds : new Map<string, NeedsKind | undefined>(); // the first sync is no change
+    const before = this.last && this.kinds; // the first sync is no change
     this.kinds = new Map(all.map((e) => [e.key, e.kind]));
     this.last = last;
     const paused = new Set(all.filter((e) => !e.status.ok).map((e) => e.key));
@@ -357,7 +358,8 @@ export class PermissionsManager {
       this.pausedSet = paused;
       this.opts.onPausedChanged?.();
     }
-    const changed = all.filter((e) => e.kind !== undefined && before.get(e.key) !== undefined && before.get(e.key) !== e.kind).map((e) => e.key);
+    // #192: a key that newly runs (recipe or rule enabled, resumed by a grant) has no previous kind; it counts too.
+    const changed = before ? all.filter((e) => e.kind !== undefined && before.get(e.key) !== e.kind).map((e) => e.key) : [];
     if (changed.length) this.opts.onKindsChanged?.(changed);
     // Granted origins of the needs that run: not paused, and not a rule of a paused recipe.
     const origins = watchOrigins([

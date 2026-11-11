@@ -464,6 +464,54 @@ describe('M3 T12: capability levels from permissions and connections', () => {
   });
 });
 
+describe('#192: needs keys that start running look their sources up now', () => {
+  const entry = (origins: string[] = []) => ({ origins, permissions: [] });
+  function world(needs: Program['needs']) {
+    const port = new FakeBrowserPort();
+    const box = { needs };
+    const program = async (): Promise<Program> => ({ rules: [], views: [], tables: {}, dedupe: defaultConfig().dedupe, needs: box.needs });
+    const onKindsChanged = vi.fn<(keys: string[]) => void>();
+    const pm = new PermissionsManager(port, program, scriptingFake().s, { onKindsChanged });
+    return { port, box, pm, onKindsChanged };
+  }
+
+  it('the first sync reports nothing (startup already looks every source up)', async () => {
+    const w = world({ a: entry(), 'a/x': entry() });
+    await w.pm.onChanged();
+    expect(w.onKindsChanged).not.toHaveBeenCalled();
+  });
+
+  it('a recipe or rule key newly present after the first sync is reported; an unchanged one is not', async () => {
+    const w = world({ a: entry() });
+    await w.pm.onChanged();
+    w.box.needs = { a: entry(), b: entry(), 'b/x': entry() }; // recipe b enabled
+    await w.pm.onChanged();
+    expect(w.onKindsChanged).toHaveBeenCalledTimes(1);
+    expect(w.onKindsChanged.mock.calls[0]![0]).toEqual(['b', 'b/x']);
+    await w.pm.onChanged(); // nothing changed
+    expect(w.onKindsChanged).toHaveBeenCalledTimes(1);
+  });
+
+  it('a removed key or a key that newly starts paused is not reported', async () => {
+    const w = world({ a: entry(), b: entry() });
+    await w.pm.onChanged();
+    w.box.needs = { a: entry(), c: entry([MEET]) }; // b disabled; c enabled without its grant
+    await w.pm.onChanged();
+    expect(w.onKindsChanged).not.toHaveBeenCalled();
+  });
+
+  it('a key resumed by a permission grant is reported', async () => {
+    const w = world({ a: entry(), 'a/meet': entry([MEET]) });
+    await w.pm.onChanged();
+    expect([...w.pm.paused()]).toEqual(['a/meet']);
+    w.port.granted.add(MEET);
+    w.port.granted.add('scripting');
+    await w.pm.onChanged();
+    expect(w.onKindsChanged).toHaveBeenCalledTimes(1);
+    expect(w.onKindsChanged.mock.calls[0]![0]).toEqual(['a/meet']);
+  });
+});
+
 describe('R44: user rules using page facts widen the watch to every granted host', () => {
   const GH = 'https://github.com/*';
   const userRule = (id: string, over: Partial<Rule>): Rule => ({
