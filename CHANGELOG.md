@@ -1,3 +1,26 @@
+# [1.9.0](https://github.com/ecoutu/tabchef/compare/v1.8.0...v1.9.0) (2026-11-11)
+
+
+### Bug Fixes
+
+* **dedupe:** treat a pull request link with extra parameters as the same pull request ([9142e24](https://github.com/ecoutu/tabchef/commit/9142e249b11bf790b4e3e0887aa55ed7e50c45cd))
+* **projects:** move a tab out of its project when a settings change stops its rule from matching ([0e34a7f](https://github.com/ecoutu/tabchef/commit/0e34a7f4fc0acc5a0a143a303ff2bb6fa8995d4f))
+* **recipes:** look up pull requests' details as soon as a recipe that needs them is turned on ([14e2af4](https://github.com/ecoutu/tabchef/commit/14e2af49e49e07642ca1cdb94b998b043d9c1de8))
+* **sources:** check statuses as often as the "check every" setting says ([bc916b5](https://github.com/ecoutu/tabchef/commit/bc916b5a8ec82d7e7122c5085bf5747a7e7d124d))
+* **sources:** stop asking again every few seconds about an issue or ticket the API cannot find or read ([b3244c8](https://github.com/ecoutu/tabchef/commit/b3244c888065c1e8d633c0a22ed3d09e77003f57))
+* **sources:** update an issue's, ticket's or pull request's status as soon as its page shows a change ([527f9e2](https://github.com/ecoutu/tabchef/commit/527f9e2384a7e819e718daa0277ffda353532ba4))
+
+
+### Features
+
+* **connections:** read GitHub issues and the issues a pull request closes ([9b3fbef](https://github.com/ecoutu/tabchef/commit/9b3fbef43490ab4d7eb94d60b5430dc405573a98))
+* **popup:** list done projects in the Finished tab, with close, close-and-archive and keep ([a251d46](https://github.com/ecoutu/tabchef/commit/a251d46bfaac469f1091b4206856afa318663758))
+* **projects:** name GitHub issue groups after their issue and list each issue's pull requests ([02b41ab](https://github.com/ecoutu/tabchef/commit/02b41ab32b353b0334daeab8d21d45acf6c1d660))
+* **recipes:** add a githubIssue extract that reads issue references from URLs and branches ([ee3be3a](https://github.com/ecoutu/tabchef/commit/ee3be3a3263d15edd25ebb123840032695c4ef0c))
+* **recipes:** add GitHub issue projects, grouping an issue with its pull requests ([041c0c8](https://github.com/ecoutu/tabchef/commit/041c0c81a97dd2f67a68deaa50a71892899d17f6))
+* **recipes:** keep a Jira board out of the group of the ticket it shows ([b49e390](https://github.com/ecoutu/tabchef/commit/b49e390c09228ca990b0c664fdf8502a60090ac1))
+* **recipes:** read a GitHub issue's state from its page ([fcf079f](https://github.com/ecoutu/tabchef/commit/fcf079ff32bafcd24a0e97625b3a5f4f81060573))
+
 # [1.8.0](https://github.com/ecoutu/tabchef/compare/v1.7.0...v1.8.0) (2026-11-11)
 
 
