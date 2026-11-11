@@ -34,7 +34,8 @@ export interface RuntimeState {
   projectTabs?: ProjectTab[];
 }
 
-export interface ProjectTab { tabId: number; projectId: string; url: string; ruleKey?: string; index?: number }
+/** `sig`: the assigning rule's signature (StickyMap); older builds ignore it, and entries they stored lack it. */
+export interface ProjectTab { tabId: number; projectId: string; url: string; ruleKey?: string; index?: number; sig?: string }
 
 /** `groupId`: the group it was recorded for (missing in records stored before it was tracked). */
 export interface AnchorEntry { tabId: number; windowId: number; title: string; url: string; groupId?: number }

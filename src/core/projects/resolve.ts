@@ -18,8 +18,10 @@ import type { Project, ProjectAssignment, ProjectDef } from './types';
 /**
  * tabId → the project a tab joined by rules, the normalized URL it had then, and the assigning rule (key and index;
  * T15 persists it in RuntimeState.projectTabs, M3-R42/R66). Entries without the rule are from before it was stored.
+ * `sig` is that rule's signature (ruleSig) when the tab joined: once the rule is gone or its signature differs, a
+ * settings change has touched it, and only the tab's own candidate keeps it. Entries without it are from older builds.
  */
-export type StickyMap = Map<number, { projectId: string; url: string; ruleKey?: string; index?: number }>;
+export type StickyMap = Map<number, { projectId: string; url: string; ruleKey?: string; index?: number; sig?: string }>;
 
 export interface ResolveInput {
   snap: Snapshot;
@@ -48,6 +50,18 @@ const prefixOf = (key: string): string => {
   return (i < 0 ? key : key.slice(0, i)).toUpperCase();
 };
 const urlOf = (t: TabSnap): string => (t.pendingUrl ? t.pendingUrl : t.url);
+
+/**
+ * A compiled rule's signature: FNV-1a over its match, extract and actions as compiled (params substituted and
+ * folded), so a setting that changes what the rule matches or extracts changes it, and one it does not use (a group
+ * color, a title format) does not. Short, as it is stored with each sticky tab.
+ */
+function ruleSig(r: Program['rules'][number]): string {
+  const j = JSON.stringify([r.rule.match, r.rule.extract, r.rule.actions]);
+  let h = 0x811c9dc5;
+  for (let i = 0; i < j.length; i++) { h ^= j.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  return `${h.toString(16)}-${j.length}`;
+}
 
 export function resolveProjects(input: ResolveInput): ResolveResult {
   const { snap, program, now } = input;
@@ -95,9 +109,11 @@ export function resolveProjects(input: ResolveInput): ResolveResult {
     }
     return p;
   };
+  const sigs = new Map(program.rules.map((r) => [r.key, ruleSig(r)]));
   const join = (tabId: number, url: string, p: Project, c: Pick<ProjectCandidate, 'ruleKey' | 'index'>): void => {
     assignments.set(tabId, { projectId: p.id, key: p.key, via: 'rule', ruleKey: c.ruleKey, index: c.index });
-    sticky.set(tabId, { projectId: p.id, url, ruleKey: c.ruleKey, index: c.index });
+    const sig = sigs.get(c.ruleKey);
+    sticky.set(tabId, { projectId: p.id, url, ruleKey: c.ruleKey, index: c.index, ...(sig !== undefined && { sig }) });
   };
 
   // Rule candidates, and sticky membership for tabs whose URL is unchanged.
@@ -111,11 +127,13 @@ export function resolveProjects(input: ResolveInput): ResolveResult {
     if (sp && !excluded(sp, url)) {
       // The tab's own candidate for that key, else the rule that assigned it (at its current index), else the
       // lowest-priority assignProject rule of the recipe (a sticky tab never outranks a group rule it might not have
-      // outranked).
+      // outranked). When a settings change turned the assigning rule off or changed it (its signature differs), only
+      // the tab's own candidate keeps it: the rule may no longer match (#196).
       const own = cands.find((c) => recipeOf.get(c.ruleKey) === sp.recipeId && c.key === sp.key);
       const assigned = s?.ruleKey !== undefined ? program.rules.find((r) => r.key === s.ruleKey && r.recipeId === sp.recipeId) : undefined;
+      const changed = s?.sig !== undefined && (!assigned || s.sig !== sigs.get(assigned.key));
       const fallback = assigned ?? program.rules.filter((r) => r.recipeId === sp.recipeId && r.rule.actions.some((a) => 'assignProject' in a)).at(-1);
-      const c = own ?? (fallback && { ruleKey: fallback.key, index: fallback.index });
+      const c = own ?? (!changed && fallback ? { ruleKey: fallback.key, index: fallback.index } : undefined);
       if (c) { join(t.id, url, sp, c); continue; }
     }
     if (cands.length) pending.push({ t, url, cands: cands.filter((c) => recipeOf.get(c.ruleKey) !== undefined) });

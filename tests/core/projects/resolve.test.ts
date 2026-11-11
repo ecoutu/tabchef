@@ -8,6 +8,7 @@ import {
 import type { Project, ProjectDef } from '../../../src/core/projects/types';
 import type { Program, Recipe, Rule, TabFacts } from '../../../src/core/lang/types';
 import type { Config, Snapshot, TabSnap } from '../../../src/core/types';
+import { builtinRecipes } from '../../../src/recipes/load';
 
 const NOW = 1_800_000_000_000;
 const RID = 'jira-ticket-title';
@@ -185,12 +186,12 @@ describe('resolveProjects: sticky membership', () => {
   it('the title loses the key while loading (same URL) → still assigned; the URL changes → re-evaluated', () => {
     const ticket = tab(1, TICKET, '[ABC-1] Login fails - Jira');
     const first = resolve(snapOf(ticket, tab(2, PR, 'ABC-1: fix login · Pull Request #5 · acme/api')));
-    expect(first.sticky.get(2)).toEqual({ projectId: `${RID}:ABC-1`, url: PR, ruleKey: `${RID}/pr`, index: 1 });
+    expect(first.sticky.get(2)).toEqual({ projectId: `${RID}:ABC-1`, url: PR, ruleKey: `${RID}/pr`, index: 1, sig: expect.any(String) });
     const projects = first.created;
 
     const loading = resolve(snapOf(ticket, tab(2, PR, 'github.com/acme/api/pull/5')), { projects, sticky: first.sticky });
     expect(loading.assignments.get(2)).toMatchObject({ projectId: `${RID}:ABC-1`, via: 'rule' });
-    expect(loading.sticky.get(2)).toEqual({ projectId: `${RID}:ABC-1`, url: PR, ruleKey: `${RID}/pr`, index: 1 });
+    expect(loading.sticky.get(2)).toEqual(first.sticky.get(2));
 
     const moved = resolve(snapOf(ticket, tab(2, 'https://github.com/acme/api/pull/6', 'github.com/acme/api/pull/6')), { projects, sticky: loading.sticky });
     expect(moved.assignments.has(2)).toBe(false);
@@ -208,11 +209,71 @@ describe('resolveProjects: sticky membership', () => {
     const sticky: StickyMap = new Map([[2, { projectId: `${RID}:ABC-1`, url: PR, ruleKey: `${RID}/pr`, index: 7 }]]);
     const r = resolve(snapOf(tab(2, PR, 'github.com/acme/api/pull/5')), { program: p, projects, sticky });
     expect(r.assignments.get(2)).toMatchObject({ ruleKey: `${RID}/pr`, index: 1 }); // not the recipe's last rule (late, 2)
-    expect(r.sticky.get(2)).toEqual({ projectId: `${RID}:ABC-1`, url: PR, ruleKey: `${RID}/pr`, index: 1 });
+    expect(r.sticky.get(2)).toEqual({ projectId: `${RID}:ABC-1`, url: PR, ruleKey: `${RID}/pr`, index: 1, sig: expect.any(String) });
   });
   it('a sticky entry for a project that no longer exists is dropped', () => {
     const sticky: StickyMap = new Map([[2, { projectId: `${RID}:ABC-1`, url: PR }]]);
     expect(resolve(snapOf(tab(2, PR, 'loading')), { sticky }).assignments.size).toBe(0);
+  });
+});
+
+describe('resolveProjects: a settings change that stops a sticky tab\'s rule from matching', () => {
+  // The builtin jira-ticket-title recipe; the ticket tab (key from its URL) joins ABC-1, then the config changes while
+  // the tab stays at the same URL.
+  const prog = (o: { params?: Record<string, unknown>; ruleEnabled?: Record<string, boolean> } = {}): Program => {
+    const c: Config = { ...defaultConfig(), recipes: defaultConfig().recipes.map((r) => (r.id === RID ? { ...r, enabled: true, ...o } : r)) };
+    const { program: p, errors } = compileProgram(c, builtinRecipes());
+    expect(errors).toEqual([]);
+    return p;
+  };
+  const ticket = tab(1, TICKET, '[ABC-1] Login fails - Jira');
+  const pr = (title: string) => tab(2, PR, title);
+  /** Resolves `tabs` with `first`, then again with `next` and the sticky map and projects of the first pass. */
+  function change(first: Program, next: Program, tabs: TabSnap[], again: TabSnap[] = tabs) {
+    const a = resolve(snapOf(...tabs), { program: first });
+    const b = resolve(snapOf(...again), { program: next, projects: a.created, sticky: a.sticky });
+    return { a, b, keys: Object.fromEntries([...b.assignments].map(([t, x]) => [t, x.key])) };
+  }
+
+  it('S1. the ticket rule turned off: the ticket tab leaves ABC-1 (the recipe\'s other rule does not hold it)', () => {
+    const { a, keys } = change(prog(), prog({ ruleEnabled: { ticket: false } }), [ticket]);
+    expect(a.assignments.get(1)?.key).toBe('ABC-1');
+    expect(keys).toEqual({});
+  });
+
+  it('S2. Your Jira project keys narrowed to XYZ: the ABC-1 ticket tab leaves', () => {
+    expect(change(prog(), prog({ params: { projectPrefixes: ['XYZ'] } }), [ticket]).keys).toEqual({});
+  });
+
+  it('S3. ABC added to the ignored prefixes: the ABC-1 ticket tab leaves', () => {
+    const ignored = builtinRecipes()[RID]!.params!.ignoredPrefixes!.default as string[];
+    expect(change(prog(), prog({ params: { ignoredPrefixes: [...ignored, 'ABC'] } }), [ticket]).keys).toEqual({});
+  });
+
+  it('a changed rule that still matches keeps the tab, with the new rule\'s signature', () => {
+    const { a, b, keys } = change(prog(), prog({ params: { projectPrefixes: ['ABC'] } }), [ticket]);
+    expect(keys).toEqual({ 1: 'ABC-1' });
+    expect(b.sticky.get(1)?.sig).not.toBe(a.sticky.get(1)?.sig);
+  });
+
+  it('a change no rule uses (the group color) keeps a loading PR whose title lost the key', () => {
+    const { keys } = change(prog(), prog({ params: { color: 'red' } }), [ticket, pr('ABC-1: fix login')], [ticket, pr('github.com/acme/api/pull/5')]);
+    expect(keys).toEqual({ 1: 'ABC-1', 2: 'ABC-1' });
+  });
+
+  it('a loading PR whose rule changed leaves until its title names the key again', () => {
+    const next = prog({ params: { keyPattern: '[A-Z]+-\\d+' } });
+    const { b, keys } = change(prog(), next, [ticket, pr('ABC-1: fix login')], [ticket, pr('github.com/acme/api/pull/5')]);
+    expect(keys).toEqual({ 1: 'ABC-1' });
+    const loaded = resolve(snapOf(ticket, pr('ABC-1: fix login')), { program: next, projects: [project('ABC-1')], sticky: b.sticky });
+    expect(loaded.assignments.get(2)?.key).toBe('ABC-1');
+  });
+
+  it('an entry stored without a signature (an older build) keeps today\'s behaviour: the recipe still holds the tab', () => {
+    const sticky: StickyMap = new Map([[1, { projectId: `${RID}:ABC-1`, url: TICKET, ruleKey: `${RID}/ticket`, index: 0 }]]);
+    const r = resolve(snapOf(ticket), { program: prog({ ruleEnabled: { ticket: false } }), projects: [project('ABC-1')], sticky });
+    expect(r.assignments.get(1)?.key).toBe('ABC-1');
+    expect(r.sticky.get(1)?.sig).toEqual(expect.any(String)); // re-stamped: the next change is checked
   });
 });
 

@@ -143,8 +143,8 @@ describe('ProjectService.targets and the reconciler', () => {
     h.f.addTab(tab(2, PR, 'ABC-1: fix login'));
     await h.r.flush();
     const rt = toRuntime(await h.r.liveState());
-    expect(rt.projectTabs).toContainEqual({ tabId: 2, projectId: PID, url: PR, ruleKey: `${RID}/pr`, index: 1 });
-    expect(toLive(rt).projectTabs.get(2)).toEqual({ projectId: PID, url: PR, ruleKey: `${RID}/pr`, index: 1 });
+    expect(rt.projectTabs).toContainEqual({ tabId: 2, projectId: PID, url: PR, ruleKey: `${RID}/pr`, index: 1, sig: expect.any(String) });
+    expect(toLive(rt).projectTabs.get(2)).toEqual({ projectId: PID, url: PR, ruleKey: `${RID}/pr`, index: 1, sig: expect.any(String) });
     expect(toLive(undefined).projectTabs.size).toBe(0);
     // While the PR reloads (its title lost the key), it stays in the group.
     h.f.state.tabs.find((t) => t.id === 2)!.title = 'github.com/acme/api/pull/5';
