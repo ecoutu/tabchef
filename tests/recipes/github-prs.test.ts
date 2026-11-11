@@ -24,6 +24,9 @@ describe('github-prs recipe: PR canonicalization via p.dedupe', () => {
     const key = keyWith(withPrs(true));
     expect(key(PR)).toBe(PR);
     for (const u of [`${PR}/files`, `${PR}/files/abc`, `${PR}/checks`, `${PR}/commits`, `${PR}/`, `${PR}#discussion_r456`]) expect(key(u), u).toBe(PR);
+    // GitHub's newer Files changed page
+    for (const u of [`${PR}/changes`, `${PR}/changes/abc123`, `${PR}/changes#diff-1`]) expect(key(u), u).toBe(PR);
+    expect(key(`${PR}/changesx`)).toBe(`${PR}/changesx`);
     expect(keyWith(withPrs(true, { stripParams: ['w'] }))(`${PR}/commits?w=1`)).toBe(PR);
     expect(normalizeUrl(`${PR}#discussion_r456`, programOf(withPrs(true)).dedupe)?.fragment).toBe('discussion_r456');
   });

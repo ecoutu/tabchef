@@ -1,8 +1,9 @@
-// Duplicates inside a project's group (#179): a second copy of a Jira ticket opens and joins the ticket's project
-// group. The Jira recipes put every /browse/<KEY> URL of a ticket into its project; their dedupe
+// Duplicates inside a project's group (#179): a second copy of a Jira ticket or of a project PR opens and joins the
+// project's group. The Jira recipes put every /browse/<KEY> URL of a ticket into its project; their dedupe
 // urlTransform folds Jira's own query params and fragment (?atlOrigin=, ?focusedCommentId=) into the bare ticket URL,
 // so the copy closes into the existing tab. They also drop Jira's ?atlOrigin= tracking param on any page of the site, so a
-// board copy opened from a shared link closes into the open board.
+// board copy opened from a shared link closes into the open board. github-prs does the same for a PR's sub-pages
+// (/files, /changes, ...).
 import { describe, expect, it, vi } from 'vitest';
 import { DedupeHandler, NEW_TAB_AGE_MS, type DedupeDeps } from '../../src/engine/dedupe-handler';
 import { defaultConfig } from '../../src/core/config/defaults';
@@ -102,6 +103,17 @@ describe('duplicates of a Jira ticket inside its project group (#179)', () => {
   it('another ticket of the same project group stays open', async () => {
     const r = await openSecondCopy(TICKET, `${SITE}/browse/ABC-2?atlOrigin=x`);
     expect(r.open).toEqual([1, 2]);
+  });
+});
+
+describe('duplicates of a project PR inside its project group', () => {
+  // The PR rule joins any `pull/:num*` page by its title; github-prs folds the sub-pages into the PR, including
+  // GitHub's newer Files changed page (/changes).
+  it('a PR in the project opened again on its /changes page: the second copy is closed', async () => {
+    const pr = 'https://github.com/acme/api/pull/5';
+    const r = await openSecondCopy(pr, `${pr}/changes`, 'ABC-1 fix login by emma · Pull Request #5 · acme/api');
+    expect(r.keys).toEqual({ 1: 'ABC-1', 2: 'ABC-1' });
+    expect(r.open).toEqual([1]);
   });
 });
 
