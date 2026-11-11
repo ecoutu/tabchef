@@ -890,6 +890,43 @@ describe('SourceService: GitHub issues', () => {
     expect(t.svc.missingIssuesPermission()).toBe(false);
   });
 
+  it('an issue the API cannot read reads its page; an unrecognized page is not a page result', async () => {
+    const rule: Rule = { ...ghIssueRule, source: { ...ghIssueRule.source!, fallback: { adapter: 'github.issuePage' } } };
+    const page = (state: string) => ({ texts: [], extracts: { 'adapter:github.issuePage.state': state }, formEdited: false });
+    const run = async (state: string) => {
+      const t = setup({ tabs: [issueTab(1, 'acme/web/issues/5')], rules: [rule], granted: true, facts: { 1: page(state) }, fetch: async (_id, req) => issueResponse(req, ['acme/web#5']) });
+      await t.svc.refresh('alarm');
+      return stateOf(t.svc, 1, 'rec/ghissue');
+    };
+    expect(await run('Closed as not planned')).toMatchObject({ via: 'page', data: { status: 'Closed', statusCategory: 'done' } });
+    expect(await run('Merged')).toMatchObject({ via: 'none', error: 'not-found' });
+  });
+
+  it('githubIssues() leaves a fresh page reading alone when the API cannot read the issue: no stale flip, no update, no request', async () => {
+    const rule: Rule = { ...ghIssueRule, source: { ...ghIssueRule.source!, fallback: { adapter: 'github.issuePage' } } };
+    const forbidden = async (): Promise<ApiResult> => ({ ok: true, status: 200, data: { data: { r0: { i0: null } }, errors: [{ type: 'FORBIDDEN', path: ['r0', 'i0'], message: 'Resource not accessible by integration' }] } });
+    const t = setup({
+      tabs: [issueTab(1, 'acme/web/issues/5')], rules: [rule], granted: true, fetch: forbidden,
+      facts: { 1: { texts: [], extracts: { 'adapter:github.issuePage.state': 'Closed as completed' }, formEdited: false } },
+    });
+    await t.svc.refresh('alarm');
+    expect(stateOf(t.svc, 1, 'rec/ghissue')).toMatchObject({ via: 'page', stale: false });
+    const sent = t.fetch.mock.calls.length;
+    t.onUpdated.mockClear();
+    expect((await t.svc.githubIssues(['acme/web#5'])).get('acme/web#5')).toMatchObject({ via: 'page', stale: false, data: { statusCategory: 'done' } });
+    expect(stateOf(t.svc, 1, 'rec/ghissue')).toMatchObject({ via: 'page', stale: false });
+    expect(t.onUpdated).not.toHaveBeenCalled();
+    expect(t.fetch).toHaveBeenCalledTimes(sent);
+    await t.svc.refresh('tabs');
+    expect(t.onUpdated).not.toHaveBeenCalled();
+    // Past the TTL the API is asked again; its refusal still leaves the page reading as it is.
+    t.advance(6 * MIN);
+    const before = t.fetch.mock.calls.length;
+    expect((await t.svc.githubIssues(['acme/web#5'])).get('acme/web#5')).toMatchObject({ via: 'page', stale: false, data: { statusCategory: 'done' } });
+    expect(t.fetch).toHaveBeenCalledTimes(before + 1);
+    expect(t.onUpdated).not.toHaveBeenCalled();
+  });
+
   it('with the connection not ok, an issue tab sends nothing and is via none', async () => {
     const t = setup({ tabs: [issueTab(1, 'acme/web/issues/5')], rules: [ghIssueRule], conn: { github: 'not-configured' }, fetch: async (_id, req) => issueResponse(req) });
     await t.svc.refresh('alarm');

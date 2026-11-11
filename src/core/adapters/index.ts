@@ -1,5 +1,6 @@
 // Page adapter registry (M3 T10). An `{adapter, field}` extract reads one adapter field from the page facts; T11's
 // SourceService uses the parsers as its page fallback. Pure.
+import { GITHUB_ISSUE_PAGE } from './github-issue-page';
 import { GITHUB_PR_PAGE } from './github-pr-page';
 import { JIRA_ISSUE_PAGE } from './jira-issue-page';
 import type { Adapter, AdapterId } from './types';
@@ -8,7 +9,7 @@ export { adapterKey, type Adapter, type AdapterId, type AdapterSelector } from '
 
 // Whole objects only, no property reads at module level: the bundler keeps those (they could run getters), and with
 // them these selectors in every bundle that imports this module's chunk, content scripts included.
-export const ADAPTERS: Record<AdapterId, Adapter> = { 'github.prPage': GITHUB_PR_PAGE, 'jira.issuePage': JIRA_ISSUE_PAGE };
+export const ADAPTERS: Record<AdapterId, Adapter> = { 'github.prPage': GITHUB_PR_PAGE, 'github.issuePage': GITHUB_ISSUE_PAGE, 'jira.issuePage': JIRA_ISSUE_PAGE };
 
 /** The adapter named `id`, or undefined (an id that is not an own key, e.g. from an unvalidated rule). */
 export const adapterOf = (id: string): Adapter | undefined => (Object.hasOwn(ADAPTERS, id) ? ADAPTERS[id as AdapterId] : undefined);

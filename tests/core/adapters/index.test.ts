@@ -7,7 +7,7 @@ import { adapterProgram, extractFixture } from './watch-fixture';
 
 describe('ADAPTERS', () => {
   it('lists the GitHub PR page and Jira issue page adapters by id', () => {
-    expect(Object.keys(ADAPTERS)).toEqual(['github.prPage', 'jira.issuePage']);
+    expect(Object.keys(ADAPTERS)).toEqual(['github.prPage', 'github.issuePage', 'jira.issuePage']);
     expect(ADAPTERS['github.prPage'].selectors).toBe(GITHUB_PR_PAGE.selectors);
     expect(ADAPTERS['jira.issuePage'].selectors).toBe(JIRA_ISSUE_PAGE.selectors);
   });

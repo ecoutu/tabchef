@@ -480,6 +480,7 @@
             "adapter": {
               "enum": [
                 "github.prPage",
+                "github.issuePage",
                 "jira.issuePage"
               ]
             }
@@ -684,6 +685,7 @@
               "adapter": {
                 "enum": [
                   "github.prPage",
+                  "github.issuePage",
                   "jira.issuePage"
                 ]
               },

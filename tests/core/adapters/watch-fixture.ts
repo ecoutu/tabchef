@@ -9,7 +9,7 @@ import { defaultConfig } from '../../../src/core/config/defaults';
 import { programOf } from '../../helpers/config';
 
 /** A program of one user rule whose extracts read every given `{adapter, field}`. */
-export function adapterProgram(adapter: 'github.prPage' | 'jira.issuePage', fields: string[]): Program {
+export function adapterProgram(adapter: 'github.prPage' | 'github.issuePage' | 'jira.issuePage', fields: string[]): Program {
   const rule: Rule = {
     id: 'a', name: 'a', enabled: true, match: { url: '*' }, actions: [{ showInView: { view: 'v' } }],
     extract: Object.fromEntries(fields.map((f) => [f, { adapter, field: f }])),

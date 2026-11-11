@@ -454,7 +454,7 @@ export class SourceService {
       if ('pr' in r.target) {
         if (parsed.state !== undefined && parsed.state !== 'unknown') return { ...r.target.pr, url: r.url, ...parsed };
       } else if ('ghIssue' in r.target) {
-        if (Object.keys(parsed).length) return { ...r.target.ghIssue, url: r.url, ...parsed };
+        if (parsed.statusCategory !== undefined) return { ...r.target.ghIssue, url: r.url, ...parsed }; // as for PRs: an unrecognized page is no result
       } else if (Object.keys(parsed).length) return { key: r.target.issue, url: r.url, ...parsed };
     }
     return undefined;

@@ -641,6 +641,7 @@
                 {
                   "enum": [
                     "github.prPage",
+                    "github.issuePage",
                     "jira.issuePage"
                   ]
                 },
@@ -940,6 +941,7 @@
                   {
                     "enum": [
                       "github.prPage",
+                      "github.issuePage",
                       "jira.issuePage"
                     ]
                   },

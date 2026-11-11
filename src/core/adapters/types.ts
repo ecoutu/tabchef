@@ -1,7 +1,7 @@
 // Page adapters (M3 T10): read a page's own markup when there is no API connection. Pure; shared by the adapters,
 // the registry (index.ts) and the watch config (engine/page-facts.ts).
 
-export type AdapterId = 'github.prPage' | 'jira.issuePage';
+export type AdapterId = 'github.prPage' | 'github.issuePage' | 'jira.issuePage';
 /** One CSS selector the watch content script reads: the element's text, or the attribute `attr`. */
 export interface AdapterSelector { selector: string; attr?: string }
 
