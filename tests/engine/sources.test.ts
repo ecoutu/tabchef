@@ -936,3 +936,154 @@ describe('SourceService: GitHub issues', () => {
     expect(t.fetch).not.toHaveBeenCalled();
   });
 });
+
+describe('SourceService: a page showing a change refetches a fresh API entry', () => {
+  const ISSUE: Rule = {
+    id: 'ghissue', name: 'GitHub issue', enabled: true,
+    source: { connection: 'github', query: 'github.issue', args: { owner: '{owner}', repo: '{repo}', number: '{num}' }, fields: { status: 'status', statusCategory: 'statusCategory', summary: 'summary' }, fallback: { adapter: 'github.issuePage' } },
+    match: { url: 'github.com/:owner/:repo/issues/:num*' }, actions: [{ group: { title: 'Issues', color: 'green' } }],
+  };
+  /** The issue on GitHub: OPEN until `closed.v` flips. */
+  const ghIssueApi = (closed: { v: boolean }) => async (_id: string, req: ApiRequest): Promise<ApiResult> => {
+    const { query } = req.json as { query: string };
+    const data: Record<string, Record<string, unknown>> = {};
+    for (const m of query.matchAll(/(r\d+): repository\(owner: \$o\d+, name: \$n\d+\) \{ (i\d+): issue/g)) {
+      data[m[1]!] = { [m[2]!]: { title: 'Fix signup form', state: closed.v ? 'CLOSED' : 'OPEN', stateReason: closed.v ? 'COMPLETED' : null, url: 'https://github.com/acme/web/issues/3', closedByPullRequestsReferences: { nodes: [] } } };
+    }
+    return { ok: true, status: 200, data: { data } };
+  };
+  const issuePage = (state: string) => ({ texts: [], extracts: { 'adapter:github.issuePage.state': state }, formEdited: false });
+  const KEY = 'acme/web#3';
+  const URL3 = 'https://github.com/acme/web/issues/3';
+
+  async function opened(o: Partial<Setup> = {}) {
+    const closed = { v: false };
+    const facts: Record<number, NonNullable<TabFacts['page']>> = { 1: issuePage('Open') };
+    const t = setup({ tabs: [tab(1, URL3)], rules: [ISSUE], granted: true, facts, fetch: ghIssueApi(closed), ...o });
+    await t.svc.refresh('tabs');
+    expect(stateOf(t.svc, 1, 'rec/ghissue')).toMatchObject({ via: 'api', data: { statusCategory: 'new' } });
+    expect(t.fetch).toHaveBeenCalledTimes(1);
+    t.advance(MIN);
+    return { t, closed, facts };
+  }
+
+  it('closed in-page: the next refresh(tabs) asks the API again and the issue is Closed (one extra request)', async () => {
+    const { t, closed, facts } = await opened();
+    closed.v = true; facts[1] = issuePage('Closed');
+    t.onUpdated.mockClear();
+    await t.svc.refresh('tabs');
+    expect(t.fetch).toHaveBeenCalledTimes(2);
+    expect(stateOf(t.svc, 1, 'rec/ghissue')).toMatchObject({ via: 'api', data: { status: 'Closed', statusCategory: 'done' } });
+    expect((await t.svc.githubIssues([KEY])).get(KEY)).toMatchObject({ via: 'api', data: { statusCategory: 'done' } });
+    expect(t.onUpdated).toHaveBeenCalledWith([1]);
+    // The page keeps reporting Closed: it agrees now, nothing more is asked.
+    await t.svc.refresh('tabs');
+    await t.svc.refresh('popup');
+    expect(t.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('reopened in-page: Open again at the next refresh(tabs)', async () => {
+    const { t, closed, facts } = await opened();
+    closed.v = true; facts[1] = issuePage('Closed');
+    await t.svc.refresh('tabs');
+    t.advance(MIN);
+    closed.v = false; facts[1] = issuePage('Open');
+    await t.svc.refresh('tabs');
+    expect(t.fetch).toHaveBeenCalledTimes(3);
+    expect(stateOf(t.svc, 1, 'rec/ghissue')).toMatchObject({ via: 'api', data: { status: 'Open', statusCategory: 'new' } });
+  });
+
+  it('a page that agrees with the API asks nothing', async () => {
+    const { t } = await opened();
+    for (let i = 0; i < 3; i++) await t.svc.refresh('tabs');
+    expect(t.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('the API still answering as before (a page ahead or misread): one request per page reading, no loop', async () => {
+    const { t, facts } = await opened();
+    facts[1] = issuePage('Closed'); // GitHub's API still says OPEN
+    await t.svc.refresh('tabs');
+    expect(t.fetch).toHaveBeenCalledTimes(2);
+    expect(stateOf(t.svc, 1, 'rec/ghissue')).toMatchObject({ via: 'api', data: { statusCategory: 'new' } }); // the API stays the authority
+    for (let i = 0; i < 3; i++) await t.svc.refresh('tabs');
+    expect(t.fetch).toHaveBeenCalledTimes(2);
+    // Past the TTL the entry is due as usual.
+    t.advance(5 * MIN);
+    await t.svc.refresh('tabs');
+    expect(t.fetch).toHaveBeenCalledTimes(3);
+  });
+
+  it('two tabs of the issue reporting the same change: one request', async () => {
+    const closed = { v: false };
+    const facts: Record<number, NonNullable<TabFacts['page']>> = { 1: issuePage('Open'), 2: issuePage('Open') };
+    const t = setup({ tabs: [tab(1, URL3), tab(2, URL3)], rules: [ISSUE], granted: true, facts, fetch: ghIssueApi(closed) });
+    await t.svc.refresh('tabs');
+    t.advance(MIN);
+    closed.v = true; facts[1] = issuePage('Closed'); facts[2] = issuePage('Closed');
+    await t.svc.refresh('tabs');
+    await t.svc.refresh('tabs');
+    expect(t.fetch).toHaveBeenCalledTimes(2);
+    for (const id of [1, 2]) expect(stateOf(t.svc, id, 'rec/ghissue')).toMatchObject({ data: { statusCategory: 'done' } });
+  });
+
+  it('the background budget refusing: nothing sent and nothing changes; the next refresh asks once it allows', async () => {
+    let allow = true;
+    const { t, closed, facts } = await opened();
+    t.canSend.mockImplementation(async () => ({ ok: allow }));
+    closed.v = true; facts[1] = issuePage('Closed');
+    allow = false;
+    await t.svc.refresh('tabs');
+    expect(t.fetch).toHaveBeenCalledTimes(1);
+    expect(stateOf(t.svc, 1, 'rec/ghissue')).toMatchObject({ via: 'api', stale: false, data: { statusCategory: 'new' } });
+    allow = true;
+    await t.svc.refresh('tabs');
+    expect(t.fetch).toHaveBeenCalledTimes(2);
+    expect(stateOf(t.svc, 1, 'rec/ghissue')).toMatchObject({ data: { statusCategory: 'done' } });
+  });
+
+  it('without page access (github.com not granted) the page is not read and nothing is asked', async () => {
+    const { t, closed, facts } = await opened({ granted: false });
+    closed.v = true; facts[1] = issuePage('Closed');
+    await t.svc.refresh('tabs');
+    expect(t.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('Jira: a ticket moved to Done in-page is Done at the next refresh(tabs)', async () => {
+    const done = { v: false };
+    const fetch = vi.fn(async (): Promise<ApiResult> => ({ ok: true, status: 200, data: { issues: [{ key: 'ABC-1', fields: { summary: 's', status: { name: done.v ? 'Done' : 'To Do', statusCategory: { key: done.v ? 'done' : 'new' } } } }] } }));
+    const jiraPage = (status: string) => ({ texts: [], extracts: { 'adapter:jira.issuePage.status': status }, formEdited: false });
+    const facts: Record<number, NonNullable<TabFacts['page']>> = { 1: jiraPage('To Do') };
+    const t = setup({ tabs: [tab(1, 'https://acme.atlassian.net/browse/ABC-1')], rules: [issueRule], granted: true, facts, fetch });
+    await t.svc.refresh('tabs');
+    t.advance(MIN);
+    facts[1] = jiraPage('TO DO'); // the same status, as the page writes it: agrees
+    await t.svc.refresh('tabs');
+    expect(fetch).toHaveBeenCalledTimes(1);
+    done.v = true; facts[1] = jiraPage('Done');
+    await t.svc.refresh('tabs');
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(stateOf(t.svc, 1, 'rec/issue')).toMatchObject({ via: 'api', data: { status: 'Done', cat: 'done' } });
+    expect((await t.svc.issues(['ABC-1'])).get('ABC-1')).toMatchObject({ data: { statusCategory: 'done' } });
+  });
+
+  it('PR: a PR closed in-page is closed at the next refresh(tabs); a merged (final) PR is never asked again', async () => {
+    const states = new Map<string, string>();
+    const prPage = (state: string) => ({ texts: [], extracts: { 'adapter:github.prPage.state': state }, formEdited: false });
+    const facts: Record<number, NonNullable<TabFacts['page']>> = { 1: prPage('Open') };
+    const t = setup({ tabs: [prTab(1)], granted: true, facts, states });
+    await t.svc.refresh('tabs');
+    t.advance(MIN);
+    states.set('acme/api#1', 'CLOSED'); facts[1] = prPage('Closed');
+    await t.svc.refresh('tabs');
+    expect(t.fetch).toHaveBeenCalledTimes(2);
+    expect(stateOf(t.svc, 1)).toMatchObject({ via: 'api', data: { state: 'closed' } });
+    t.advance(MIN);
+    states.set('acme/api#1', 'MERGED'); facts[1] = prPage('Merged');
+    await t.svc.refresh('tabs');
+    expect(stateOf(t.svc, 1)).toMatchObject({ via: 'api', final: true, data: { state: 'merged' } });
+    t.advance(MIN);
+    facts[1] = prPage('Open'); // a final entry stays as it is
+    await t.svc.refresh('tabs');
+    expect(t.fetch).toHaveBeenCalledTimes(3);
+  });
+});

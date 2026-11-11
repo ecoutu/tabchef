@@ -2,7 +2,8 @@
 // ConnectionManager, caches results (SourceCache: storage.local `sourceCache`, LRU), falls back to the page adapters when there
 // is no usable connection, and reports tabs whose data changed so rules re-evaluate.
 //
-// Resolution per lookup: 1. the cache (a `final` entry is never refetched, a fresh one not within its TTL); 2. the
+// Resolution per lookup: 1. the cache (a `final` entry is never refetched, a fresh one not within its TTL unless the
+// tab's page shows another state, e.g. an issue closed there: then once per such page reading); 2. the
 // API, when a rule asking for it runs at its connection alternative (`levelFor`, M3-R65) and the connection is `ok`;
 // 3. the page adapter (`fallback`) of a loaded, live tab on a granted host, for rules whose level allows page access
 // (connection or page); 4. `via: 'none'`. Failures keep the previous data with `stale: true` and `error`: good data never becomes unknown.
@@ -176,6 +177,12 @@ export class SourceService {
    * PR's closing issues read since clears it. In memory only; the Connections page shows it.
    */
   private issuesForbidden = false;
+  /**
+   * Per cache key, the page reading that last sent a fresh API entry back to the API (see `pageDisagrees`): the same
+   * reading does not ask again, so a page the API does not follow (yet, or a misread) costs one request, not one per
+   * refresh. Cleared when the page agrees. In memory only.
+   */
+  private challenged = new Map<string, string>();
   private chain: Promise<unknown> = Promise.resolve();
   private readonly now: () => number;
   /** The cache loaded and the open tabs indexed (no network): factsFor answers from here on. */
@@ -358,6 +365,7 @@ export class SourceService {
     const byKey = new Map<string, SourceRequest[]>();
     for (const r of reqs) byKey.set(r.key, [...(byKey.get(r.key) ?? []), r]);
     const apiGroups = new Map<string, SourceRequest[]>(); // `${connection}|${query}` -> one request per key
+    const challenged = new Map<string, CacheEntry>(); // keys sent back to the API by their page, with the entry then
     for (const [key, rs] of byKey) {
       const r = rs[0]!;
       const e = this.cache.touch(key, now);
@@ -365,7 +373,10 @@ export class SourceService {
       const blocked = (e?.retryAt ?? 0) > now;
       // M3-R65: the API only for a rule at its connection alternative; the page for one whose level allows page access.
       const api = state === 'ok' && rs.some((x) => kinds.get(x.ruleKey) === 'connection');
-      if (e && (e.final || this.fresh(e, r.query, now))) {
+      // #193: a fresh API entry the tab's page contradicts (closed or reopened there) is asked again at once.
+      const recheck = api && !blocked && e !== undefined && !e.final && this.fresh(e, r.query, now) && await this.pageDisagrees(key, e, rs, kinds);
+      if (recheck) challenged.set(key, e);
+      else if (e && (e.final || this.fresh(e, r.query, now))) {
         if (!api) this.cache.markStale(e, stateError(state));
         else this.cache.unstale(e); // a final entry, usable again
         continue;
@@ -405,6 +416,30 @@ export class SourceService {
       }
       if (site && on.length) await this.fetchIssues(connection, site, on.map((r) => (r.target as { issue: string }).issue), background, now);
     }
+    // Not sent (the background budget said no): the entry is as it was, so the next refresh asks again.
+    for (const [key, e] of challenged) if (this.cache.get(key) === e && !e.stale) this.challenged.delete(key);
+  }
+
+  /**
+   * Whether the page reading of `rs`'s tabs contradicts the API entry `e` on the state a page shows (a PR's `state`, a
+   * GitHub issue's `statusCategory`, a Jira ticket's `status` name), and that reading has not already sent `key` back
+   * to the API. A page that agrees, or none, never asks.
+   */
+  private async pageDisagrees(key: string, e: CacheEntry, rs: SourceRequest[], kinds: Map<string, NeedsKind | undefined>): Promise<boolean> {
+    const page = await this.readPage(rs.filter((x) => { const k = kinds.get(x.ruleKey); return k === 'connection' || k === 'page'; })) as Record<string, unknown> | undefined;
+    const api = e.data as Record<string, unknown> | undefined;
+    if (!page || !api) return false;
+    const target = rs[0]!.target;
+    const field = 'pr' in target ? 'state' : 'ghIssue' in target ? 'statusCategory' : 'status';
+    const norm = (v: unknown) => (typeof v === 'string' ? v.trim().toLowerCase() : undefined);
+    const shown = norm(page[field]);
+    if (shown === undefined || shown === norm(api[field])) {
+      this.challenged.delete(key);
+      return false;
+    }
+    if (this.challenged.get(key) === shown) return false;
+    this.challenged.set(key, shown);
+    return true;
   }
 
   /** The page adapter's reading for `rs` (rules whose level allows page access), else a failed lookup. */
