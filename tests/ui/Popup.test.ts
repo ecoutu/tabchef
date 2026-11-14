@@ -156,6 +156,20 @@ describe('Popup', () => {
     await waitFor(() => expect(screen.getByRole('tab', { name: /Duplicates/ }).textContent).toContain('2'));
   });
 
+  it('#212: the Projects view marks the card holding the popup\'s active tab as current', async () => {
+    const projView: V = { id: 'projects', tab: 'Projects', kind: 'projects', actions: [], count: 2 };
+    views = [projView];
+    const card = (n: number) => ({ id: `jira:ABC-${n}`, key: `ABC-${n}`, title: `ABC-${n} · Ticket`, done: false,
+      tabs: [{ tabId: n, windowId: 1, title: `ABC-${n} ticket`, url: `https://acme.atlassian.net/browse/ABC-${n}` }], linked: [] });
+    const base = send.getMockImplementation()!;
+    send.mockImplementation(async (req: { type: string }) => (req.type === 'projects.list' ? { ok: true, data: [card(4), card(5)] } : base(req)));
+    await browser.storage.local.set({ 'popup.lastTab': 'projects' });
+    render(Popup);
+    const article = async (n: number) => (await screen.findByRole('heading', { name: `ABC-${n} · Ticket` })).closest('article')!;
+    await waitFor(async () => expect((await article(5)).getAttribute('aria-current')).toBe('true'));
+    expect((await article(4)).hasAttribute('aria-current')).toBe(false);
+  });
+
   it('#195: the Finished view lists done projects; Keep there refreshes the popup', async () => {
     views = [dupView, { ...finView, count: 2 }];
     const project = { id: 'github-issue:acme/web#12', key: 'acme/web#12', title: 'acme/web#12 · Fix login', status: { name: 'Closed', category: 'done', via: 'api' }, tabCount: 2 };

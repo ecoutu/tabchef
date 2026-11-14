@@ -4,7 +4,8 @@
   // Close and archive, and "Keep open"). Collapsed (#151): the header alone, whose disclosure button expands it again; a
   // Done prompt then shows in the header as a Done badge and Close group (Close and archive and the keep button stay in
   // the body). The keep button says what it does (#157): "Keep open", or "Keep and save to bookmarks" while project sync
-  // is on (`syncOn`) and the project is not kept yet (`card.keep`).
+  // is on (`syncOn`) and the project is not kept yet (`card.keep`). The card holding the window's active tab (`activeTabId`,
+  // #212) and that tab's row are marked current; a collapsed card is marked in its header alone and stays collapsed.
   import { staleText, type ProjectCard } from '../../../ui/projects-model';
   import PrPill from '../../../ui/PrPill.svelte';
   import ProjectTitle from '../../../ui/ProjectTitle.svelte';
@@ -12,7 +13,7 @@
   import { browser } from 'wxt/browser';
   import { doneKeepLabel } from '../../../ui/keep-wording';
 
-  let { card, prompt, collapsed = false, syncOn = false, onToggle, onFocus, onOpenLinked, onCloseGroup, onCloseAndArchive, onKeep, onOpenProject }: {
+  let { card, prompt, collapsed = false, syncOn = false, activeTabId, onToggle, onFocus, onOpenLinked, onCloseGroup, onCloseAndArchive, onKeep, onOpenProject }: {
     card: ProjectCard;
     /**
      * Show "Ticket is done. Close this group?", or "Issue is closed. Close this group?" for a GitHub issue (`card.issue`)
@@ -23,6 +24,8 @@
     collapsed?: boolean;
     /** Project sync is on (projects.sync.status `enabled`): Keep also saves the project to bookmarks. */
     syncOn?: boolean;
+    /** The active tab of the page's window (#212): the card holding it is the current project. */
+    activeTabId?: number;
     /** The header's disclosure button: collapse or expand the card. */
     onToggle: () => void;
     onFocus: (tabId: number) => void;
@@ -46,9 +49,10 @@
   // GitHub calls them issues, closed rather than done; a Jira card keeps the ticket wording.
   const DONE = $derived(card.issue ? 'Issue is closed' : 'Ticket is done');
   const PROMPT = $derived(`${DONE}. Close this group?`);
+  const current = $derived(activeTabId !== undefined && card.tabs.some((t) => t.tabId === activeTabId));
 </script>
 
-<article class="card">
+<article class="card" class:current aria-current={current ? 'true' : undefined}>
   <header>
     <button type="button" class="disclosure" aria-expanded={!collapsed} aria-controls={bodyId} aria-label={card.title}
       title={collapsed ? 'Expand' : 'Collapse'} onclick={onToggle}><span aria-hidden="true">{collapsed ? '▸' : '▾'}</span></button>
@@ -74,13 +78,13 @@
   {/if}
   <ul>
     {#each card.tabs as t (t.tabId)}
-      <li class="row">
+      <li class="row" class:current={t.tabId === activeTabId}>
         {#if t.favIconUrl}
           <img class="fav" src={t.favIconUrl} alt="" width="16" height="16" />
         {:else}
           <span class="fav fav-ph" aria-hidden="true"></span>
         {/if}
-        <button type="button" class="title" title={t.url} onclick={() => onFocus(t.tabId)}>{t.title || t.url}</button>
+        <button type="button" class="title" title={t.url} aria-current={t.tabId === activeTabId ? 'true' : undefined} onclick={() => onFocus(t.tabId)}>{t.title || t.url}</button>
         <PrPill state={t.pill} stale={t.stale === true} staleLabel={STALE} />
       </li>
     {/each}
@@ -98,6 +102,29 @@
 
 <style>
   .card { border-bottom: 1px solid var(--border); padding: 4px 0 6px; }
+  /* The current project (#212): a rounded, inset card (the header alone when collapsed) with an accent outline and tint,
+     and a rounded, stronger tint and bold title on its tab row, which hover and focus deepen rather than replace. The
+     outline takes no space and the divider turns transparent rather than going, so marking a card never moves the list.
+     An outline rather than an inset bar: on a rounded box an inset shadow thins into a crescent at the corners. */
+  .card.current { margin: 0 6px; border-radius: 8px; border-bottom-color: transparent;
+    outline: 1px solid var(--accent); outline-offset: -1px; background: color-mix(in srgb, var(--accent) 8%, transparent);
+    /* On the tints the muted, accent and green text falls below 4.5:1 (11px): inks pushed toward --text keep it at
+       4.6:1 or more in both themes, hover included. The outline and tints keep the plain accent. */
+    --muted-ink: color-mix(in srgb, var(--text) 75%, var(--bg));
+    --accent-ink: color-mix(in srgb, var(--accent) 62%, var(--text));
+    --ok-ink: color-mix(in srgb, var(--ok, #1e8e3e) 50%, var(--text)); }
+  .card.current button, .card.current .count, .card.current .status, .card.current :global(.pill),
+  .card.current :global(.pr-stale) { --muted: var(--muted-ink); --accent: var(--accent-ink); --ok: var(--ok-ink); }
+  /* The opaque --hover would flatten the tint (1.03:1): a translucent shade of the text deepens it instead. */
+  .card.current .row:not(.current):hover, .card.current .row:not(.current):focus-within, .card.current .disclosure:hover {
+    background: color-mix(in srgb, var(--text) 7%, transparent); }
+  .card.current .prompt { background: var(--bg); }
+  /* The rows of the current card are rounded and inset, so the curve of the current row and of a hovered row shows;
+     6 px margin + 6 px padding keep the row content 12 px from the card edge, as before. */
+  .card.current .row { margin: 0 6px; padding: 4px 6px; border-radius: 6px; }
+  .row.current { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+  .row.current:hover, .row.current:focus-within { background: color-mix(in srgb, var(--accent) 26%, transparent); }
+  .row.current .title { font-weight: 600; }
   header { display: flex; align-items: center; gap: 8px; padding: 6px 12px 2px 4px; }
   .disclosure { flex: none; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 4px; background: none;
     color: var(--muted); font: inherit; line-height: 1; cursor: pointer; }

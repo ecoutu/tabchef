@@ -19,9 +19,16 @@
     allCollapsed, collapseIds, COLLAPSED_PROJECTS_KEY, expandIds, parseCollapsed, pruneCollapsed, sameIds, type Edit,
   } from '../../../ui/collapsed-projects';
   import { syncOnFrom } from '../../../ui/keep-wording';
+  import { followActiveTab, type ActiveTabFollower } from '../../../ui/active-tab';
   import ProjectCard from './ProjectCard.svelte';
 
-  let { live = false, onChange, onOpenProject }: { live?: boolean; onChange?: () => void; onOpenProject?: (id: string) => void } = $props();
+  let { live = false, activeTabId, onChange, onOpenProject }: {
+    live?: boolean;
+    /** The popup's active tab (#212), read once: the popup closes when another tab is activated. */
+    activeTabId?: number;
+    onChange?: () => void;
+    onOpenProject?: (id: string) => void;
+  } = $props();
   let cards = $state<Card[] | undefined>(undefined);
   let error = $state('');
   /**
@@ -33,6 +40,12 @@
   let toast = $state<Toast | undefined>(undefined);
   /** Project sync is on: Keep in a Done prompt also saves the project to bookmarks. */
   let syncOn = $state(false);
+  /**
+   * The side panel's active tab (#212), followed while it is open and read again with each list. The current tab's card
+   * and row are marked current; a tab that joins a project shows as current with the next list.
+   */
+  let followed = $state<number | undefined>(undefined);
+  const currentTabId = $derived(live ? followed : activeTabId);
   let seq = 0;
   /**
    * The collapsed cards' ids as shown: `stored` with this page's edits not yet stored on top. Storage is the source of
@@ -129,6 +142,7 @@
 
   async function load(): Promise<void> {
     const n = ++seq;
+    void follower?.sync();
     const [r, s] = await Promise.all([send({ type: 'projects.list' }), send({ type: 'projects.sync.status' })]);
     await collapsedRead; // no card shows expanded before its stored state is known
     if (n !== seq) return; // a newer list is on its way
@@ -153,16 +167,21 @@
   const { focus, openLinked, closeGroup, closeAndArchive, keepDone, undo } = actions;
 
   let stopLive: (() => void) | undefined;
+  let follower: ActiveTabFollower | undefined;
 
   onMount(() => {
     browser.storage.onChanged.addListener(onStorage);
     collapsedRead = readCollapsed();
-    if (live) stopLive = startLiveRefresh(load);
+    if (live) {
+      follower = followActiveTab((id) => { followed = id; });
+      stopLive = startLiveRefresh(load);
+    }
     void load();
     void send({ type: 'sources.refresh' }).then((r) => (r.ok ? load() : undefined));
   });
   onDestroy(() => {
     stopLive?.();
+    follower?.stop();
     browser.storage.onChanged.removeListener(onStorage);
   });
 </script>
@@ -190,7 +209,7 @@
     <p class="empty">No projects yet. Turn on a Jira ticket or GitHub issue recipe, then open a ticket or issue.</p>
   {/if}
   {#each cards ?? [] as c (c.id)}
-    <ProjectCard card={c} prompt={c.showClose && !kept.includes(c.id)}
+    <ProjectCard card={c} prompt={c.showClose && !kept.includes(c.id)} activeTabId={currentTabId}
       collapsed={collapsed.includes(c.id)} {syncOn} onToggle={() => setIds([c.id], !collapsed.includes(c.id))}
       onFocus={focus} onOpenLinked={(url) => openLinked(c.id, url)} onCloseGroup={() => closeGroup(c.id)}
       onCloseAndArchive={() => closeAndArchive(c.id)}

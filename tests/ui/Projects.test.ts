@@ -2,6 +2,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, cleanup, waitFor, within } from '@testing-library/svelte';
 import { fakeBrowser } from 'wxt/testing/fake-browser';
+import { tick } from 'svelte';
+import { browser } from 'wxt/browser';
 import type { ProjectCardData } from '../../src/core/projects/types';
 
 const send = vi.fn();
@@ -598,5 +600,74 @@ describe('Done prompt Keep wording (#157)', () => {
     withStatus({ ok: false, error: 'worker restarting' });
     render(Projects);
     expect(await screen.findByRole('button', { name: 'Keep open' })).toBeTruthy();
+  });
+});
+
+describe('the current project (#212)', () => {
+  const other: ProjectCardData = {
+    id: 'jira:ABC-4', key: 'ABC-4', title: 'ABC-4 · Signup', status: { name: 'In Progress', category: 'indeterminate', via: 'api' }, done: false,
+    tabs: [{ tabId: 4, windowId: 1, title: 'ABC-4 ticket', url: 'https://acme.atlassian.net/browse/ABC-4', lastAccessed: 5 }],
+    linked: [],
+  };
+  const card = (title: string) => screen.getByRole('heading', { name: title }).closest('article')!;
+  const isCurrent = (title: string) => card(title).getAttribute('aria-current') === 'true';
+  const activate = (tabId: number, windowId: number) =>
+    (fakeBrowser.tabs.onActivated as unknown as { trigger: (i: unknown) => Promise<unknown> }).trigger({ tabId, windowId });
+  const listening = () => (fakeBrowser.tabs.onActivated as unknown as { hasListeners: () => boolean }).hasListeners();
+  const activeTab = (tab: unknown) =>
+    (vi.spyOn(browser.tabs, 'query') as unknown as { mockResolvedValue: (v: unknown) => void }).mockResolvedValue([tab]);
+
+  it('the popup: the card holding its active tab, and that tab row, are marked current; the others are not', async () => {
+    cards = [done, other];
+    render(Projects, { activeTabId: 2 });
+    await screen.findByRole('heading', { name: 'ABC-4 · Signup' });
+    expect(isCurrent('ABC-1 · Login fails')).toBe(true);
+    expect(card('ABC-4 · Signup').hasAttribute('aria-current')).toBe(false);
+    expect(screen.getByRole('button', { name: 'Fix login' }).getAttribute('aria-current')).toBe('true');
+    expect(screen.getByRole('button', { name: 'ABC-1 ticket' }).hasAttribute('aria-current')).toBe(false);
+  });
+
+  it('the popup does not follow tab switches (it closes on one)', async () => {
+    render(Projects, { activeTabId: 2 });
+    await screen.findByRole('heading', { name: 'ABC-1 · Login fails' });
+    expect(listening()).toBe(false);
+  });
+
+  it('a collapsed current card is marked current but stays collapsed', async () => {
+    await fakeBrowser.storage.local.set({ 'projects.collapsed': ['jira:ABC-1'] });
+    render(Projects, { activeTabId: 2 });
+    await screen.findByRole('heading', { name: 'ABC-1 · Login fails' });
+    expect(isCurrent('ABC-1 · Login fails')).toBe(true);
+    expect(screen.getByRole('button', { name: 'ABC-1 · Login fails' }).getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('the side panel follows switches in its own window: to another card, off every card, not for another window', async () => {
+    cards = [done, other];
+    activeTab({ id: 2, windowId: 1 });
+    const { unmount } = render(Projects, { live: true });
+    await screen.findByRole('heading', { name: 'ABC-4 · Signup' });
+    await waitFor(() => expect(isCurrent('ABC-1 · Login fails')).toBe(true));
+    await activate(4, 1);
+    await waitFor(() => expect(isCurrent('ABC-4 · Signup')).toBe(true));
+    expect(isCurrent('ABC-1 · Login fails')).toBe(false);
+    await activate(1, 2); // another window
+    await tick();
+    expect(isCurrent('ABC-4 · Signup')).toBe(true);
+    await activate(99, 1); // a tab in no project
+    await waitFor(() => expect(document.querySelector('[aria-current]')).toBeNull());
+    unmount();
+    expect(listening()).toBe(false);
+  });
+
+  it('the side panel reads the active tab again with each list (an id swapped by tabs.onReplaced)', async () => {
+    activeTab({ id: 2, windowId: 1 });
+    render(Projects, { live: true });
+    await screen.findByRole('heading', { name: 'ABC-1 · Login fails' });
+    await waitFor(() => expect(isCurrent('ABC-1 · Login fails')).toBe(true));
+    cards = [{ ...done, tabs: [done.tabs[0]!, { ...done.tabs[1]!, tabId: 20 }] }];
+    activeTab({ id: 20, windowId: 1 });
+    await (fakeBrowser.runtime.onMessage as unknown as { trigger: (m: unknown) => Promise<unknown> })
+      .trigger({ type: 'config.changed', rev: 'r2' });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Fix login' }).getAttribute('aria-current')).toBe('true'));
   });
 });

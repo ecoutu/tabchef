@@ -215,7 +215,7 @@
 
   <div class="body" role="tabpanel">
     {#if activeView?.kind === 'projects'}
-      <Projects onChange={refresh} onOpenProject={(id) => openOptions(projectHomeHash(id))} />
+      <Projects activeTabId={currentTabId} onChange={refresh} onOpenProject={(id) => openOptions(projectHomeHash(id))} />
     {:else if activeView && data?.viewId === activeView.id}
       {#if data.data.kind === 'duplicates'}
         <Duplicates data={{ sets: data.data.sets, pending: data.data.pending, locked }} onChange={refresh} />
