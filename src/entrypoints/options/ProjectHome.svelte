@@ -222,7 +222,7 @@
   .prs { color: var(--muted); font-size: 12px; }
   .status { flex: none; font-size: 11px; border-radius: 999px; padding: 1px 8px; border: 1px solid var(--border); color: var(--muted); }
   .tone-progress { color: var(--accent); border-color: var(--accent); }
-  .tone-done { color: var(--ok, #1e8e3e); border-color: var(--ok, #1e8e3e); }
+  .tone-done { color: var(--ok); border-color: var(--ok); }
   /* Like the in-progress status pill: --accent on --bg, 4.5:1 light and 6.4:1 dark (WCAG AA at 11px). */
   .saved { flex: none; font-size: 11px; border-radius: 999px; padding: 1px 8px; border: 1px solid var(--accent); color: var(--accent); }
   ul { list-style: none; margin: 0; padding: 0; }

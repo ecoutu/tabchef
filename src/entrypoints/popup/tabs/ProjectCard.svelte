@@ -135,7 +135,7 @@
   .count { color: var(--muted); font-size: 11px; flex: none; }
   .status { flex: none; font-size: 11px; border-radius: 999px; padding: 1px 8px; border: 1px solid var(--border); color: var(--muted); }
   .tone-progress { color: var(--accent); border-color: var(--accent); }
-  .tone-done { color: var(--ok, #1e8e3e); border-color: var(--ok, #1e8e3e); }
+  .tone-done { color: var(--ok); border-color: var(--ok); }
   /* White on the Chrome group green (#188038, as in the options page): 5.0:1 in both themes (WCAG AA at 11px). */
   .badge { color: #fff; background: #188038; border-color: #188038; font-weight: 600; }
   .prompt { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 4px 12px; padding: 6px 8px; border-radius: 6px; background: var(--surface); }

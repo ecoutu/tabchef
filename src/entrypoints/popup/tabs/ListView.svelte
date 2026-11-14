@@ -185,7 +185,7 @@
   .count { color: var(--muted); font-size: 11px; flex: none; }
   .status { flex: none; font-size: 11px; border-radius: 999px; padding: 1px 8px; border: 1px solid var(--border); color: var(--muted); }
   .tone-progress { color: var(--accent); border-color: var(--accent); }
-  .tone-done { color: var(--ok, #1e8e3e); border-color: var(--ok, #1e8e3e); }
+  .tone-done { color: var(--ok); border-color: var(--ok); }
   .project-actions { display: flex; flex-wrap: wrap; gap: 6px; }
   .toast { display: flex; align-items: center; gap: 8px; margin: 6px 12px; padding: 6px 8px; border-radius: 6px; background: var(--surface); }
   .toast .act { background: var(--bg); }
