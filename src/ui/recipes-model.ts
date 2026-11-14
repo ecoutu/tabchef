@@ -7,9 +7,14 @@ import type { Needs } from '../engine/permissions';
 import { conflictingRecipes, paramProblem } from '../core/lang/compile';
 import { matchPatternProblem } from '../core/lang/schema';
 
-/** Everything Enable requests in one prompt: the recipe's own needs plus every rule-level need (Meet for Finished). */
+/**
+ * Everything Enable requests in one prompt: the recipe's own needs plus every rule-level need (Meet for Finished), plus
+ * what a rule paused on `anyOf` alternatives misses (#225): its `needs` holds only the base needs, so a rule that needs
+ * "the GitHub connection or github.com" (Merged PRs) would otherwise ask for nothing. A rule that runs adds nothing.
+ */
 export function requestedNeeds(item: RecipeListItem): Needs {
-  const all = [item.needs, ...Object.values(item.rules).map((r) => r.needs)];
+  const rules = Object.values(item.rules);
+  const all = [item.needs, ...rules.map((r) => r.needs), ...rules.filter((r) => !r.status.ok).map((r) => r.status.missing)];
   return { origins: [...new Set(all.flatMap((n) => n.origins))], permissions: [...new Set(all.flatMap((n) => n.permissions))] };
 }
 

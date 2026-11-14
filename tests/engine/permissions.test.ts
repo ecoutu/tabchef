@@ -454,6 +454,17 @@ describe('M3 T12: capability levels from permissions and connections', () => {
     expect(await pm.levelFor('x/a')).toBe('titles');
   });
 
+  it('#225: recipes.list on a fresh install: Merged PRs\' pr-state is paused and its status lists github.com (what Enable requests)', async () => {
+    const t = setup([ref('merged-prs', false)], [], builtinRecipes(), { github: 'not-configured' });
+    const r = await t.handle({ type: 'recipes.list' }, ui) as { ok: true; data: { recipes: RecipeListItem[] } };
+    const pr = r.data.recipes[0]!.rules['merged-prs/pr-state']!;
+    expect(pr.needs).toEqual({ origins: [], permissions: [] }); // anyOf only: no base needs
+    expect(pr.status).toMatchObject({ ok: false, missing: { origins: ['https://github.com/*'], permissions: ['scripting'] } });
+    t.grant('https://github.com/*', 'scripting');
+    const after = await t.handle({ type: 'recipes.list' }, ui) as { ok: true; data: { recipes: RecipeListItem[] } };
+    expect(after.data.recipes[0]!.rules['merged-prs/pr-state']!.status).toMatchObject({ ok: true, level: 1 });
+  });
+
   it('recipes.list returns the levels of each recipe that declares them, enabled or not', async () => {
     const t = setup([ref('either', false), ref('gh', true)], [], { either, gh }, { github: 'ok', jira: 'not-configured' });
     const r = await t.handle({ type: 'recipes.list' }, ui) as { ok: true; data: { recipes: RecipeListItem[] } };

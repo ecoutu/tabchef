@@ -2,7 +2,7 @@
 // Recipes page (M2 T15). Enable follows ruling R5: requestNeeds FIRST (synchronously, in the click's user gesture),
 // then preview.change for the config with the recipe enabled, then on Apply recipes.enable {id, params, baseRev}.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/svelte';
+import { render, screen, fireEvent, cleanup, waitFor, within } from '@testing-library/svelte';
 import { browser } from 'wxt/browser';
 import { fakeBrowser } from 'wxt/testing/fake-browser';
 import { defaultConfig } from '../../src/core/config/defaults';
@@ -136,12 +136,19 @@ describe('Recipes: cards', () => {
     items = [finishedItem({ enabled: true })];
     render(Recipes, props({ saved: { ...defaultConfig(), recipes: defaultConfig().recipes.map((r) => (r.id === 'finished' ? { ...r, enabled: true } : r)) } }));
     const c = await card('Finished');
-    const rows = [...c.querySelectorAll('[data-rule]')].map((x) => x.textContent!.replace(/\s+/g, ' ').trim());
+    const status = (x: Element) => [...x.childNodes].filter((n) => n.nodeName !== 'BUTTON' && n.nodeName !== 'A').map((n) => n.textContent).join('');
+    const rows = [...c.querySelectorAll('[data-rule]')].map((x) => status(x).replace(/\s+/g, ' ').trim());
     expect(rows).toEqual([
       'Close OAuth callback tabs: Active',
       `Close Meet tabs after the call ends: ${PAUSED}`,
       'Close redirect landing tabs: Inactive: no URL patterns',
     ]);
+    // #225: the paused rule can be unlocked from its row (no connection alternative: no Connections link).
+    const meet = c.querySelector('[data-rule="finished/meet-ended"]')!;
+    expect(meet.querySelector('button')!.textContent).toBe('Allow access');
+    expect(meet.querySelector('a')).toBeNull();
+    await fireEvent.click(meet.querySelector('button')!);
+    expect(request).toHaveBeenCalledWith({ origins: [MEET], permissions: ['scripting'] });
   });
 
   it('a rule turned off in #/rules (ruleEnabled, R56) shows Off; one turned on shows Active', async () => {
@@ -422,5 +429,174 @@ describe('Recipes: capability levels (M3 T12)', () => {
     await trigger({ type: 'connections.changed', id: 'github' });
     await new Promise((r) => setTimeout(r, 0));
     expect(lists()).toBe(before);
+  });
+});
+
+describe('Recipes: a rule paused for "a connection or a host" (#225)', () => {
+  const GH = 'https://github.com/*';
+  const REASON = 'Paused: needs the GitHub connection, or needs access to github.com';
+  /** Merged PRs as recipes.list sends it on a fresh install: pr-state's own needs are only `anyOf` alternatives, so its
+   * `needs` is empty; its status lists what the alternatives miss. */
+  function mergedItem(over: Partial<RecipeListItem> = {}, prStateOk = false): RecipeListItem {
+    return {
+      id: 'merged-prs', source: 'builtin', enabled: false, params: {}, name: 'Merged PRs',
+      description: 'Lists open tabs of merged GitHub pull requests in the popup\'s Merged tab, and can close them.',
+      paramDefs: {}, needs: none, status: { ok: true, missing: none },
+      rules: {
+        'merged-prs/pr-state': {
+          needs: none,
+          status: prStateOk ? { ok: true, missing: none, level: 0 } : { ok: false, missing: { origins: [GH], permissions: ['scripting'] }, reason: REASON },
+        },
+      },
+      ...over,
+    };
+  }
+  const withMerged = (enabled: boolean): Config => {
+    const c = defaultConfig();
+    return { ...c, recipes: c.recipes.map((r) => (r.id === 'merged-prs' ? { ...r, enabled } : r)) };
+  };
+  const row = (c: HTMLElement) => c.querySelector('[data-rule="merged-prs/pr-state"]') as HTMLElement;
+
+  it('Enable requests github.com (and scripting) in the click when neither github.com nor the GitHub connection is there', async () => {
+    items = [mergedItem()];
+    render(Recipes, props({ saved: withMerged(false) }));
+    const c = await card('Merged PRs');
+    const clicked = fireEvent.click(within(c).getByRole('button', { name: 'Enable' }));
+    expect(request).toHaveBeenCalledWith({ origins: [GH], permissions: ['scripting'] }); // synchronously, in the gesture
+    await clicked;
+    await waitFor(() => expect(sent('recipes.enable')).toHaveLength(1));
+  });
+
+  it('Enable asks for nothing when the rule already runs (the GitHub connection is set up)', async () => {
+    items = [mergedItem({}, true)];
+    render(Recipes, props({ saved: withMerged(false) }));
+    const c = await card('Merged PRs');
+    await fireEvent.click(within(c).getByRole('button', { name: 'Enable' }));
+    await waitFor(() => expect(sent('recipes.enable')).toHaveLength(1));
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it('a denied prompt still enables (a rule-level need): the paused rule offers Allow access and Set up a connection', async () => {
+    request.mockImplementation((p: unknown) => { log.push(`request ${JSON.stringify(p)}`); return Promise.resolve(false); });
+    items = [mergedItem()];
+    const list = send.getMockImplementation()!;
+    send.mockImplementation(async (req: { type: string }) => {
+      if (req.type === 'recipes.enable') items = [mergedItem({ enabled: true })];
+      return list(req);
+    });
+    render(Recipes, props({ saved: withMerged(false) }));
+    const c = await card('Merged PRs');
+    await fireEvent.click(within(c).getByRole('button', { name: 'Enable' }));
+    expect(request).toHaveBeenCalledWith({ origins: [GH], permissions: ['scripting'] });
+    await waitFor(() => expect(sent('recipes.enable')).toHaveLength(1));
+    await waitFor(() => expect(c.querySelector('.status')!.textContent).toBe('On'));
+    expect(within(c).getByRole('status').textContent).toBe('Enabled.');
+    expect(row(c).textContent).toContain(REASON);
+    expect(within(row(c)).getByRole('link', { name: 'Set up a connection' }).getAttribute('href')).toBe('#/connections');
+    log = [];
+    await fireEvent.click(within(row(c)).getByRole('button', { name: 'Allow access' }));
+    expect(log[0]).toBe(`request ${JSON.stringify({ origins: [GH], permissions: ['scripting'] })}`);
+  });
+
+  const DENIED = 'Read pull request state: Not allowed: needs the GitHub connection, or needs access to github.com (permission denied).';
+
+  it('a denied Allow access on the rule row says so on the card', async () => {
+    request.mockImplementation(() => Promise.resolve(false));
+    items = [mergedItem({ enabled: true })];
+    render(Recipes, props({ saved: withMerged(true) }));
+    const c = await card('Merged PRs');
+    await waitFor(() => expect(row(c).textContent).toContain(REASON));
+    await fireEvent.click(within(row(c)).getByRole('button', { name: 'Allow access' }));
+    expect((await within(c).findByRole('alert')).textContent).toBe(DENIED);
+  });
+
+  it('a failed Allow access (the request rejects) says so too', async () => {
+    request.mockImplementation(() => Promise.reject(new Error('boom')));
+    items = [mergedItem({ enabled: true })];
+    render(Recipes, props({ saved: withMerged(true) }));
+    const c = await card('Merged PRs');
+    await waitFor(() => expect(row(c).textContent).toContain(REASON));
+    await fireEvent.click(within(row(c)).getByRole('button', { name: 'Allow access' }));
+    expect((await within(c).findByRole('alert')).textContent).toBe(DENIED);
+  });
+
+  it('auto-close-merged, turned on in #/rules and needing only the GitHub connection, offers only the Connections link', async () => {
+    const ONLY_CONN = 'Paused: needs the GitHub connection';
+    items = [mergedItem({ enabled: true, rules: {
+      ...mergedItem().rules,
+      'merged-prs/auto-close-merged': { needs: none, status: { ok: false, missing: none, reason: ONLY_CONN } },
+    } })];
+    const c0 = defaultConfig();
+    const saved = { ...c0, recipes: c0.recipes.map((r) => (r.id === 'merged-prs' ? { ...r, enabled: true, ruleEnabled: { 'auto-close-merged': true } } : r)) };
+    render(Recipes, props({ saved }));
+    const c = await card('Merged PRs');
+    const auto = () => c.querySelector('[data-rule="merged-prs/auto-close-merged"]') as HTMLElement;
+    await waitFor(() => expect(auto().textContent).toContain(ONLY_CONN));
+    expect(within(auto()).getByRole('link', { name: 'Set up a connection' }).getAttribute('href')).toBe('#/connections');
+    expect(auto().querySelector('button')).toBeNull();
+  });
+
+  it('a running rule offers neither', async () => {
+    items = [mergedItem({ enabled: true }, true)];
+    render(Recipes, props({ saved: withMerged(true) }));
+    const c = await card('Merged PRs');
+    await waitFor(() => expect(row(c).textContent).toContain('Active'));
+    expect(row(c).querySelector('button, a')).toBeNull();
+  });
+});
+
+describe('Recipes: a recipe with levels whose PR rule is paused (#225, GitHub issue projects / Jira ticket projects)', () => {
+  const GH = 'https://github.com/*';
+  const REASON = 'Paused: needs the GitHub connection, or needs access to github.com';
+  const levels: NonNullable<RecipeListItem['levels']> = [
+    { id: 'titles', label: 'Titles', available: true },
+    { id: 'page', label: 'Page details', available: false, needs: 'github.com', missing: { origins: [GH], permissions: ['scripting'], connections: [] } },
+    { id: 'connections', label: 'Connections', available: false, needs: 'GitHub connection', missing: { origins: [], permissions: [], connections: ['github'] } },
+  ];
+  function issueItem(over: Partial<RecipeListItem> = {}): RecipeListItem {
+    return {
+      id: 'github-issue', source: 'builtin', enabled: false, params: {}, name: 'GitHub issue projects', description: 'Issue projects.',
+      paramDefs: {}, needs: none, status: { ok: true, missing: none }, levels,
+      rules: {
+        'github-issue/issue': { needs: none, status: { ok: true, missing: none, level: 2 } },
+        'github-issue/pr': { needs: none, status: { ok: false, missing: { origins: [GH], permissions: ['scripting'] }, reason: REASON } },
+      },
+      ...over,
+    };
+  }
+  const withIssue = (enabled: boolean): Config => {
+    const c = defaultConfig();
+    return { ...c, recipes: c.recipes.map((r) => (r.id === 'github-issue' ? { ...r, enabled } : r)) };
+  };
+
+  it('Enable requests the paused rule\'s missing hosts in the click; a denied prompt still enables', async () => {
+    request.mockImplementation((p: unknown) => { log.push(`request ${JSON.stringify(p)}`); return Promise.resolve(false); });
+    items = [issueItem()];
+    render(Recipes, props({ saved: withIssue(false) }));
+    const c = await card('GitHub issue projects');
+    const clicked = fireEvent.click(within(c).getByRole('button', { name: 'Enable' }));
+    expect(request).toHaveBeenCalledWith({ origins: [GH], permissions: ['scripting'] }); // synchronously, in the gesture
+    await clicked;
+    await waitFor(() => expect(sent('recipes.enable')).toHaveLength(1));
+  });
+
+  it('its rule rows show no buttons or links (the levels offer them)', async () => {
+    items = [issueItem({ enabled: true })];
+    render(Recipes, props({ saved: withIssue(true) }));
+    const c = await card('GitHub issue projects');
+    const pr = () => c.querySelector('[data-rule="github-issue/pr"]') as HTMLElement;
+    await waitFor(() => expect(pr().textContent).toContain(REASON));
+    expect(c.querySelector('.rules button, .rules a')).toBeNull();
+    expect(c.querySelector('[data-level="page"] button')).not.toBeNull();
+  });
+
+  it('a denied level Allow access says so on the card', async () => {
+    request.mockImplementation(() => Promise.resolve(false));
+    items = [issueItem({ enabled: true })];
+    render(Recipes, props({ saved: withIssue(true) }));
+    const c = await card('GitHub issue projects');
+    await waitFor(() => expect(c.querySelector('[data-level="page"] button')).not.toBeNull());
+    await fireEvent.click(c.querySelector('[data-level="page"] button')!);
+    expect((await within(c).findByRole('alert')).textContent).toBe('Page details: Not allowed: needs github.com (permission denied).');
   });
 });

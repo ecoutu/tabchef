@@ -104,16 +104,39 @@
     const why = shown ? inactiveReason(shown.rule) : undefined;
     return why ? `Inactive: ${why}` : 'Active';
   }
+  /**
+   * #225: a paused rule of an enabled recipe that declares no levels (Merged PRs) gets the unlock actions a locked level
+   * has: Allow access for its missing hosts / permissions, and a link to #/connections when an alternative is a connection.
+   */
+  function pausedRule(i: RecipeListItem, rule: Rule): { missing?: NeedStatus['missing']; connection: boolean } | undefined {
+    if (i.levels?.length || !i.enabled || !i.status.ok || !ruleOn(saved.recipes.find((r) => r.id === i.id) ?? {}, rule)) return undefined;
+    const st = i.rules[`${i.id}/${rule.id}`]?.status;
+    if (!st || st.ok) return undefined;
+    const connection = Boolean(rule.needs?.connections?.length || rule.needs?.anyOf?.some((a) => a.connections?.length));
+    return { ...((st.missing.origins.length || st.missing.permissions.length) && { missing: st.missing }), connection };
+  }
   const levelText = (l: LevelStatus): string => (l.available ? `${l.label}: available` : `${l.label}: locked, needs ${l.needs ?? ''}`);
   /**
    * Request a locked level's hosts. requestNeeds is the first statement (user gesture). A grant reloads through
    * onPermissionsChanged; only without that subscription does the answer reload here (never both).
    */
-  function allowLevel(l: LevelStatus): void {
-    const granted = requestNeeds({ origins: l.missing?.origins ?? [], permissions: l.missing?.permissions ?? [] });
-    if (!watchingPermissions) void granted.catch(() => false).then(() => load());
+  function allowLevel(item: RecipeListItem, l: LevelStatus): void {
+    allow(item.id, { origins: l.missing?.origins ?? [], permissions: l.missing?.permissions ?? [] }, `${l.label}: ${deniedText({ reason: `needs ${l.needs ?? 'missing permissions'}` }, 'Not allowed')}`);
   }
-  const deniedText = (s: NeedStatus): string => `Not enabled: ${(s.reason ?? 'missing permissions').replace(/^Paused: /, '')} (permission denied).`;
+  /**
+   * allowLevel for any needs (a paused rule's, #225): requestNeeds first, in the click. A denied (or failed) prompt
+   * says so on the card with `denied`.
+   */
+  function allow(id: string, missing: NeedStatus['missing'], denied: string): void {
+    const granted = requestNeeds(missing);
+    messages[id] = { text: '', error: false };
+    void granted.catch(() => false).then((ok) => {
+      if (!ok) say(id, denied, true);
+      if (!watchingPermissions) void load();
+    });
+  }
+  const deniedText = (s: Pick<NeedStatus, 'reason'>, what = 'Not enabled'): string =>
+    `${what}: ${(s.reason ?? 'missing permissions').replace(/^Paused: /, '')} (permission denied).`;
   const errorsOf = (i: RecipeListItem): Record<string, string> => paramErrors(i.paramDefs, values[i.id] ?? {}, hostParams(bodyOf(i.id)));
   const blocked = (i: RecipeListItem): boolean => dirty || busy !== null || Object.keys(errorsOf(i)).length > 0;
   const rev = (): string | undefined => baseRev ?? listRev;
@@ -200,7 +223,10 @@
       {#if body?.rules.length}
         <ul class="rules">
           {#each body.rules as r (r.id)}
-            <li data-rule={`${item.id}/${r.id}`}>{r.name}: <span class:paused={ruleStatus(item, r).startsWith('Paused')}>{ruleStatus(item, r)}</span></li>
+            {@const unlock = pausedRule(item, r)}
+            <li data-rule={`${item.id}/${r.id}`}>{r.name}: <span class:paused={ruleStatus(item, r).startsWith('Paused')}>{ruleStatus(item, r)}</span>{#if unlock?.missing}{@const missing = unlock.missing}
+              <button type="button" disabled={busy !== null} onclick={() => allow(item.id, missing, `${r.name}: ${deniedText(item.rules[`${item.id}/${r.id}`]?.status ?? {}, 'Not allowed')}`)}>Allow access</button>{/if}{#if unlock?.connection}
+              <a href="#/connections">Set up a connection</a>{/if}</li>
           {/each}
         </ul>
       {/if}
@@ -213,7 +239,7 @@
               {#if !l.available && l.missing?.connections.length}
                 <a href="#/connections">Set up a connection</a>
               {:else if !l.available && (l.missing?.origins.length || l.missing?.permissions.length)}
-                <button type="button" disabled={busy !== null} onclick={() => allowLevel(l)}>Allow access</button>
+                <button type="button" disabled={busy !== null} onclick={() => allowLevel(item, l)}>Allow access</button>
               {:else if l.available && l.reauth?.length}
                 <a href="#/connections" class="reauth">Sign in again</a>
               {/if}
@@ -279,6 +305,7 @@
   .paused { color: var(--danger); }
   .needs { color: var(--muted); font-size: 12px; }
   .rules { margin: 0; padding-left: 18px; font-size: 13px; }
+  .rules li > button, .rules li > a { margin-left: 8px; }
   .levels { margin: 0; padding-left: 18px; font-size: 13px; }
   .levels li { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .locked { color: var(--muted); }
