@@ -229,8 +229,8 @@
 
 <style>
   :global(:root) {
-    --bg: #fff; --surface: #f6f6f8; --hover: #eef0f4; --border: #d4d7de; --text: #1c1e24; --muted: #6a6f7b;
-    --accent: #3b6df0; --danger: #b3261e; --ok: #177d36;
+    --bg: #fff; --surface: #f6f6f8; --hover: #eef0f4; --border: #d4d7de; --text: #1c1e24; --muted: #656a76;
+    --accent: #2f63e6; --danger: #b3261e; --ok: #177d36;
   }
   @media (prefers-color-scheme: dark) {
     :global(:root) {

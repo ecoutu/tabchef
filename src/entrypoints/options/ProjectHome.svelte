@@ -223,7 +223,7 @@
   .status { flex: none; font-size: 11px; border-radius: 999px; padding: 1px 8px; border: 1px solid var(--border); color: var(--muted); }
   .tone-progress { color: var(--accent); border-color: var(--accent); }
   .tone-done { color: var(--ok); border-color: var(--ok); }
-  /* Like the in-progress status pill: --accent on --bg, 4.5:1 light and 6.4:1 dark (WCAG AA at 11px). */
+  /* Like the in-progress status pill: --accent on --bg, 5.2:1 light and 6.4:1 dark (WCAG AA at 11px). */
   .saved { flex: none; font-size: 11px; border-radius: 999px; padding: 1px 8px; border: 1px solid var(--accent); color: var(--accent); }
   ul { list-style: none; margin: 0; padding: 0; }
   .row { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
