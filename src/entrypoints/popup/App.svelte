@@ -12,6 +12,7 @@
   import Projects from './tabs/Projects.svelte';
   import { projectHomeHash } from '../../ui/routes';
   import { startLiveRefresh } from '../../ui/project-actions';
+  import { currentTab } from '../../ui/active-tab';
 
   /** Recipe-declared views (M2 T17): one popup tab each, the rest under More ▾. */
   let views = $state<ViewSummary[]>([]);
@@ -75,11 +76,9 @@
       if (typeof v === 'string') lastTab = v;
       prefs = parsePopupPrefs(got[POPUP_PREFS_KEY]);
     } catch { /* storage unavailable: default tab, order and visible count */ }
-    try {
-      const tab = (await browser.tabs.query({ active: true, currentWindow: true }))[0];
-      currentTabId = tab?.id;
-      currentWindowId = tab?.windowId;
-    } catch { /* no current tab (e.g. devtools): no lock or side panel button */ }
+    const tab = await currentTab(); // none (e.g. devtools): no lock or side panel button
+    currentTabId = tab?.tabId;
+    currentWindowId = tab?.windowId;
     await refresh();
   });
   onDestroy(() => { browser.storage.onChanged.removeListener(onStorage); });
