@@ -74,6 +74,7 @@ npm run check:secrets    # the build holds no tokens and no test-only localhost 
 npm run check:csp        # no eval or new Function in the build
 npm run check:cycles     # no import cycles across the source layers
 npm run check:terms      # the store listing, the guides and the UI use the same words
+npm run check:contrast   # every theme text color reaches WCAG AA on every background color
 npm run validate:recipes # the built-in recipes match the recipe schema
 ```
 

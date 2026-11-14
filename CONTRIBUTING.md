@@ -26,6 +26,7 @@ npm run check
 npm test
 npm run check:terms
 npm run check:cycles
+npm run check:contrast     # if you changed a theme color
 npm run validate:recipes   # if you changed a recipe
 npm run e2e                # if you changed behaviour in the browser
 ```
