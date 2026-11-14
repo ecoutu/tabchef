@@ -241,6 +241,36 @@ describe('App: #/project/<id>', () => {
   });
 });
 
+describe('App: Projects card order (#217)', () => {
+  const at = (n: number, lastAccessed: number) => ({
+    id: `jira:ABC-${n}`, key: `ABC-${n}`, title: `ABC-${n}`, done: false, linked: [],
+    tabs: [{ tabId: n, windowId: 1, title: `ABC-${n} ticket`, url: `https://acme.atlassian.net/browse/ABC-${n}`, lastAccessed }],
+  });
+  const go = (hash: string) => { window.location.hash = hash; window.dispatchEvent(new HashChangeEvent('hashchange')); };
+  const order = async () => within(await screen.findByRole('region', { name: 'Open' })).getAllByRole('link').map((a) => a.textContent!.trim());
+
+  it('a project home and back keeps the Open order, though activity changed meanwhile', async () => {
+    let cards = [at(1, 10), at(2, 30), at(3, 20)];
+    const base = send.getMockImplementation()!;
+    send.mockImplementation(async (req: { type: string; id?: string }) => {
+      if (req.type === 'projects.list') return { ok: true, data: cards };
+      if (req.type === 'projects.home') return { ok: true, data: { ...cards.find((c) => c.id === req.id)!, groups: [] } };
+      return base(req);
+    });
+    window.location.hash = '#/projects';
+    render(App);
+    await waitFor(async () => expect(await order()).toEqual(['ABC-2', 'ABC-3', 'ABC-1']));
+    go('#/project/jira%3AABC-1');
+    expect(await screen.findByRole('navigation', { name: 'Breadcrumb' })).toBeTruthy();
+    cards = [at(1, 99), at(2, 30), at(3, 20)]; // ABC-1 is now the most recent
+    const n = send.mock.calls.filter((c) => c[0].type === 'projects.list').length;
+    go('#/projects');
+    await waitFor(() => expect(send.mock.calls.filter((c) => c[0].type === 'projects.list').length).toBeGreaterThan(n));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(await order()).toEqual(['ABC-2', 'ABC-3', 'ABC-1']);
+  });
+});
+
 describe('App: #/connections (M3 T7)', () => {
   it('opens the Connections page from the nav', async () => {
     const base = send.getMockImplementation()!;

@@ -608,3 +608,53 @@ describe('project lists: a hover tooltip with the full title', () => {
     tooltip(await screen.findByRole('heading', { level: 2, name: 'ABC-2 · Fix login' }), 'ABC-2 · Fix login');
   });
 });
+
+describe('Projects page: card order while the page is open (#217)', () => {
+  const at = (n: number, lastAccessed: number): ProjectCardData => ({
+    ...card(`jira-ticket-either:ABC-${n}`, `ABC-${n}`),
+    tabs: [{ tabId: n, windowId: 1, title: `ABC-${n} ticket`, url: `https://acme.atlassian.net/browse/ABC-${n}`, lastAccessed }],
+  });
+  let open: ProjectCardData[];
+  beforeEach(() => {
+    send.mockImplementation(async (req: { type: string }) => (req.type === 'projects.list' ? { ok: true, data: open } : reply(req)));
+  });
+  const order = async () => within(await screen.findByRole('region', { name: 'Open' })).getAllByRole('link').map((a) => a.textContent!.trim());
+  const lists = () => send.mock.calls.filter((c) => (c[0] as { type: string }).type === 'projects.list').length;
+  const configChanged = async () => {
+    const n = lists();
+    await (fakeBrowser.runtime.onMessage as unknown as { trigger: (m: unknown) => Promise<unknown> }).trigger({ type: 'config.changed', rev: 'r2' });
+    await waitFor(() => expect(lists()).toBe(n + 1));
+  };
+
+  it('the first list is most recently active first; a refresh where activity changed keeps that order', async () => {
+    open = [at(1, 10), at(2, 30), at(3, 20)];
+    render(Projects);
+    await waitFor(async () => expect(await order()).toEqual(['ABC-2', 'ABC-3', 'ABC-1']));
+    open = [at(1, 99), at(2, 30), at(3, 20)];
+    await configChanged();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(await order()).toEqual(['ABC-2', 'ABC-3', 'ABC-1']);
+  });
+
+  it('a new project is appended; one that leaves the Open list and comes back returns to its place', async () => {
+    open = [at(1, 10), at(2, 30), at(3, 20)];
+    render(Projects);
+    await waitFor(async () => expect(await order()).toEqual(['ABC-2', 'ABC-3', 'ABC-1']));
+    open = [at(1, 10), at(2, 30), at(4, 99)]; // ABC-3 closed (to Saved), ABC-4 new
+    await configChanged();
+    await waitFor(async () => expect(await order()).toEqual(['ABC-2', 'ABC-1', 'ABC-4']));
+    open = [at(1, 10), at(2, 30), at(3, 99), at(4, 99)]; // ABC-3 reopened
+    await configChanged();
+    await waitFor(async () => expect(await order()).toEqual(['ABC-2', 'ABC-3', 'ABC-1', 'ABC-4']));
+  });
+
+  it('opening the page again sorts by recency again', async () => {
+    open = [at(1, 10), at(2, 30)];
+    render(Projects);
+    await waitFor(async () => expect(await order()).toEqual(['ABC-2', 'ABC-1']));
+    cleanup();
+    open = [at(1, 99), at(2, 30)];
+    render(Projects);
+    await waitFor(async () => expect(await order()).toEqual(['ABC-1', 'ABC-2']));
+  });
+});

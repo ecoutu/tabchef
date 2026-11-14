@@ -1,6 +1,13 @@
 <script lang="ts">
   // The Projects tab (M3 T17): one card per open project (projects.list), in the popup and, full height, in the side
   // panel. Opening it sends sources.refresh (SourceService refresh('popup'), throttled; M3-R83), then lists again.
+  // Card order (#217): the first list is most recently active first; later lists on the same page (the refresh after
+  // sources.refresh, the side panel's polls, the reloads after an action) keep each card in place and add a project
+  // never shown on this page at the end (keepOrder). A project no longer listed is hidden but keeps its place, so one
+  // that comes back (Close group then Undo, a project missing from one refresh) returns to it, like the collapsed state.
+  // The order lasts as long as the page: reopening the popup or the side panel sorts again, and a side panel left open
+  // never re-sorts. `cardOrder` (the side panel) holds it outside this view, so the panel's round trip to a project
+  // home and back keeps it; without it (the popup) the view holds its own, and switching popup tabs sorts again.
   // `live` (the side panel): also re-fetch on config.changed and every LIVE_MS while the page is visible.
   // `onOpenProject` (the popup): a card title opens the dashboard at that project; without it the title link is a plain
   // hash link (the side panel switches on its own hash).
@@ -14,7 +21,7 @@
   import { browser } from 'wxt/browser';
   import { send } from '../../../ui/send';
   import { createProjectActions, startLiveRefresh, type Toast } from '../../../ui/project-actions';
-  import { buildProjectCards, type ProjectCard as Card } from '../../../ui/projects-model';
+  import { buildProjectCards, keepOrder, type CardOrder, type ProjectCard as Card } from '../../../ui/projects-model';
   import {
     allCollapsed, collapseIds, COLLAPSED_PROJECTS_KEY, expandIds, parseCollapsed, pruneCollapsed, sameIds, type Edit,
   } from '../../../ui/collapsed-projects';
@@ -22,8 +29,10 @@
   import { followActiveTab, type ActiveTabFollower } from '../../../ui/active-tab';
   import ProjectCard from './ProjectCard.svelte';
 
-  let { live = false, activeTabId, onChange, onOpenProject }: {
+  let { live = false, activeTabId, cardOrder, onChange, onOpenProject }: {
     live?: boolean;
+    /** The card order's holder (#217), kept by the page around this view so a remount keeps the order. */
+    cardOrder?: CardOrder;
     /** The popup's active tab (#212), read once: the popup closes when another tab is activated. */
     activeTabId?: number;
     onChange?: () => void;
@@ -47,6 +56,8 @@
   let followed = $state<number | undefined>(undefined);
   const currentTabId = $derived(live ? followed : activeTabId);
   let seq = 0;
+  /** Without `cardOrder`: this view's own card order (#217). */
+  const ownOrder: CardOrder = {};
   /**
    * The collapsed cards' ids as shown: `stored` with this page's edits not yet stored on top. Storage is the source of
    * truth: every write is a read-modify-write of the stored set, one at a time, and every storage.onChanged value is
@@ -148,7 +159,8 @@
     if (n !== seq) return; // a newer list is on its way
     syncOn = syncOnFrom(s, syncOn);
     if (r.ok) {
-      cards = buildProjectCards(r.data);
+      const held = cardOrder ?? ownOrder;
+      ({ cards, order: held.ids } = keepOrder(held.ids, buildProjectCards(r.data)));
       error = '';
       if (!pruned) {
         pruned = true;

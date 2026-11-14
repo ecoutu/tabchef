@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildDoneRows, buildProjectCards, projectSubtitle, staleText } from '../../src/ui/projects-model';
+import { buildDoneRows, buildProjectCards, keepOrder, projectSubtitle, staleText } from '../../src/ui/projects-model';
 import type { DoneProject, ProjectCardData } from '../../src/core/projects/types';
 
 const TICKET = 'https://acme.atlassian.net/browse/ABC-1';
@@ -69,6 +69,52 @@ describe('buildProjectCards (M3 T17)', () => {
       id, tabs: ts.map((t, i) => ({ tabId: i + 1, windowId: 1, title: 't', url: `${TICKET}?${i}`, ...(t !== undefined && { lastAccessed: t }) })),
     });
     expect(buildProjectCards([at('a', 5, 1), at('none', undefined), at('b', 2, 30), at('c', 20)]).map((c) => c.id)).toEqual(['b', 'c', 'a', 'none']);
+  });
+});
+
+describe('keepOrder: cards stay in place while the page is open (#217)', () => {
+  const ids = (cs: { id: string }[]) => cs.map((c) => c.id);
+  const at = (id: string, t: number) => card({ id, tabs: [{ tabId: 1, windowId: 1, title: 't', url: TICKET, lastAccessed: t }] });
+
+  it('the first list (no previous order): most recently active first, as built, and that order', () => {
+    const r = keepOrder(undefined, buildProjectCards([at('a', 1), at('b', 3), at('c', 2)]));
+    expect(ids(r.cards)).toEqual(['b', 'c', 'a']);
+    expect(r.order).toEqual(['b', 'c', 'a']);
+  });
+
+  it('a later list where activity changed keeps each card where it was', () => {
+    const next = buildProjectCards([at('a', 9), at('b', 3), at('c', 2)]); // a is now the most recent
+    expect(ids(next)).toEqual(['a', 'b', 'c']);
+    expect(ids(keepOrder(['b', 'c', 'a'], next).cards)).toEqual(['b', 'c', 'a']);
+  });
+
+  it('the kept cards carry the new contents', () => {
+    const [b] = keepOrder(['b'], buildProjectCards([card({ id: 'b', title: 'Renamed' })])).cards;
+    expect(b!.title).toBe('Renamed');
+  });
+
+  it('a project not shown before goes to the end; several new ones in recency order', () => {
+    const r = keepOrder(['b', 'a'], buildProjectCards([at('a', 1), at('b', 2), at('n1', 5), at('n2', 9)]));
+    expect(ids(r.cards)).toEqual(['b', 'a', 'n2', 'n1']);
+    expect(r.order).toEqual(['b', 'a', 'n2', 'n1']);
+  });
+
+  it('a project no longer listed is not shown, but keeps its place in the order', () => {
+    const r = keepOrder(['b', 'c', 'a'], buildProjectCards([at('a', 1), at('b', 2)]));
+    expect(ids(r.cards)).toEqual(['b', 'a']);
+    expect(r.order).toEqual(['b', 'c', 'a']);
+  });
+
+  it('a project missing from one list comes back in its old place, not at the end', () => {
+    const first = keepOrder(undefined, buildProjectCards([at('a', 1), at('b', 3), at('c', 2)])); // b, c, a
+    const missing = keepOrder(first.order, buildProjectCards([at('a', 1), at('b', 3), at('n', 9)]));
+    expect(ids(missing.cards)).toEqual(['b', 'a', 'n']);
+    const back = keepOrder(missing.order, buildProjectCards([at('a', 1), at('b', 3), at('c', 99), at('n', 9)]));
+    expect(ids(back.cards)).toEqual(['b', 'c', 'a', 'n']);
+  });
+
+  it('an empty previous list (no projects shown) takes the new list as built', () => {
+    expect(ids(keepOrder([], buildProjectCards([at('a', 1), at('b', 2)])).cards)).toEqual(['b', 'a']);
   });
 });
 

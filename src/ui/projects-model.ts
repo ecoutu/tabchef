@@ -54,7 +54,11 @@ export function projectSubtitle(p: { key: string; title: string; summary?: strin
   return s && !p.title.includes(s) ? s : undefined;
 }
 
-/** One card per project, the most recently active project first. */
+/**
+ * One card per project, the most recently active project first. The Projects views (the popup, the side panel and the
+ * options page, #217) sort only their first list this way: later lists go through keepOrder, so cards stay in place
+ * while the page is open.
+ */
 export function buildProjectCards(data: ProjectCardData[]): ProjectCard[] {
   return [...data].sort((a, b) => lastActive(b) - lastActive(a)).map((c): ProjectCard => {
     const open = new Set(c.tabs.map((t) => t.url));
@@ -79,6 +83,27 @@ export function buildProjectCards(data: ProjectCardData[]): ProjectCard[] {
       showClose: c.done && !c.doneKept, done: c.done,
     };
   });
+}
+
+/**
+ * A page's card order (#217, keepOrder): every project the page has shown, in place, listed or not; `ids` is undefined
+ * until its first list. A plain holder, so the page around a Projects view can keep it across remounts.
+ */
+export interface CardOrder { ids?: string[] }
+
+/**
+ * `cards` in the order the page shows them (#217), and the page's order to pass with its next list. `order` is every
+ * project this page has shown, in place, including those no longer listed: a listed card keeps its place, so one that
+ * drops out of a list and comes back (Close group then Undo, a project missing from one refresh) returns to it; a
+ * project never shown before goes to the end (in `cards`' order, most recent first). Only listed cards are returned.
+ * No `order` (the page's first list): `cards` as they are. The order only grows, which is fine for one page's lifetime.
+ */
+export function keepOrder<C extends { id: string }>(order: readonly string[] | undefined, cards: C[]): { cards: C[]; order: string[] } {
+  if (!order) return { cards, order: cards.map((c) => c.id) };
+  const at = new Map(order.map((id, i) => [id, i]));
+  const added = cards.filter((c) => !at.has(c.id));
+  const kept = cards.filter((c) => at.has(c.id)).sort((a, b) => at.get(a.id)! - at.get(b.id)!);
+  return { cards: [...kept, ...added], order: [...order, ...added.map((c) => c.id)] };
 }
 
 /** A done project row of the popup's Finished tab (#195): the card's header, with the card prompt's actions. */

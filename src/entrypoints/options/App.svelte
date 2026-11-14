@@ -17,6 +17,7 @@
   import Import from './Import.svelte';
   import Connections from './Connections.svelte';
   import Projects from './Projects.svelte';
+  import type { CardOrder } from '../../ui/projects-model';
   import ProjectHome from './ProjectHome.svelte';
   import Breadcrumbs, { projectCrumbs, type CrumbTitle } from '../../ui/Breadcrumbs.svelte';
   import PreviewDialog from './PreviewDialog.svelte';
@@ -37,6 +38,8 @@
   let matched = $state(parseHash());
   /** The open project's title, for its breadcrumbs (#180). */
   let project = $state<CrumbTitle | undefined>(undefined);
+  /** The Projects page's card order (#217), kept while this page is open, across its remounts. */
+  const cardOrder: CardOrder = {};
   const route = $derived(matched.path);
   let saved = $state<Config | null>(null);
   let draft = $state<Config | null>(null);
@@ -197,7 +200,7 @@
     {:else if current.page === 'explain'}
       {#key matched.params.tabId}<Explain tabId={Number(matched.params.tabId)} />{/key}
     {:else if current.page === 'projects'}
-      {#key matched.params.new}<Projects newTab={matched.params.new} initialError={matched.params.error} />{/key}
+      {#key matched.params.new}<Projects newTab={matched.params.new} initialError={matched.params.error} {cardOrder} />{/key}
     {:else if current.page === 'projectHome'}
       <div class="crumbs"><Breadcrumbs crumbs={projectCrumbs(project)} /></div>
       {#key matched.params.id}<ProjectHome id={matched.params.id ?? ''} onTitle={(t) => { project = t; }} />{/key}

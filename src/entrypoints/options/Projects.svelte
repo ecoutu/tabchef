@@ -10,10 +10,13 @@
   // M4 T9: three sections, Open (projects.list; Close and archive on a ticket Done by fresh data, M3-R90), Saved (kept,
   // nothing open: Reopen, Archive) and Archived ("Archived: reopen?" when a rule assigns its key: Reopen, Unarchive), from
   // projects.savedLists; kept current like Project home (M4-R6: config.changed and every LIVE_MS while visible).
+  // Open's order (#217): the first list is most recently active first; later lists keep each project in place (one that
+  // leaves Open and comes back returns to it) and add a new one at the end (keepOrder). The options page holds the order
+  // (`cardOrder`), so going to a project home or another page and back keeps it; opening or reloading the page sorts again.
   import { onDestroy, onMount, tick } from 'svelte';
   import { send } from '../../ui/send';
   import { createProjectActions, startLiveRefresh, type Toast } from '../../ui/project-actions';
-  import { buildProjectCards, projectSubtitle, type ProjectCard } from '../../ui/projects-model';
+  import { buildProjectCards, keepOrder, projectSubtitle, type CardOrder, type ProjectCard } from '../../ui/projects-model';
   import { projectHomeHash } from '../../ui/routes';
   import ProjectTitle from '../../ui/ProjectTitle.svelte';
   import { requestPermissions } from '../../ui/permissions';
@@ -22,7 +25,12 @@
   import type { SavedProjectData } from '../../core/projects/types';
 
   /** The route's `new` param: the tab to put in the new project. */
-  let { newTab, initialError }: { newTab?: string; initialError?: string } = $props();
+  let { newTab, initialError, cardOrder }: {
+    newTab?: string;
+    initialError?: string;
+    /** Open's card order (#217), held by the options page so a remount keeps it; without it this page holds its own. */
+    cardOrder?: CardOrder;
+  } = $props();
 
   let cards = $state<ProjectCard[] | undefined>(undefined);
   // svelte-ignore state_referenced_locally
@@ -41,6 +49,8 @@
   /** After Close and archive: the closed tabs' recently-closed entries, which Undo reopens (recent.undo). */
   let toast = $state<Toast | undefined>(undefined);
   let seq = 0;
+  /** Without `cardOrder`: this page's own card order (#217). */
+  const ownOrder: CardOrder = {};
   let sync = $state<SyncStatus>({ enabled: false, wanted: false });
   let syncError = $state('');
   let syncBox = $state<HTMLInputElement | undefined>(undefined);
@@ -134,7 +144,10 @@
     const n = ++seq;
     const [r, l, g] = await Promise.all([send({ type: 'projects.list' }), send({ type: 'projects.savedLists' }), send({ type: 'projects.groups' })]);
     if (n !== seq) return; // a newer read is on its way
-    if (r.ok) cards = buildProjectCards(r.data); else error = r.error;
+    if (r.ok) {
+      const held = cardOrder ?? ownOrder;
+      ({ cards, order: held.ids } = keepOrder(held.ids, buildProjectCards(r.data)));
+    } else error = r.error;
     // Read defensively: the Saved / Archived and group lists must never break the page.
     const lists = l.ok ? (l.data as Partial<Record<'saved' | 'archived', unknown>> | null) : undefined;
     if (lists) {

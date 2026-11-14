@@ -96,6 +96,33 @@ describe('side panel breadcrumbs (#180)', () => {
   });
 });
 
+describe('side panel card order (#217)', () => {
+  const at = (n: number, lastAccessed: number) => ({
+    id: `jira:ABC-${n}`, key: `ABC-${n}`, title: `ABC-${n}`, done: false, linked: [],
+    tabs: [{ tabId: n, windowId: 1, title: `ABC-${n} ticket`, url: `https://acme.atlassian.net/browse/ABC-${n}`, lastAccessed }],
+  });
+  const order = () => [...document.querySelectorAll('article h2')].map((h) => h.textContent!.trim());
+  const go = (hash: string) => { window.location.hash = hash; window.dispatchEvent(new HashChangeEvent('hashchange')); };
+
+  it('a project home and back keeps the order, though activity changed meanwhile', async () => {
+    let cards = [at(1, 10), at(2, 30), at(3, 20)];
+    const base = send.getMockImplementation()!;
+    send.mockImplementation(async (req: { type: string }) => (req.type === 'projects.list' ? { ok: true, data: cards } : base(req)));
+    render(Panel);
+    await waitFor(() => expect(lists()).toBe(2));
+    await waitFor(() => expect(order()).toEqual(['ABC-2', 'ABC-3', 'ABC-1']));
+    go('#/project/jira%3AABC-1');
+    expect(await screen.findByRole('navigation', { name: 'Breadcrumb' })).toBeTruthy();
+    cards = [at(1, 99), at(2, 30), at(3, 20)]; // ABC-1 is now the most recent
+    const n = lists();
+    go('#/projects');
+    await waitFor(() => expect(lists()).toBe(n + 2)); // the remounted list, and after its sources.refresh
+    await waitFor(() => expect(order()).toEqual(['ABC-2', 'ABC-3', 'ABC-1']));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(order()).toEqual(['ABC-2', 'ABC-3', 'ABC-1']);
+  });
+});
+
 describe('side panel breadcrumbs, switching projects (#180)', () => {
   it("going from one project to another, the crumbs follow to the second one's title", async () => {
     window.location.hash = '#/project/repo%3Aacme%2Fweb';

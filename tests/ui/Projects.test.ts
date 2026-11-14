@@ -671,3 +671,112 @@ describe('the current project (#212)', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Fix login' }).getAttribute('aria-current')).toBe('true'));
   });
 });
+
+describe('card order while the page is open (#217)', () => {
+  const at = (n: number, lastAccessed: number, title = `ABC-${n} ticket`): ProjectCardData => ({
+    id: `jira:ABC-${n}`, key: `ABC-${n}`, title: `ABC-${n}`, done: false,
+    tabs: [{ tabId: n, windowId: 1, title, url: `https://acme.atlassian.net/browse/ABC-${n}`, lastAccessed }],
+    linked: [],
+  });
+  const order = () => [...document.querySelectorAll('article h2')].map((h) => h.textContent!.trim());
+  const configChanged = () => (fakeBrowser.runtime.onMessage as unknown as { trigger: (m: unknown) => Promise<unknown> })
+    .trigger({ type: 'config.changed', rev: 'r2' });
+  /** The side panel, its first lists (the opening one and the one after sources.refresh) shown. */
+  async function panel(): Promise<void> {
+    render(Projects, { live: true });
+    await waitFor(() => expect(types().filter((t) => t === 'projects.list')).toHaveLength(2));
+    await screen.findByRole('heading', { name: 'ABC-3' });
+  }
+
+  it('the first list is most recently active first', async () => {
+    cards = [at(1, 10), at(2, 30), at(3, 20)];
+    await panel();
+    expect(order()).toEqual(['ABC-2', 'ABC-3', 'ABC-1']);
+  });
+
+  it('a refresh where activity changed updates the cards but does not reorder them', async () => {
+    cards = [at(1, 10), at(2, 30), at(3, 20)];
+    await panel();
+    cards = [at(1, 99, 'ABC-1 ticket, edited'), at(2, 30), at(3, 20)]; // ABC-1 is now the most recent
+    await configChanged();
+    await screen.findByRole('button', { name: 'ABC-1 ticket, edited' });
+    expect(order()).toEqual(['ABC-2', 'ABC-3', 'ABC-1']);
+  });
+
+  it('a new project is appended at the end, however recent', async () => {
+    cards = [at(1, 10), at(2, 30), at(3, 20)];
+    await panel();
+    cards = [...cards, at(4, 99)];
+    await configChanged();
+    await screen.findByRole('heading', { name: 'ABC-4' });
+    expect(order()).toEqual(['ABC-2', 'ABC-3', 'ABC-1', 'ABC-4']);
+  });
+
+  it('a removed project drops out; the others keep their places', async () => {
+    cards = [at(1, 10), at(2, 30), at(3, 20)];
+    await panel();
+    cards = [at(1, 99), at(2, 30)];
+    await configChanged();
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'ABC-3' })).toBeNull());
+    expect(order()).toEqual(['ABC-2', 'ABC-1']);
+  });
+
+  it('a project missing from one refresh comes back in its old place', async () => {
+    cards = [at(1, 10), at(2, 30), at(3, 20)];
+    await panel();
+    const all = cards;
+    cards = [all[0]!, all[1]!];
+    await configChanged();
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'ABC-3' })).toBeNull());
+    cards = [...all, at(4, 99)];
+    await configChanged();
+    await screen.findByRole('heading', { name: 'ABC-3' });
+    expect(order()).toEqual(['ABC-2', 'ABC-3', 'ABC-1', 'ABC-4']);
+  });
+
+  it('Close group, then Undo: the card comes back in its old place', async () => {
+    const all = [at(1, 10), at(2, 30), { ...at(3, 20), done: true, status: { name: 'Done', category: 'done', via: 'api' } } as ProjectCardData];
+    cards = all;
+    const base = send.getMockImplementation()!;
+    send.mockImplementation(async (req: { type: string; projectId?: string }) => {
+      if (req.type === 'projects.closeGroup') cards = all.filter((c) => c.id !== req.projectId);
+      if (req.type === 'recent.undo') cards = all.map((c) => ({ ...c, tabs: c.tabs.map((t) => ({ ...t, lastAccessed: 99 })) }));
+      return base(req);
+    });
+    await panel();
+    expect(order()).toEqual(['ABC-2', 'ABC-3', 'ABC-1']);
+    await fireEvent.click(screen.getByRole('button', { name: 'Close group' }));
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'ABC-3' })).toBeNull()); // the middle card
+    await fireEvent.click(await screen.findByRole('button', { name: 'Undo' }));
+    await screen.findByRole('heading', { name: 'ABC-3' });
+    expect(order()).toEqual(['ABC-2', 'ABC-3', 'ABC-1']);
+  });
+
+  it('the popup: the list after sources.refresh keeps the first list\'s order', async () => {
+    let refreshed!: (r: unknown) => void;
+    const base = send.getMockImplementation()!;
+    send.mockImplementation((req: { type: string }) =>
+      req.type === 'sources.refresh' ? new Promise((r) => { refreshed = r; }) : base(req));
+    cards = [at(1, 10), at(2, 30)];
+    render(Projects);
+    await screen.findByRole('heading', { name: 'ABC-1' });
+    expect(order()).toEqual(['ABC-2', 'ABC-1']);
+    cards = [at(1, 99, 'ABC-1 ticket, edited'), at(2, 30)];
+    refreshed({ ok: true, data: null });
+    await screen.findByRole('button', { name: 'ABC-1 ticket, edited' });
+    expect(order()).toEqual(['ABC-2', 'ABC-1']);
+  });
+
+  it('opening the page again sorts by recency again', async () => {
+    cards = [at(1, 10), at(2, 30)];
+    render(Projects);
+    await waitFor(() => expect(types().filter((t) => t === 'projects.list')).toHaveLength(2));
+    await screen.findByRole('heading', { name: 'ABC-1' });
+    expect(order()).toEqual(['ABC-2', 'ABC-1']);
+    cleanup();
+    cards = [at(1, 99), at(2, 30)];
+    render(Projects);
+    await screen.findByRole('heading', { name: 'ABC-1' });
+    expect(order()).toEqual(['ABC-1', 'ABC-2']);
+  });
+});
