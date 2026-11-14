@@ -18,6 +18,7 @@
   let { config = null }: { config?: Config | null } = $props();
 
   const NEEDS_HOSTS = 'Tabchef needs access to github.com and api.github.com to connect GitHub.';
+  const PASTE_AGAIN = 'Paste the token again to retry.';
   const TOKEN_HELP = 'Fine-grained token (recommended): choose the repositories, then Repository permissions → Pull requests: Read-only, Issues: Read-only (Metadata: Read-only is added automatically). Classic token: the repo scope, which also grants write access. Tabchef only reads.';
   const JIRA_TOKENS_URL = 'https://id.atlassian.com/manage-profile/security/api-tokens';
   const JIRA_SESSION_LABEL = 'Use my browser session instead (read-only, best effort)';
@@ -110,12 +111,13 @@
   }
 
   /** Awaits a permission prompt started in a click handler; false (with the inline message) when denied. */
-  async function hostsGranted(granted: Promise<boolean>, hosts: string[]): Promise<boolean> {
+  async function hostsGranted(granted: Promise<boolean>, denied: string): Promise<boolean> {
     let ok: boolean;
     try { ok = await granted; } catch (e) { ok = false; error = e instanceof Error ? e.message : String(e); }
-    if (alive && !ok && !error) error = `Tabchef needs access to ${hosts.map(hostName).join(' and ')} to connect Jira.`;
+    if (alive && !ok && !error) error = denied;
     return alive && ok;
   }
+  const jiraDenied = (hosts: string[]): string => `Tabchef needs access to ${hosts.map(hostName).join(' and ')} to connect Jira.`;
 
   /**
    * Connect Jira with a token. Validation is synchronous, then the permission request for the typed site's hosts,
@@ -141,7 +143,7 @@
     busy = true;
     void (async () => {
       try {
-        if (!(await hostsGranted(granted, hosts))) return;
+        if (!(await hostsGranted(granted, jiraDenied(hosts)))) return;
         const r = await send({
           type: 'connections.setToken', id: 'jira', token,
           jira: { site, email, tokenKind, ...(expiresAt !== undefined && { expiresAt }) },
@@ -167,7 +169,7 @@
     busy = true;
     void (async () => {
       try {
-        if (!(await hostsGranted(granted, hosts))) return;
+        if (!(await hostsGranted(granted, jiraDenied(hosts)))) return;
         const r = await send({ type: 'connections.setSession', site });
         if (!alive) return;
         if (!r.ok) { error = r.error; return; }
@@ -270,20 +272,33 @@
     }
   }
 
-  async function saveToken(e: SubmitEvent): Promise<void> {
+  /**
+   * Save a GitHub token. Like connectJira, the permission request for the GitHub hosts comes before any await (the
+   * click's user gesture, #225): the worker validates the token with a request to api.github.com, which needs them.
+   */
+  function saveToken(e: SubmitEvent): void {
     e.preventDefault();
     const input = tokenInput;
     const token = input?.value.trim() ?? '';
     if (input) input.value = '';
     error = ''; info = '';
     if (!token) { error = 'Paste a token first.'; return; }
+    const granted = requestPermissions({ origins: [...githubHosts] });
     busy = true;
-    const r = await send({ type: 'connections.setToken', id: 'github', token });
-    busy = false;
-    if (!r.ok) { error = r.error; return; }
-    cancelFlow();
-    info = 'Token saved.';
-    await load();
+    void (async () => {
+      try {
+        // The field stays cleared (the token must not linger in the page): the message asks for it again.
+        if (!(await hostsGranted(granted, NEEDS_HOSTS))) { if (alive) error = `${error.replace(/\.?$/, '.')} ${PASTE_AGAIN}`; return; }
+        const r = await send({ type: 'connections.setToken', id: 'github', token });
+        if (!alive) return;
+        if (!r.ok) { error = r.error; return; }
+        cancelFlow();
+        info = 'Token saved.';
+        await load();
+      } finally {
+        busy = false;
+      }
+    })();
   }
 
   async function testConnection(row: ConnectionRow): Promise<void> {

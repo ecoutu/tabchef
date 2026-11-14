@@ -259,6 +259,42 @@ describe('Connections page', () => {
     expect(document.body.innerHTML).not.toContain(PAT);
   });
 
+  it('#225: Save token requests both GitHub hosts synchronously in the click (as Connect Jira does), then sends setToken', async () => {
+    reply('connections.setToken', { ok: true, data: st({ state: 'ok' }) });
+    await open();
+    await fireEvent.input(screen.getByLabelText('Personal access token'), { target: { value: PAT } });
+    log = [];
+    const clicked = fireEvent.click(screen.getByRole('button', { name: 'Save token' }));
+    expect(request).toHaveBeenCalledWith({ origins: HOSTS }); // before any await: the click's user gesture
+    await clicked;
+    await flush();
+    expect(log.slice(0, 2)).toEqual([`request ${JSON.stringify({ origins: HOSTS })}`, 'connections.setToken']);
+  });
+
+  it('#225: Save token with the GitHub hosts denied sends nothing and says why; the field is still cleared, so it asks to paste again', async () => {
+    granted = false;
+    await open();
+    const input = screen.getByLabelText('Personal access token') as HTMLInputElement;
+    await fireEvent.input(input, { target: { value: PAT } });
+    await fireEvent.click(screen.getByRole('button', { name: 'Save token' }));
+    await flush();
+    expect(sent('connections.setToken')).toEqual([]);
+    expect(input.value).toBe('');
+    expect(screen.getByRole('alert').textContent).toBe('Tabchef needs access to github.com and api.github.com to connect GitHub. Paste the token again to retry.');
+    expect(document.body.innerHTML).not.toContain(PAT);
+  });
+
+  it('#225: Save token when the permission request fails shows its error, sends nothing, and asks to paste again', async () => {
+    request.mockImplementation(() => Promise.reject(new Error('Permissions request failed')));
+    await open();
+    await fireEvent.input(screen.getByLabelText('Personal access token'), { target: { value: PAT } });
+    await fireEvent.click(screen.getByRole('button', { name: 'Save token' }));
+    await flush();
+    expect(sent('connections.setToken')).toEqual([]);
+    expect(screen.getByRole('alert').textContent).toBe('Permissions request failed. Paste the token again to retry.');
+    expect((screen.getByRole('button', { name: 'Save token' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
   it('an empty token is not sent', async () => {
     await open();
     await fireEvent.click(screen.getByRole('button', { name: 'Save token' }));
