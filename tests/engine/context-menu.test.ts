@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
-  createProjectMenu, installMenus, MENU_CONTEXTS, MENU_IDS, onMenuClick, refreshMenus, type MenuApi,
+  ACTION_MENU_TOP_LEVEL_LIMIT, createProjectMenu, installMenus, MENU_CONTEXTS, MENU_IDS, onMenuClick, refreshMenus, type MenuApi,
 } from '../../src/engine/context-menu';
 import { explainHash, matchRoute, newRuleHash, OPTIONS_ROUTES, projectHomeHash, projectsErrorHash } from '../../src/ui/routes';
 
@@ -33,6 +33,7 @@ const chromeMenu = (seed: [id: string, parentId?: string][] = []) => {
 };
 /** Every item installMenus creates with the projects A-1 (`tc-project:r:A-1`). */
 const FULL_MENU: [string, string?][] = [
+  ['tc-rules'], ['tc-group@action', 'tc-rules'], ['tc-close@action', 'tc-rules'], ['tc-allowdup@action', 'tc-rules'],
   ['tc-group'], ['tc-close'], ['tc-allowdup'], ['tc-lock'], ['tc-why'], ['tc-save-group'],
   ['tc-project'], ['tc-project:r:A-1', 'tc-project'], ['tc-project-new', 'tc-project'], ['tc-project-remove'],
 ];
@@ -46,8 +47,9 @@ const sessionArea = (init: Record<string, unknown> = {}) => {
   };
 };
 const A1 = [{ id: 'r:A-1', title: 'A-1' }];
-/** The top-level items Chrome shows, in its order. */
-const tops = (items: Map<string, { parentId?: string }>) => [...items].filter(([, it]) => !it.parentId).map(([id]) => id);
+/** The top-level items Chrome shows in a menu, in its order: the toolbar icon's lacks the rule items, the page's New rule ›. */
+const tops = (items: Map<string, { parentId?: string }>, ctx: 'page' | 'action') => [...items].filter(([, it]) => !it.parentId)
+  .map(([id]) => id).filter((id) => ctx === 'action' ? !['tc-group', 'tc-close', 'tc-allowdup'].includes(id) : id !== 'tc-rules');
 
 describe('context menu (M2 T16)', () => {
   it('installMenus removes stale items first, then creates the items with their exact titles and contexts', async () => {
@@ -56,6 +58,10 @@ describe('context menu (M2 T16)', () => {
     expect(a.calls[0]).toBe('removeAll');
     const created = (a.create as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]);
     expect(created.map((c) => [c.id, c.title])).toEqual([
+      ['tc-rules', 'New rule for this page'],
+      ['tc-group@action', 'Group pages like this under…'],
+      ['tc-close@action', 'Auto-close pages like this'],
+      ['tc-allowdup@action', 'Allow duplicates of pages like this'],
       ['tc-group', 'Group pages like this under…'],
       ['tc-close', 'Auto-close pages like this'],
       ['tc-allowdup', 'Allow duplicates of pages like this'],
@@ -66,18 +72,37 @@ describe('context menu (M2 T16)', () => {
       ['tc-project-new', 'New project…'],
       ['tc-project-remove', 'Remove from project'],
     ]);
-    for (const c of created) expect(c.contexts).toEqual([...MENU_CONTEXTS]);
+    const contexts = Object.fromEntries(created.map((c) => [c.id, c.contexts]));
+    for (const id of ['tc-rules', 'tc-group@action', 'tc-close@action', 'tc-allowdup@action']) expect(contexts[id]).toEqual(['action']);
+    for (const id of ['tc-group', 'tc-close', 'tc-allowdup']) expect(contexts[id]).toEqual(['page', 'link']);
+    for (const id of ['tc-lock', 'tc-why', 'tc-save-group', 'tc-project', 'tc-project-new', 'tc-project-remove']) expect(contexts[id]).toEqual([...MENU_CONTEXTS]);
+    expect(created.filter((c) => c.id.endsWith('@action')).every((c) => c.parentId === 'tc-rules')).toBe(true);
     // M4 T6: on with no open project too, for its New project… child.
     expect(created.find((c) => c.id === 'tc-project').enabled).toBe(true);
     expect(created.find((c) => c.id === 'tc-project-new').parentId).toBe('tc-project');
     expect(MENU_CONTEXTS).toEqual(['page', 'link', 'action']);
   });
 
-  it('on activation of an exempt tab (chrome://) every item is disabled', async () => {
+  it('the toolbar icon menu has at most ACTION_MENU_TOP_LEVEL_LIMIT top-level items, the rule items first; the page menu keeps all eight', async () => {
+    const a = api();
+    const m = createProjectMenu(a);
+    await m.install();
+    await m.sync([{ id: 'r:A-1', title: 'A-1' }, { id: 'r:A-2', title: 'A-2' }]); // project items re-created at the end
+    await m.sync([{ id: 'r:A-1', title: 'A-1' }]);
+    const all = (a.create as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0] as { id: string; contexts: string[]; parentId?: string });
+    const tops = (ctx: string) => [...new Map(all.filter((c) => !c.parentId && c.contexts.includes(ctx)).map((c) => [c.id, c])).keys()];
+    expect(tops('action')).toEqual(['tc-rules', 'tc-lock', 'tc-why', 'tc-save-group', 'tc-project', 'tc-project-remove']);
+    expect(tops('action').length).toBeLessThanOrEqual(ACTION_MENU_TOP_LEVEL_LIMIT);
+    expect(tops('page')).toEqual(['tc-group', 'tc-close', 'tc-allowdup', 'tc-lock', 'tc-why', 'tc-save-group', 'tc-project', 'tc-project-remove']);
+  });
+
+  it('on activation of an exempt tab (chrome://) every item is disabled, Add to project and Remove from project too', async () => {
     const a = api();
     await refreshMenus(a, { id: 3, url: 'chrome://settings' }, () => false);
     const up = (a.update as ReturnType<typeof vi.fn>).mock.calls;
-    expect(up.map((c) => c[0]).sort()).toEqual([...Object.values(MENU_IDS)].sort()); // not the project items
+    // The toolbar icon's menu shows the project items on chrome:// pages, where a click does nothing. Submenu items
+    // (New rule ›'s copies, the projects) follow their parent: disabling it disables them.
+    expect(up.map((c) => c[0]).sort()).toEqual([...Object.values(MENU_IDS), 'tc-rules', 'tc-project', 'tc-project-remove'].sort());
     for (const c of up) expect(c[1].enabled).toBe(false);
   });
 
@@ -117,7 +142,8 @@ describe('context menu (M2 T16)', () => {
     const d = deps();
     await onMenuClick({ menuItemId: 'tc-group', pageUrl: tab.url }, tab, d);
     await onMenuClick({ menuItemId: 'tc-close', pageUrl: tab.url, linkUrl: 'https://x.com/a' }, tab, d);
-    await onMenuClick({ menuItemId: 'tc-allowdup' }, tab, d); // action context: no pageUrl, the tab's URL
+    await onMenuClick({ menuItemId: 'tc-allowdup@action' }, tab, d); // toolbar icon's New rule ›: no pageUrl, the tab's URL
+    await onMenuClick({ menuItemId: 'tc-rules' }, tab, d); // the parent does nothing
     expect(d.openPage.mock.calls.map((c) => c[0])).toEqual([
       newRuleHash(tab.url, 'group'), newRuleHash('https://x.com/a', 'close'), newRuleHash(tab.url, 'allowDup'),
     ]);
@@ -146,7 +172,13 @@ describe('context menu (M2 T16)', () => {
     await onMenuClick({ menuItemId: 'tc-lock' }, { id: 1, url: 'chrome://settings' }, d);
     await onMenuClick({ menuItemId: 'tc-why' }, undefined, d);
     await onMenuClick({ menuItemId: 'other' }, tab, d);
+    // Only the three rule items have toolbar-icon copies: any other `@action` id is unknown.
+    await onMenuClick({ menuItemId: 'tc-lock@action' }, tab, d);
+    await onMenuClick({ menuItemId: 'tc-why@action' }, tab, d);
+    await onMenuClick({ menuItemId: 'x@action' }, tab, d);
+    await onMenuClick({ menuItemId: '@action' }, tab, d);
     expect(d.safety.lock).not.toHaveBeenCalled();
+    expect(d.refresh).not.toHaveBeenCalled();
     expect(d.openPage).not.toHaveBeenCalled();
   });
 
@@ -221,6 +253,29 @@ describe('context menu (M2 T16)', () => {
     expect(a.calls).toEqual([]);
   });
 
+  it('#220: on a chrome:// tab Add to project and Remove from project stay disabled after the project list changes', async () => {
+    // Chrome's menu state as create / update / remove leave it: id → enabled.
+    const state = new Map<string, boolean>();
+    const a: MenuApi = {
+      removeAll: async () => { state.clear(); },
+      create: (p) => { state.set(p.id, p.enabled ?? true); },
+      update: async (id, p) => { if (!state.has(id)) throw new Error('Cannot find menu item'); if (p.enabled !== undefined) state.set(id, p.enabled); },
+      remove: async (id) => { state.delete(id); },
+    };
+    const m = createProjectMenu(a);
+    const chromeTab = { id: 3, url: 'chrome://settings' };
+    // background.ts: refresh the titles and enabled state whenever sync re-created items.
+    const sync = async (ps: { id: string; title: string }[]) => { if (await m.sync(ps)) await refreshMenus(a, chromeTab, () => false); };
+    await m.install();
+    await refreshMenus(a, chromeTab, () => false);
+    await sync([]);
+    await sync([{ id: 'r:A-1', title: 'A-1' }]); // a pass lists a new project: the project items are re-created
+    expect(state.get('tc-project')).toBe(false);
+    expect(state.get('tc-project-remove')).toBe(false);
+    // No top-level item left on (submenu items follow their disabled parent).
+    expect([...state].filter(([id, on]) => on && !id.includes(':') && !id.endsWith('@action') && id !== 'tc-project-new')).toEqual([]);
+  });
+
   it('#223: a wake with nothing missing re-creates nothing: no removeAll, no rule items, not even the same project list', async () => {
     const chrome = chromeMenu(FULL_MENU);
     const session = sessionArea({ contextMenuProjects: A1 }); // the list the previous worker showed
@@ -264,7 +319,17 @@ describe('context menu (M2 T16)', () => {
     chrome.calls.length = 0;
     expect(await m.sync([...A1, { id: 'r:B-1', title: 'B-1' }])).toBe(true); // the first pass: the project items, at the end again
     expect(chrome.calls).toEqual(['remove:tc-project', 'remove:tc-project-remove', 'create:tc-project', 'create:tc-project:r:A-1', 'create:tc-project:r:B-1', 'create:tc-project-new', 'create:tc-project-remove']);
-    expect(tops(chrome.items)).toEqual(['tc-group', 'tc-close', 'tc-allowdup', 'tc-lock', 'tc-why', 'tc-save-group', 'tc-project', 'tc-project-remove']);
+    expect(tops(chrome.items, 'page')).toEqual(['tc-group', 'tc-close', 'tc-allowdup', 'tc-lock', 'tc-why', 'tc-save-group', 'tc-project', 'tc-project-remove']);
+    expect(tops(chrome.items, 'action')).toEqual(['tc-rules', 'tc-lock', 'tc-why', 'tc-save-group', 'tc-project', 'tc-project-remove']);
+  });
+
+  it('#223: until the first pass of a new browser session, the toolbar icon\'s menu still shows all six items, in a new order', async () => {
+    const chrome = chromeMenu(FULL_MENU.filter(([id]) => id.startsWith('tc-project')));
+    expect(await createProjectMenu(chrome.api).repair()).toBe(true);
+    // Chrome appends re-created items: the kept project items come first, and none falls past the limit.
+    expect(tops(chrome.items, 'action')).toEqual(['tc-project', 'tc-project-remove', 'tc-rules', 'tc-lock', 'tc-why', 'tc-save-group']);
+    expect(tops(chrome.items, 'action').length).toBeLessThanOrEqual(ACTION_MENU_TOP_LEVEL_LIMIT);
+    expect(tops(chrome.items, 'page')).toEqual(['tc-project', 'tc-project-remove', 'tc-group', 'tc-close', 'tc-allowdup', 'tc-lock', 'tc-why', 'tc-save-group']);
   });
 
   it('#223: with the projects unknown, only the lost project item is re-created; the fixed items and Chrome\'s children stay', async () => {
@@ -337,7 +402,8 @@ describe('context menu (M2 T16)', () => {
     expect(a.calls).toEqual(['remove:tc-project', 'remove:tc-project-remove']); // the second sync waits
     release();
     await Promise.all([one, two, inst]);
-    const rules = ['create:tc-group', 'create:tc-close', 'create:tc-allowdup', 'create:tc-lock', 'create:tc-why', 'create:tc-save-group'];
+    const rules = ['create:tc-rules', 'create:tc-group@action', 'create:tc-close@action', 'create:tc-allowdup@action',
+      'create:tc-group', 'create:tc-close', 'create:tc-allowdup', 'create:tc-lock', 'create:tc-why', 'create:tc-save-group'];
     expect(a.calls.slice(2)).toEqual([
       'create:tc-project', 'create:tc-project:r:A-1', 'create:tc-project-new', 'create:tc-project-remove',
       'remove:tc-project', 'remove:tc-project-remove', 'create:tc-project', 'create:tc-project:r:B-1', 'create:tc-project-new', 'create:tc-project-remove',

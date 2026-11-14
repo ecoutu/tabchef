@@ -13,11 +13,18 @@ import type { SafetyService } from './safety';
 // ProjectService.menuItems), rebuilt by createProjectMenu when that list changes; "Remove from project" (`tc-project-remove`) follows it.
 // The list shown is kept in storage.session, so a worker start re-creates nothing while the list stays the same.
 // M4 T6: the last child, "New project…" (`tc-project-new`), opens the Projects page's New project form for the tab.
+// Layout: the page and link menus list all eight top-level items. The toolbar icon's menu shows at most
+// ACTION_MENU_TOP_LEVEL_LIMIT (6), so there the three rule items are copies (`<rule id>@action`) under
+// "New rule for this page" (`tc-rules`): New rule ›, Lock, Why, Save group, Add to project ›, Remove from project.
 
 export const MENU_IDS = { group: 'tc-group', close: 'tc-close', allowDup: 'tc-allowdup', lock: 'tc-lock', why: 'tc-why', saveGroup: 'tc-save-group' } as const;
 export const PROJECT_MENU_ID = 'tc-project';
 export const PROJECT_REMOVE_MENU_ID = 'tc-project-remove';
 export const PROJECT_NEW_MENU_ID = 'tc-project-new';
+/** Toolbar icon's menu only: "New rule for this page ›" holds copies of the three rule items (ids `<rule id>@action`). */
+export const ACTION_RULES_MENU_ID = 'tc-rules';
+/** chrome.contextMenus.ACTION_MENU_TOP_LEVEL_LIMIT: Chrome shows only the first 6 top-level items in the toolbar icon's menu. */
+export const ACTION_MENU_TOP_LEVEL_LIMIT = 6;
 const PROJECT_CHILD_PREFIX = `${PROJECT_MENU_ID}:`;
 export const MENU_CONTEXTS = ['page', 'link', 'action'] as const;
 type MenuContext = (typeof MENU_CONTEXTS)[number];
@@ -33,10 +40,19 @@ const ITEMS: { id: string; title: string }[] = [
   { id: MENU_IDS.saveGroup, title: 'Save group as project' },
 ];
 const KIND: Record<string, NewRuleKind> = { [MENU_IDS.group]: 'group', [MENU_IDS.close]: 'close', [MENU_IDS.allowDup]: 'allowDup' };
-/** Add to project and Remove from project: re-created on each change of the project list. */
+const isRule = (id: string): boolean => Object.hasOwn(KIND, id);
+/** The toolbar icon's copies of the rule items, by copy id (`<rule id>@action`): created, probed and clicked by this map. */
+const ACTION_COPIES: ReadonlyMap<string, { id: string; title: string }> = new Map(
+  ITEMS.filter((it) => isRule(it.id)).map((it) => [`${it.id}@action`, it]),
+);
+/** Add to project and Remove from project: re-created on each change of the project list, enabled state included. */
 const PROJECT_TOP_IDS = [PROJECT_MENU_ID, PROJECT_REMOVE_MENU_ID];
-/** The items that don't depend on the project list: the eight minus the project ones. */
-const FIXED_IDS = ITEMS.map((it) => it.id);
+/** The top-level items that don't depend on the project list: New rule › and the eight minus the project ones. */
+const FIXED_TOP_IDS = [ACTION_RULES_MENU_ID, ...ITEMS.map((it) => it.id)];
+/** The items that don't depend on the project list: the top-level ones and New rule ›'s copies. */
+const FIXED_IDS = [...FIXED_TOP_IDS, ...ACTION_COPIES.keys()];
+/** The top-level items, whose title and enabled state refreshMenus sets. Submenu items follow their parent. */
+const TOP_IDS = [...ITEMS.map((it) => it.id), ACTION_RULES_MENU_ID, ...PROJECT_TOP_IDS];
 /** storage.session key: the project list the menu shows, so the next worker start knows it (#223). */
 const SHOWN_KEY = 'contextMenuProjects';
 
@@ -48,6 +64,8 @@ export interface MenuApi {
   remove(id: string): Promise<void>;
 }
 const CONTEXTS: [MenuContext, ...MenuContext[]] = [MENU_CONTEXTS[0], ...MENU_CONTEXTS.slice(1)];
+const PAGE_CONTEXTS: [MenuContext, ...MenuContext[]] = ['page', 'link'];
+const ACTION_CONTEXTS: [MenuContext, ...MenuContext[]] = ['action'];
 
 type MenuProject = { id: string; title: string };
 /** The storage.session calls used: the project list shown survives worker restarts, not a browser restart. */
@@ -58,9 +76,11 @@ export interface MenuSession {
 const isMenuProjects = (v: unknown): v is MenuProject[] =>
   Array.isArray(v) && v.every((p: Partial<MenuProject> | null) => typeof p?.id === 'string' && typeof p.title === 'string');
 
-/** The fixed items: the rule, Lock, Why and Save group items. */
+/** The fixed items: New rule › (toolbar icon) with its copies, then the rule, Lock, Why and Save group items. */
 function createFixedItems(api: MenuApi): void {
-  for (const it of ITEMS) api.create({ id: it.id, title: it.title, contexts: CONTEXTS });
+  api.create({ id: ACTION_RULES_MENU_ID, title: 'New rule for this page', contexts: ACTION_CONTEXTS });
+  for (const [id, it] of ACTION_COPIES) api.create({ id, parentId: ACTION_RULES_MENU_ID, title: it.title, contexts: ACTION_CONTEXTS });
+  for (const it of ITEMS) api.create({ id: it.id, title: it.title, contexts: isRule(it.id) ? PAGE_CONTEXTS : CONTEXTS });
 }
 
 const createNewProjectItem = (api: MenuApi) =>
@@ -158,11 +178,11 @@ export function createProjectMenu(api: MenuApi, deps: ProjectMenuDeps = {}): Pro
       const lost = new Set(await missing());
       if (lost.size === 0) return false;
       if (last) return apply(last, true);
-      // The projects are unknown: re-create only what was lost. The fixed items go together. Add to project keeps the
-      // children Chrome kept unless it is lost itself; then it gets New project… only. The first sync, with `shown`
-      // still unknown, re-creates the project items with the full list.
+      // The projects are unknown: re-create only what was lost. The fixed items go together (removing New rule ›
+      // removes its copies). Add to project keeps the children Chrome kept unless it is lost itself; then it gets
+      // New project… only. The first sync, with `shown` still unknown, re-creates the project items with the full list.
       if (FIXED_IDS.some((id) => lost.has(id))) {
-        await Promise.all(FIXED_IDS.map((id) => api.remove(id).catch(() => {}))); // absent: nothing to remove
+        await Promise.all(FIXED_TOP_IDS.map((id) => api.remove(id).catch(() => {}))); // absent: nothing to remove
         createFixedItems(api);
       }
       if (lost.has(PROJECT_MENU_ID)) createAddItem(api, []);
@@ -175,19 +195,26 @@ export function createProjectMenu(api: MenuApi, deps: ProjectMenuDeps = {}): Pro
 
 export interface MenuTab { id?: number; url?: string; groupId?: number }
 
-/** Drop every item (from the previous version or Chrome's stored copy: duplicate ids would throw), then create them all. */
+/**
+ * Drop every item (from the previous version or Chrome's stored copy: duplicate ids would throw), then create them all.
+ * The toolbar icon's menu shows only its first ACTION_MENU_TOP_LEVEL_LIMIT top-level items, so there the three rule
+ * items sit under "New rule for this page ›": New rule ›, Lock, Why, Save group, Add to project ›, Remove from project.
+ */
 export async function installMenus(api: MenuApi, projects: MenuProject[] = []): Promise<void> {
   await api.removeAll();
   createFixedItems(api);
   createProjectItems(api, projects);
 }
 
-/** Title and enabled state for the active tab: every item is disabled on exempt URLs (chrome://, file:, ...). */
+/**
+ * Title and enabled state for the active tab: every item is disabled on exempt URLs (chrome://, file:, ...), where a
+ * click does nothing. Only top-level items are updated: disabling New rule › or Add to project disables its children.
+ */
 export async function refreshMenus(api: MenuApi, tab: MenuTab | undefined, isLocked: (tabId: number) => boolean): Promise<void> {
   const enabled = tab?.id !== undefined && !isExemptUrl(tab.url);
   const locked = enabled && isLocked(tab!.id!);
-  await Promise.all(ITEMS.map((it) => api.update(it.id, {
-    enabled, ...(it.id === MENU_IDS.lock && { title: locked ? UNLOCK_TITLE : LOCK_TITLE }),
+  await Promise.all(TOP_IDS.map((id) => api.update(id, {
+    enabled, ...(id === MENU_IDS.lock && { title: locked ? UNLOCK_TITLE : LOCK_TITLE }),
   }).catch(() => {}))); // a missing item (ProjectMenu.repair re-creates it at a worker start): nothing to update
 }
 
@@ -202,7 +229,8 @@ export interface MenuClickDeps {
 }
 
 /**
- * contextMenus.onClicked: the rule items open NewRule with the link URL (on a link) or the page URL; tc-lock toggles
+ * contextMenus.onClicked: the rule items (and their toolbar-icon copies, `<rule id>@action`) open NewRule with the
+ * link URL (on a link), the page URL or, from the toolbar icon, the tab's URL; tc-lock toggles
  * the tab's lock directly; tc-why opens the tab's explain view (R54); the project items add the tab to a project or
  * remove it (M3 T15); Save group as project (M4 T8) saves the tab's group and opens its home (an error opens the Projects page showing it); New project… opens the Projects page's form for the tab (M4 T6). Exempt pages and unknown items
  * do nothing.
@@ -210,7 +238,8 @@ export interface MenuClickDeps {
 export async function onMenuClick(
   info: { menuItemId: string | number; linkUrl?: string; pageUrl?: string }, tab: MenuTab | undefined, deps: MenuClickDeps,
 ): Promise<void> {
-  const id = String(info.menuItemId);
+  const raw = String(info.menuItemId);
+  const id = ACTION_COPIES.get(raw)?.id ?? raw; // tc-group@action (the toolbar icon's New rule for this page ›) acts as tc-group
   const kind = KIND[id];
   if (kind) {
     const url = info.linkUrl ?? info.pageUrl ?? tab?.url;
