@@ -252,12 +252,22 @@ export default defineBackground(() => {
   // Tabs already on a new-tab page when this worker starts are still "fresh" (rule: never committed a real URL).
   port.snapshot().then((s) => dedupe.seed(s.tabs), (e: unknown) => console.warn('[tabchef] dedupe seed failed', e));
 
-  // Context menu (M2 T16): items are created on onInstalled; title / enabled follow the active tab and its lock.
+  // Context menu (M2 T16): items are created on onInstalled, and re-created at a worker start that finds one missing
+  // (ProjectMenu.repair, below); title / enabled follow the active tab and its lock.
+  /** Runs a contextMenus call in its callback form: resolves, or rejects with runtime.lastError (a missing item). */
+  const menuCall = (call: (cb: () => void) => void) => new Promise<void>((resolve, reject) => {
+    call(() => { const e = browser.runtime.lastError; if (e) reject(new Error(e.message)); else resolve(); });
+  });
   const menuApi: MenuApi = {
-    removeAll: () => browser.contextMenus.removeAll(),
-    create: (p) => { browser.contextMenus.create(p, () => void browser.runtime.lastError); },
-    update: async (id, p) => { await browser.contextMenus.update(id, p); },
-    remove: async (id) => { await browser.contextMenus.remove(id); },
+    // Callbacks, not promises: before Chrome 123 (the manifest allows 116) update / remove / removeAll return none,
+    // and ProjectMenu.repair's probe needs update to reject for a missing item.
+    removeAll: () => menuCall((cb) => browser.contextMenus.removeAll(cb)),
+    // Reading runtime.lastError marks it handled; log it (a duplicate id, an unknown parent) instead of dropping it.
+    create: (p) => {
+      browser.contextMenus.create(p, () => { const e = browser.runtime.lastError; if (e) warn('menu item create')(e); });
+    },
+    update: (id, p) => menuCall((cb) => browser.contextMenus.update(id, p, cb)),
+    remove: (id) => menuCall((cb) => browser.contextMenus.remove(id, cb)),
   };
   const refreshMenu = (tab: MenuTab | undefined) => {
     safety.ready.then(() => refreshMenus(menuApi, tab, (id) => safety.isLocked(id))).catch(warn('menu refresh'));
@@ -319,9 +329,18 @@ export default defineBackground(() => {
   // The "Add to project" submenu lists the Projects page's projects that take tabs (ProjectService.menuItems: open at
   // the last pass, or kept), refreshed after each pass (the open set, config and recipe changes) and on each
   // stored-project change (storage.onChanged, below): a project created without tabs or closed and saved changes the
-  // store without a pass. ProjectMenu.sync skips an unchanged list.
-  const projectMenu = createProjectMenu(menuApi);
-  const refreshProjectMenu = () => { projects.menuItems().then((ps) => projectMenu.sync(ps)).catch(warn('project menu')); };
+  // store without a pass. ProjectMenu.sync skips an unchanged list, also across worker restarts (kept in storage.session).
+  const projectMenu = createProjectMenu(menuApi, { session: sessionArea, warn: (what, e) => warn(what)(e) });
+  // A sync or repair that re-creates items leaves them with the default titles and enabled state: refresh them for the
+  // active tab. An unchanged list re-creates nothing.
+  const refreshProjectMenu = () => {
+    projects.menuItems().then((ps) => projectMenu.sync(ps)).then((recreated) => { if (recreated) refreshActiveMenu(); }).catch(warn('project menu'));
+  };
+  // #220/#223: Chrome's stored copy of the menu can lose items. Every worker start probes them, whatever woke it (a tab
+  // switch, a Lock click and a popup message run no pass), and re-creates them only if one is missing; a failed
+  // rebuild is retried by the next sync. Not refreshProjectMenu: before this worker's first pass, menuItems lists only
+  // kept projects.
+  projectMenu.repair().then((recreated) => { if (recreated) refreshActiveMenu(); }).catch(warn('context menu repair'));
   /** Open projects as of the last pass: the Projects tab's count. */
   let openProjects = 0;
   const projects: ProjectService = new ProjectService({
@@ -640,7 +659,7 @@ export default defineBackground(() => {
   syncPermissions();
   browser.runtime.onInstalled.addListener(() => {
     reconciler.schedule('installed');
-    projectMenu.install().then(refreshActiveMenu, warn('context menu install')); // installMenus, then the listed projects
+    projectMenu.install().then(refreshActiveMenu, warn('context menu install')); // every item, with the last known projects
     startSourcesAlarm();
   });
   browser.contextMenus.onClicked.addListener((info, tab) => {

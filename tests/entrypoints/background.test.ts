@@ -11,7 +11,8 @@ const h = vi.hoisted(() => {
   const instances: Record<string, Fake> = {};
   const listeners: Record<string, Fn[]> = {};
   /** `notificationsAbsent`: browser.notifications is undefined, as before the optional permission is granted. */
-  const flags = { notificationsAbsent: false };
+  /** `lastError`: what browser.runtime.lastError reads (undefined: no error). */
+  const flags: { notificationsAbsent: boolean; lastError?: { message: string } } = { notificationsAbsent: false };
   // A class whose instances record their constructor args; any method not given in `extra` is an async vi.fn.
   const fake = (name: string, extra: () => object = () => ({})) => class {
     constructor(...args: unknown[]) {
@@ -36,6 +37,7 @@ const h = vi.hoisted(() => {
     get: (_t, p) => {
       if (p === 'then' || typeof p === 'symbol') return undefined;
       if (path.join('.') === 'runtime' && p === 'id') return 'ext-id';
+      if (path.join('.') === 'runtime' && p === 'lastError') return flags.lastError;
       if (path.length === 0 && p === 'notifications' && flags.notificationsAbsent) return undefined;
       if (p === 'addListener') return (fn: Fn) => { (listeners[path.join('.')] ??= []).push(fn); };
       if (p === 'removeListener') return () => {};
@@ -49,7 +51,10 @@ const h = vi.hoisted(() => {
   /** What ProgramCache.get resolves to (the age.tick gate reads it). */
   const state: { program: unknown } = { program: { rules: [] } };
   /** createProjectMenu's result (the project submenu). */
-  const projectMenu = { sync: vi.fn<(ps: unknown) => Promise<void>>(async () => {}), install: vi.fn(async () => {}) };
+  const projectMenu = {
+    sync: vi.fn<(ps: unknown) => Promise<boolean>>(async () => false), install: vi.fn(async () => {}),
+    repair: vi.fn<() => Promise<boolean>>(async () => false),
+  };
   return { instances, listeners, flags, fake, returns, calls, state, projectMenu, browser: node([]) };
 });
 
@@ -134,7 +139,7 @@ vi.mock('../../src/engine/connections/token-auth', async (orig) => ({
 }));
 
 const { afterConfigChange } = await import('../../src/engine/close-executor');
-const { installMenus, onMenuClick, refreshMenus } = await import('../../src/engine/context-menu');
+const { createProjectMenu, installMenus, onMenuClick, refreshMenus } = await import('../../src/engine/context-menu');
 const { createAskController } = await import('../../src/engine/ask');
 const { createContentHandler, createHandler, createOnMessage, refreshBadge } = await import('../../src/engine/messages');
 const { setGitHubToken } = await import('../../src/engine/connections/token-auth');
@@ -203,6 +208,8 @@ const alarmCallsOf = (name: string) => alarmCalls().filter(([, a]) => (a as unkn
 beforeEach(() => {
   vi.useFakeTimers();
   h.flags.notificationsAbsent = false;
+  delete h.flags.lastError;
+  for (const k of ['create', 'update', 'remove', 'removeAll']) delete h.returns[`contextMenus.${k}`];
   for (const k of Object.keys(h.listeners)) delete h.listeners[k];
   h.calls.length = 0;
   delete h.returns['alarms.get'];
@@ -694,6 +701,90 @@ describe('background wiring', () => {
     expect(I('projectSync').schedule).not.toHaveBeenCalled();
     await fire('storage.onChanged', { projects: {} }, 'local');
     expect(I('projectSync').schedule).toHaveBeenCalledTimes(1);
+  });
+
+  it('a project-menu sync that re-created items refreshes the menu for the active tab; an unchanged one does not', async () => {
+    I('projects').menuItems!.mockResolvedValue([]);
+    h.projectMenu.sync.mockResolvedValueOnce(false);
+    vi.mocked(refreshMenus).mockClear();
+    await fire('storage.onChanged', { projects: {} }, 'local');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(refreshMenus).not.toHaveBeenCalled();
+    h.projectMenu.sync.mockResolvedValueOnce(true); // items re-created: titles and enabled state are the defaults
+    await fire('storage.onChanged', { projects: {} }, 'local');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(refreshMenus).toHaveBeenCalledTimes(1);
+  });
+
+  it('#223: every worker start repairs the context menu, with no pass needed; a repair refreshes the active tab\'s items', async () => {
+    // beforeEach started a worker: repair (through the project menu queue) found nothing missing.
+    expect(h.projectMenu.repair).toHaveBeenCalledTimes(1);
+    expect(h.projectMenu.sync).not.toHaveBeenCalled(); // no pass, no sync: the repair does not wait for one
+    expect(installMenus).not.toHaveBeenCalled();
+    expect(vi.mocked(createProjectMenu).mock.calls[0]![1]?.session).toBeDefined(); // storage.session keeps the list shown
+    await vi.advanceTimersByTimeAsync(0);
+    expect(refreshMenus).not.toHaveBeenCalled();
+    h.projectMenu.repair.mockResolvedValueOnce(true); // items re-created: titles and enabled state are the defaults
+    for (const k of Object.keys(h.listeners)) delete h.listeners[k];
+    background.main();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(refreshMenus).toHaveBeenCalledTimes(1);
+  });
+
+  it('#223: a failed repair is logged', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    h.projectMenu.repair.mockRejectedValueOnce(new Error('removeAll failed'));
+    try {
+      for (const k of Object.keys(h.listeners)) delete h.listeners[k];
+      background.main();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(warn).toHaveBeenCalledWith('[tabchef] context menu repair failed', expect.objectContaining({ message: 'removeAll failed' }));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('#223: the menu calls use callbacks and reject on runtime.lastError, so the probe works before Chrome 123', async () => {
+    // Before Chrome 123, contextMenus.update / remove / removeAll return no promise: only the callback reports.
+    const cbCall = (cbAt: number) => (...a: unknown[]) => { (a[cbAt] as () => void)(); return undefined; };
+    h.returns['contextMenus.update'] = cbCall(2);
+    h.returns['contextMenus.remove'] = cbCall(1);
+    h.returns['contextMenus.removeAll'] = cbCall(0);
+    const menuApi = vi.mocked(createProjectMenu).mock.calls[0]![0];
+    await expect(menuApi.update('tc-lock', {})).resolves.toBeUndefined();
+    await expect(menuApi.remove('tc-lock')).resolves.toBeUndefined();
+    await expect(menuApi.removeAll()).resolves.toBeUndefined();
+    h.flags.lastError = { message: 'Cannot find menu item with id tc-lock' };
+    await expect(menuApi.update('tc-lock', {})).rejects.toThrow('Cannot find menu item with id tc-lock');
+    await expect(menuApi.remove('tc-lock')).rejects.toThrow('Cannot find menu item with id tc-lock');
+    await expect(menuApi.removeAll()).rejects.toThrow('Cannot find menu item with id tc-lock');
+  });
+
+  it('a menu item Chrome refuses to create is logged, not swallowed', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    h.returns['contextMenus.create'] = (_p: unknown, cb: () => void) => { cb(); };
+    const menuApi = vi.mocked(createProjectMenu).mock.calls[0]![0];
+    menuApi.create({ id: 'tc-lock', title: 'Lock this tab', contexts: ['page'] });
+    expect(warn).not.toHaveBeenCalled();
+    h.flags.lastError = { message: 'Cannot create item with duplicate id tc-lock' };
+    menuApi.create({ id: 'tc-lock', title: 'Lock this tab', contexts: ['page'] });
+    expect(warn).toHaveBeenCalledWith('[tabchef] menu item create failed', h.flags.lastError);
+    warn.mockRestore();
+  });
+
+  it('a throw while refreshing after a project-menu sync is logged', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    I('projects').menuItems!.mockResolvedValue([]);
+    h.projectMenu.sync.mockResolvedValueOnce(true);
+    h.returns['tabs.query'] = () => { throw new Error('tabs.query threw'); };
+    try {
+      await fire('storage.onChanged', { projects: {} }, 'local');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(warn).toHaveBeenCalledWith('[tabchef] project menu failed', expect.objectContaining({ message: 'tabs.query threw' }));
+    } finally {
+      h.returns['tabs.query'] = () => Promise.resolve([]);
+      warn.mockRestore();
+    }
   });
 
   it('a stored-project change refreshes the "Add to project" submenu from ProjectService.menuItems', async () => {

@@ -15,6 +15,40 @@ const api = (): MenuApi & { calls: string[] } => {
   };
 };
 
+/** Chrome's menu as create / update / remove / removeAll leave it (id → parentId, enabled), recording every call. */
+const chromeMenu = (seed: [id: string, parentId?: string][] = []) => {
+  const items = new Map<string, { parentId?: string; enabled: boolean }>(seed.map(([id, parentId]) => [id, { parentId, enabled: true }]));
+  const calls: string[] = [];
+  const drop = (id: string) => { items.delete(id); for (const [c, it] of [...items]) if (it.parentId === id) drop(c); };
+  const a: MenuApi = {
+    removeAll: async () => { calls.push('removeAll'); items.clear(); },
+    create: (p) => { calls.push(`create:${p.id}`); items.set(p.id, { parentId: p.parentId, enabled: p.enabled ?? true }); },
+    update: async (id, p) => {
+      if (!items.has(id)) throw new Error(`Cannot find menu item with id ${id}`);
+      if (p.enabled !== undefined) items.get(id)!.enabled = p.enabled;
+    },
+    remove: async (id) => { calls.push(`remove:${id}`); if (!items.has(id)) throw new Error(`Cannot find menu item with id ${id}`); drop(id); },
+  };
+  return { api: a, items, calls };
+};
+/** Every item installMenus creates with the projects A-1 (`tc-project:r:A-1`). */
+const FULL_MENU: [string, string?][] = [
+  ['tc-group'], ['tc-close'], ['tc-allowdup'], ['tc-lock'], ['tc-why'], ['tc-save-group'],
+  ['tc-project'], ['tc-project:r:A-1', 'tc-project'], ['tc-project-new', 'tc-project'], ['tc-project-remove'],
+];
+/** storage.session as the menu uses it. */
+const sessionArea = (init: Record<string, unknown> = {}) => {
+  const data: Record<string, unknown> = { ...init };
+  return {
+    data,
+    get: vi.fn(async (k: string | string[]) => Object.fromEntries([k].flat().filter((x) => x in data).map((x) => [x, data[x]]))),
+    set: vi.fn(async (items: Record<string, unknown>) => { Object.assign(data, items); }),
+  };
+};
+const A1 = [{ id: 'r:A-1', title: 'A-1' }];
+/** The top-level items Chrome shows, in its order. */
+const tops = (items: Map<string, { parentId?: string }>) => [...items].filter(([, it]) => !it.parentId).map(([id]) => id);
+
 describe('context menu (M2 T16)', () => {
   it('installMenus removes stale items first, then creates the items with their exact titles and contexts', async () => {
     const a = api();
@@ -122,8 +156,8 @@ describe('context menu (M2 T16)', () => {
     await sync([{ id: 'r:ABC-1', title: 'ABC-1' }, { id: 'r:ABC-2', title: 'ABC-2 · Login' }]);
     expect(a.calls).toEqual(['remove:tc-project', 'remove:tc-project-remove', 'create:tc-project', 'create:tc-project:r:ABC-1', 'create:tc-project:r:ABC-2', 'create:tc-project-new', 'create:tc-project-remove']);
     const created = (a.create as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]);
-    expect(created[0]).toMatchObject({ id: 'tc-project', title: 'Add to project', enabled: true });
-    expect(created[1]).toMatchObject({ id: 'tc-project:r:ABC-1', parentId: 'tc-project', title: 'ABC-1' });
+    expect(created.at(-5)).toMatchObject({ id: 'tc-project', title: 'Add to project', enabled: true });
+    expect(created.at(-4)).toMatchObject({ id: 'tc-project:r:ABC-1', parentId: 'tc-project', title: 'ABC-1' });
     a.calls.length = 0;
     await sync([{ id: 'r:ABC-1', title: 'ABC-1' }, { id: 'r:ABC-2', title: 'ABC-2 · Login' }]);
     expect(a.calls).toEqual([]);
@@ -174,13 +208,126 @@ describe('context menu (M2 T16)', () => {
     expect(saveGroup).toHaveBeenCalledTimes(1);
   });
 
+  it('#223: the first sync after a worker start re-creates only the project items, and resolves true so the caller refreshes', async () => {
+    const a = api();
+    const m = createProjectMenu(a);
+    expect(await m.sync([])).toBe(true); // the projects shown before this worker started are unknown
+    expect(a.calls).toEqual(['remove:tc-project', 'remove:tc-project-remove', 'create:tc-project', 'create:tc-project-new', 'create:tc-project-remove']);
+    a.calls.length = 0;
+    expect(await m.sync(A1)).toBe(true);
+    expect(a.calls).toEqual(['remove:tc-project', 'remove:tc-project-remove', 'create:tc-project', 'create:tc-project:r:A-1', 'create:tc-project-new', 'create:tc-project-remove']);
+    a.calls.length = 0;
+    expect(await m.sync(A1)).toBe(false); // the same list: nothing re-created, nothing to refresh
+    expect(a.calls).toEqual([]);
+  });
+
+  it('#223: a wake with nothing missing re-creates nothing: no removeAll, no rule items, not even the same project list', async () => {
+    const chrome = chromeMenu(FULL_MENU);
+    const session = sessionArea({ contextMenuProjects: A1 }); // the list the previous worker showed
+    const m = createProjectMenu(chrome.api, { session });
+    expect(await m.repair()).toBe(false);
+    expect(await m.sync(A1)).toBe(false); // the first pass lists the same projects
+    expect(chrome.calls).toEqual([]);
+    expect(await m.sync([...A1, { id: 'r:B-1', title: 'B-1' }])).toBe(true); // a changed list: only the project items
+    expect(chrome.calls).toEqual(['remove:tc-project', 'remove:tc-project-remove', 'create:tc-project', 'create:tc-project:r:A-1', 'create:tc-project:r:B-1', 'create:tc-project-new', 'create:tc-project-remove']);
+    expect(session.data.contextMenuProjects).toEqual([...A1, { id: 'r:B-1', title: 'B-1' }]); // the next worker starts from it
+  });
+
+  it('#223: a wake with no pass repairs lost items with the last known projects (open ticket projects kept)', async () => {
+    const chrome = chromeMenu(FULL_MENU.filter(([id]) => id.startsWith('tc-project'))); // Chrome kept only the project items
+    const m = createProjectMenu(chrome.api, { session: sessionArea({ contextMenuProjects: A1 }) });
+    expect(await m.repair()).toBe(true); // background.ts refreshes titles and enabled state after it
+    expect(chrome.calls[0]).toBe('removeAll');
+    expect([...chrome.items.keys()].sort()).toEqual(FULL_MENU.map(([id]) => id).sort());
+    chrome.calls.length = 0;
+    expect(await m.sync(A1)).toBe(false); // the first pass lists the same projects: nothing more to do
+    expect(chrome.calls).toEqual([]);
+  });
+
+  it('#223: with the projects known, a lost project child or New project… is found and repaired', async () => {
+    for (const lostId of ['tc-project:r:A-1', 'tc-project-new']) {
+      const chrome = chromeMenu(FULL_MENU.filter(([id]) => id !== lostId));
+      const m = createProjectMenu(chrome.api, { session: sessionArea({ contextMenuProjects: A1 }) });
+      expect(await m.repair(), lostId).toBe(true);
+      expect(chrome.calls[0]).toBe('removeAll');
+      expect([...chrome.items.keys()].sort()).toEqual(FULL_MENU.map(([id]) => id).sort());
+    }
+  });
+
+  it('#223: with the projects unknown (a new browser session), the repair re-creates the lost fixed items and keeps the project items', async () => {
+    const chrome = chromeMenu(FULL_MENU.filter(([id]) => id.startsWith('tc-project')));
+    const m = createProjectMenu(chrome.api, { session: sessionArea() });
+    expect(await m.repair()).toBe(true);
+    expect(chrome.calls).not.toContain('removeAll');
+    expect(chrome.calls.filter((c) => c.includes('tc-project'))).toEqual([]); // Add to project › keeps A-1 until the first pass
+    expect([...chrome.items.keys()].sort()).toEqual(FULL_MENU.map(([id]) => id).sort());
+    chrome.calls.length = 0;
+    expect(await m.sync([...A1, { id: 'r:B-1', title: 'B-1' }])).toBe(true); // the first pass: the project items, at the end again
+    expect(chrome.calls).toEqual(['remove:tc-project', 'remove:tc-project-remove', 'create:tc-project', 'create:tc-project:r:A-1', 'create:tc-project:r:B-1', 'create:tc-project-new', 'create:tc-project-remove']);
+    expect(tops(chrome.items)).toEqual(['tc-group', 'tc-close', 'tc-allowdup', 'tc-lock', 'tc-why', 'tc-save-group', 'tc-project', 'tc-project-remove']);
+  });
+
+  it('#223: with the projects unknown, only the lost project item is re-created; the fixed items and Chrome\'s children stay', async () => {
+    const cases: [lost: string[], calls: string[]][] = [
+      [['tc-project-remove'], ['create:tc-project-remove']],
+      [['tc-project-new'], ['create:tc-project-new']], // A-1 stays under Add to project
+      [['tc-project', 'tc-project:r:A-1', 'tc-project-new'], ['create:tc-project', 'create:tc-project-new']],
+    ];
+    for (const [lost, calls] of cases) {
+      const chrome = chromeMenu(FULL_MENU.filter(([id]) => !lost.includes(id)));
+      expect(await createProjectMenu(chrome.api).repair(), lost[0]).toBe(true);
+      expect(chrome.calls, lost[0]).toEqual(calls);
+    }
+  });
+
+  it('#223: with the projects unknown and Add to project lost too, the repair creates it with New project… only', async () => {
+    const chrome = chromeMenu();
+    const m = createProjectMenu(chrome.api);
+    expect(await m.repair()).toBe(true);
+    expect([...chrome.items.keys()].sort()).toEqual(FULL_MENU.map(([id]) => id).filter((id) => id !== 'tc-project:r:A-1').sort());
+    chrome.calls.length = 0;
+    expect(await m.sync(A1)).toBe(true); // the first pass adds the projects
+    expect(chrome.items.has('tc-project:r:A-1')).toBe(true);
+  });
+
+  it('#223: a failed rebuild rejects and the next sync rebuilds every item, even with the same list', async () => {
+    const chrome = chromeMenu(FULL_MENU.filter(([id]) => id !== 'tc-lock'));
+    const removeAll = chrome.api.removeAll;
+    chrome.api.removeAll = vi.fn().mockRejectedValueOnce(new Error('removeAll failed')).mockImplementation(removeAll);
+    const m = createProjectMenu(chrome.api, { session: sessionArea({ contextMenuProjects: A1 }) });
+    await expect(m.repair()).rejects.toThrow('removeAll failed');
+    expect(chrome.items.has('tc-lock')).toBe(false);
+    expect(await m.sync(A1)).toBe(true); // the list shown, but the rebuild is still owed
+    expect(chrome.calls[0]).toBe('removeAll');
+    expect([...chrome.items.keys()].sort()).toEqual(FULL_MENU.map(([id]) => id).sort());
+    chrome.calls.length = 0;
+    expect(await m.sync(A1)).toBe(false); // done: the same list does nothing again
+    expect(chrome.calls).toEqual([]);
+  });
+
+  it('#223: an unreadable or malformed stored project list counts as unknown; storage failures are logged', async () => {
+    for (const stored of [{ contextMenuProjects: 'x' }, { contextMenuProjects: [{ id: 1 }] }]) {
+      const chrome = chromeMenu(FULL_MENU.filter(([id]) => id.startsWith('tc-project')));
+      expect(await createProjectMenu(chrome.api, { session: sessionArea(stored) }).repair()).toBe(true);
+      expect(chrome.calls).not.toContain('removeAll'); // not a full rebuild with a made-up list
+    }
+    const readErr = new Error('read failed');
+    const writeErr = new Error('write failed');
+    const broken = { get: vi.fn(async () => { throw readErr; }), set: vi.fn(async () => { throw writeErr; }) };
+    const warn = vi.fn();
+    const m = createProjectMenu(api(), { session: broken, warn });
+    expect(await m.sync(A1)).toBe(true);
+    expect(await m.sync(A1)).toBe(false);
+    expect(warn.mock.calls).toEqual([['context menu projects read', readErr], ['context menu projects write', writeErr]]);
+  });
+
   it('M3-R71: overlapping syncs and an install run one at a time; install re-adds the last projects', async () => {
     const a = api();
     let release!: () => void;
     let first = true;
     a.remove = vi.fn(async (id: string) => {
       a.calls.push(`remove:${id}`);
-      if (first && id === 'tc-project') { first = false; await new Promise<void>((r) => { release = r; }); }
+      if (first) { first = false; await new Promise<void>((r) => { release = r; }); }
     });
     const m = createProjectMenu(a);
     const one = m.sync([{ id: 'r:A-1', title: 'A-1' }]);
@@ -190,11 +337,11 @@ describe('context menu (M2 T16)', () => {
     expect(a.calls).toEqual(['remove:tc-project', 'remove:tc-project-remove']); // the second sync waits
     release();
     await Promise.all([one, two, inst]);
+    const rules = ['create:tc-group', 'create:tc-close', 'create:tc-allowdup', 'create:tc-lock', 'create:tc-why', 'create:tc-save-group'];
     expect(a.calls.slice(2)).toEqual([
       'create:tc-project', 'create:tc-project:r:A-1', 'create:tc-project-new', 'create:tc-project-remove',
       'remove:tc-project', 'remove:tc-project-remove', 'create:tc-project', 'create:tc-project:r:B-1', 'create:tc-project-new', 'create:tc-project-remove',
-      'removeAll', 'create:tc-group', 'create:tc-close', 'create:tc-allowdup', 'create:tc-lock', 'create:tc-why', 'create:tc-save-group', 'create:tc-project', 'create:tc-project-new', 'create:tc-project-remove',
-      'remove:tc-project', 'remove:tc-project-remove', 'create:tc-project', 'create:tc-project:r:B-1', 'create:tc-project-new', 'create:tc-project-remove',
+      'removeAll', ...rules, 'create:tc-project', 'create:tc-project:r:B-1', 'create:tc-project-new', 'create:tc-project-remove',
     ]);
     a.calls.length = 0;
     await m.sync([{ id: 'r:B-1', title: 'B-1' }]);
