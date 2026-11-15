@@ -7,6 +7,7 @@ import { explainTab, findShadowed, shadowText } from '../../../src/core/lang/exp
 import type { Action, Program, Rule, TabFacts } from '../../../src/core/lang/types';
 import type { Config, GroupRule, TabSnap } from '../../../src/core/types';
 import { withGroupRules } from '../../helpers/config';
+import { builtinRecipes } from '../../../src/recipes/load';
 
 const NOW = 1_800_000_000_000;
 const tab = (url: string, over: Partial<TabSnap> = {}): TabSnap => ({
@@ -175,6 +176,49 @@ describe('findShadowed', () => {
 
   it('copy', () => {
     expect(shadowText('Github Other')).toBe('Likely never matches: rule "Github Other" above catches these first.');
+  });
+
+  describe('project rules', () => {
+    const issues = (rules: Rule[], order?: string[]): Program => {
+      const c: Config = { ...defaultConfig(), recipes: [{ id: 'github-issue', enabled: true, params: {}, source: 'builtin' }], rules, order: order ?? rules.map((r) => `user/${r.id}`) };
+      const { program: p, errors } = compileProgram(c, builtinRecipes());
+      expect(errors).toEqual([]);
+      return p;
+    };
+
+    it('a group rule above that catches all its tabs keeps them out of the project group', () => {
+      const p = issues([rule('site', { url: '/^https?:\\/\\/(?<site>[^\\/]+)/' }, [group('{site}')])]);
+      expect(findShadowed(p)).toContainEqual({ key: 'github-issue/issue', shadowedBy: 'user/site', project: true });
+    });
+
+    it('a glob catch-all is reported too; the same rule below the recipe is not', () => {
+      const all = rule('all', { url: 'github.com/*' }, [group('GH')]);
+      expect(findShadowed(issues([all]))).toContainEqual({ key: 'github-issue/issue', shadowedBy: 'user/all', project: true });
+      const below = issues([all], ['github-issue/issue', 'github-issue/pr', 'user/all']);
+      expect(findShadowed(below).filter((x) => x.key === 'github-issue/issue')).toEqual([]);
+    });
+
+    it('only a group action keeps tabs out: a dedupe or close rule above is not reported, nor one matching only some tabs', () => {
+      const p = issues([
+        rule('d', { url: 'github.com/*' }, [{ dedupe: { mode: 'off' } }]),
+        rule('c', { url: 'github.com/*' }, [{ close: { after: '1d' } }]),
+        rule('some', { url: 'github.com/acme/*' }, [group('Acme')]),
+      ]);
+      expect(findShadowed(p).filter((x) => x.key.startsWith('github-issue/'))).toEqual([]);
+    });
+
+    it('a dry-run group rule above, or one whose match is unsure (not, title), is not reported', () => {
+      const p = issues([
+        rule('dry', { url: 'github.com/*' }, [group('Dry')], { dryRun: true }),
+        rule('not', { all: [{ url: 'github.com/*' }, { not: { url: 'github.com/settings/*' } }] }, [group('Not')]),
+        rule('title', { title: '*Issue*' }, [group('T')]),
+      ]);
+      expect(findShadowed(p).filter((x) => x.key.startsWith('github-issue/'))).toEqual([]);
+    });
+
+    it('copy', () => {
+      expect(shadowText('Group by site', true)).toBe('Likely never reaches the project group: rule "Group by site" above groups these tabs first (they still join the project).');
+    });
   });
 });
 

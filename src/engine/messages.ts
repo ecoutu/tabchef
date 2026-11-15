@@ -282,7 +282,8 @@ export interface ExplainView {
   rules: ExplainEntry[];
 }
 /** A shadowed rule (`key`), the earlier rule that catches its tabs (`shadowedBy`) and that rule's name (R19). */
-export interface ShadowedRule { key: string; shadowedBy: string; name: string }
+/** `project`: a project rule whose tabs the rule above groups first (they stay out of the project group). */
+export interface ShadowedRule { key: string; shadowedBy: string; name: string; project?: true }
 
 /**
  * One recipe as listed to the UI: its ref, header, effective needs (host needs add `scripting`) and their status.
