@@ -12,7 +12,7 @@
   import type { Config, TabSnap } from '../../core/types';
   import type { Rule } from '../../core/lang/types';
   import {
-    addRule, configPatternErrors, customizeRule, addSection, assignSection, customizedCopy, deleteSection, errorsForPath, gatherBlock, inactiveReason, moveBlock, neighborUnit, patchRuleForm,
+    addRule, addSampleRule, RULE_SAMPLES, configPatternErrors, customizeRule, addSection, assignSection, customizedCopy, deleteSection, errorsForPath, gatherBlock, inactiveReason, moveBlock, neighborUnit, patchRuleForm,
     removeRule, renameSection, reorder, sectionOf,
     replaceRule, ruleForm, ruleIndex, ruleRows, ruleSummary, ruleRuns, setRecipeRuleOn, type RuleForm, type RuleRow, type RuleRun,
   } from '../../ui/rules-model';
@@ -158,6 +158,16 @@
     await tick();
     const copy = customizedCopy(config, key, builtins);
     if (copy) focusRule(`user/${copy.id}`);
+  }
+  /** The sample chosen in the picker; Add sample adds it (choosing alone changes nothing, so arrow keys can browse). */
+  let sample = $state('');
+  /** Adds a copy of a sample rule, then takes the user to it. */
+  async function addSample(sampleId: string): Promise<void> {
+    const next = addSampleRule(config, sampleId, builtins);
+    if (next === config) return;
+    onChange(next);
+    await tick();
+    focusRule(`user/${next.rules.at(-1)!.id}`);
   }
   function remove(id: string): void { delete yaml[id]; delete yamlInvalid[id]; onChange(removeRule(config, id)); }
 
@@ -317,6 +327,12 @@
 
   <div class="actions">
     <button type="button" onclick={() => onChange(addRule(config))}>Add rule</button>
+    <select aria-label="Sample rule" value={sample} onchange={(e) => (sample = e.currentTarget.value)}>
+      <option value="" disabled>Choose a sample rule…</option>
+      {#each RULE_SAMPLES as s (s.id)}<option value={s.id}>{s.label}</option>{/each}
+    </select>
+    <button type="button" disabled={sample === ''} onclick={() => { const v = sample; sample = ''; void addSample(v); }}>Add sample</button>
+    <Help label="Sample rules" text="Choose a sample, then Add sample: a ready-made rule you can edit, added at the end of the list, below your rules and the recipes you have on. Group tabs by site, by the app name at the end of their title (such as Gmail or GitHub), or by a word in their title. Edit the pattern to fit your tabs. Nothing changes until you Save." />
     <button type="button" class="primary" disabled={!dirty || saving || hasErrors || yamlBlocked} onclick={onSave}>Save</button>
     {#if hasErrors}<span class="err">Fix pattern errors to save.</span>{/if}
     {#if yamlBlocked}<span class="err">Fix YAML errors to save.</span>{/if}
