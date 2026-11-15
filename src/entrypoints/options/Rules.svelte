@@ -302,7 +302,7 @@
         {#if row.kind === 'user'}<button type="button" class="danger" onclick={() => remove(row.rule.id)}>Delete</button>{/if}
       </div>
       {#if shadowOf(row.key)}
-        <p class="warn" role="note"><span class="chip">Likely</span> {shadowText(shadowOf(row.key)!.name)}</p>
+        <p class="warn" role="note"><span class="chip">Likely</span> {shadowText(shadowOf(row.key)!.name, shadowOf(row.key)!.project)}</p>
       {/if}
 
       {#if row.kind === 'recipe'}
