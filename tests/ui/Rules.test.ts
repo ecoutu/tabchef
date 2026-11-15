@@ -61,6 +61,23 @@ describe('Rules', () => {
     expect(p.onChange.mock.calls[0]![0].rules).toHaveLength(1);
   });
 
+  it('Add sample appends the chosen sample and resets the picker; choosing alone adds nothing', async () => {
+    const p = props(cfg());
+    render(Rules, p);
+    const picker = screen.getByRole('combobox', { name: 'Sample rule' }) as HTMLSelectElement;
+    const add = screen.getByRole('button', { name: 'Add sample' }) as HTMLButtonElement;
+    expect(add.disabled).toBe(true);
+    await fireEvent.change(picker, { target: { value: 'title-app' } });
+    expect(p.onChange).not.toHaveBeenCalled();
+    expect(add.disabled).toBe(false);
+    await fireEvent.click(add);
+    const added = p.onChange.mock.calls[0]![0].rules;
+    expect(added).toHaveLength(1);
+    expect(added[0].name).toBe('Group by the app name at the end of the title');
+    expect(picker.value).toBe('');
+    expect(add.disabled).toBe(true);
+  });
+
   it('shows server errors inline next to the matching field', () => {
     render(Rules, props(cfg(rule('a', 'a.com/*')), { serverErrors: ['/rules/0/actions/0/group/color must be equal to one of the allowed values'] }));
     expect(screen.getByText(/must be equal to one of the allowed values/)).toBeTruthy();

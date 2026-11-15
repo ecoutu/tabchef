@@ -1,9 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { reorderRules, addRule, updateRule, removeRule, previewMatches, patternError, configPatternErrors, errorsForPath, orderedUserRules, formRule, addNewRule, groupRuleChoices } from '../../src/ui/rules-model';
+import { reorderRules, addRule, updateRule, removeRule, previewMatches, patternError, configPatternErrors, errorsForPath, orderedUserRules, formRule, addNewRule, groupRuleChoices, addSampleRule, RULE_SAMPLES, ruleForm, ruleRows, setRecipeRuleOn } from '../../src/ui/rules-model';
 import { defaultConfig } from '../../src/core/config/defaults';
 import { validateConfig } from '../../src/core/config/schema';
 import type { Config, GroupRule, Rule, TabSnap } from '../../src/core/types';
 import { withGroupRules } from '../helpers/config';
+import { compileProgram } from '../../src/core/lang/compile';
+import { evaluateTab } from '../../src/core/lang/evaluate';
+import { builtinRecipes } from '../../src/recipes/load';
+import { withRecipe } from '../../src/ui/recipes-model';
 
 const rule = (id: string, url: string | string[] = 'a.com/*'): GroupRule => ({ id, name: id, enabled: true, match: { url }, group: { title: id, color: 'blue' } });
 const cfg = (...ids: string[]): Config => withGroupRules(ids.map((i) => rule(i)));
@@ -517,5 +521,83 @@ describe('rules-model: sections (M4 rule sections T3)', () => {
     const out = customizeRule(base, 'finished/oauth-callback', builtinRecipes());
     expect(out.rules).toHaveLength(2);
     expect(sectionOf(out)(out.rules[1]!.id)).toBeUndefined();
+  });
+});
+
+describe('rules-model: sample rules', () => {
+  const NOW = 1_800_000_000_000;
+  const titled = (url: string, title: string): TabSnap => ({ ...tab(1, url), title });
+  const groupOf = (c: Config, t: TabSnap): string | undefined => {
+    const { program, errors } = compileProgram(c, builtinRecipes());
+    expect(errors).toEqual([]);
+    return evaluateTab(program, { tab: t }, NOW).group?.title;
+  };
+  const withSample = (id: string): Config => addSampleRule(defaultConfig(), id);
+
+  it('every sample adds one valid, form-editable rule at the end of the order', () => {
+    for (const s of RULE_SAMPLES) {
+      const base = addRule(defaultConfig());
+      const c = addSampleRule(base, s.id);
+      expect(validateConfig(c).ok).toBe(true);
+      expect(configPatternErrors(c)).toEqual([]);
+      const added = c.rules.at(-1)!;
+      expect(added.name).toBe(s.rule.name);
+      expect(c.order.at(-1)).toBe(`user/${added.id}`);
+      expect(ruleForm(added)).not.toBeNull();
+    }
+  });
+
+  it('a sample lands below the recipe rules shown, so an enabled recipe still wins', () => {
+    const b = builtinRecipes();
+    const on = setRecipeRuleOn(withRecipe(defaultConfig(), 'github-issue', { enabled: true }, b), 'github-prs/group-by-repo', true, b);
+    const c = addSampleRule(on, 'site', b);
+    expect(ruleRows(c, b).at(-1)!.key).toBe(`user/${c.rules.at(-1)!.id}`);
+    expect(groupOf(c, titled('https://github.com/acme/web/pull/7', 'Fix login by x · Pull Request #7 · acme/web · GitHub'))).toBe('web');
+    const { program } = compileProgram(c, b);
+    const keys = program.rules.map((r) => r.key);
+    expect(keys.indexOf('github-issue/issue')).toBeGreaterThanOrEqual(0);
+    expect(keys.indexOf('github-issue/issue')).toBeLessThan(keys.indexOf(`user/${c.rules.at(-1)!.id}`));
+  });
+
+  it('adding a sample twice gives two rules with different ids', () => {
+    const c = addSampleRule(withSample('site'), 'site');
+    expect(c.rules).toHaveLength(2);
+    expect(c.rules[0]!.id).not.toBe(c.rules[1]!.id);
+  });
+
+  it('a stale key of the sample in order is not duplicated', () => {
+    const c = addSampleRule({ ...defaultConfig(), order: ['user/sample-site'] }, 'site');
+    expect(c.order.filter((k) => k === 'user/sample-site')).toHaveLength(1);
+    expect(validateConfig(c).ok).toBe(true);
+  });
+
+  it('an unknown sample leaves the config unchanged', () => {
+    const c = defaultConfig();
+    expect(addSampleRule(c, 'nope')).toBe(c);
+  });
+
+  it('Group by site names the group after the host, without www', () => {
+    const c = withSample('site');
+    expect(groupOf(c, titled('https://www.example.com/a?b#c', 'x'))).toBe('example.com');
+    expect(groupOf(c, titled('http://docs.python.org/3/', 'x'))).toBe('docs.python.org');
+    expect(groupOf(c, titled('http://localhost:5173/', 'x'))).toBe('localhost');
+    expect(groupOf(c, titled('chrome://settings/', 'x'))).toBeUndefined();
+    expect(groupOf(c, titled('https://user:pw@host.com/', 'x'))).toBe('host.com');
+    expect(groupOf(c, titled('http://[::1]:5173/', 'x'))).toBe('[::1]');
+    expect(groupOf(c, titled('https://a.com/?next=x@y.com', 'x'))).toBe('a.com');
+  });
+
+  it('Group by app name reads the last part of the title', () => {
+    const c = withSample('title-app');
+    expect(groupOf(c, titled('https://mail.example.com/', 'Inbox (3) - me@example.com - Gmail'))).toBe('Gmail');
+    expect(groupOf(c, titled('https://example.com/a/b', 'Fix login by x · Pull Request #7 · a/b · GitHub'))).toBe('GitHub');
+    expect(groupOf(c, titled('https://example.com/', 'Plain title'))).toBeUndefined();
+  });
+
+  it('Group by a word in the title matches it anywhere, ignoring case', () => {
+    const c = withSample('title-word');
+    expect(groupOf(c, titled('https://a.com/', 'Weekly docs review'))).toBe('Docs');
+    expect(groupOf(c, titled('https://a.com/', 'Google DOCS'))).toBe('Docs');
+    expect(groupOf(c, titled('https://a.com/', 'Something else'))).toBeUndefined();
   });
 });

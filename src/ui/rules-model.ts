@@ -56,6 +56,52 @@ export function addRule(c: Config, partial: Partial<GroupRule> = {}): Config {
   return { ...c, rules: [...c.rules, rule], order: [...c.order.filter((k) => k !== userKey(id)), userKey(id)] };
 }
 
+/**
+ * Sample rules offered next to Add rule: simple, form-editable starting points. Grouping by page content is not one:
+ * a user rule's pageText only works on sites a recipe already has access to (user rules cannot ask for it, R44).
+ */
+export interface RuleSample { id: string; label: string; rule: Omit<Rule, 'id' | 'enabled'> }
+export const RULE_SAMPLES: readonly RuleSample[] = [
+  {
+    id: 'site', label: 'Group by site',
+    rule: {
+      name: 'Group by site',
+      match: { url: '/^https?:\\/\\/(?:[^@\\/?#]*@)?(?:www\\.)?(?<site>\\[[^\\]\\/]+\\]|[^\\/:?#@]+)/' },
+      actions: [{ group: { title: '{site}', color: 'grey' } }],
+    },
+  },
+  {
+    id: 'title-app', label: 'Group by the app name at the end of the title',
+    rule: {
+      name: 'Group by the app name at the end of the title',
+      match: { title: '/\\s[-–—|·]\\s(?<app>[^-–—|·]+)$/' },
+      actions: [{ group: { title: '{app}', color: 'purple' } }],
+    },
+  },
+  {
+    id: 'title-word', label: 'Group by a word in the title',
+    rule: {
+      name: 'Group tabs with "docs" in the title',
+      match: { title: '*docs*' },
+      actions: [{ group: { title: 'Docs', color: 'cyan' } }],
+    },
+  },
+];
+
+/**
+ * Adds a copy of the sample `sampleId` (enabled) as the last row of the Rules page: below the user's rules and the
+ * rules of enabled recipes, whose keys are written into `order` first (keys missing from it rank user rules above
+ * recipe rules, so appending only the sample's key would put a catch-all sample above every recipe). An unknown id
+ * leaves `c` unchanged.
+ */
+export function addSampleRule(c: Config, sampleId: string, builtins: Record<string, Recipe> = builtinRecipes()): Config {
+  const s = RULE_SAMPLES.find((x) => x.id === sampleId);
+  if (!s) return c;
+  const id = sanitizeRuleId(`sample-${s.id}`, new Set(c.rules.map((r) => r.id)));
+  const rule: Rule = { id, enabled: true, ...structuredClone(s.rule) };
+  return { ...c, rules: [...c.rules, rule], order: [...fullOrder(c, ruleRows(c, builtins).map((r) => r.key)).filter((k) => k !== userKey(id)), userKey(id)] };
+}
+
 /** Applies a form patch (M1 fields) to a form-editable rule; other rules and unknown ids leave `c` unchanged. */
 export function updateRule(c: Config, id: string, patch: Partial<GroupRule>): Config {
   const i = ruleIndex(c, id);
