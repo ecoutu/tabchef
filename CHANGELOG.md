@@ -1,3 +1,21 @@
+# [1.10.0](https://github.com/ecoutu/tabchef/compare/v1.9.1...v1.10.0) (2026-11-15)
+
+
+### Bug Fixes
+
+* **connections:** ask for GitHub access when saving a personal access token ([cc1b7e6](https://github.com/ecoutu/tabchef/commit/cc1b7e66599d60269992ecaa69b1dd098280a66d))
+* **menus:** bring back the right-click menu items after Chrome loses its saved menu ([232a6de](https://github.com/ecoutu/tabchef/commit/232a6de3b99cdeff8f4934fa971cf0c21f9b01b6))
+* **menus:** show Add to project and Remove from project in the toolbar icon's menu ([219ea8f](https://github.com/ecoutu/tabchef/commit/219ea8f0a2e74b9591bdc3d4e928a7fc39b53e90))
+* **recipes:** ask for GitHub access when enabling Merged PRs, and offer it on paused rules ([77fcf73](https://github.com/ecoutu/tabchef/commit/77fcf7349f77aadbf4c92d650d465ee2d93c4b73))
+* **ui:** make links, chips and hovered rows readable in the light theme ([ce02ad8](https://github.com/ecoutu/tabchef/commit/ce02ad8ef4ba06315cc3e327e997f41b245e692b)), closes [#2f63e6](https://github.com/ecoutu/tabchef/issues/2f63e6) [#656a76](https://github.com/ecoutu/tabchef/issues/656a76)
+* **ui:** make the Done status pill readable in light and dark themes ([1f8138e](https://github.com/ecoutu/tabchef/commit/1f8138e031590ee09337a64e6a5a5f538af25553)), closes [#1e8e3e](https://github.com/ecoutu/tabchef/issues/1e8e3e) [#177d36](https://github.com/ecoutu/tabchef/issues/177d36) [#5bb974](https://github.com/ecoutu/tabchef/issues/5bb974)
+
+
+### Features
+
+* **projects:** highlight the project whose tab you are on ([70f2299](https://github.com/ecoutu/tabchef/commit/70f22996362d8bf4c0e5c22f62d0770716596a5a))
+* **projects:** keep project cards in place while a projects list is open ([948520c](https://github.com/ecoutu/tabchef/commit/948520c9a01c18dfc83e77ceb568170a70a49c56))
+
 ## [1.9.1](https://github.com/ecoutu/tabchef/compare/v1.9.0...v1.9.1) (2026-11-11)
 
 
