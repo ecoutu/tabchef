@@ -171,6 +171,16 @@ describe('Rules: shadowed-rule warnings (M2 T14)', () => {
     expect(note.closest('[role="group"]')!.getAttribute('aria-label')).toBe('Rule 2: Rule b');
   });
 
+  it('a project rule kept out of its project group gets the project wording', async () => {
+    const config = { ...cfg(rule('a', 'github.com/*')), recipes: [{ id: 'github-issue', enabled: true, params: {}, source: 'builtin' as const }] };
+    send.mockReset();
+    send.mockImplementation(async (req: { type: string }) =>
+      (req.type === 'rules.shadowed' ? { ok: true, data: [{ key: 'github-issue/issue', shadowedBy: 'user/a', name: 'Rule a', project: true }] } : { ok: false, error: 'x' }));
+    render(Rules, props(config));
+    const note = await screen.findByText('Likely never reaches the project group: rule "Rule a" above groups these tabs first (they still join the project).');
+    expect(note.closest('[role="group"]')!.getAttribute('aria-label')).toMatch(/Issue tab$/);
+  });
+
   it('shows nothing when the request fails', async () => {
     send.mockReset();
     send.mockResolvedValue({ ok: false, error: 'invalid config' });

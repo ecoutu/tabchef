@@ -46,8 +46,10 @@ export interface ExplainEntry {
 }
 
 /** Exact inline warning copy for a shadowed rule (heuristic: "Likely"). */
-export function shadowText(name: string): string {
-  return `Likely never matches: rule "${name}" above catches these first.`;
+export function shadowText(name: string, project = false): string {
+  return project
+    ? `Likely never reaches the project group: rule "${name}" above groups these tabs first (they still join the project).`
+    : `Likely never matches: rule "${name}" above catches these first.`;
 }
 
 /** Action kinds of a rule, in order, without duplicates. */
@@ -166,14 +168,20 @@ const sampleTab = (url: string): TabSnap => ({
   id: -1, windowId: -1, index: 0, url, title: '', pinned: false, groupId: -1, incognito: false, discarded: false, active: false, audible: false,
 });
 
-/** Rules that likely never win anything: an earlier rule catches all of their tabs first. The first such rule is named. */
-export function findShadowed(p: Program): { key: string; shadowedBy: string }[] {
-  const out: { key: string; shadowedBy: string }[] = [];
+/**
+ * Rules that likely never win anything: an earlier rule catches all of their tabs first. The first such rule is named.
+ * A project rule (`assignProject`) still makes its tabs members, but an earlier group rule catching all of them puts
+ * them in its own group instead of the project's (planTargets: the lower rule index wins): reported with `project`.
+ */
+export function findShadowed(p: Program): { key: string; shadowedBy: string; project?: true }[] {
+  const out: { key: string; shadowedBy: string; project?: true }[] = [];
   for (let bi = 0; bi < p.rules.length; bi++) {
     const b = p.rules[bi]!;
-    const kinds = actionKinds(b.rule).filter((k): k is ExclusiveKind => k !== 'showInView' && k !== 'assignProject');
-    // Its view (or project candidate) would still apply.
-    if (!kinds.length || b.rule.actions.some((a) => 'showInView' in a || 'assignProject' in a)) continue;
+    // Its view would still apply.
+    if (b.rule.actions.some((a) => 'showInView' in a)) continue;
+    const project = b.rule.actions.some((a) => 'assignProject' in a);
+    const kinds: ExclusiveKind[] = project ? ['group'] : actionKinds(b.rule).filter((k): k is ExclusiveKind => k !== 'showInView' && k !== 'assignProject');
+    if (!kinds.length) continue;
     const samples = samplesOf(b.rule.match);
     if (!samples) continue;
     for (let ai = 0; ai < bi; ai++) {
@@ -183,7 +191,7 @@ export function findShadowed(p: Program): { key: string; shadowedBy: string }[] 
       const aKinds = actionKinds(a.rule);
       if (!kinds.every((k) => aKinds.includes(k))) continue;
       if (samples.every((u) => evalCond(a.rule.match, { tab: sampleTab(u) }, 0).ok)) {
-        out.push({ key: b.key, shadowedBy: a.key });
+        out.push({ key: b.key, shadowedBy: a.key, ...(project && { project: true as const }) });
         break;
       }
     }
