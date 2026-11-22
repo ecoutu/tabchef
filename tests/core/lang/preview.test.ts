@@ -195,6 +195,32 @@ describe('previewChange: dry run (R30, R48)', () => {
   });
 });
 
+describe('previewChange: rules sharing a group title', () => {
+  const A = rule('a', 'a.com/*', [group('Work')]);
+
+  it('each move names the rule that matched the tab', () => {
+    const B = rule('b', 'b.com/*', [group('Work')]);
+    const s = snapOf([tab(1, 'https://a.com/x'), tab(2, 'https://b.com/x'), tab(3, 'https://b.com/y')]);
+    const r = previewChange(s, prog([]), prog([A, B]), noFacts, ctx());
+    expect(r.moves.map((m) => [m.tabId, m.ruleKey])).toEqual([[1, 'user/a'], [2, 'user/b'], [3, 'user/b']]);
+    expect(previewCounts(r).moves).toBe(3);
+    // Across windows: one moveTabs op takes window 2's tabs into window 1's group (merge).
+    const m = (id: string, url: string) => rule(id, url, [group('Work', { merge: true })]);
+    const w = snapOf([tab(1, 'https://a.com/x', { groupId: 9 }), tab(4, 'https://a.com/y', { windowId: 2 }), tab(2, 'https://b.com/x', { windowId: 2 })], [grp(9, 'Work')]);
+    w.windows.push({ id: 2, type: 'normal', focused: false });
+    const r2 = previewChange(w, prog([]), prog([m('a', 'a.com/*'), m('b', 'b.com/*')]), noFacts, ctx({ managedTitles: new Set(['Work']) }));
+    expect(r2.moves.filter((x) => x.tabId !== 1).map((x) => [x.tabId, x.ruleKey])).toEqual([[4, 'user/a'], [2, 'user/b']]);
+  });
+
+  it('a dry-run rule\'s would-move into the group a live rule holds is listed (R30)', () => {
+    const D = rule('d', 'd.com/*', [group('Work')], { dryRun: true });
+    const s = snapOf([tab(1, 'https://a.com/x', { groupId: 9 }), tab(2, 'https://d.com/x')], [grp(9, 'Work')]);
+    const r = previewChange(s, prog([A]), prog([A, D]), noFacts, ctx({ managedTitles: new Set(['Work']) }));
+    expect(r.moves).toEqual([{ tabId: 2, title: 't2', from: undefined, to: 'Work', ruleKey: 'user/d', dryRun: true }]);
+    expect(previewCounts(r).moves).toBe(0);
+  });
+});
+
 describe('emptyProgram ("test against my open tabs")', () => {
   it('previewChange(snap, emptyProgram, only this rule) shows what the rule alone does', () => {
     const snap = snapOf([tab(1, 'https://example.com/a'), tab(2, 'https://other.org/')]);

@@ -117,6 +117,15 @@ function simulate(snap: Snapshot, p: Program, base: PlanContext, now: number, pa
 function applyOp(s: Snapshot, op: Op, sim: Sim, ctx: PlanContext, matches: Map<number, GroupMatch>, newId: () => number): void {
   const tabs = (ids: number[]) => s.tabs.filter((t) => ids.includes(t.id));
   const mark = (ids: number[], ruleId: string | undefined) => { for (const id of ids) sim.by.set(id, ruleId); };
+  // A group op covers every tab of one window and title under the bucket's best match, and a moveTabs op every tab
+  // going from one window to one group under the first tab's rule: credit each tab to the rule that matched it (its
+  // match for that title), so rules sharing a group title each get their own tabs.
+  const markOwn = (ids: number[], ruleId: string | undefined, title: string | undefined) => {
+    for (const id of ids) {
+      const m = matches.get(id);
+      sim.by.set(id, m && (title === undefined || m.title === title) ? m.ruleId : ruleId);
+    }
+  };
   switch (op.kind) {
     case 'group': {
       let gid = op.existingGroupId;
@@ -132,7 +141,7 @@ function applyOp(s: Snapshot, op: Op, sim: Sim, ctx: PlanContext, matches: Map<n
       }
       for (const t of tabs(op.tabIds)) { t.groupId = gid; t.windowId = op.windowId; }
       ctx.managedTitles.add(op.title);
-      mark(op.tabIds, op.ruleId);
+      markOwn(op.tabIds, op.ruleId, op.title);
       break;
     }
     case 'ungroup':
@@ -142,7 +151,7 @@ function applyOp(s: Snapshot, op: Op, sim: Sim, ctx: PlanContext, matches: Map<n
     case 'moveTabs': {
       const end = Math.max(-1, ...s.tabs.filter((t) => t.windowId === op.windowId).map((t) => t.index));
       tabs(op.tabIds).forEach((t, i) => { t.windowId = op.windowId; t.groupId = op.groupId; t.index = end + 1 + i; });
-      mark(op.tabIds, op.ruleId);
+      markOwn(op.tabIds, op.ruleId, s.groups.find((g) => g.id === op.groupId)?.title);
       break;
     }
     default:
