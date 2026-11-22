@@ -58,20 +58,27 @@
   let openRuns = $state<Record<string, boolean>>({});
   const runKey = (run: RuleRun): string => `${run.kind}:${run.id}`;
   const membersOf = (run: RuleRun): RuleRow[] => rows.slice(run.start, run.start + run.keys.length);
-  /** A member has a param error or a shadowed ("Likely") warning: the run is shown open, so it is not hidden. */
-  const runNeedsAttention = (run: RuleRun): boolean => membersOf(run).some((r) => (r.kind === 'recipe' && r.error !== undefined) || shadowOf(r.key) !== undefined);
-  const runOpen = (run: RuleRun): boolean => unitKeys(run).length < 2 || openRuns[runKey(run)] === true || runNeedsAttention(run);
-  /** The header text of a run: its recipe, how many rules, how many on, how many can never match or have errors. */
+  /** A member has a param error: the run is kept open, so the error is not hidden. A shadowed ("Likely") warning is
+   * only likely, so it never locks the run: the header counts it instead (runSummary). */
+  const runHasErrors = (run: RuleRun): boolean => membersOf(run).some((r) => r.kind === 'recipe' && r.error !== undefined);
+  const runOpen = (run: RuleRun): boolean => unitKeys(run).length < 2 || openRuns[runKey(run)] === true || runHasErrors(run);
+  /** " · N warnings" for the shadowed ("Likely") rules among `keys`, or nothing. */
+  function warningsText(keys: string[]): string {
+    const n = keys.filter((k) => shadowOf(k) !== undefined).length;
+    return n ? ` · ${n} ${n === 1 ? 'warning' : 'warnings'}` : '';
+  }
+  /** The header text of a run: its recipe, how many rules, how many on, how many can never match, have errors or
+   * have warnings. */
   function runSummary(run: RuleRun): string {
     if (run.kind === 'section') {
       const n = unitKeys(run).length;
-      return `${sectionById.get(run.id)?.name ?? run.id} (${n} ${n === 1 ? 'rule' : 'rules'})`;
+      return `${sectionById.get(run.id)?.name ?? run.id} (${n} ${n === 1 ? 'rule' : 'rules'}${warningsText(unitKeys(run))})`;
     }
     const members = membersOf(run).filter((r) => r.kind === 'recipe');
     const on = members.filter((r) => r.on).length;
     const inactive = members.filter((r) => r.on && inactiveReason(r.rule)).length;
     const errors = members.filter((r) => r.error !== undefined).length;
-    return `From recipe · ${members[0]?.recipeName ?? run.id} · ${members.length} rules · ${on} on${inactive ? ` · ${inactive} inactive` : ''}${errors ? ` · ${errors} with errors` : ''}`;
+    return `From recipe · ${members[0]?.recipeName ?? run.id} · ${members.length} rules · ${on} on${inactive ? ` · ${inactive} inactive` : ''}${errors ? ` · ${errors} with errors` : ''}${warningsText(members.map((r) => r.key))}`;
   }
   /** "Rule N" labels count only the rows shown, so a collapsed run leaves no gap in the numbering. */
   const shownNumber = $derived.by(() => {
@@ -229,8 +236,8 @@
         ondrop={(e) => { e.preventDefault(); dropAt(run.start); }}>
         <span class="handle" role="img" aria-label="Drag to move these rules" title="Drag to move these rules" draggable="true"
           ondragstart={(e) => dragStart(e, unitKeys(run))} ondragend={() => (dragKeys = null)}>⠿</span>
-        <button type="button" class="run-toggle" aria-expanded={runOpen(run)} disabled={runNeedsAttention(run)}
-          title={runNeedsAttention(run) ? 'Kept open while a rule here has an error or warning' : undefined}
+        <button type="button" class="run-toggle" aria-expanded={runOpen(run)} disabled={runHasErrors(run)}
+          title={runHasErrors(run) ? 'Kept open while a rule here has an error' : undefined}
           onclick={() => (openRuns[runKey(run)] = !runOpen(run))}>
           <span aria-hidden="true">{runOpen(run) ? '▾' : '▸'}</span> {runSummary(run)}
         </button>

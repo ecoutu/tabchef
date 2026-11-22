@@ -194,6 +194,9 @@ describe('Rules: shadowed-rule warnings (M2 T14)', () => {
     send.mockImplementation(async (req: { type: string }) =>
       (req.type === 'rules.shadowed' ? { ok: true, data: [{ key: 'github-issue/issue', shadowedBy: 'user/a', name: 'Rule a', project: true }] } : { ok: false, error: 'x' }));
     render(Rules, props(config));
+    const h = await screen.findByRole('button', { name: /GitHub issue projects · 2 rules · .* · 1 warning$/ }) as HTMLButtonElement;
+    expect(h.disabled).toBe(false); // the warning doesn't lock the run open: it can be collapsed
+    await fireEvent.click(h);
     const note = await screen.findByText('Likely never reaches the project group: rule "Rule a" above groups these tabs first (they still join the project).');
     expect(note.closest('[role="group"]')!.getAttribute('aria-label')).toMatch(/Issue tab$/);
   });
@@ -376,19 +379,28 @@ describe('Rules: recipe rules as locked rows (M2 T15)', () => {
     const h = screen.getByRole('button', { name: /Two · 2 rules · 2 on · 1 with errors/ }) as HTMLButtonElement;
     expect(h.getAttribute('aria-expanded')).toBe('true');
     expect(h.disabled).toBe(true); // forced open: collapsing would hide the error
-    expect(h.title).toMatch(/error or warning/);
+    expect(h.title).toBe('Kept open while a rule here has an error');
     expect(screen.getByRole('group', { name: /Broken rule$/ }).querySelector('[role="alert"]')).toBeTruthy();
   });
 
-  it('a collapsed run with a shadowed ("Likely") rule is shown open', async () => {
+  it('a run with shadowed ("Likely") rules stays collapsible; its header counts the warnings', async () => {
     send.mockReset();
     send.mockImplementation(async (req: { type: string }) =>
-      (req.type === 'rules.shadowed' ? { ok: true, data: [{ key: 'finished/meet-ended', shadowedBy: 'user/a', name: 'Rule a' }] } : { ok: false, error: 'x' }));
+      (req.type === 'rules.shadowed' ? { ok: true, data: [
+        { key: 'finished/meet-ended', shadowedBy: 'user/a', name: 'Rule a' },
+        { key: 'finished/redirect', shadowedBy: 'user/a', name: 'Rule a' },
+      ] } : { ok: false, error: 'x' }));
     render(Rules, props(withFinished(cfg(rule('a', 'a.com/*')))));
-    const note = await screen.findByRole('note');
-    expect(note.closest('.rule')!.getAttribute('data-key')).toBe('finished/meet-ended');
-    expect(header().getAttribute('aria-expanded')).toBe('true');
-    expect((header() as HTMLButtonElement).disabled).toBe(true);
+    const h = await screen.findByRole('button', { name: /Finished · 3 rules · 3 on · 1 inactive · 2 warnings$/ }) as HTMLButtonElement;
+    expect(h.disabled).toBe(false); // a warning is only likely: it never locks the run open
+    expect(h.title).toBe('');
+    expect(h.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByRole('note')).toBeNull();
+    await fireEvent.click(h);
+    expect(h.getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getAllByRole('note').map((n) => n.closest('.rule')!.getAttribute('data-key'))).toEqual(['finished/meet-ended', 'finished/redirect']);
+    await fireEvent.click(h);
+    expect(h.getAttribute('aria-expanded')).toBe('false');
     send.mockReset();
   });
 
@@ -544,12 +556,16 @@ describe('Rules: sections (M4 rule sections T4)', () => {
     expect(p.onChange.mock.calls[0]![0].order).toEqual(['user/p', 'user/a', 'user/b', 'user/x']);
   });
 
-  it('a section holding a shadowed rule is kept open, its header disabled', async () => {
+  it('a section holding a shadowed rule stays collapsible; its header counts the warning', async () => {
     send.mockReset();
     send.mockImplementation(async (r: { type: string }) => (r.type === 'rules.shadowed' ? { ok: true, data: [{ key: 'user/b', shadowedBy: 'user/a', name: 'Rule a' }] } : { ok: true, data: null }));
     render(Rules, props({ ...cfg(rule('a', 'a.com/*'), rule('b', 'b.com/*')), sections: work(['a', 'b']) }));
-    await vi.waitFor(() => expect(sectionHeader().getAttribute('aria-expanded')).toBe('true'));
-    expect((sectionHeader() as HTMLButtonElement).disabled).toBe(true);
+    const h = await screen.findByRole('button', { name: /Work \(2 rules · 1 warning\)/ }) as HTMLButtonElement;
+    expect(h.disabled).toBe(false);
+    expect(h.getAttribute('aria-expanded')).toBe('false');
+    await fireEvent.click(h);
+    expect(h.getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByRole('note').closest('.rule')!.getAttribute('data-key')).toBe('user/b');
     send.mockReset();
   });
 
