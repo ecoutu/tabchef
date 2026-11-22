@@ -24,7 +24,7 @@
   const toUrl = (l: string[]): string | string[] => (l.length > 1 ? l : (l[0] ?? ''));
   const hints = $derived(lines.flatMap((p) => patternHints(p).map((h) => `${p}: ${h}`)));
   const count = $derived.by(() => {
-    const n = previewMatches({ id: rule.id, name: '', enabled: true, match: { url: form.url }, group: { title: '', color: 'grey' } }, tabs).length;
+    const n = previewMatches({ id: rule.id, name: '', enabled: true, match: { url: form.url }, group: { title: '', color: 'grey' } }, tabs, form.title).length;
     return `Matches ${n} open ${n === 1 ? 'tab' : 'tabs'}`;
   });
   const titleError = $derived.by(() => {
@@ -47,13 +47,13 @@
   helpLabel="URL patterns" help="A tab whose URL matches any line belongs to this rule. * matches anything (github.com/*), /…/ is a regular expression, and :name captures one path segment for the group title, e.g. github.com/acme/:repo*."
   check={patternError} onChange={(l) => onPatch({ url: toUrl(l) })} extraErrors={sErr(matchPath('url'))} />
 {#each hints as h (h)}<p class="hint" role="note">{h}</p>{/each}
-<span class="count">{count}</span>
 
 <Field label="Title pattern (optional)" helpLabel="Title pattern" help="Optional. The tab's title must match this too, e.g. *Inbox* for any title containing Inbox. * matches anything.">
   <input value={form.title} placeholder="e.g. *Inbox*" oninput={(e) => onPatch({ title: e.currentTarget.value })} />
 </Field>
 {#if titleError}<p class="err" role="alert">{form.title}: {titleError}</p>{/if}
 {#each sErr(matchPath('title')) as m (m)}<p class="err" role="alert">title {m}</p>{/each}
+<span class="count">{count}</span>
 
 <Field label="Group tabs" help="Put tabs matching this rule into a tab group." inline>
   <input type="checkbox" checked={form.group !== null} onchange={(e) => onPatch({ group: e.currentTarget.checked ? (form.group ?? NEW_GROUP) : null })} />

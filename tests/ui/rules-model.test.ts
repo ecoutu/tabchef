@@ -68,6 +68,26 @@ describe('rules-model', () => {
     expect(previewMatches(rule('r', ['github.com/other/*', 'nomatch.test/*']), tabs).map((t) => t.id)).toEqual([2]);
   });
 
+  it('previewMatches also requires the title pattern, and no URL patterns match any URL', () => {
+    const titled = (id: number, url: string, title: string): TabSnap => ({ ...tab(id, url), title });
+    const tabs = [titled(1, 'https://github.com/x', 'PR - App'), titled(2, 'https://a.com/', 'Docs - App'), titled(3, 'https://github.com/y', 'Plain')];
+    expect(previewMatches(rule('r', ''), tabs, '* - App').map((t) => t.id)).toEqual([1, 2]);
+    expect(previewMatches(rule('r', 'github.com/*'), tabs, '* - App').map((t) => t.id)).toEqual([1]);
+    expect(previewMatches(rule('r', ''), tabs).map((t) => t.id)).toEqual([]);
+    expect(previewMatches(rule('r', ''), tabs, '/(/')).toEqual([]);
+    expect(previewMatches(rule('r', '/(/'), tabs, '* - App')).toEqual([]);
+  });
+
+  it('previewMatches matches as the engine: an empty URL list matches nothing, and a loading tab by its pending URL', () => {
+    const titled = (id: number, url: string, title: string): TabSnap => ({ ...tab(id, url), title });
+    const tabs = [titled(1, 'https://github.com/x', 'PR - App'), titled(2, 'https://a.com/', 'Docs - App')];
+    // YAML-only {all: [{url: []}, {title}]}: the form shows url [] and the engine matches no tab.
+    expect(previewMatches(rule('r', []), tabs, '* - App')).toEqual([]);
+    const loading: TabSnap = { ...tab(3, 'https://a.com/'), pendingUrl: 'https://github.com/acme/x' };
+    expect(previewMatches(rule('r', 'github.com/*'), [loading]).map((t) => t.id)).toEqual([3]);
+    expect(previewMatches(rule('r', 'a.com/*'), [loading])).toEqual([]);
+  });
+
   it('previewMatches tolerates invalid patterns', () => {
     expect(previewMatches(rule('r', '/(/'), [tab(1, 'https://a.com/')])).toEqual([]);
   });

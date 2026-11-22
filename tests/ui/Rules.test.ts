@@ -43,6 +43,18 @@ describe('Rules', () => {
     expect(screen.getByText('Matches 1 open tab')).toBeTruthy();
   });
 
+  it('the live match count includes the title pattern', () => {
+    const titled = (id: number, url: string, title: string): TabSnap => ({ ...tab(id, url), title });
+    const tabs = [titled(1, 'https://github.com/x', 'Pull request #1 - App'), titled(2, 'https://github.com/y', 'Issues - App'), titled(3, 'https://a.com/', 'Plain title')];
+    const withMatch = (match: Config['rules'][number]['match']): Config =>
+      ({ ...defaultConfig(), rules: [{ id: 'a', name: 'A', enabled: true, match, actions: [{ group: { title: 'a', color: 'blue' } }] }], order: ['user/a'] });
+    render(Rules, props(withMatch({ title: '* - App' }), { tabs }));
+    expect(screen.getByText('Matches 2 open tabs')).toBeTruthy();
+    cleanup();
+    render(Rules, props(withMatch({ all: [{ url: 'github.com/*' }, { title: '*Pull request*' }] }), { tabs }));
+    expect(screen.getByText('Matches 1 open tab')).toBeTruthy();
+  });
+
   it('Move down reorders via onChange; first Move up and last Move down are disabled', async () => {
     const p = props(cfg(rule('a', 'a.com/*'), rule('b', 'b.com/*')));
     render(Rules, p);

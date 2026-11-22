@@ -1,7 +1,7 @@
 import { isMap, isScalar, isSeq, LineCounter, parseDocument, stringify, type Node as YamlNode } from 'yaml';
 import type { Config, DedupeMode, GroupColor, GroupRule, Section, TabSnap } from '../core/types';
 import type { CloseMode, Cond, GroupAction, Recipe, RecipeRef, Rule } from '../core/lang/types';
-import { compilePattern, compileTextPattern } from '../core/match/pattern';
+import { compilePattern, compileTextPattern, type Matcher } from '../core/match/pattern';
 import { asGroupRule, orderedUserRules } from '../core/config/group-view';
 import { groupRuleToRule, sanitizeRuleId, userKey } from '../core/config/migrate';
 import { COLORS } from '../core/config/schema';
@@ -119,11 +119,21 @@ export function removeRule(c: Config, id: string): Config {
 
 const patterns = (rule: GroupRule): string[] => (Array.isArray(rule.match.url) ? rule.match.url : [rule.match.url]);
 
-export function previewMatches(rule: GroupRule, tabs: TabSnap[]): TabSnap[] {
+/**
+ * The open tabs `rule` matches, with `title` ('' = none) as the rule's title pattern. As in the engine (cond.ts): a
+ * URL of '' is no URL condition (any URL, the form's "none"), but an empty URL list matches nothing; a loading tab is
+ * matched by its pending URL; a rule with neither condition matches nothing. A pattern that does not compile matches
+ * nothing.
+ */
+export function previewMatches(rule: GroupRule, tabs: TabSnap[], title = ''): TabSnap[] {
+  const anyUrl = rule.match.url === '';
+  if (anyUrl && title === '') return [];
   const matchers = patterns(rule).filter((p) => p !== '').flatMap((p) => {
     try { return [compilePattern(p)]; } catch { return []; }
   });
-  return tabs.filter((t) => matchers.some((m) => m(t.url) !== null));
+  let titleMatcher: Matcher | undefined;
+  try { titleMatcher = title === '' ? undefined : compileTextPattern(title); } catch { return []; }
+  return tabs.filter((t) => (anyUrl || matchers.some((m) => m(t.pendingUrl ?? t.url) !== null)) && (!titleMatcher || titleMatcher(t.title) !== null));
 }
 
 /** Error message for a pattern that does not compile, else undefined. */
