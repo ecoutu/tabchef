@@ -39,7 +39,8 @@
 - Stacked PRs: keep every commit, because the commits are the changelog. Before landing:
   - restack the PRs into one line on top of `origin/main` (each PR based on the previous one);
   - fold fixes of code that was never released into the commit they fix (`git commit --fixup=<sha>`, then `git rebase -i --autosquash --update-refs origin/main`), so the changelog lists only real fixes;
-  - re-sign after the rewrite (`git rebase --force-rebase --committer-date-is-author-date`).
+  - re-sign after the rewrite (`git rebase --force-rebase --committer-date-is-author-date`);
+  - to test the stack by hand, `scripts/stack-checkout.sh PR1 ... PRN` builds it into `../tabchef-stack` (no PRs: the chain of open PRs assigned to you, from `main`) and prints the folder to load unpacked.
 - Then land with `scripts/merge-stack.sh --fast-forward [--dry-run] PR1 ... PRN`. It fast-forwards `main` to the top PR in one push, so semantic-release cuts one release, and GitHub marks every PR merged. `--single-release` (one squash commit for the whole stack) and `--bottom-up` (one squash per PR) remain for stacks whose history doesn't matter.
 - Use `--force-with-lease` for force pushes, never plain `--force`. Never force-push `main`.
 
