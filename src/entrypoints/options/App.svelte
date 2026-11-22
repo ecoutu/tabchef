@@ -217,7 +217,7 @@
         <NewRule url={matched.params.url ?? ''} kind={matched.params.kind ?? ''} config={draft} {tabs} {saving} onSave={saveNewRule} />
       {/key}
     {:else if draft && current.page === 'rules'}
-      <Rules config={draft} {tabs} {dirty} {saving} serverErrors={saveErrors} onChange={edit} onSave={save} />
+      <Rules config={draft} saved={saved!} {tabs} {dirty} {saving} serverErrors={saveErrors} onChange={edit} onSave={save} />
     {:else if draft && current.page === 'dedupe'}
       <Dedupe config={draft} {dirty} {saving} serverErrors={saveErrors} onChange={edit} onSave={save} />
     {:else if draft}

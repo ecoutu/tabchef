@@ -28,8 +28,9 @@
   import Field from './Field.svelte';
   import Help from './Help.svelte';
 
-  let { config, tabs, dirty, saving, serverErrors, onChange, onSave }: {
-    config: Config; tabs: TabSnap[]; dirty: boolean; saving: boolean; serverErrors: string[];
+  let { config, saved, tabs, dirty, saving, serverErrors, onChange, onSave }: {
+    /** The draft, and the saved config the engine runs (Test results depend on both). */
+    config: Config; saved: Config; tabs: TabSnap[]; dirty: boolean; saving: boolean; serverErrors: string[];
     onChange: (c: Config) => void; onSave: () => void;
   } = $props();
 
@@ -179,21 +180,26 @@
   function remove(id: string): void { delete yaml[id]; delete yamlInvalid[id]; onChange(removeRule(config, id)); }
 
   /**
-   * "Test against my open tabs" (M2 T13; YAML, read-only and recipe rows since T15, R53): the rule alone against the
-   * open tabs, via preview.change {only}. `only` needs the rule's recipe enabled in the config sent. A result is
-   * shown while the rule is unchanged since the test (`rule` is its JSON then).
+   * "Test against my open tabs" (M2 T13; YAML, read-only and recipe rows since T15, R53): the rule's share of what
+   * saving the draft would do to the open tabs, with the rule turned on, via preview.change {only}. `only` needs the
+   * rule's recipe enabled in the config sent. The answer depends on the whole draft (order, other rules, recipes) and
+   * on the saved config, so a result is shown only while both are unchanged since the test (`key` is testKey then).
    */
-  let tested = $state<Record<string, { rule: string; text: string }>>({});
+  const testKey = $derived(`${JSON.stringify(saved)}|${JSON.stringify(config)}`);
+  let tested = $state<Record<string, { key: string; text: string }>>({});
   async function test(row: RuleRow): Promise<void> {
-    const rule = JSON.stringify(row.rule);
+    const key = testKey;
     const draft = $state.snapshot(config) as Config;
     // A recipe rule is tested as if on: its recipe enabled and the rule turned on (R56 override when off).
     const cfg = row.kind === 'recipe' ? setRecipeRuleOn(withRecipe(draft, row.recipeId, { enabled: true }, builtins), row.key, true, builtins) : draft;
     const res = await send({ type: 'preview.change', config: cfg, only: row.key });
     const n = res.ok ? previewCounts(res.data) : undefined;
-    tested[row.key] = { rule, text: n ? `${n.moves} tabs would move · ${n.closes} would close` : `Could not test: ${res.ok ? '' : res.error}` };
+    tested[row.key] = { key, text: n ? `${n.moves} tabs would move · ${n.closes} would close` : `Could not test: ${res.ok ? '' : res.error}` };
   }
-  const testText = (row: RuleRow): string | undefined => (tested[row.key]?.rule === JSON.stringify(row.rule) ? tested[row.key]!.text : undefined);
+  const testText = (row: RuleRow): string | undefined => {
+    const t = tested[row.key];
+    return t && t.key === testKey ? t.text : undefined;
+  };
 
   /**
    * Shadowed-rule warnings (M2 T14, heuristic, "Likely"): rules.shadowed for the draft, re-asked on every edit. Only

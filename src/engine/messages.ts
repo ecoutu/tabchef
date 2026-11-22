@@ -13,7 +13,7 @@ import type { ConfigStore, Backup } from '../storage/config-store';
 import { compileProgram, conflictingRecipes, paramProblem } from '../core/lang/compile';
 import { applyCollapse, suggestCollapse, type CollapseSuggestion } from '../core/lang/collapse';
 import type { Program, Recipe, RecipeRef, Rule, TabFacts } from '../core/lang/types';
-import { emptyProgram, previewChange, type PreviewContext, type PreviewResult } from '../core/lang/preview';
+import { previewChange, previewRule, type PreviewContext, type PreviewResult } from '../core/lang/preview';
 import type { PlanContext } from '../core/group/plan';
 import { explainTab, findShadowed, type ExplainEntry } from '../core/lang/explain';
 import { effectiveNeeds, type LevelStatus, type Needs, type NeedStatus, type PermissionsManager } from './permissions';
@@ -175,8 +175,9 @@ export type Request =
   | { type: 'recipes.setParams'; id: string; params: Record<string, unknown>; baseRev?: string }
   /**
    * What saving `config` would do to the open tabs (M2 T13): the UI sends it before config.set / recipes.enable and
-   * shows PreviewDialog when it has effects. `only` (a rule key) tests that one rule alone against the open tabs
-   * ("test against my open tabs"): enabled, live, against a Program with no rules.
+   * shows PreviewDialog when it has effects. `only` (a rule key) tests that one rule against the open tabs ("test
+   * against my open tabs", previewRule): the rule turned on and live; its share of the moves saving `config` would
+   * make, and the tabs it would close.
    */
   | { type: 'preview.change'; config: unknown; only?: string }
   /** The conflict view (M2 T14): the rules relevant to one open tab, what each won and to whom it lost. Read-only. */
@@ -994,16 +995,15 @@ export function createHandler(deps: HandlerDeps): (req: unknown, sender: Message
       const draft = await compileDraft(v.config, d);
       return ok(previewChange(snap, current, draft, facts, await sides(current, draft, ctx), now()));
     }
-    // Test one rule: enabled and live (R30 labels belong to Save previews), alone against no rules. No managed titles:
-    // only the rule's own groups count as managed, so other rules' groups are not torn down in "before".
+    // Test one rule (previewRule): the draft with the rule turned on and live (R30 labels belong to Save previews),
+    // against the current Program and the engine's context. Moves: the rule's share of what Save would do; rules above
+    // it still get their tabs first, so a rule they fully catch moves none. Closes: what the rule would close.
     const only = req.only;
     const cfg: Config = { ...v.config, dryRun: false, rules: v.config.rules.map((r) => (userKey(r.id) === only ? { ...r, enabled: true, dryRun: false } : r)) };
     const p = await compileDraft(cfg, d);
-    const rules = p.rules.filter((r) => r.key === only).map((r) => ({ ...r, dryRun: false }));
-    if (rules.length === 0) return fail('unknown rule');
-    const after: Program = { ...p, rules };
-    const before = emptyProgram(after);
-    return ok(previewChange(snap, before, after, facts, await sides(before, after, { ...ctx, managedTitles: new Set() }), now()));
+    if (!p.rules.some((r) => r.key === only)) return fail('unknown rule');
+    const after: Program = { ...p, rules: p.rules.map((r) => (r.key === only ? { ...r, dryRun: false } : r)) };
+    return ok(previewRule(snap, current, after, only, facts, await sides(current, after, ctx), now()));
   }
 
   /**

@@ -1,11 +1,12 @@
 // Preview before apply (M2 T13): previewChange diffs what the engine would do under two Programs. Rulings R27, R30.
 import { describe, expect, it } from 'vitest';
-import { emptyProgram, hasEffects, previewChange, previewCounts, previewText, type PreviewContext } from '../../../src/core/lang/preview';
+import { hasEffects, previewChange, previewCounts, previewRule, previewText, type PreviewContext } from '../../../src/core/lang/preview';
 import { defaultConfig } from '../../../src/core/config/defaults';
 import { builtinRecipeRefs } from '../../../src/core/config/defaults';
 import type { Config, GroupSnap, Snapshot, TabSnap } from '../../../src/core/types';
 import type { Action, GroupAction, Program, Rule, TabFacts } from '../../../src/core/lang/types';
 import { programOf } from '../../helpers/config';
+import { customizeRule, setRecipeRuleOn } from '../../../src/ui/rules-model';
 
 const tab = (id: number, url: string, o: Partial<TabSnap> = {}): TabSnap => ({
   id, windowId: 1, index: id, url, title: `t${id}`, pinned: false, groupId: -1, incognito: false, discarded: false,
@@ -221,12 +222,51 @@ describe('previewChange: rules sharing a group title', () => {
   });
 });
 
-describe('emptyProgram ("test against my open tabs")', () => {
-  it('previewChange(snap, emptyProgram, only this rule) shows what the rule alone does', () => {
-    const snap = snapOf([tab(1, 'https://example.com/a'), tab(2, 'https://other.org/')]);
-    const p = prog([EX]);
-    const r = previewChange(snap, emptyProgram(p), p, noFacts, ctx());
-    expect(previewCounts(r)).toEqual({ moves: 1, closes: 0 });
-    expect(emptyProgram(p).rules).toEqual([]);
+describe('previewRule ("test against my open tabs")', () => {
+  const CL = rule('cl', 'example.com/*', [{ close: { after: '7d' } }]);
+  const snap = () => snapOf([tab(1, 'https://example.com/a'), tab(2, 'https://other.org/')]);
+
+  it('moves: the rule\'s share of the change; the other rules\' moves are left out', () => {
+    const OT = rule('ot', 'other.org/*', [group('ot')]);
+    const r = previewRule(snap(), prog([]), prog([EX, OT]), 'user/ex', noFacts, ctx());
+    expect(r.moves.map((m) => [m.tabId, m.to])).toEqual([[1, 'ex']]);
+    expect(r).toMatchObject({ groupsCreated: ['ex'], unchanged: 1, dryRun: false });
+  });
+
+  it('closes: what the rule would close, even when `before` already runs it', () => {
+    expect(previewRule(snap(), prog([]), prog([CL]), 'user/cl', noFacts, ctx()).closes.map((c) => c.tabId)).toEqual([1]);
+    expect(previewRule(snap(), prog([CL]), prog([CL]), 'user/cl', noFacts, ctx()).closes.map((c) => c.tabId)).toEqual([1]);
+    expect(previewChange(snap(), prog([CL]), prog([CL]), noFacts, ctx()).closes).toEqual([]);
+  });
+
+  it('rules sharing a group title: each rule gets the tabs it matches, not the higher-ranked one', () => {
+    const A = rule('a', 'a.com/*', [group('Work')]);
+    const B = rule('b', 'b.com/*', [group('Work')]);
+    const s = snapOf([tab(1, 'https://a.com/x'), tab(2, 'https://b.com/x'), tab(3, 'https://b.com/y')]);
+    const ids = (key: string) => previewRule(s, prog([]), prog([A, B]), key, noFacts, ctx()).moves.map((m) => m.tabId);
+    expect(ids('user/a')).toEqual([1]);
+    expect(ids('user/b')).toEqual([2, 3]);
+    // Across windows (moveTabs into the existing group), too.
+    const w = snapOf([tab(1, 'https://a.com/x', { groupId: 9 }), tab(4, 'https://a.com/y', { windowId: 2 }), tab(2, 'https://b.com/x', { windowId: 2 })], [grp(9, 'Work')]);
+    w.windows.push({ id: 2, type: 'normal', focused: false });
+    const merged = (key: string) => previewRule(w, prog([]), prog([{ ...A, actions: [group('Work', { merge: true })] }, { ...B, actions: [group('Work', { merge: true })] }]), key, noFacts, ctx({ managedTitles: new Set(['Work']) })).moves.map((m) => m.tabId);
+    expect(merged('user/b')).toEqual([2]);
+    expect(merged('user/a')).toEqual([4]);
+  });
+
+  it('a customized copy above its recipe rule: each gets the tabs it matches', () => {
+    const KEY = 'github-prs/group-by-repo';
+    const base = customizeRule(setRecipeRuleOn(cfgOf([], { recipes: builtinRecipeRefs({ duplicates: false }) }), KEY, true), KEY);
+    const copy = base.rules[0]!;
+    const c: Config = { ...base, rules: [{ ...copy, match: { url: 'github.com/:owner/:repo/pull/*' } }] };
+    const s = snapOf([tab(1, 'https://github.com/acme/api/pull/1'), tab(2, 'https://github.com/acme/api/issues/2')]);
+    const ids = (key: string) => previewRule(s, prog([]), programOf(c), key, noFacts, ctx()).moves.map((m) => [m.tabId, m.to]);
+    expect(ids(`user/${copy.id}`)).toEqual([[1, 'api']]);
+    expect(ids(KEY)).toEqual([[2, 'api']]);
+  });
+
+  it('closes: a rule above that closes the tab first takes it', () => {
+    const above = rule('above', 'example.com/*', [{ close: { after: '1d' } }]);
+    expect(previewRule(snap(), prog([]), prog([above, CL]), 'user/cl', noFacts, ctx()).closes).toEqual([]);
   });
 });

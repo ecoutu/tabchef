@@ -57,8 +57,8 @@ const MAX_PASSES = 4;
 const STRUCTURAL = new Set<Op['kind']>(['group', 'ungroup', 'moveTabs']);
 const urlOf = (t: TabSnap): string => (t.pendingUrl ? t.pendingUrl : t.url);
 
-/** `p` with no rules: the "before" of "test against my open tabs" (previewChange(snap, emptyProgram(p), p, ...)). */
-export function emptyProgram(p: Program): Program {
+/** `p` with no rules: what previewRule counts a rule's closes against. */
+function emptyProgram(p: Program): Program {
   return { ...p, rules: [], dryRun: false };
 }
 
@@ -200,6 +200,81 @@ export function previewChange(
   ctx: PreviewContext = { leaveAlone: new Set(), managedTitles: new Set(), creationOrder: new Map() },
   now: number = Date.now(),
 ): PreviewResult {
+  return diff(snap, before, after, facts, ctx, now).result;
+}
+
+/**
+ * "Test against my open tabs" (M2 T13): rule `key`'s share of changing the engine's Program from `before` (the saved
+ * one) to `after` (the draft, with the rule turned on and live); arguments as previewChange.
+ *  - Moves: the moves of Save's preview of the tabs the rule itself matches under `after` (rules above it still take
+ *    their tabs first; a tab only the saved rule would move is not counted), and the groups / anchor tabs those moves
+ *    create (by window and title).
+ *  - Closes: what the rule would close, counted against no rules rather than `before`, so a rule already saved and
+ *    running still shows the closes it is counting down. A rule above it that closes the tab first takes the close.
+ */
+export function previewRule(
+  snap: Snapshot, before: Program, after: Program, key: string, facts: (tabId: number) => Partial<TabFacts>,
+  ctx: PreviewContext = { leaveAlone: new Set(), managedTitles: new Set(), creationOrder: new Map() },
+  now: number = Date.now(),
+): PreviewResult {
+  const d = diff(snap, before, after, facts, ctx, now, true);
+  const moves = d.result.moves.filter((m) => !m.dryRun && d.movedBy.get(m.tabId) === key);
+  const into = new Map(moves.map((m) => [m.tabId, m.to]));
+  const created = d.created.filter((g) => g.tabIds.some((id) => into.get(id) === g.title));
+  const closes = previewCloses(snap, emptyProgram(after), after, facts, now).filter((c) => !c.dryRun && c.ruleKey === key);
+  const touched = new Set([...moves.map((m) => m.tabId), ...closes.map((c) => c.tabId)]);
+  return {
+    moves,
+    closes,
+    groupsCreated: [...new Set(created.map((g) => g.title))],
+    unchanged: snap.tabs.filter((t) => !touched.has(t.id)).length,
+    anchorsOpened: created.reduce((n, g) => n + anchorsToOpen(g, snap, after, ctx.anchorsDismissed), 0),
+    dryRun: after.dryRun === true,
+  };
+}
+
+/** The closes of changing `before` to `after` (see the header): auto-mode closes new with `after`, real or labelled. */
+function previewCloses(snap: Snapshot, before: Program, after: Program, facts: (tabId: number) => Partial<TabFacts>, now: number): PreviewClose[] {
+  const closes: PreviewClose[] = [];
+  const byId = new Map(snap.tabs.map((t) => [t.id, t]));
+  const groupTitles = new Map(snap.groups.map((g) => [g.id, g.title]));
+  const closeOf = (p: Program, t: TabSnap): CloseResult | undefined => {
+    const opener = t.openerTabId !== undefined ? byId.get(t.openerTabId) : undefined;
+    const groupTitle = t.groupId !== -1 ? groupTitles.get(t.groupId) : undefined;
+    const c = evaluateTab(p, { ...facts(t.id), tab: t, ...(opener && { opener }), ...(groupTitle !== undefined && { groupTitle }) }, now).close;
+    return c?.mode === 'auto' ? c : undefined;
+  };
+  for (const t of snap.tabs) {
+    // Real: the live close under `after` that `before` did not already schedule (nothing applies under global dry run).
+    const cA = after.dryRun ? undefined : closeOf(liveProgram(after), t);
+    const cB = before.dryRun ? undefined : closeOf(liveProgram(before), t);
+    if (cA && !cB) {
+      closes.push({ tabId: t.id, title: t.title, ruleKey: cA.key, afterMs: cA.afterMs });
+      continue;
+    }
+    // Labelled (R30): a dry-run close that would win and is new with this change.
+    const wA = closeOf(after, t);
+    const wB = closeOf(before, t);
+    if (!cA && wA?.dryRun && !(wB?.dryRun && wB.key === wA.key)) {
+      closes.push({ tabId: t.id, title: t.title, ruleKey: wA.key, afterMs: wA.afterMs, dryRun: true });
+    }
+  }
+  return closes;
+}
+
+interface Diff {
+  result: PreviewResult;
+  /** The groups `after` creates that `before` does not. */
+  created: Sim['created'];
+  /** Tab id → the rule key of the last op that moved it under `after`. */
+  movedBy: Sim['by'];
+}
+
+/** `movesOnly`: real moves only (previewRule), skipping the would-* pass and closes, which are then left empty. */
+function diff(
+  snap: Snapshot, before: Program, after: Program, facts: (tabId: number) => Partial<TabFacts>, ctx: PreviewContext, now: number,
+  movesOnly = false,
+): Diff {
   const page: PageLookup = { get: (id) => facts(id).page, awaiting: () => false };
   // The engine's context for `p` on `s`: R49 leaves a dry-run rule's existing group alone (per-rule dry run only).
   // `base` carries the titles and creation numbers an earlier simulation adopted.
@@ -215,21 +290,12 @@ export function previewChange(
 
   const B = live(before);
   const L = live(after);
-  const F0 = full(before, B);
-  const F = full(after, L);
+  const F0 = movesOnly ? B : full(before, B);
+  const F = movesOnly ? L : full(after, L);
   const [pB, pL, pF0, pF] = [B, L, F0, F].map((x) => placements(x.snap)) as [Map<number, Placement>, Map<number, Placement>, Map<number, Placement>, Map<number, Placement>];
   const isDry = (p: Program, key: string | undefined) => p.dryRun === true || (key !== undefined && p.rules.some((r) => r.key === key && r.dryRun));
 
   const moves: PreviewMove[] = [];
-  const closes: PreviewClose[] = [];
-  const byId = new Map(snap.tabs.map((t) => [t.id, t]));
-  const groupTitles = new Map(snap.groups.map((g) => [g.id, g.title]));
-  const closeOf = (p: Program, t: TabSnap): CloseResult | undefined => {
-    const opener = t.openerTabId !== undefined ? byId.get(t.openerTabId) : undefined;
-    const groupTitle = t.groupId !== -1 ? groupTitles.get(t.groupId) : undefined;
-    const c = evaluateTab(p, { ...facts(t.id), tab: t, ...(opener && { opener }), ...(groupTitle !== undefined && { groupTitle }) }, now).close;
-    return c?.mode === 'auto' ? c : undefined;
-  };
   /** The would-move a dry-run pass adds on top of the live outcome, as a placement (undefined: none). */
   const would = (live: Map<number, Placement>, fullP: Map<number, Placement>, id: number) =>
     (samePlace(live.get(id), fullP.get(id)) ? undefined : fullP.get(id));
@@ -247,26 +313,12 @@ export function previewChange(
       moves.push({ tabId: t.id, title: t.title, from: pL.get(t.id)?.title, to: wA.title, ...(ruleKey !== undefined && { ruleKey }), dryRun: true });
     }
   }
-  for (const t of snap.tabs) {
-    // Real: the live close under `after` that `before` did not already schedule (nothing applies under global dry run).
-    const cA = after.dryRun ? undefined : closeOf(liveProgram(after), t);
-    const cB = before.dryRun ? undefined : closeOf(liveProgram(before), t);
-    if (cA && !cB) {
-      closes.push({ tabId: t.id, title: t.title, ruleKey: cA.key, afterMs: cA.afterMs });
-      continue;
-    }
-    // Labelled (R30): a dry-run close that would win and is new with this change.
-    const wA = closeOf(after, t);
-    const wB = closeOf(before, t);
-    if (!cA && wA?.dryRun && !(wB?.dryRun && wB.key === wA.key)) {
-      closes.push({ tabId: t.id, title: t.title, ruleKey: wA.key, afterMs: wA.afterMs, dryRun: true });
-    }
-  }
+  const closes = movesOnly ? [] : previewCloses(snap, before, after, facts, now);
 
   const createdBefore = new Set(B.created.map((g) => `${g.windowId}|${g.title}`));
   const createdNew = L.created.filter((g) => !createdBefore.has(`${g.windowId}|${g.title}`));
   const touched = new Set([...moves.map((m) => m.tabId), ...closes.map((c) => c.tabId)]);
-  return {
+  const result: PreviewResult = {
     moves,
     closes,
     groupsCreated: [...new Set(createdNew.map((g) => g.title))],
@@ -274,4 +326,5 @@ export function previewChange(
     anchorsOpened: createdNew.reduce((n, g) => n + anchorsToOpen(g, snap, after, ctx.anchorsDismissed), 0),
     dryRun: after.dryRun === true,
   };
+  return { result, created: createdNew, movedBy: L.by };
 }

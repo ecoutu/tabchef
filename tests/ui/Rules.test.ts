@@ -15,7 +15,7 @@ afterEach(cleanup);
 const rule = (id: string, url: string | string[]): GroupRule => ({ id, name: `Rule ${id}`, enabled: true, match: { url }, group: { title: id, color: 'blue' } });
 const cfg = (...rules: GroupRule[]): Config => withGroupRules(rules);
 const tab = (id: number, url: string): TabSnap => ({ id, windowId: 1, index: id, url, title: '', pinned: false, groupId: -1, incognito: false, discarded: false, active: false, audible: false });
-const props = (config: Config, over = {}) => ({ config, tabs: [] as TabSnap[], dirty: true, saving: false, serverErrors: [] as string[], onChange: vi.fn(), onSave: vi.fn(), ...over });
+const props = (config: Config, over = {}) => ({ config, saved: defaultConfig(), tabs: [] as TabSnap[], dirty: true, saving: false, serverErrors: [] as string[], onChange: vi.fn(), onSave: vi.fn(), ...over });
 
 describe('Rules', () => {
   it('shows "invalid regex" for /(/ and disables Save', () => {
@@ -167,7 +167,7 @@ describe('Rules', () => {
 });
 
 describe('Rules: test against my open tabs (M2 T13)', () => {
-  it('sends preview.change for that rule alone and shows "N tabs would move · M would close" inline', async () => {
+  it('sends preview.change for that rule and shows "N tabs would move · M would close" inline', async () => {
     send.mockReset();
     send.mockResolvedValue({ ok: true, data: {
       moves: [{ tabId: 1, title: 'x', to: 'a' }, { tabId: 2, title: 'y', to: 'a' }], closes: [], groupsCreated: ['a'], unchanged: 0, anchorsOpened: 0, dryRun: false,
@@ -177,6 +177,41 @@ describe('Rules: test against my open tabs (M2 T13)', () => {
     await fireEvent.click(screen.getAllByRole('button', { name: 'Test against my open tabs' })[0]!);
     expect(await screen.findByText('2 tabs would move · 0 would close')).toBeTruthy();
     expect(send).toHaveBeenCalledWith({ type: 'preview.change', config, only: 'user/a' });
+  });
+
+  it('drops the result when the draft changes elsewhere (order, other rules) or after Save', async () => {
+    send.mockReset();
+    send.mockResolvedValue({ ok: true, data: {
+      moves: [{ tabId: 1, title: 'x', to: 'a' }, { tabId: 2, title: 'y', to: 'a' }, { tabId: 3, title: 'z', to: 'a' }], closes: [], groupsCreated: ['a'], unchanged: 0, anchorsOpened: 0, dryRun: false,
+    } });
+    const config = cfg(rule('a', 'a.com/*'), rule('b', 'b.com/*'));
+    const testB = async () => {
+      await fireEvent.click(screen.getByRole('group', { name: /Rule 2: Rule b|Rule 1: Rule b/ }).querySelector('button.test') as HTMLButtonElement);
+      return screen.findByText('3 tabs would move · 0 would close');
+    };
+    const r = render(Rules, props(config));
+    await testB();
+    // Rule a moves below b: b's rule is unchanged, but what it would move is not.
+    await r.rerender({ config: { ...config, order: ['user/b', 'user/a'] } });
+    expect(screen.queryByText('3 tabs would move · 0 would close')).toBeNull();
+    await testB();
+    const moved = { ...config, order: ['user/b', 'user/a'] };
+    await r.rerender({ config: moved, saved: moved, dirty: false });
+    expect(screen.queryByText('3 tabs would move · 0 would close')).toBeNull();
+  });
+
+  it('drops the result after a Save of other edits, even when the draft goes back to the tested one', async () => {
+    send.mockReset();
+    send.mockResolvedValue({ ok: true, data: { moves: [{ tabId: 1, title: 'x', to: 'a' }], closes: [], groupsCreated: [], unchanged: 0, anchorsOpened: 0, dryRun: false } });
+    const d = cfg(rule('a', 'a.com/*'));
+    const e = cfg(rule('a', 'a.com/*'), rule('b', 'b.com/*'));
+    const r = render(Rules, props(d));
+    await fireEvent.click(screen.getAllByRole('button', { name: 'Test against my open tabs' })[0]!);
+    await screen.findByText('1 tabs would move · 0 would close');
+    await r.rerender({ config: e });
+    await r.rerender({ config: e, saved: e, dirty: false });
+    await r.rerender({ config: d, dirty: true });
+    expect(screen.queryByText('1 tabs would move · 0 would close')).toBeNull();
   });
 
   it('shows the error when the preview fails', async () => {

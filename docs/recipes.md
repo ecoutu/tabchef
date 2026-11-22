@@ -180,8 +180,10 @@ added after your own. Consecutive rules of one recipe sit under one header that 
 **New section** names a section, and a rule's **Section** menu puts it there. A section collapses and moves as one
 block. Sections only organize the Rules page: order is still priority.
 
-**Test against my open tabs** shows how many open tabs a rule would move or close, and History lists what each rule
-did. For any open tab, **Why is this tab here?** in its right-click menu shows which rules matched it.
+**Test against my open tabs** works even when a rule is off. It shows how many open tabs Save would move for this rule
+if it were on, with rules above it still getting their tabs first, and how many tabs the rule would close, including
+tabs it is already counting down if it is running. History lists what each rule did. For any open tab, **Why is this
+tab here?** in its right-click menu shows which rules matched it.
 
 ## Recipes
 

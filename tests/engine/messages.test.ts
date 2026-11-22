@@ -717,11 +717,11 @@ describe('preview.change (M2 T13)', () => {
   const withRules = (rules: unknown[], o: Partial<Config> = {}): Config => ({
     ...defaultConfig(), rules: rules as Config['rules'], order: (rules as { id: string }[]).map((r) => `user/${r.id}`), ...o,
   });
-  type Prev = { ok: boolean; error?: string; data: { moves: { tabId: number; to?: string; dryRun?: true }[]; closes: { tabId: number }[] } };
+  type Prev = { ok: boolean; error?: string; data: { moves: { tabId: number; to?: string; dryRun?: true }[]; closes: { tabId: number }[]; groupsCreated: string[]; anchorsOpened: number; dryRun: boolean } };
 
-  function previewSetup(o: { leaveAlone?: number[]; check?: (n: { origins: string[] }) => boolean; facts?: Record<number, string[]> } = {}) {
+  function previewSetup(o: { leaveAlone?: number[]; managed?: string[]; check?: (n: { origins: string[] }) => boolean; facts?: Record<number, string[]> } = {}) {
     const planContext = vi.fn(async () => ({
-      leaveAlone: new Set(o.leaveAlone ?? []), managedTitles: new Set<string>(), creationOrder: new Map<string, number>(), anchorsDismissed: new Set<string>(),
+      leaveAlone: new Set(o.leaveAlone ?? []), managedTitles: new Set<string>(o.managed ?? []), creationOrder: new Map<string, number>(), anchorsDismissed: new Set<string>(),
     }));
     const s = setup({
       preview: {
@@ -755,7 +755,7 @@ describe('preview.change (M2 T13)', () => {
     expect(r.data.moves.map((m) => m.tabId)).toEqual([1]);
   });
 
-  it('`only`: tests one rule alone against the open tabs (disabled and dry-run rules too)', async () => {
+  it('`only`: tests one rule turned on and live, even a disabled or dry-run one; an unknown rule fails', async () => {
     const s = previewSetup();
     s.mk(1, 'https://example.com/a'); s.mk(2, 'https://other.org/');
     const cfg = withRules([{ ...exRule, enabled: false, dryRun: true }, otherRule]);
@@ -763,6 +763,119 @@ describe('preview.change (M2 T13)', () => {
     expect(r.data.moves).toEqual([expect.objectContaining({ tabId: 1, to: 'ex' })]);
     expect(r.data.moves[0]!.dryRun).toBeUndefined();
     expect(await s.handle({ type: 'preview.change', config: cfg, only: 'user/nope' }, ui)).toMatchObject({ ok: false, error: 'unknown rule' });
+  });
+
+  describe('`only`: the rule\'s share of what Save would do', () => {
+    // Title-app above Group by site; the tabs sit in groups Group by site made, which the engine counts as managed.
+    const titleApp = { id: 'app', name: 'app', enabled: true, match: { title: '/\\s[-–—|·]\\s(?<app>[^-–—|·]+)$/' }, actions: [{ group: { title: '{app}', color: 'purple' } }] };
+    const site = { id: 'site', name: 'site', enabled: true, match: { url: '/^https?:\\/\\/(?:www\\.)?(?<site>[^\\/:?#@]+)/' }, actions: [{ group: { title: '{site}', color: 'grey' } }] };
+    async function rig() {
+      const s = previewSetup({ managed: ['npmjs.com', 'google.com'] });
+      await s.deps.store.set(withRules([site]));
+      s.port.addGroup({ id: 10, windowId: 1, title: 'npmjs.com', color: 'grey', collapsed: false });
+      s.port.addGroup({ id: 11, windowId: 1, title: 'google.com', color: 'grey', collapsed: false });
+      s.mk(1, 'https://www.npmjs.com/package/x', { title: 'claude-term-tabs - npm', groupId: 10 });
+      s.mk(2, 'https://www.google.com/search?q=a', { title: 'nexusmods - Google Search', groupId: 11 });
+      s.mk(3, 'https://app.graphify.com/login', { title: 'Log in · Graphify' });
+      return s;
+    }
+    const fmt = (r: Prev) => r.data.moves.map((m) => `${m.tabId}->${m.to}`);
+
+    it('includes tabs in groups another rule made, as Save does', async () => {
+      const s = await rig();
+      const cfg = withRules([titleApp, site]);
+      const save = (await s.handle({ type: 'preview.change', config: cfg }, ui)) as Prev;
+      const only = (await s.handle({ type: 'preview.change', config: cfg, only: 'user/app' }, ui)) as Prev;
+      expect(fmt(save)).toEqual(['1->npm', '2->Google Search', '3->Graphify']);
+      expect(fmt(only)).toEqual(fmt(save));
+    });
+
+    it('a rule fully caught by a rule above it moves nothing', async () => {
+      const s = await rig();
+      const only = (await s.handle({ type: 'preview.change', config: withRules([titleApp, site]), only: 'user/site' }, ui)) as Prev;
+      expect(only.data.moves).toEqual([]);
+    });
+
+    it('leaves out the other rules\' moves', async () => {
+      const s = await rig();
+      const off = { ...titleApp, enabled: false };
+      const only = (await s.handle({ type: 'preview.change', config: withRules([site, off]), only: 'user/app' }, ui)) as Prev;
+      expect(fmt(only)).toEqual([]); // Group by site ranks first and already holds every tab
+      const first = (await s.handle({ type: 'preview.change', config: withRules([off, site, exRule]), only: 'user/app' }, ui)) as Prev;
+      expect(fmt(first)).toEqual(['1->npm', '2->Google Search', '3->Graphify']);
+    });
+
+    it('a tab the draft rule no longer matches is not its move, though the saved rule would move it', async () => {
+      const s = previewSetup();
+      await s.deps.store.set(withRules([exRule]));
+      s.mk(1, 'https://example.com/a'); s.mk(2, 'https://example.com/b');
+      const draft = withRules([{ ...exRule, match: { url: 'nothing.test/*' } }]);
+      const only = (await s.handle({ type: 'preview.change', config: draft, only: 'user/ex' }, ui)) as Prev;
+      expect(only.data.moves).toEqual([]);
+    });
+
+    it('a narrowed running rule: the tabs leaving its group count as its moves', async () => {
+      const s = previewSetup({ managed: ['ex'] });
+      await s.deps.store.set(withRules([exRule]));
+      s.port.addGroup({ id: 10, windowId: 1, title: 'ex', color: 'blue', collapsed: false });
+      s.mk(1, 'https://example.com/a', { groupId: 10 }); s.mk(2, 'https://example.com/a2', { groupId: 10 }); s.mk(3, 'https://example.com/b', { groupId: 10 });
+      const draft = withRules([{ ...exRule, match: { url: 'example.com/a*' } }]);
+      const only = (await s.handle({ type: 'preview.change', config: draft, only: 'user/ex' }, ui)) as Prev;
+      expect(fmt(only)).toEqual(['3->undefined']);
+    });
+
+    it('counts only the groups and anchors the rule\'s own moves create (title and window)', async () => {
+      const s = previewSetup();
+      // Another rule creates a group titled "ex" in window 2; the tested rule only joins the "ex" window 1 has.
+      const anchored = { ...otherRule, actions: [{ group: { title: 'ex', color: 'red', anchors: ['https://other.org/home'] } }] };
+      s.port.addGroup({ id: 10, windowId: 1, title: 'ex', color: 'blue', collapsed: false });
+      s.mk(1, 'https://example.com/a', { groupId: 10 }); s.mk(2, 'https://example.com/b');
+      s.mk(3, 'https://other.org/a', { windowId: 2 }); s.mk(4, 'https://other.org/b', { windowId: 2 });
+      const cfg = withRules([anchored, exRule]);
+      const save = (await s.handle({ type: 'preview.change', config: cfg }, ui)) as Prev;
+      expect(save.data).toMatchObject({ groupsCreated: ['ex'], anchorsOpened: 1 });
+      const only = (await s.handle({ type: 'preview.change', config: cfg, only: 'user/ex' }, ui)) as Prev;
+      expect(fmt(only)).toEqual(['2->ex']);
+      expect(only.data).toMatchObject({ groupsCreated: [], anchorsOpened: 0, dryRun: false });
+    });
+
+    it('counts the group and anchors the rule creates', async () => {
+      const s = previewSetup();
+      const anchored = { ...exRule, actions: [{ group: { title: 'ex', color: 'blue', anchors: ['https://example.com/home'] } }] };
+      s.mk(1, 'https://example.com/a'); s.mk(2, 'https://example.com/b');
+      const only = (await s.handle({ type: 'preview.change', config: withRules([anchored]), only: 'user/ex' }, ui)) as Prev;
+      expect(only.data).toMatchObject({ groupsCreated: ['ex'], anchorsOpened: 1, dryRun: false });
+    });
+  });
+
+  describe('`only`: what a close rule would close', () => {
+    // Closes are counted as if the tested rule were not running yet, so a rule already saved and running still shows
+    // the tabs it is counting down. A rule above it that closes the tab first takes the close, as in the engine.
+    const cl = { id: 'cl', name: 'CL', enabled: true, match: { url: 'example.com/*' }, actions: [{ close: { after: '7d' } }] };
+    const above = { ...cl, id: 'above', actions: [{ close: { after: '1d' } }] };
+    const closes = async (s: ReturnType<typeof previewSetup>, cfg: Config) =>
+      ((await s.handle({ type: 'preview.change', config: cfg, only: 'user/cl' }, ui)) as Prev).data.closes.map((c) => c.tabId);
+    function rig() {
+      const s = previewSetup();
+      s.mk(1, 'https://example.com/a'); s.mk(2, 'https://other.org/'); s.mk(3, 'https://example.com/b');
+      return s;
+    }
+
+    it('a new close rule counts the tabs it would close', async () => {
+      expect(await closes(rig(), withRules([cl]))).toEqual([1, 3]);
+    });
+
+    it('a saved, running close rule still counts its pending closes', async () => {
+      const s = rig();
+      await s.deps.store.set(withRules([cl]));
+      expect(await closes(s, withRules([cl]))).toEqual([1, 3]);
+    });
+
+    it('a close a rule above it makes first is not counted', async () => {
+      const s = rig();
+      await s.deps.store.set(withRules([above, cl]));
+      expect(await closes(s, withRules([above, cl]))).toEqual([]);
+    });
   });
 
   it('enabling a recipe: rules whose needs are not granted are paused in the preview, as in the engine', async () => {
@@ -1544,13 +1657,17 @@ describe('preview.change with project recipes (T15 fix N1)', () => {
     expect(r.data.moves.map((m) => [m.tabId, m.to])).toEqual([[1, 'ABC-1'], [2, 'ABC-1']]);
   });
 
-  it('`only` (test one rule) plans each side with its own overrides: the rule alone, not the current project targets', async () => {
+  it('`only` (test one rule): the rule gets a project tab only when the draft leaves it to the rule', async () => {
     const s = rig(cfgWith(true));
     s.mk(1, 'https://acme.atlassian.net/browse/ABC-1', { title: '[ABC-1] x - Jira' });
     const jiraRule = { id: 'jr', name: 'JR', enabled: true, match: { url: '*.atlassian.net/*' }, actions: [{ group: { title: 'Jira', color: 'blue' } }] };
-    // The rule ranks after the project rules: the current project target would win if it were used for "after".
-    const cfg: Config = { ...cfgWith(true), rules: [jiraRule] as Config['rules'], order: [`${RID}/ticket`, `${RID}/pr`, 'user/jr'] };
-    const r = (await s.handle({ type: 'preview.change', config: cfg, only: 'user/jr' }, ui)) as Prev;
-    expect(r.data.moves.map((m) => [m.tabId, m.to])).toEqual([[1, 'Jira']]);
+    const test = async (on: boolean) => {
+      const cfg: Config = { ...cfgWith(on), rules: [jiraRule] as Config['rules'], order: [`${RID}/ticket`, `${RID}/pr`, 'user/jr'] };
+      return ((await s.handle({ type: 'preview.change', config: cfg, only: 'user/jr' }, ui)) as Prev).data.moves.map((m) => [m.tabId, m.to]);
+    };
+    // The draft turns the project recipe off: the rule gets the tab.
+    expect(await test(false)).toEqual([[1, 'Jira']]);
+    // Ranked after the project rules, they keep the tab, as Save would.
+    expect(await test(true)).toEqual([]);
   });
 });
