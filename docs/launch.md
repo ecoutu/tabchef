@@ -2,7 +2,7 @@
 
 Taglines and the launch posts, from the launch kit (https://claude.ai/artifact/RF913qNnKxbSjjQqTaFTVe), updated for
 1.1: merged pull requests and Jira ticket projects have shipped, so they are features here, not "coming next". The
-store listing itself is in [listing.md](listing.md). `npm run check:terms` checks this file too, and the sections
+store listing itself is in [store/listing.md](store/listing.md). `npm run check:terms` checks this file too, and the sections
 headed "(max N characters)" against their limits.
 
 Post the launch posts only once the listing is live ([#55](https://github.com/ecoutu/tabchef/issues/55); the repository is already public). Replace

@@ -78,7 +78,8 @@ npm run check:contrast   # every theme text color reaches WCAG AA on every backg
 npm run validate:recipes # the built-in recipes match the recipe schema
 ```
 
-The Chrome Web Store listing, the launch copy and the step-by-step submission guide are in [docs/store/](docs/store/).
+The Chrome Web Store listing and the step-by-step submission guide are in [docs/store/](docs/store/); the launch copy
+is in [docs/launch.md](docs/launch.md).
 The Tabchef GitHub App's listing, permissions and settings are in [docs/store/github-app.md](docs/store/github-app.md).
 
 The extension icon's source is `docs/store/icon.svg`; after editing it, run `npm run icons` to render

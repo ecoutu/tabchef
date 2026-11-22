@@ -2,7 +2,7 @@
 
 The first submission is manual (spec §11.1). After it, semantic-release publishes each release automatically
 ([#53](https://github.com/ecoutu/tabchef/issues/53)). The copy for every dashboard field is in [listing.md](listing.md); the launch posts are in
-[launch.md](launch.md). The milestone **M5** on GitHub tracks all of it.
+[launch.md](../launch.md). The milestone **M5** on GitHub tracks all of it.
 
 ## 0. Before you start
 
