@@ -209,7 +209,7 @@
     {:else if current.page === 'backups'}
       {#if saved}<Backups saved={saved!} {dirty} onApplied={loadConfig} />{/if}
     {:else if current.page === 'recipes'}
-      {#if saved}<Recipes saved={saved!} {baseRev} {dirty} onApplied={loadConfig} />{/if}
+      {#if saved}<Recipes saved={saved!} {baseRev} {dirty} onApplied={loadConfig} openId={matched.params.open} />{/if}
     {:else if current.page === 'import'}
       {#if saved}<Import {dirty} onApplied={loadConfig} />{/if}
     {:else if draft && current.page === 'newRule'}

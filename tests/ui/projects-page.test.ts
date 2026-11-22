@@ -88,7 +88,7 @@ describe('Projects page: New project (M4 T6, M4-R8)', () => {
     for (const props of [{ newTab: '5' }, {}]) {
       render(Projects, props);
       expect((await screen.findByText(/Manual projects are turned off\./)).textContent).toContain('Manual projects are turned off.');
-      expect((screen.getByRole('link', { name: 'Recipes' }) as HTMLAnchorElement).getAttribute('href')).toBe('#/recipes');
+      expect((screen.getByRole('link', { name: 'Recipes' }) as HTMLAnchorElement).getAttribute('href')).toBe('#/recipes?open=manual-project');
       expect(screen.queryByLabelText('Project name')).toBeNull();
       expect(screen.queryByRole('button', { name: 'Create' })).toBeNull();
       expect(screen.queryByRole('button', { name: 'New project' })).toBeNull();

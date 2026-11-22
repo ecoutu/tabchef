@@ -1302,7 +1302,7 @@ export class ProjectService {
     const def = defOf.get(p.recipeId);
     const recipe = def
       ? await this.homeOf(def)
-      : { recipeName: (await this.deps.recipeName?.(p.recipeId)) ?? p.recipeId, recipeOff: true as const };
+      : { recipeName: (await this.deps.recipeName?.(p.recipeId)) ?? p.recipeId, recipeOff: true as const, recipeId: p.recipeId };
     return {
       id: p.id, key: p.key, title: def ? projectGroupTitle(def, p) : (p.name ?? p.key), ...(p.summary !== undefined && { summary: p.summary }), ...prTitleOf(p),
       ...(p.status && { status: p.status }), done: false, tabs: [], linked: p.linked, groups: [], ...recipe, ...kept(p),

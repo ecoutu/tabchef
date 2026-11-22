@@ -19,7 +19,7 @@
   import { withRecipe } from '../../ui/recipes-model';
   import { builtinRecipes } from '../../recipes/load';
   import { send } from '../../ui/send';
-  import { RECIPES_GUIDE_URL } from '../../ui/routes';
+  import { RECIPES_GUIDE_URL, recipeHash } from '../../ui/routes';
   import { previewCounts } from '../../core/lang/preview';
   import { shadowText } from '../../core/lang/explain';
   import type { ShadowedRule } from '../../engine/messages';
@@ -283,7 +283,7 @@
         <button type="button" aria-label={run.kind === 'recipe' ? 'Move rules down' : 'Move section down'} disabled={!runSplit(run) && run.start + run.keys.length === rows.length} onclick={() => moveRun(run, 'down')}>↓</button>
         {#if run.kind === 'recipe'}
           <Help label="Move rules" text="Moves all of this recipe's rules together, keeping their order: past the next rule, or the next whole group of rules. You can also drag the handle." />
-          <a href="#/recipes">Recipe settings</a>
+          <a href={recipeHash(run.id)}>Recipe settings</a>
         {:else}
           <Help label="Move section" text="Moves all of this section's rules together, keeping their order: past the next rule, or the next whole group of rules. You can also drag the handle. When other rules sit between the section's rules, the first move gathers them where the section starts." />
           <button type="button" onclick={() => renameSectionAsk(run.id)}>Rename section</button>
@@ -323,7 +323,7 @@
           <span class="name">{row.rule.name}</span>
           {#if inactiveReason(row.rule)}
             <span class="chip inactive" title="This rule can never match until its recipe settings give it patterns">Inactive · {inactiveReason(row.rule)}</span>
-            <a href="#/recipes">Add them in Recipes</a>
+            <a href={recipeHash(row.recipeId)}>Add them in Recipes</a>
           {/if}
         {/if}
         <button type="button" class="test" onclick={() => test(row)}>Test against my open tabs</button>

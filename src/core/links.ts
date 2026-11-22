@@ -23,6 +23,11 @@ export function projectsErrorHash(message: string): string {
   return `#/projects?error=${encodeURIComponent(message)}`;
 }
 
+/** The Recipes page with this recipe's card open and scrolled to (`#/recipes?open=<id>`, #248: cards start collapsed). */
+export function recipeHash(id: string): string {
+  return `#/recipes?open=${encodeURIComponent(id)}`;
+}
+
 /** The Projects page with its New project form open for this tab (`#/projects?new=<tabId>`, M4 T6). */
 export function newProjectHash(tabId: number): string {
   return `#/projects?new=${tabId}`;

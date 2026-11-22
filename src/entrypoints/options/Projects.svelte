@@ -17,7 +17,7 @@
   import { send } from '../../ui/send';
   import { createProjectActions, startLiveRefresh, type Toast } from '../../ui/project-actions';
   import { buildProjectCards, keepOrder, projectSubtitle, type CardOrder, type ProjectCard } from '../../ui/projects-model';
-  import { projectHomeHash } from '../../ui/routes';
+  import { projectHomeHash, recipeHash } from '../../ui/routes';
   import ProjectTitle from '../../ui/ProjectTitle.svelte';
   import { requestPermissions } from '../../ui/permissions';
   import Field from './Field.svelte';
@@ -183,7 +183,7 @@
 <section>
   <h2>Projects</h2>
   {#if manualOn === false}
-    <p class="muted">Manual projects are turned off. Turn them on under <a href="#/recipes">Recipes</a> to create a project.</p>
+    <p class="muted">Manual projects are turned off. Turn them on under <a href={recipeHash('manual-project')}>Recipes</a> to create a project.</p>
   {:else if formOpen}
     <form class="new" onsubmit={create}>
       <label for="new-project-name">Project name</label>

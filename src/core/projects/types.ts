@@ -157,6 +157,8 @@ export interface ProjectHomeData extends ProjectCardData {
   recipeName: string;
   /** M4 T9: its recipe is off (or gone): the stored data only, no settings; it cannot be reopened until it is on. */
   recipeOff?: true;
+  /** With `recipeOff`: the recipe's id, for the link to its card on the Recipes page (#248). */
+  recipeId?: string;
   /** M4 T7: its saved tab list (`keep`: see ProjectCardData). A kept project with no open tab has no groups. */
   saved?: Project['saved'];
   /** M4 T9: archived at (no tabs, no groups), and how many open tabs a rule assigns its key to ("Archived: reopen?"). */

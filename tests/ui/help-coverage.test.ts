@@ -6,7 +6,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { cleanup, render, screen } from '@testing-library/svelte';
+import { cleanup, fireEvent, render, screen } from '@testing-library/svelte';
 vi.mock('../../src/ui/permissions', async (orig) => ({
   ...(await orig<typeof import('../../src/ui/permissions')>()),
   readPermissions: async () => ({ scripting: false, notifications: false, origins: [] }),
@@ -138,6 +138,7 @@ describe('every options setting has a help tip', () => {
     render(Recipes, { saved: defaultConfig(), baseRev: 'r', dirty: false, onApplied: vi.fn() });
     await screen.findByRole('region', { name: 'Finished' });
     await screen.findByRole('region', { name: 'Every kind' });
+    for (const t of screen.getAllByRole('button', { expanded: false })) await fireEvent.click(t);
     for (const label of ['A string', 'A number', 'A boolean', 'An enum', 'A duration', 'A list']) {
       expect(screen.getByRole('button', { name: `About ${label}` }), label).toBeTruthy();
     }

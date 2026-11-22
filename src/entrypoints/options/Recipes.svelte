@@ -12,7 +12,13 @@
   // locked connection level links to the Connections page, and so does an available one whose connection needs a new
   // sign-in (needs-reauth keeps the level, M3-R89). The list reloads on permission changes and on the
   // background's `connections.changed` broadcast, so levels follow a sign-in or a needs-reauth while the page is open.
-  import { onMount } from 'svelte';
+  //
+  // Each card starts collapsed to its name, status and description (#248); its toggle shows the rules, levels, params and
+  // actions. Open cards stay open across reloads. A running recipe whose body holds an action (a paused rule's unlock, a
+  // sign-in) says "Needs attention" in its header and starts open, until its toggle is used. A card with a setting in
+  // error stays open (its toggle is disabled), as a Rules page section does. `openId`
+  // (`#/recipes?open=<id>`) opens that card and scrolls to it.
+  import { onMount, tick, untrack } from 'svelte';
   import { browser } from 'wxt/browser';
   import type { Config } from '../../core/types';
   import type { ParamDef, Rule } from '../../core/lang/types';
@@ -31,8 +37,11 @@
   import LinesField from './LinesField.svelte';
   import PreviewDialog from './PreviewDialog.svelte';
 
-  /** `saved` / `baseRev`: the stored config and its rev (App). `dirty`: unsaved rule edits, which a recipe change would conflict with. */
-  let { saved, baseRev, dirty, onApplied }: { saved: Config; baseRev?: string; dirty: boolean; onApplied: () => void } = $props();
+  /**
+   * `saved` / `baseRev`: the stored config and its rev (App). `dirty`: unsaved rule edits, which a recipe change would
+   * conflict with. `openId`: the card to open and scroll to once the list loads (`#/recipes?open=<id>`).
+   */
+  let { saved, baseRev, dirty, onApplied, openId }: { saved: Config; baseRev?: string; dirty: boolean; onApplied: () => void; openId?: string } = $props();
 
   let items = $state<RecipeListItem[]>([]);
   let listRev = $state<string | undefined>(undefined);
@@ -44,6 +53,13 @@
   let messages = $state<Record<string, { text: string; error: boolean }>>({});
   let busy = $state<string | null>(null);
   let preview = $state<{ result: PreviewResult; answer: (apply: boolean) => void } | null>(null);
+  /**
+   * Cards the user opened (true) or closed (false) by recipe id; absent = open only while it needs attention. A setting
+   * in error keeps its card open either way: collapsed, the error would hide while Enable / Save stay blocked.
+   */
+  let open = $state<Record<string, boolean>>({});
+  /** Whether the `openId` card was scrolled to (once per `openId`, as soon as the list has it). */
+  let scrolled = false;
 
   const builtins = builtinRecipes();
   const bodyOf = (id: string) => {
@@ -68,7 +84,23 @@
       storedParams[i.id] = json;
     }
     values = next;
+    await scrollToOpenId();
   }
+
+  async function scrollToOpenId(): Promise<void> {
+    const id = openId;
+    if (!id || scrolled || !items.some((i) => i.id === id)) return;
+    scrolled = true;
+    await tick();
+    document.getElementById(`recipe-${id}`)?.closest('section')?.scrollIntoView?.({ block: 'start' });
+  }
+
+  // A new `openId` (a link to one recipe) opens its card and scrolls to it; leaving it (the Recipes tab) changes nothing.
+  $effect(() => {
+    const id = openId;
+    if (!id) return;
+    untrack(() => { open[id] = true; scrolled = false; void scrollToOpenId(); });
+  });
 
   $effect(() => { void saved; void load(); });
   /** Whether onPermissionsChanged is subscribed: a grant then reloads through it (one recipes.list per grant). */
@@ -115,6 +147,11 @@
     const connection = Boolean(rule.needs?.connections?.length || rule.needs?.anyOf?.some((a) => a.connections?.length));
     return { ...((st.missing.origins.length || st.missing.permissions.length) && { missing: st.missing }), connection };
   }
+  /** #248: a running recipe whose collapsed body holds an action: a paused rule's unlock (#225) or a sign-in (M3-R89). */
+  const needsAttention = (i: RecipeListItem): boolean =>
+    i.enabled && i.status.ok && (
+      Boolean(i.levels?.some((l) => l.available && l.reauth?.length)) ||
+      Boolean(bodyOf(i.id)?.rules.some((r) => pausedRule(i, r))));
   const levelText = (l: LevelStatus): string => (l.available ? `${l.label}: available` : `${l.label}: locked, needs ${l.needs ?? ''}`);
   /**
    * Request a locked level's hosts. requestNeeds is the first statement (user gesture). A grant reloads through
@@ -138,7 +175,6 @@
   const deniedText = (s: Pick<NeedStatus, 'reason'>, what = 'Not enabled'): string =>
     `${what}: ${(s.reason ?? 'missing permissions').replace(/^Paused: /, '')} (permission denied).`;
   const errorsOf = (i: RecipeListItem): Record<string, string> => paramErrors(i.paramDefs, values[i.id] ?? {}, hostParams(bodyOf(i.id)));
-  const blocked = (i: RecipeListItem): boolean => dirty || busy !== null || Object.keys(errorsOf(i)).length > 0;
   const rev = (): string | undefined => baseRev ?? listRev;
   const say = (id: string, text: string, error = false): void => { messages[id] = { text, error }; };
 
@@ -196,7 +232,11 @@
       () => send({ type: 'recipes.setParams', id, params, ...(baseRev !== undefined && { baseRev }) }), 'Saved.');
   }
 
-  const set = (id: string, name: string, v: unknown): void => { values[id] = { ...values[id], [name]: v }; };
+  /**
+   * An edit also pins its card open (#248): one open only for attention or for an error would otherwise close with
+   * it, hiding the edit (and the field being typed in). A field shows only on an open card, so this never opens one.
+   */
+  const set = (id: string, name: string, v: unknown): void => { values[id] = { ...values[id], [name]: v }; open[id] = true; };
   const strList = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
   const kind = (d: ParamDef): 'enum' | 'boolean' | 'number' | 'list' | 'text' =>
     (d.enum ? 'enum' : d.type === 'boolean' ? 'boolean' : d.type === 'number' ? 'number' : d.type === 'string[]' ? 'list' : 'text');
@@ -213,82 +253,93 @@
   {#each items as item (item.id)}
     {@const body = bodyOf(item.id)}
     {@const errs = errorsOf(item)}
+    {@const locked = Object.keys(errs).length > 0}
+    {@const attention = needsAttention(item)}
+    {@const opened = locked || (open[item.id] ?? attention)}
+    {@const blocked = dirty || busy !== null || locked}
     <section class="card" aria-label={item.name}>
       <div class="head">
-        <h2>{item.name}</h2>
+        <h2><button type="button" class="toggle" aria-expanded={opened} aria-controls={opened ? `recipe-${item.id}` : undefined}
+          disabled={locked} title={locked ? 'Kept open while a setting here has an error' : undefined}
+          onclick={() => { if (!locked) open[item.id] = !opened; }}><span aria-hidden="true">{opened ? '▾' : '▸'}</span> {item.name}</button></h2>
+        {#if attention}<span class="attention">Needs attention</span>{/if}
         <span class="status" class:paused={item.enabled && !item.status.ok}>{recipeStatus(item)}</span>
       </div>
       <p>{item.description}</p>
-      {#if needsText(item)}<p class="needs">{needsText(item)}</p>{/if}
-      {#if body?.rules.length}
-        <ul class="rules">
-          {#each body.rules as r (r.id)}
-            {@const unlock = pausedRule(item, r)}
-            <li data-rule={`${item.id}/${r.id}`}>{r.name}: <span class:paused={ruleStatus(item, r).startsWith('Paused')}>{ruleStatus(item, r)}</span>{#if unlock?.missing}{@const missing = unlock.missing}
-              <button type="button" disabled={busy !== null} onclick={() => allow(item.id, missing, `${r.name}: ${deniedText(item.rules[`${item.id}/${r.id}`]?.status ?? {}, 'Not allowed')}`)}>Allow access</button>{/if}{#if unlock?.connection}
-              <a href="#/connections">Set up a connection</a>{/if}</li>
-          {/each}
-        </ul>
-      {/if}
+      {#if opened}
+        <div class="body" id={`recipe-${item.id}`}>
+          {#if needsText(item)}<p class="needs">{needsText(item)}</p>{/if}
+          {#if body?.rules.length}
+            <ul class="rules">
+              {#each body.rules as r (r.id)}
+                {@const unlock = pausedRule(item, r)}
+                <li data-rule={`${item.id}/${r.id}`}>{r.name}: <span class:paused={ruleStatus(item, r).startsWith('Paused')}>{ruleStatus(item, r)}</span>{#if unlock?.missing}{@const missing = unlock.missing}
+                  <button type="button" disabled={busy !== null} onclick={() => allow(item.id, missing, `${r.name}: ${deniedText(item.rules[`${item.id}/${r.id}`]?.status ?? {}, 'Not allowed')}`)}>Allow access</button>{/if}{#if unlock?.connection}
+                  <a href="#/connections">Set up a connection</a>{/if}</li>
+              {/each}
+            </ul>
+          {/if}
 
-      {#if item.levels?.length}
-        <ul class="levels" aria-label="Capability levels">
-          {#each item.levels as l (l.id)}
-            <li data-level={l.id}>
-              <span class="level-text" class:locked={!l.available}>{levelText(l)}</span>
-              {#if !l.available && l.missing?.connections.length}
-                <a href="#/connections">Set up a connection</a>
-              {:else if !l.available && (l.missing?.origins.length || l.missing?.permissions.length)}
-                <button type="button" disabled={busy !== null} onclick={() => allowLevel(item, l)}>Allow access</button>
-              {:else if l.available && l.reauth?.length}
-                <a href="#/connections" class="reauth">Sign in again</a>
-              {/if}
-            </li>
-          {/each}
-        </ul>
-      {/if}
+          {#if item.levels?.length}
+            <ul class="levels" aria-label="Capability levels">
+              {#each item.levels as l (l.id)}
+                <li data-level={l.id}>
+                  <span class="level-text" class:locked={!l.available}>{levelText(l)}</span>
+                  {#if !l.available && l.missing?.connections.length}
+                    <a href="#/connections">Set up a connection</a>
+                  {:else if !l.available && (l.missing?.origins.length || l.missing?.permissions.length)}
+                    <button type="button" disabled={busy !== null} onclick={() => allowLevel(item, l)}>Allow access</button>
+                  {:else if l.available && l.reauth?.length}
+                    <a href="#/connections" class="reauth">Sign in again</a>
+                  {/if}
+                </li>
+              {/each}
+            </ul>
+          {/if}
 
-      {#if Object.keys(item.paramDefs).length}
-        <div class="params">
-          {#each Object.entries(item.paramDefs) as [name, def] (name)}
-            {@const v = values[item.id]?.[name]}
-            {#if kind(def) === 'list'}
-              <LinesField label={def.label} value={strList(v)} rows={3} help={def.help} onChange={(l) => set(item.id, name, l)} />
-            {:else if kind(def) === 'enum'}
-              <Field label={def.label} help={def.help}>
-                <select value={String(v)} onchange={(e) => { const s = e.currentTarget.value; set(item.id, name, def.enum?.find((o) => String(o) === s)); }}>
-                  {#each def.enum ?? [] as opt (String(opt))}<option value={String(opt)}>{String(opt)}</option>{/each}
-                </select>
-              </Field>
-            {:else if kind(def) === 'boolean'}
-              <Field label={def.label} help={def.help} inline>
-                <input type="checkbox" checked={v === true} onchange={(e) => set(item.id, name, e.currentTarget.checked)} />
-              </Field>
-            {:else if kind(def) === 'number'}
-              <Field label={def.label} help={def.help}>
-                <input type="number" value={typeof v === 'number' ? v : ''} oninput={(e) => set(item.id, name, e.currentTarget.valueAsNumber)} />
-              </Field>
+          {#if Object.keys(item.paramDefs).length}
+            <div class="params">
+              {#each Object.entries(item.paramDefs) as [name, def] (name)}
+                {@const v = values[item.id]?.[name]}
+                {#if kind(def) === 'list'}
+                  <LinesField label={def.label} value={strList(v)} rows={3} help={def.help} onChange={(l) => set(item.id, name, l)} />
+                {:else if kind(def) === 'enum'}
+                  <Field label={def.label} help={def.help}>
+                    <select value={String(v)} onchange={(e) => { const s = e.currentTarget.value; set(item.id, name, def.enum?.find((o) => String(o) === s)); }}>
+                      {#each def.enum ?? [] as opt (String(opt))}<option value={String(opt)}>{String(opt)}</option>{/each}
+                    </select>
+                  </Field>
+                {:else if kind(def) === 'boolean'}
+                  <Field label={def.label} help={def.help} inline>
+                    <input type="checkbox" checked={v === true} onchange={(e) => set(item.id, name, e.currentTarget.checked)} />
+                  </Field>
+                {:else if kind(def) === 'number'}
+                  <Field label={def.label} help={def.help}>
+                    <input type="number" value={typeof v === 'number' ? v : ''} oninput={(e) => set(item.id, name, e.currentTarget.valueAsNumber)} />
+                  </Field>
+                {:else}
+                  <Field label={def.label} help={def.help}>
+                    <input value={typeof v === 'string' ? v : ''} oninput={(e) => set(item.id, name, e.currentTarget.value)} />
+                  </Field>
+                {/if}
+                {#if errs[name]}<p class="err" role="alert">{def.label}: {errs[name]}</p>{/if}
+              {/each}
+            </div>
+          {/if}
+
+          <div class="actions">
+            {#if item.enabled}
+              <button type="button" disabled={blocked} onclick={() => saveParams(item)}>Save settings</button>
+              <button type="button" disabled={dirty || busy !== null} onclick={() => disable(item)}>Disable</button>
             {:else}
-              <Field label={def.label} help={def.help}>
-                <input value={typeof v === 'string' ? v : ''} oninput={(e) => set(item.id, name, e.currentTarget.value)} />
-              </Field>
+              <button type="button" class="primary" disabled={blocked} onclick={() => enable(item)}>Enable</button>
             {/if}
-            {#if errs[name]}<p class="err" role="alert">{def.label}: {errs[name]}</p>{/if}
-          {/each}
+            {#if messages[item.id]?.text}
+              <span class={messages[item.id]!.error ? 'err' : 'ok'} role={messages[item.id]!.error ? 'alert' : 'status'}>{messages[item.id]!.text}</span>
+            {/if}
+          </div>
         </div>
       {/if}
-
-      <div class="actions">
-        {#if item.enabled}
-          <button type="button" disabled={blocked(item)} onclick={() => saveParams(item)}>Save settings</button>
-          <button type="button" disabled={dirty || busy !== null} onclick={() => disable(item)}>Disable</button>
-        {:else}
-          <button type="button" class="primary" disabled={blocked(item)} onclick={() => enable(item)}>Enable</button>
-        {/if}
-        {#if messages[item.id]?.text}
-          <span class={messages[item.id]!.error ? 'err' : 'ok'} role={messages[item.id]!.error ? 'alert' : 'status'}>{messages[item.id]!.text}</span>
-        {/if}
-      </div>
     </section>
   {:else}
     {#if !loadError}<p class="muted">Loading recipes…</p>{/if}
@@ -301,6 +352,11 @@
   .card p { margin: 0; }
   .head { display: flex; align-items: center; gap: 10px; }
   h2 { font-size: 15px; margin: 0; flex: 1; }
+  .toggle { background: none; border: none; border-radius: 4px; padding: 0 4px; margin-left: -4px; font: inherit; color: var(--text); cursor: pointer; text-align: left; }
+  .toggle:hover:not(:disabled) { background: var(--hover); }
+  .toggle:disabled { cursor: default; }
+  .attention { font-size: 12px; color: var(--danger); }
+  .body { display: flex; flex-direction: column; gap: 6px; }
   .status { font-size: 12px; border: 1px solid var(--border); border-radius: 10px; padding: 0 8px; }
   .paused { color: var(--danger); }
   .needs { color: var(--muted); font-size: 12px; }

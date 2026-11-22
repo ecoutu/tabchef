@@ -43,6 +43,11 @@ describe('buildProjectHome (M4 T4)', () => {
     expect(v.prSummary).toBe('2 open · 1 merged');
   });
 
+  it('recipe off: carries the recipe id for the link to its card (#248)', () => {
+    expect(buildProjectHome(data({ recipeOff: true, recipeId: 'manual-project' }))).toMatchObject({ recipeOff: true, recipeId: 'manual-project' });
+    expect(buildProjectHome(data())).not.toHaveProperty('recipeId');
+  });
+
   it('no PRs: no counts and an empty summary', () => {
     const v = buildProjectHome(data({ tabs: [T(1)], linked: [], groups: [{ title: 'A', color: 'blue', windowId: 1, tabIds: [1] }] }));
     expect(v.prCounts).toEqual([]);

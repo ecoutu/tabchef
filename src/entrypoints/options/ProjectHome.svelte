@@ -14,6 +14,7 @@
   // button, not an aria-pressed toggle. The actions row wraps, so the longer labels fit a narrow side panel.
   import { onDestroy, onMount, tick } from 'svelte';
   import { send } from '../../ui/send';
+  import { recipeHash } from '../../ui/routes';
   import { createProjectActions, startLiveRefresh, type Toast } from '../../ui/project-actions';
   import { buildProjectHome, type ProjectHomeView } from '../../ui/project-home-model';
   import { keepLabel, keepTitle, savedBadge, syncOnFrom } from '../../ui/keep-wording';
@@ -141,7 +142,7 @@
     </header>
     {#if v.archived}<p class="note">{v.held > 0 && !v.recipeOff ? 'Archived: reopen?' : 'Archived.'}</p>{/if}
     {#if v.recipeOff}
-      <p class="muted">The recipe {v.recipeName} is turned off. Turn it on under <a href="#/recipes">Recipes</a> to reopen this project.</p>
+      <p class="muted">The recipe {v.recipeName} is turned off. Turn it on under <a href={v.recipeId ? recipeHash(v.recipeId) : '#/recipes'}>Recipes</a> to reopen this project.</p>
     {/if}
 
     {#if !v.open}

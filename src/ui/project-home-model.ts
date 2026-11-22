@@ -28,8 +28,9 @@ export interface ProjectHomeView {
   /** Empty when its recipe is off. */
   settings: { label: string; value: string; help: string }[];
   recipeName: string;
-  /** Its recipe is off: no settings, no Reopen, a note linking to the Recipes page. */
+  /** Its recipe is off: no settings, no Reopen, a note linking to the Recipes page (to the recipe's card: `recipeId`). */
   recipeOff: boolean;
+  recipeId?: string;
   /** M4 T9: tabs of it are open (Close group, Close and save); otherwise its saved tab list is shown, with Reopen. */
   open: boolean;
   keep: boolean;
@@ -108,7 +109,7 @@ export function buildProjectHome(d: ProjectHomeData): ProjectHomeView {
     prCounts, prSummary: prCounts.map((c) => `${c.count} ${c.state}`).join(' · '),
     ...(firstTabId !== undefined && { firstTabId }),
     groups, linked: card.linked, settings: d.settings ? settings(d.settings) : [], recipeName: d.recipeName,
-    recipeOff: d.recipeOff === true,
+    recipeOff: d.recipeOff === true, ...(d.recipeId !== undefined && { recipeId: d.recipeId }),
     open: d.tabs.length > 0, keep: d.keep === true,
     savedTabs: (d.saved?.tabs ?? []).map((t) => ({ url: t.url, title: t.title, ...(t.group !== undefined && { group: t.group }) })),
     archived: d.archivedAt !== undefined, held: d.held ?? 0,

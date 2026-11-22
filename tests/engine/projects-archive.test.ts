@@ -301,7 +301,7 @@ describe('a saved or archived project whose recipe is off (fix round 1)', () => 
     const id = await savedTaxes(harness({ local }));
     const off = harness({ program: manualOff(), local });
     const home = await off.svc.home(id);
-    expect(home).toMatchObject({ id, title: 'Taxes', recipeOff: true, keep: true, tabs: [], groups: [], saved: { tabs: [{ url: A }, { url: B }] } });
+    expect(home).toMatchObject({ id, title: 'Taxes', recipeOff: true, recipeId: MANUAL, keep: true, tabs: [], groups: [], saved: { tabs: [{ url: A }, { url: B }] } });
     expect(home).not.toHaveProperty('settings');
     expect(home?.recipeName).toBe(builtinRecipes()[MANUAL]!.name);
     await off.svc.remove(id);

@@ -223,6 +223,18 @@ describe('App routing (R28, M2 T14)', () => {
     expect((screen.getByRole('link', { name: 'Recipes' }) as HTMLAnchorElement).getAttribute('aria-current')).toBe('page');
     expect(await screen.findByRole('region', { name: 'Duplicates' })).toBeTruthy();
   });
+
+  it('#/recipes?open=<id> opens that recipe\'s card, with the nav still on Recipes (#248)', async () => {
+    const base = send.getMockImplementation()!;
+    send.mockImplementation(async (req: { type: string }) => (req.type === 'recipes.list'
+      ? { ok: true, data: { rev, recipes: [{ id: 'duplicates', source: 'builtin', enabled: true, params: {}, name: 'Duplicates', description: 'Lists duplicate tabs.', paramDefs: {}, needs: { origins: [], permissions: [] }, status: { ok: true, missing: { origins: [], permissions: [] } }, rules: {} }] } }
+      : base(req)));
+    window.location.hash = '#/recipes?open=duplicates';
+    render(App);
+    expect((screen.getByRole('link', { name: 'Recipes' }) as HTMLAnchorElement).getAttribute('aria-current')).toBe('page');
+    const c = await screen.findByRole('region', { name: 'Duplicates' });
+    expect(within(c).getByRole('button', { name: 'Duplicates' }).getAttribute('aria-expanded')).toBe('true');
+  });
 });
 
 describe('App: #/project/<id>', () => {

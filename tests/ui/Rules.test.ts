@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, screen, fireEvent, cleanup } from '@testing-library/svelte';
+import { render, screen, fireEvent, cleanup, within } from '@testing-library/svelte';
 import { tick } from 'svelte';
 const send = vi.fn();
 vi.mock('../../src/ui/send', () => ({ send: (r: unknown) => send(r) }));
@@ -479,7 +479,8 @@ describe('Rules: recipe rules as locked rows (M2 T15)', () => {
     await expand();
     const redirect = screen.getByRole('group', { name: 'Rule 5: Close redirect landing tabs' });
     expect(redirect.textContent).toContain('Inactive · no URL patterns');
-    expect(redirect.querySelector('a[href="#/recipes"]')).toBeTruthy();
+    expect(within(redirect).getByRole('link', { name: 'Add them in Recipes' }).getAttribute('href')).toBe('#/recipes?open=finished');
+    expect(screen.getByRole('link', { name: 'Recipe settings' }).getAttribute('href')).toBe('#/recipes?open=finished');
     expect(screen.getByRole('group', { name: 'Rule 3: Close OAuth callback tabs' }).textContent).not.toContain('Inactive');
   });
 

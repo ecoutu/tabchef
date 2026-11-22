@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { explainHash, matchRoute, projectHomeHash, OPTIONS_ROUTES } from '../../src/ui/routes';
+import { explainHash, matchRoute, projectHomeHash, recipeHash, OPTIONS_ROUTES } from '../../src/ui/routes';
 
 const ROUTES = [{ path: '/rules' }, { path: '/history' }, { path: '/explain/:tabId' }, { path: '/rules/new' }];
 
@@ -39,5 +39,13 @@ describe('project routes (M4 T3)', () => {
     const nav = OPTIONS_ROUTES.filter((r) => r.nav !== false).map((r) => r.label);
     expect(nav[nav.indexOf('Recipes') + 1]).toBe('Projects');
     expect(OPTIONS_ROUTES.find((r) => r.page === 'projectHome')?.nav).toBe(false);
+  });
+});
+
+describe('recipe links (#248)', () => {
+  it('#/recipes?open=<id> stays on the Recipes page, with the recipe id as `open`', () => {
+    expect(recipeHash('manual-project')).toBe('#/recipes?open=manual-project');
+    expect(matchRoute(OPTIONS_ROUTES, recipeHash('manual-project'))).toEqual({ path: '/recipes', params: { open: 'manual-project' } });
+    expect(matchRoute(OPTIONS_ROUTES, recipeHash('a b&c')).params.open).toBe('a b&c');
   });
 });

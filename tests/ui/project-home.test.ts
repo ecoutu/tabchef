@@ -414,12 +414,12 @@ describe('Project home fix round 1 (M4 T9)', () => {
   };
 
   it('recipe off: the saved list, Delete, a note linking to Recipes; no Reopen; never "no longer open"', async () => {
-    data = resting({ recipeOff: true, recipeName: 'Manual projects' });
+    data = resting({ recipeOff: true, recipeName: 'Manual projects', recipeId: 'manual-project' });
     render(ProjectHome, { id: ID });
     expect(await screen.findByRole('region', { name: 'Saved tabs' })).toBeTruthy();
     const note = screen.getByText(/is turned off/);
     expect(note.textContent).toContain('Manual projects');
-    expect(within(note).getByRole('link', { name: 'Recipes' }).getAttribute('href')).toBe('#/recipes');
+    expect(within(note).getByRole('link', { name: 'Recipes' }).getAttribute('href')).toBe('#/recipes?open=manual-project');
     expect(screen.queryByRole('button', { name: 'Reopen' })).toBeNull();
     expect(screen.getByRole('button', { name: 'Delete' })).toBeTruthy();
     expect(screen.queryByText('Settings')).toBeNull();
