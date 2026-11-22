@@ -521,7 +521,10 @@ export function replaceRule(c: Config, id: string, rule: Rule): { ok: true; conf
 
 // ---- M2 T15: the rule form ----
 
-/** What the rule form edits. `url` '' / `title` '' = no such condition; a null action = the rule has none. */
+/**
+ * What the rule form edits. `url` '' / `title` '' = no such condition (`url` [] is a URL condition that matches no tab);
+ * a null action = the rule has none.
+ */
 export interface RuleForm {
   name: string; enabled: boolean; dryRun: boolean;
   url: string | string[]; title: string;
@@ -570,11 +573,12 @@ export function ruleForm(r: Rule): RuleForm | null {
   return f;
 }
 
-const hasUrl = (u: string | string[]): boolean => (Array.isArray(u) ? u.length > 0 : u !== '');
-
-/** `r` with the form values: match rebuilt; actions replaced in place, removed, or appended (group, dedupe, close). */
+/**
+ * `r` with the form values: match rebuilt; actions replaced in place, removed, or appended (group, dedupe, close). Only
+ * a URL of '' is no URL condition: an empty URL list (from YAML) matches no tab, so it is kept, not dropped (#240).
+ */
 export function applyRuleForm(r: Rule, f: RuleForm): Rule {
-  const match: Cond = f.title === '' ? { url: f.url } : !hasUrl(f.url) ? { title: f.title } : { all: [{ url: f.url }, { title: f.title }] };
+  const match: Cond = f.title === '' ? { url: f.url } : f.url === '' ? { title: f.title } : { all: [{ url: f.url }, { title: f.title }] };
   const actions: Rule['actions'] = [];
   const seen = new Set<string>();
   for (const a of r.actions) {

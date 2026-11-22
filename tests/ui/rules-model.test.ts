@@ -291,6 +291,32 @@ describe('rules-model: form and helpers (M2 T15)', () => {
     expect(patchRuleForm(odd, 'x', { enabled: false })).toBe(odd);
   });
 
+  it('a rule matching no URL (url: []) keeps matching nothing when edited in the form (#240)', async () => {
+    const { patchRuleForm } = await import('../../src/ui/rules-model');
+    const r = { id: 'n', name: 'N', enabled: true, match: { all: [{ url: [] }, { title: '*Inbox*' }] },
+      actions: [{ group: { title: 'G', color: 'blue' } }] } as Rule;
+    const c = { ...defaultConfig(), rules: [r], order: ['user/n'] } as Config;
+    expect(ruleForm(r)).toMatchObject({ url: [], title: '*Inbox*' });
+    const renamed = patchRuleForm(c, 'n', { name: 'Renamed' });
+    expect(renamed.rules[0]).toEqual({ ...r, name: 'Renamed' });
+    const { program, errors } = compileProgram(renamed, builtinRecipes());
+    expect(errors).toEqual([]);
+    const inbox: TabSnap = { ...tab(1, 'https://mail.example.com/'), title: 'Inbox (3)' };
+    expect(evaluateTab(program, { tab: inbox }, 1_800_000_000_000).group).toBeUndefined();
+    expect(previewMatches(rule('n', []), [inbox], '*Inbox*')).toEqual([]);
+    expect(patchRuleForm(c, 'n', { title: '' }).rules[0]!.match).toEqual({ url: [] });
+  });
+
+  it("a rule with no URL condition ('') and a title saves as a title-only match", async () => {
+    const { patchRuleForm } = await import('../../src/ui/rules-model');
+    const r = { id: 't', name: 'T', enabled: true, match: { title: '*Inbox*' }, actions: [{ group: { title: 'G', color: 'blue' } }] } as Rule;
+    const c = { ...defaultConfig(), rules: [r], order: ['user/t'] } as Config;
+    expect(ruleForm(r)).toMatchObject({ url: '', title: '*Inbox*' });
+    expect(patchRuleForm(c, 't', { name: 'Renamed' }).rules[0]!.match).toEqual({ title: '*Inbox*' });
+    const cleared = patchRuleForm({ ...c, rules: [{ ...r, match: { all: [{ url: 'a.com/*' }, { title: '*x*' }] } }] }, 't', { url: '' });
+    expect(cleared.rules[0]!.match).toEqual({ title: '*x*' });
+  });
+
   it('replaceRule swaps a rule by id, renames its order key, and refuses an id that collides', async () => {
     const { replaceRule } = await import('../../src/ui/rules-model');
     const c = cfg('a', 'b');

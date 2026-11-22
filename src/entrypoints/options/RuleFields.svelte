@@ -21,7 +21,25 @@
   const NEW_CLOSE = { after: '3s', mode: 'suggest' as CloseMode };
 
   const lines = $derived(Array.isArray(form.url) ? form.url : form.url === '' ? [] : [form.url]);
-  const toUrl = (l: string[]): string | string[] => (l.length > 1 ? l : (l[0] ?? ''));
+  /**
+   * Whether rule `id` came to the form with `url: []` (from YAML), a URL condition that matches no tab. Its field then
+   * reads back as [], not '' (any URL), while it holds no patterns, so a stray space or a pattern typed and deleted
+   * does not turn it into a title-only rule (#240). Clearing the patterns of any other rule still gives ''.
+   */
+  let openedId: string | undefined;
+  let openedNoUrls = false;
+  const startedWithNoUrls = (): boolean => {
+    // A reload in place (App.svelte loadConfig) can hand this field a url: [] rule later: that state sticks too.
+    if (Array.isArray(form.url) && form.url.length === 0) { openedId = rule.id; openedNoUrls = true; }
+    if (openedId !== rule.id) { openedId = rule.id; openedNoUrls = Array.isArray(form.url) && form.url.length === 0; }
+    return openedNoUrls;
+  };
+  const toUrl = (l: string[]): string | string[] => {
+    const noUrlsAtOpen = startedWithNoUrls(); // before the first edit changes form.url
+    return l.length > 1 ? l : (l[0] ?? (noUrlsAtOpen ? [] : ''));
+  };
+  /** `url: []` matches no tab; the empty field would read as "any URL", so say so. */
+  const noUrls = $derived(Array.isArray(form.url) && form.url.length === 0);
   const hints = $derived(lines.flatMap((p) => patternHints(p).map((h) => `${p}: ${h}`)));
   const count = $derived.by(() => {
     const n = previewMatches({ id: rule.id, name: '', enabled: true, match: { url: form.url }, group: { title: '', color: 'grey' } }, tabs, form.title).length;
@@ -36,7 +54,7 @@
 
   const group = (p: Partial<GroupAction>): void => onPatch({ group: { ...(form.group ?? NEW_GROUP), ...p } });
   const close = (p: { after?: string; mode?: CloseMode }): void => onPatch({ close: { ...(form.close ?? NEW_CLOSE), ...p } });
-  const matchPath = (k: 'url' | 'title'): string => (form.title !== '' && lines.length > 0 ? `match/all/${k === 'url' ? 0 : 1}/${k}` : `match/${k}`);
+  const matchPath = (k: 'url' | 'title'): string => (form.title !== '' && form.url !== '' ? `match/all/${k === 'url' ? 0 : 1}/${k}` : `match/${k}`);
   /** Server errors under /rules/<index>/<sub>. */
   const sErr = (sub: string): string[] => errorsForPath(serverErrors, `/rules/${index}/${sub}`);
   const groupPath = $derived(actionPaths(rule).group);
@@ -46,6 +64,7 @@
 <LinesField label="URL patterns (one per line: glob, /regex/, or :param)" value={lines} rows={2}
   helpLabel="URL patterns" help="A tab whose URL matches any line belongs to this rule. * matches anything (github.com/*), /…/ is a regular expression, and :name captures one path segment for the group title, e.g. github.com/acme/:repo*."
   check={patternError} onChange={(l) => onPatch({ url: toUrl(l) })} extraErrors={sErr(matchPath('url'))} />
+{#if noUrls}<p class="hint" role="note">No URL patterns: this rule matches no tab until you add one.</p>{/if}
 {#each hints as h (h)}<p class="hint" role="note">{h}</p>{/each}
 
 <Field label="Title pattern (optional)" helpLabel="Title pattern" help="Optional. The tab's title must match this too, e.g. *Inbox* for any title containing Inbox. * matches anything.">
