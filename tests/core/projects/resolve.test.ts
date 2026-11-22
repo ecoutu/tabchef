@@ -8,6 +8,7 @@ import {
 import type { Project, ProjectDef } from '../../../src/core/projects/types';
 import type { Program, Recipe, Rule, TabFacts } from '../../../src/core/lang/types';
 import type { Config, Snapshot, TabSnap } from '../../../src/core/types';
+import { pickFields } from '../../../src/core/sources/registry';
 import { builtinRecipes } from '../../../src/recipes/load';
 
 const NOW = 1_800_000_000_000;
@@ -108,6 +109,24 @@ describe('resolveProjects: order independence (M3-R56)', () => {
     expect(r.assignments.get(2)?.projectId).toBe(`${RID}:ABC-1`);
     expect(r.assignments.get(1)?.projectId).toBe(`${RID}:ABC-1`);
     expect(r.created.map((x) => x.id)).toEqual([`${RID}:ABC-1`]);
+  });
+  it('a project a sticky tab moves into counts for the other tabs of the same pass: no second move, no empty project', () => {
+    const r3: Recipe = { ...recipe, rules: [
+      { id: 'mention', name: 'mention', enabled: true, match: { url: '*' }, extract: { key: { from: 'title', jiraKey: {} } }, actions: [{ assignProject: { key: '{key}' } }] },
+      recipe.rules[0]!,
+      { id: 'late', name: 'late', enabled: true, match: { url: 'nowhere.test/*' }, actions: [{ assignProject: { key: 'ZZZ-1' } }] },
+    ] };
+    const c: Config = { ...defaultConfig(), recipes: [{ id: RID, enabled: true, params: {}, source: 'builtin' }] };
+    const { program: p, errors } = compileProgram(c, { [RID]: r3 });
+    expect(errors).toEqual([]);
+    // Tab 1 mentions DEF-7 (unconfirmed) above its own ticket ABC-1; tab 2, the DEF-7 ticket, is sticky in ZZZ-1 by
+    // the lower `late` rule, so its ticket candidate creates DEF-7.
+    const DEF = 'https://acme.atlassian.net/browse/DEF-7';
+    const sticky: StickyMap = new Map([[2, { projectId: `${RID}:ZZZ-1`, url: DEF, ruleKey: `${RID}/late`, index: 2 }]]);
+    const r = resolve(snapOf(tab(1, TICKET, 'DEF-7 mentioned'), tab(2, DEF, 'x')), { program: p, projects: [project('ZZZ-1')], sticky });
+    expect(r.assignments.get(2)?.projectId).toBe(`${RID}:DEF-7`);
+    expect(r.assignments.get(1)?.projectId).toBe(`${RID}:DEF-7`);
+    expect(r.created.map((x) => x.id)).toEqual([`${RID}:DEF-7`]);
   });
 });
 
@@ -260,6 +279,160 @@ describe('resolveProjects: sticky membership', () => {
   it('a sticky entry for a project that no longer exists is dropped', () => {
     const sticky: StickyMap = new Map([[2, { projectId: `${RID}:ABC-1`, url: PR }]]);
     expect(resolve(snapOf(tab(2, PR, 'loading')), { sticky }).assignments.size).toBe(0);
+  });
+});
+
+describe('resolveProjects: sticky never outranks a higher-priority candidate that resolves (#238)', () => {
+  // Jira ticket projects ordered above GitHub issue projects. A PR titled SCRUM-1 that closes acme/fixtures#2 is first
+  // seen with no SCRUM-1 ticket tab and no stored project: its Jira candidate (create: false) cannot resolve, so it
+  // joins acme/fixtures#2 (create: true) and stores a sticky entry there.
+  const JT = 'jira-ticket-either';
+  const GI = 'github-issue';
+  const SCRUM = 'https://acme.atlassian.net/browse/SCRUM-1';
+  const GH_PR = 'https://github.com/acme/fixtures/pull/1';
+  const order = [`${JT}/ticket`, `${JT}/pr`, `${GI}/issue`, `${GI}/pr`];
+  /** Both recipes enabled, Jira first; `jtRules` turns rules of the Jira recipe on or off. */
+  const programOf = (jtRules?: Record<string, boolean>): Program => {
+    const c: Config = {
+      ...defaultConfig(), order,
+      recipes: defaultConfig().recipes.map((r) => ({ ...r, enabled: r.id === JT || r.id === GI, ...(r.id === JT && jtRules && { ruleEnabled: jtRules }) })),
+    };
+    const { program: p, errors } = compileProgram(c, builtinRecipes());
+    expect(errors).toEqual([]);
+    return p;
+  };
+  const both = programOf();
+  const prData = { headRefName: 'feature/scrum-1-login', state: 'open', closingIssues: ['acme/fixtures#2'] };
+  /** The PR tab's (id 2) source facts: `data` as the GitHub API answers it. */
+  const prFactsOf = (data: typeof prData) => (id: number): Partial<TabFacts> => (id !== 2 ? {} : {
+    source: Object.fromEntries(both.rules.filter((r) => r.rule.source?.query === 'github.pull_request')
+      .map((r) => [r.key, { data: pickFields(data as never, r.rule.source!.fields) }])),
+  } as Partial<TabFacts>);
+  const prFacts = prFactsOf(prData);
+  /** The same PR on a branch that names no key. */
+  const noBranchKey = prFactsOf({ ...prData, headRefName: 'feature/login' });
+  const jt = (key: string, o: Partial<Project> = {}): Project => ({ id: `${JT}:${key}`, recipeId: JT, key, createdAt: 1, updatedAt: 1, manual: [], excluded: [], linked: [], ...o });
+  const run = (s: Snapshot, o: Partial<ResolveInput> = {}) => resolve(s, { program: both, facts: prFacts, ...o });
+  const prTab = tab(2, GH_PR, 'SCRUM-1 fix login by acme · Pull Request #1');
+  const ticketTab = tab(1, SCRUM, '[SCRUM-1] Login fails - Jira');
+  const firstPass = () => {
+    const a = run(snapOf(prTab));
+    expect(a.assignments.get(2)?.projectId).toBe(`${GI}:acme/fixtures#2`);
+    return a;
+  };
+
+  it('the ticket tab opens later: the PR moves to SCRUM-1, and its sticky entry follows', () => {
+    const a = firstPass();
+    const b = run(snapOf(ticketTab, prTab), { projects: a.created, sticky: a.sticky });
+    expect(b.assignments.get(2)).toMatchObject({ projectId: `${JT}:SCRUM-1`, ruleKey: `${JT}/pr` });
+    expect(b.sticky.get(2)).toMatchObject({ projectId: `${JT}:SCRUM-1`, ruleKey: `${JT}/pr` });
+    // It does not flip back while its title briefly loses the key.
+    const c = run(snapOf(ticketTab, { ...prTab, title: 'github.com/acme/fixtures/pull/1' }), { projects: [...a.created, ...b.created], sticky: b.sticky });
+    expect(c.assignments.get(2)?.projectId).toBe(`${JT}:SCRUM-1`);
+  });
+  it('a stored SCRUM-1 project (no ticket tab open): the PR moves to it', () => {
+    const a = firstPass();
+    const stored: Project = { id: `${JT}:SCRUM-1`, recipeId: JT, key: 'SCRUM-1', createdAt: 1, updatedAt: 1, manual: [], excluded: [], linked: [] };
+    const b = run(snapOf(prTab), { projects: [...a.created, stored], sticky: a.sticky });
+    expect(b.assignments.get(2)?.projectId).toBe(`${JT}:SCRUM-1`);
+    expect(b.sticky.get(2)?.projectId).toBe(`${JT}:SCRUM-1`);
+  });
+  it('with nothing ranked above it resolving, the PR stays in its sticky project', () => {
+    const a = firstPass();
+    const b = run(snapOf(prTab), { projects: a.created, sticky: a.sticky });
+    expect(b.assignments.get(2)?.projectId).toBe(`${GI}:acme/fixtures#2`);
+    expect(b.sticky.get(2)).toEqual(a.sticky.get(2));
+  });
+  it('a title edited to another stored key moves the PR there, whether or not its branch still names the old key', () => {
+    const projects = [jt('SCRUM-1'), jt('SCRUM-2')];
+    const edited = { ...prTab, title: 'SCRUM-2 fix login by acme · Pull Request #1' };
+    for (const facts of [prFacts, noBranchKey]) {
+      const a = run(snapOf(prTab), { projects, facts });
+      expect(a.assignments.get(2)?.projectId).toBe(`${JT}:SCRUM-1`);
+      const b = run(snapOf(edited), { projects, facts, sticky: a.sticky });
+      expect(b.assignments.get(2)?.projectId).toBe(`${JT}:SCRUM-2`);
+      expect(b.sticky.get(2)?.projectId).toBe(`${JT}:SCRUM-2`);
+    }
+  });
+  it('a PR in SCRUM-1 whose title and branch name no key (loading) stays in SCRUM-1', () => {
+    const projects = [jt('SCRUM-1')];
+    const a = run(snapOf(prTab), { projects, facts: noBranchKey });
+    expect(a.assignments.get(2)?.projectId).toBe(`${JT}:SCRUM-1`);
+    const b = run(snapOf({ ...prTab, title: 'github.com/acme/fixtures/pull/1' }), { projects, facts: noBranchKey, sticky: a.sticky });
+    expect(b.assignments.get(2)?.projectId).toBe(`${JT}:SCRUM-1`);
+    expect(b.sticky.get(2)).toEqual(a.sticky.get(2));
+  });
+  it('a higher-ranked project that excludes the PR does not take it: it stays in acme/fixtures#2', () => {
+    const a = firstPass();
+    const b = run(snapOf(ticketTab, prTab), { projects: [...a.created, jt('SCRUM-1', { excluded: [GH_PR] })], sticky: a.sticky });
+    expect(b.assignments.get(1)?.projectId).toBe(`${JT}:SCRUM-1`);
+    expect(b.assignments.get(2)?.projectId).toBe(`${GI}:acme/fixtures#2`);
+    expect(b.sticky.get(2)).toEqual(a.sticky.get(2));
+  });
+  it('a confirmed prefix alone (no ticket tab, nothing stored) moves the PR, creating SCRUM-1', () => {
+    const a = firstPass();
+    const b = run(snapOf(prTab), { projects: a.created, sticky: a.sticky, knownPrefixes: new Set(['SCRUM']) });
+    expect(b.assignments.get(2)?.projectId).toBe(`${JT}:SCRUM-1`);
+    expect(b.created.map((p) => p.id)).toEqual([`${JT}:SCRUM-1`]);
+    expect(b.sticky.get(2)?.projectId).toBe(`${JT}:SCRUM-1`);
+  });
+  it('the rule that moved it turned off while its title lost the key (#196): it falls back to acme/fixtures#2', () => {
+    const projects = [jt('SCRUM-1')];
+    const a = run(snapOf(prTab), { projects, facts: noBranchKey });
+    expect(a.assignments.get(2)?.projectId).toBe(`${JT}:SCRUM-1`);
+    const loading = { ...prTab, title: 'github.com/acme/fixtures/pull/1' };
+    const b = run(snapOf(loading), { program: programOf({ pr: false }), projects, facts: noBranchKey, sticky: a.sticky });
+    expect(b.assignments.get(2)?.projectId).toBe(`${GI}:acme/fixtures#2`);
+    expect(b.sticky.get(2)?.projectId).toBe(`${GI}:acme/fixtures#2`);
+  });
+  it('an archived SCRUM-1 whose prefix is confirmed does not pull the PR out of acme/fixtures#2; a fresh PR tab still names it', () => {
+    const a = firstPass();
+    const o = { knownPrefixes: new Set(['SCRUM']), archived: new Set([`${JT}:SCRUM-1`]) };
+    const b = run(snapOf(prTab), { projects: a.created, sticky: a.sticky, ...o });
+    expect(b.assignments.get(2)?.projectId).toBe(`${GI}:acme/fixtures#2`);
+    expect(b.sticky.get(2)).toEqual(a.sticky.get(2));
+    expect(b.created).toEqual([]);
+    // With no sticky entry, the archived key is its project (the engine holds it out: "Archived: reopen?").
+    expect(run(snapOf(prTab), { projects: a.created, ...o }).assignments.get(2)?.projectId).toBe(`${JT}:SCRUM-1`);
+  });
+});
+
+describe('resolveProjects: stored projects left out of `projects` and a sticky tab (#238)', () => {
+  // Rule a: a title key (create: false), above rule b (BBB-1) and rule c (CCC-1), both matching every PR.
+  const abc = ((): Program => {
+    const lit = (id: string, key: string): Rule => ({ id, name: id, enabled: true, match: { url: 'github.com/*' }, actions: [{ assignProject: { key } }] });
+    const r: Recipe = { ...recipe, rules: [
+      { id: 'a', name: 'a', enabled: true, match: { url: 'github.com/*' }, extract: { key: { from: 'title', jiraKey: {} } }, actions: [{ assignProject: { key: '{key}' } }] },
+      lit('b', 'BBB-1'), lit('c', 'CCC-1'),
+    ] };
+    const c: Config = { ...defaultConfig(), recipes: [{ id: RID, enabled: true, params: {}, source: 'builtin' }] };
+    const { program: p, errors } = compileProgram(c, { [RID]: r });
+    expect(errors).toEqual([]);
+    return p;
+  })();
+  const pr = tab(2, PR, 'XYZ-9 fix');
+  const XYZ = `${RID}:XYZ-9`;
+  const inC: StickyMap = new Map([[2, { projectId: `${RID}:CCC-1`, url: PR, ruleKey: `${RID}/c`, index: 2 }]]);
+  const inB: StickyMap = new Map([[2, { projectId: `${RID}:BBB-1`, url: PR, ruleKey: `${RID}/b`, index: 1 }]]);
+  const run = (o: Partial<ResolveInput>) => resolve(snapOf(pr), { program: abc, projects: [project('BBB-1'), project('CCC-1')], ...o });
+
+  it('an archived candidate that would not resolve (unconfirmed prefix) does not stop a higher project from taking the tab', () => {
+    const archived = new Set([XYZ]);
+    expect(run({ archived }).assignments.get(2)?.projectId).toBe(`${RID}:BBB-1`); // a fresh tab
+    expect(run({ archived, sticky: inC }).assignments.get(2)?.projectId).toBe(`${RID}:BBB-1`);
+    // Confirmed, it would resolve (and be held): the sticky tab stays.
+    expect(run({ archived, sticky: inC, knownPrefixes: new Set(['XYZ']) }).assignments.get(2)?.projectId).toBe(`${RID}:CCC-1`);
+  });
+  it('a tombstoned or archived project that excludes the URL never takes the tab, sticky or fresh', () => {
+    for (const archived of [undefined, new Set([XYZ])]) {
+      const o = { knownPrefixes: new Set(['XYZ']), storedExcluded: new Map([[XYZ, [PR]]]), ...(archived && { archived }) };
+      const sticky = run({ ...o, sticky: inB });
+      expect(sticky.assignments.get(2)?.projectId).toBe(`${RID}:BBB-1`);
+      expect(sticky.created).toEqual([]);
+      const fresh = run(o);
+      expect(fresh.assignments.get(2)?.projectId).toBe(`${RID}:BBB-1`);
+      expect(fresh.created).toEqual([]);
+    }
   });
 });
 

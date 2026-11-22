@@ -356,9 +356,10 @@ export class ProjectService {
   private run(snap: Snapshot, program: Program, stored: Project[], sticky: StickyMap): Run {
     const tabs = new Map(snap.tabs.map((t) => [t.id, t]));
     const archived = new Set(stored.filter(isArchived).map((p) => p.id));
+    const storedExcluded = new Map(stored.filter((p) => (isTomb(p) || isArchived(p)) && p.excluded.length > 0).map((p) => [p.id, p.excluded]));
     const heldTabIds = new Set(stored.flatMap((p) => p.manual.flatMap((m) => (m.tabId === undefined ? [] : [m.tabId]))));
     const r = holdArchived(resolveProjects({
-      snap, program, now: this.now(), projects: stored.filter((p) => !isTomb(p) && !isArchived(p)), sticky, heldTabIds,
+      snap, program, now: this.now(), projects: stored.filter((p) => !isTomb(p) && !isArchived(p)), sticky, heldTabIds, archived, storedExcluded,
       facts: (id): Partial<TabFacts> => {
         const t = tabs.get(id);
         const page = this.deps.facts.get(id);

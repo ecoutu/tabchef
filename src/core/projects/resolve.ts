@@ -1,10 +1,12 @@
 // Project membership (M3 T14). Pure: which project each open tab belongs to, by manual membership, sticky membership
 // and the `assignProject` candidates of the Program, plus the group targets the planner uses for them (M3-R43).
 //
-// Order per tab: manual > sticky (same normalized URL) > rules. Rules: pass 1 settles tabs whose highest-priority
+// Order per tab: manual > rules > sticky (same normalized URL). Rules: pass 1 settles tabs whose highest-priority
 // candidate creates (Jira ticket tabs); pass 2 walks every other tab's candidates in priority order, and the first one
-// that resolves wins. A `create: false` candidate (a PR) resolves only into a project that exists (stored or created in
-// pass 1/2) or whose key prefix is confirmed (`allowPrefixes` ∪ `knownPrefixes`, Review Focus #5).
+// that resolves wins. Sticky membership is only a fallback (#238): a sticky tab goes through the same passes with the
+// candidates ranked before its sticky one, and stays when none resolves. A `create: false` candidate (a PR) resolves
+// only into a project that exists (stored or created in pass 1/2) or whose key prefix is confirmed (`allowPrefixes` ∪
+// `knownPrefixes`, Review Focus #5).
 import { COLORS } from '../config/schema';
 import { parseIssueKey, type IssueRef } from '../keys/github-issue';
 import { evaluateTab, type ProjectCandidate } from '../lang/evaluate';
@@ -37,6 +39,18 @@ export interface ResolveInput {
    * tab one of them holds is never rebound to another entry (M4-R58). Default: those of `projects`.
    */
   heldTabIds?: ReadonlySet<number>;
+  /**
+   * The ids of the archived projects (left out of `projects`). A sticky tab never leaves its project for one whose
+   * candidate would resolve before this pass's creations, nor for a candidate ranked below it: the archived project
+   * would only hold it out of any group (#238). One whose candidate would not resolve (create: false, prefix
+   * unconfirmed) is passed over, even if another tab creates it later in the same pass. Default: none.
+   */
+  archived?: ReadonlySet<string>;
+  /**
+   * projectId → excluded URLs of the stored projects left out of `projects` (tombstoned, archived): a URL one of them
+   * excludes never joins it, so a rule never revives a closed project the user took the tab out of. Default: none.
+   */
+  storedExcluded?: ReadonlyMap<string, readonly string[]>;
 }
 export interface ResolveResult {
   assignments: Map<number, ProjectAssignment>;
@@ -130,7 +144,9 @@ export function resolveProjects(input: ResolveInput): ResolveResult {
     for (const { t, url: u } of tabs) if (u === url && !assignments.has(t.id) && inOwnGroup(p, t)) claim(p, t);
   }
 
-  const excluded = (p: Project | undefined, url: string): boolean => p !== undefined && p.excluded.includes(url);
+  /** Whether project `id` excludes `url`: by its own list, or by that of its stored record left out of `projects`. */
+  const excluded = (id: string, url: string): boolean =>
+    (byId.get(id)?.excluded.includes(url) ?? false) || (input.storedExcluded?.get(id)?.includes(url) ?? false);
   const ensure = (recipeId: string, key: string): Project => {
     const id = projectId(recipeId, key);
     let p = byId.get(id);
@@ -148,15 +164,26 @@ export function resolveProjects(input: ResolveInput): ResolveResult {
     sticky.set(tabId, { projectId: p.id, url, ruleKey: c.ruleKey, index: c.index, ...(sig !== undefined && { sig }) });
   };
 
-  // Rule candidates, and sticky membership for tabs whose URL is unchanged.
-  const pending: { t: TabSnap; url: string; cands: ProjectCandidate[] }[] = [];
+  /**
+   * Whether a candidate can resolve now: its project exists, it creates, or its prefix is confirmed. One whose project
+   * excludes this tab's URL never applies to it.
+   */
+  const resolvable = (c: ProjectCandidate, url: string): boolean => {
+    const id = projectId(recipeOf.get(c.ruleKey)!, c.key);
+    return !excluded(id, url) && (c.create || byId.has(id) || confirmed.has(prefixOf(c.key)));
+  };
+
+  // Rule candidates, and sticky membership for tabs whose URL is unchanged. A sticky tab's candidates are those ranked
+  // before its sticky one, and `keep` is the project and candidate that keep it when none of them resolves.
+  type Keep = { p: Project; c: Pick<ProjectCandidate, 'ruleKey' | 'index'> };
+  const pending: { t: TabSnap; url: string; cands: ProjectCandidate[]; keep?: Keep }[] = [];
   for (const { t, url } of tabs) {
     if (assignments.has(t.id)) continue;
     const f = input.facts(t.id);
     const cands = evaluateTab(program, { ...f, tab: t }, now).project ?? [];
     const s = input.sticky.get(t.id);
     const sp = s && s.url === url ? byId.get(s.projectId) : undefined;
-    if (sp && !excluded(sp, url)) {
+    if (sp && !excluded(sp.id, url)) {
       // The tab's own candidate for that key, else the rule that assigned it (at its current index), else the
       // lowest-priority assignProject rule of the recipe (a sticky tab never outranks a group rule it might not have
       // outranked). When a settings change turned the assigning rule off or changed it (its signature differs), only
@@ -166,7 +193,17 @@ export function resolveProjects(input: ResolveInput): ResolveResult {
       const changed = s?.sig !== undefined && (!assigned || s.sig !== sigs.get(assigned.key));
       const fallback = assigned ?? program.rules.filter((r) => r.recipeId === sp.recipeId && r.rule.actions.some((a) => 'assignProject' in a)).at(-1);
       const c = own ?? (!changed && fallback ? { ruleKey: fallback.key, index: fallback.index } : undefined);
-      if (c) { join(t.id, url, sp, c); continue; }
+      if (c) {
+        // Ranked before it: the candidates listed before its own, else those of its rule (other keys) and earlier
+        // ones (the two agree because candidates come in rule-priority order and `index` is that priority). Cut at
+        // the first one naming an archived project that would resolve (`archived`); pass over the others.
+        const ranked = (own ? cands.slice(0, cands.indexOf(own)) : cands.filter((x) => x.index <= c.index))
+          .filter((x) => recipeOf.get(x.ruleKey) !== undefined);
+        const isArchived = (x: ProjectCandidate): boolean => input.archived?.has(projectId(recipeOf.get(x.ruleKey)!, x.key)) ?? false;
+        const cut = ranked.findIndex((x) => isArchived(x) && resolvable(x, url));
+        pending.push({ t, url, cands: (cut < 0 ? ranked : ranked.slice(0, cut)).filter((x) => !isArchived(x)), keep: { p: sp, c } });
+        continue;
+      }
     }
     if (cands.length) pending.push({ t, url, cands: cands.filter((c) => recipeOf.get(c.ruleKey) !== undefined) });
   }
@@ -179,7 +216,7 @@ export function resolveProjects(input: ResolveInput): ResolveResult {
   };
   const create = (t: TabSnap, url: string, c: ProjectCandidate): boolean => {
     const recipeId = recipeOf.get(c.ruleKey)!;
-    if (excluded(byId.get(projectId(recipeId, c.key)), url)) return false;
+    if (excluded(projectId(recipeId, c.key), url)) return false;
     const p = ensure(recipeId, c.key);
     join(t.id, url, p, c);
     noteSummary(p, t, c);
@@ -193,36 +230,35 @@ export function resolveProjects(input: ResolveInput): ResolveResult {
     if (!(first?.create && create(x.t, x.url, first))) rest.push(x);
   }
   // Pass 2a: tabs whose first candidate that can resolve now creates, so a PR listed before such a tab still finds
-  // the project in 2b (M3-R56). A create:false candidate can resolve now if its project exists or its prefix is confirmed.
-  // A candidate whose project excludes this tab's URL never applies to it, so it is skipped.
-  const resolvable = (c: ProjectCandidate, url: string): boolean => {
-    const id = projectId(recipeOf.get(c.ruleKey)!, c.key);
-    return !excluded(byId.get(id), url) && (c.create || byId.has(id) || confirmed.has(prefixOf(c.key)));
-  };
+  // the project in 2b (M3-R56).
   const later: typeof rest = [];
   for (const x of rest) {
     const c = x.cands.find((y) => resolvable(y, x.url));
     if (!(c?.create && create(x.t, x.url, c))) later.push(x);
   }
-  // Pass 2b: the first candidate that resolves.
-  for (const { t, url, cands } of later) {
+  /** Joins the first of `cands` that resolves (creates, exists, or has a confirmed prefix); false when none does. */
+  const settle = (t: TabSnap, url: string, cands: ProjectCandidate[]): boolean => {
     for (const c of cands) {
-      if (c.create) { if (create(t, url, c)) break; continue; }
+      if (c.create) { if (create(t, url, c)) return true; continue; }
       const recipeId = recipeOf.get(c.ruleKey)!;
-      const p = byId.get(projectId(recipeId, c.key));
+      const id = projectId(recipeId, c.key);
+      if (excluded(id, url)) continue;
+      const p = byId.get(id);
       if (p) {
-        if (excluded(p, url)) continue;
         join(t.id, url, p, c);
-        break;
+        return true;
       }
       if (confirmed.has(prefixOf(c.key))) {
         const np = ensure(recipeId, c.key);
         join(t.id, url, np, c);
         noteSummary(np, t, c);
-        break;
+        return true;
       }
     }
-  }
+    return false;
+  };
+  // Pass 2b: the first candidate that resolves; a sticky tab none of whose candidates resolves stays.
+  for (const { t, url, cands, keep } of later) if (!settle(t, url, cands) && keep) join(t.id, url, keep.p, keep.c);
   return { assignments, created, summaries, sticky, rebound };
 }
 

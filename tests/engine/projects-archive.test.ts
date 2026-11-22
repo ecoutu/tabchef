@@ -169,6 +169,56 @@ describe('ProjectService.closeAndArchive and a rule assigning an archived key', 
     expect(await h.svc.home(PID)).toMatchObject({ id: PID, archivedAt: NOW + 3, held: 1, tabs: [], groups: [], keep: true });
   });
 
+  /** A `mention` rule (title key, create: false) above the ticket rule. */
+  const mentionProgram = (): Program => {
+    const mention: Recipe = { ...recipe, rules: [
+      { id: 'mention', name: 'mention', enabled: true, match: { url: '*.atlassian.net/browse/*' }, extract: { key: { from: 'title', jiraKey: {} } }, actions: [{ assignProject: { key: '{key}' } }] },
+      ...recipe.rules,
+    ] };
+    const base = defaultConfig();
+    const { program: p, errors } = compileProgram({ ...base, recipes: [...base.recipes, { id: RID, enabled: true, params: {}, source: 'builtin' }] }, { ...builtinRecipes(), [RID]: mention });
+    expect(errors).toEqual([]);
+    return p;
+  };
+  /** XYZ-9, its prefix known to the Jira API. */
+  const xyz = (o: Partial<Project> = {}): Project => ({ id: `${RID}:XYZ-9`, recipeId: RID, key: 'XYZ-9', createdAt: NOW, updatedAt: NOW, manual: [], excluded: [], linked: [], status: { name: 'Done', category: 'done', via: 'api' }, ...o });
+
+  it('a tab already in a live project is not pulled out of it by a higher rule naming an archived key (#238)', async () => {
+    // XYZ-9 is archived. The ABC-1 ticket tab joins ABC-1, then its title names XYZ-9.
+    const local = memoryArea();
+    local.data.set(PROJECTS_KEY, [xyz({ keep: true, archivedAt: NOW })]);
+    const h = harness({ program: mentionProgram(), local });
+    h.f.addTab(tab(1, TICKET, { title: 'Login fails' }));
+    await h.r.flush();
+    expect(h.groupOf(1)).toBe('ABC-1');
+    h.f.state.tabs.find((t) => t.id === 1)!.title = 'Login fails (see XYZ-9)';
+    await h.r.flush();
+    expect(h.groupOf(1)).toBe('ABC-1');
+    expect((await h.stored(`${RID}:XYZ-9`))?.archivedAt).toBe(NOW);
+  });
+
+  it('a tab removed from a project that Close group then closed does not revive it (#238)', async () => {
+    // Tab 1 (the ABC-1 ticket, its title naming XYZ-9) joins XYZ-9 with the XYZ-9 ticket tab (2). The user removes
+    // tab 1 from XYZ-9 (it moves to ABC-1), then closes XYZ-9's group: a tombstone that still excludes tab 1's URL.
+    const local = memoryArea();
+    local.data.set(PROJECTS_KEY, [xyz()]);
+    const h = harness({ program: mentionProgram(), local });
+    h.f.addTab(tab(2, 'https://acme.atlassian.net/browse/XYZ-9'));
+    h.f.addTab(tab(1, TICKET, { title: 'Login fails (see XYZ-9)' }));
+    await h.r.flush();
+    expect([h.groupOf(1), h.groupOf(2)]).toEqual(['XYZ-9', 'XYZ-9']);
+    await h.svc.removeTab(1);
+    await h.r.flush();
+    expect(h.groupOf(1)).toBe('ABC-1');
+    expect(await h.svc.closeGroup(`${RID}:XYZ-9`)).toMatchObject({ closed: 1 });
+    await h.r.flush();
+    await h.r.flush();
+    expect(h.groupOf(1)).toBe('ABC-1');
+    const tomb = await h.stored(`${RID}:XYZ-9`);
+    expect(tomb).toMatchObject({ closedAt: NOW, excluded: [TICKET] });
+    expect(tomb?.closedIds?.length).toBe(1); // Undo still finds it
+  });
+
   it('Undo of a close-and-archive brings the project back, unarchived', async () => {
     const h = harness();
     await ticket(h);
