@@ -648,6 +648,76 @@ describe('Rules: sections (M4 rule sections T4)', () => {
     confirm.mockRestore();
   });
 
+  describe('a section holding a rule with an error stays open (#239)', () => {
+    const locked = (h: HTMLButtonElement): void => {
+      expect(h.disabled).toBe(true);
+      expect(h.getAttribute('aria-expanded')).toBe('true');
+      expect(h.title).toBe('Kept open while a rule here has an error');
+    };
+
+    it('an invalid pattern keeps the section open and its header counts the error; fixing it frees the header', async () => {
+      const bad = { ...cfg(rule('a', '/(/'), rule('b', 'b.com/*')), sections: work(['a', 'b']) };
+      const { rerender } = render(Rules, props(bad));
+      locked(screen.getByRole('button', { name: /Work \(2 rules · 1 with errors\)/ }) as HTMLButtonElement);
+      expect(screen.getByText(/invalid regex/)).toBeTruthy();
+      await rerender({ config: { ...bad, rules: cfg(rule('a', 'a.com/*'), rule('b', 'b.com/*')).rules } });
+      const freed = screen.getByRole('button', { name: /Work \(2 rules\)/ }) as HTMLButtonElement;
+      expect(freed.disabled).toBe(false);
+      expect(freed.getAttribute('aria-expanded')).toBe('true'); // fixing the rule doesn't collapse it under the user
+      await fireEvent.click(freed);
+      expect(freed.getAttribute('aria-expanded')).toBe('false');
+    });
+
+    it('a server error on one of its rules keeps the section open', () => {
+      render(Rules, props({ ...cfg(rule('a', 'a.com/*'), rule('b', 'b.com/*')), sections: work(['a', 'b']) }, { serverErrors: ['/rules/1/actions/0/group/color must be a color'] }));
+      locked(screen.getByRole('button', { name: /Work \(2 rules · 1 with errors\)/ }) as HTMLButtonElement);
+      expect(screen.getByText(/must be a color/)).toBeTruthy();
+    });
+
+    it('invalid YAML keeps the section open until the YAML is valid again', async () => {
+      render(Rules, props({ ...cfg(rule('a', 'a.com/*'), rule('b', 'b.com/*')), sections: work(['a', 'b']) }));
+      await fireEvent.click(screen.getByRole('button', { name: /Work \(2 rules\)/ }));
+      await fireEvent.click(screen.getAllByRole('button', { name: 'YAML' })[0]!);
+      const area = screen.getByRole('textbox', { name: 'Rule YAML' }) as HTMLTextAreaElement;
+      const valid = area.value;
+      await fireEvent.input(area, { target: { value: 'id: [' } });
+      locked(screen.getByRole('button', { name: /Work \(2 rules · 1 with errors\)/ }) as HTMLButtonElement);
+      await fireEvent.input(area, { target: { value: valid } });
+      const freed = screen.getByRole('button', { name: /Work \(2 rules\)/ }) as HTMLButtonElement;
+      expect(freed.disabled).toBe(false);
+      await fireEvent.click(freed);
+      expect(freed.getAttribute('aria-expanded')).toBe('false');
+      expect(screen.queryByRole('textbox', { name: 'Rule YAML' })).toBeNull();
+    });
+
+    it('a section with both an error and a warning stays locked and counts both', async () => {
+      send.mockReset();
+      send.mockImplementation(async (r: { type: string }) => (r.type === 'rules.shadowed' ? { ok: true, data: [{ key: 'user/b', shadowedBy: 'user/a', name: 'Rule a' }] } : { ok: true, data: null }));
+      try {
+        render(Rules, props({ ...cfg(rule('a', ['a.com/*', '/(/']), rule('b', 'b.com/*')), sections: work(['a', 'b']) }));
+        locked(await screen.findByRole('button', { name: /Work \(2 rules · 1 with errors · 1 warning\)/ }) as HTMLButtonElement);
+      } finally {
+        send.mockReset();
+      }
+    });
+
+    it('a server error finds its rule by config index, not by display position', () => {
+      // Config index 0 is rule a, shown second; shown first is c, outside the section.
+      const c = { ...cfg(rule('a', 'a.com/*'), rule('b', 'b.com/*'), rule('c', 'c.com/*')), order: ['user/c', 'user/a', 'user/b'], sections: work(['a', 'b']) };
+      render(Rules, props(c, { serverErrors: ['/rules/0/actions/0/group/color must be a color'] }));
+      locked(screen.getByRole('button', { name: /Work \(2 rules · 1 with errors\)/ }) as HTMLButtonElement);
+      expect(screen.getByText(/must be a color/).closest('.rule')!.getAttribute('data-key')).toBe('user/a');
+    });
+
+    it('a section split by order locks every fragment', () => {
+      const c = { ...cfg(rule('p', 'p.com/*'), rule('a', '/(/'), rule('x', 'x.com/*'), rule('b', 'b.com/*')), sections: work(['a', 'b']) };
+      render(Rules, props(c));
+      const headers = screen.getAllByRole('button', { name: /Work \(2 rules · 1 with errors\)/ }) as HTMLButtonElement[];
+      expect(headers).toHaveLength(2);
+      headers.forEach(locked);
+    });
+  });
+
   it('an empty section is still listed, so it can be renamed or deleted', () => {
     render(Rules, props({ ...cfg(rule('a', 'a.com/*')), sections: [{ id: 'empty', name: 'Later', rules: [] }] }));
     expect(screen.getByText('Later (0 rules)')).toBeTruthy();

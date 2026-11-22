@@ -8,7 +8,7 @@
   // M4 rule sections T2); a rule that can never match (an empty URL list param) says so. Named sections (T4,
   // config.sections) group user rules the same way under a header that collapses, moves, renames and deletes; they are
   // display only, priority stays `order`.
-  import { tick } from 'svelte';
+  import { tick, untrack } from 'svelte';
   import type { Config, TabSnap } from '../../core/types';
   import type { Rule } from '../../core/lang/types';
   import {
@@ -59,9 +59,40 @@
   let openRuns = $state<Record<string, boolean>>({});
   const runKey = (run: RuleRun): string => `${run.kind}:${run.id}`;
   const membersOf = (run: RuleRun): RuleRow[] => rows.slice(run.start, run.start + run.keys.length);
-  /** A member has a param error: the run is kept open, so the error is not hidden. A shadowed ("Likely") warning is
+  /** Every config pattern error (one blocks Save). */
+  const patternErrors = $derived(configPatternErrors(config));
+  /** The config index (`/rules/<i>`) of every rule with an invalid pattern or a server error. */
+  const badRuleIndexes = $derived(new Set(
+    [...patternErrors.map((e) => e.path), ...serverErrors.map((e) => e.split(' ', 1)[0]!)]
+      .map((path) => /^\/rules\/(\d+)(?:\/|$)/.exec(path)?.[1])
+      .filter((i) => i !== undefined)
+      .map(Number),
+  ));
+  /** Keys of the rows with an error: a recipe rule's param error, or a user rule's invalid pattern, server error or
+   * invalid YAML. Built in one pass, so headers and rows only look keys up. */
+  const errorKeys = $derived.by(() => {
+    const index = new Map(config.rules.map((r, i) => [r.id, i]));
+    return new Set(rows.filter((r) => (r.kind === 'recipe'
+      ? r.error !== undefined
+      : yamlInvalid[r.rule.id] === true || badRuleIndexes.has(index.get(r.rule.id) ?? -1))).map((r) => r.key));
+  });
+  /** How many rows with an error each run holds, by its start: a section counts across its fragments, so they all
+   * lock together; a recipe run counts its own rows. */
+  const runErrors = $derived.by(() => {
+    const count = (keys: string[]): number => keys.filter((k) => errorKeys.has(k)).length;
+    const bySection = new Map(Object.entries(sectionKeys).map(([id, keys]) => [id, count(keys)]));
+    return new Map([...runs].map(([i, run]) => [i, run.kind === 'section' ? bySection.get(run.id) ?? count(run.keys) : count(run.keys)]));
+  });
+  /** A member has an error: the run is kept open, so the error is not hidden. A shadowed ("Likely") warning is
    * only likely, so it never locks the run: the header counts it instead (runSummary). */
-  const runHasErrors = (run: RuleRun): boolean => membersOf(run).some((r) => r.kind === 'recipe' && r.error !== undefined);
+  const runHasErrors = (run: RuleRun): boolean => (runErrors.get(run.start) ?? 0) > 0;
+  // A run locked open by an error stays open once the error is fixed, so fixing a rule doesn't collapse it under the user.
+  $effect(() => {
+    for (const [i, n] of runErrors) {
+      const run = runs.get(i);
+      if (n > 0 && headed(run) && untrack(() => openRuns[runKey(run)]) !== true) openRuns[runKey(run)] = true;
+    }
+  });
   const runOpen = (run: RuleRun): boolean => unitKeys(run).length < 2 || openRuns[runKey(run)] === true || runHasErrors(run);
   /** " · N warnings" for the shadowed ("Likely") rules among `keys`, or nothing. */
   function warningsText(keys: string[]): string {
@@ -72,8 +103,9 @@
    * have warnings. */
   function runSummary(run: RuleRun): string {
     if (run.kind === 'section') {
-      const n = unitKeys(run).length;
-      return `${sectionById.get(run.id)?.name ?? run.id} (${n} ${n === 1 ? 'rule' : 'rules'}${warningsText(unitKeys(run))})`;
+      const keys = unitKeys(run);
+      const errors = runErrors.get(run.start) ?? 0;
+      return `${sectionById.get(run.id)?.name ?? run.id} (${keys.length} ${keys.length === 1 ? 'rule' : 'rules'}${errors ? ` · ${errors} with errors` : ''}${warningsText(keys)})`;
     }
     const members = membersOf(run).filter((r) => r.kind === 'recipe');
     const on = members.filter((r) => r.on).length;
@@ -88,7 +120,7 @@
     rows.forEach((r, i) => { const run = runs.get(i); if (!run || runOpen(run)) out[r.key] = ++n; });
     return out;
   });
-  const hasErrors = $derived(configPatternErrors(config).length > 0);
+  const hasErrors = $derived(patternErrors.length > 0);
   /** The keys being dragged: one row's, or a whole run's (dragged by its header). */
   let dragKeys = $state<string[] | null>(null);
   /** Rules shown as YAML (by id); every other user rule shows its form, or its summary when the form cannot. */
