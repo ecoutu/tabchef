@@ -1,3 +1,20 @@
+# [1.11.0](https://github.com/ecoutu/tabchef/compare/v1.10.0...v1.11.0) (2026-11-22)
+
+
+### Bug Fixes
+
+* **preview:** show a dry-run rule's would-moves when it shares a group title with a live rule ([36d1d5e](https://github.com/ecoutu/tabchef/commit/36d1d5e8e4a4f44cc0b2dc4ff08c1def5a25af55))
+* **projects:** move a pull request into its Jira ticket's project once that project appears ([fc1dfe2](https://github.com/ecoutu/tabchef/commit/fc1dfe21c3850381528dd4fed8a7034073ceedf0))
+* **rules:** count the tabs a rule's title pattern matches ([50d2e8a](https://github.com/ecoutu/tabchef/commit/50d2e8a7480985f06737a86495db274d7ad74f56))
+* **rules:** include tabs in other rules' groups when testing a rule ([e2ff525](https://github.com/ecoutu/tabchef/commit/e2ff5256eb570c6eacd0ffdaa4c0e93fe677508c))
+* **rules:** let a recipe or section with warnings collapse, and count them in its header ([cd24f41](https://github.com/ecoutu/tabchef/commit/cd24f41a3d35a9f003a8d752b80a479aab4cde37))
+
+
+### Features
+
+* **rules:** offer sample rules to start from on the Rules page ([2727058](https://github.com/ecoutu/tabchef/commit/2727058c6983fde776c3d39f8f470ad9ce451700)), closes [#230](https://github.com/ecoutu/tabchef/issues/230)
+* **rules:** warn when a rule above a project recipe keeps its tabs out of the project group ([b08c434](https://github.com/ecoutu/tabchef/commit/b08c43480d5a73f1486d2360215783fcb75d2411))
+
 # [1.10.0](https://github.com/ecoutu/tabchef/compare/v1.9.1...v1.10.0) (2026-11-15)
 
 
