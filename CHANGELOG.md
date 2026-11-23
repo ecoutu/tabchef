@@ -1,3 +1,10 @@
+## [1.12.1](https://github.com/ecoutu/tabchef/compare/v1.12.0...v1.12.1) (2026-11-23)
+
+
+### Bug Fixes
+
+* **rules:** clear a failed Save's error from a rule once it is edited, and keep it on the right rule ([26d9a73](https://github.com/ecoutu/tabchef/commit/26d9a73337c431a7480f9e032f56e805617facd9))
+
 # [1.12.0](https://github.com/ecoutu/tabchef/compare/v1.11.0...v1.12.0) (2026-11-23)
 
 
