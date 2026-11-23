@@ -26,6 +26,18 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - run: npx playwright --version
       - run: npm run e2e
+      # Also after a pass: a test that failed and then passed on retry (CI retries once) left its trace here. Only
+      # diagnostics: a failed upload must not fail the job (or open a false 'check failed' issue).
+      - name: Upload the failed tests' traces
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-test-results-latest-chromium
+          path: test-results/
+          retention-days: 14
+          if-no-files-found: ignore
+          overwrite: true
       - name: Open an issue on failure
         if: failure()
         env:

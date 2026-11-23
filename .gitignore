@@ -27,6 +27,7 @@ web-ext.config.ts
 
 # Playwright
 test-results
+test-results-m3
 playwright-report
 
 # Recorded fixtures hold real tab data; commit only sanitized *.synthetic.* or scrubbed copies.

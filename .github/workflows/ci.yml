@@ -40,3 +40,18 @@ jobs:
       - run: npm run e2e
       # M3 mocked-services spec: its own build with WXT_E2E_LOCALHOST=1 (localhost host permission, M3-R86).
       - run: npm run e2e:m3
+      # Also after a pass: a test that failed and then passed on retry (CI retries once) left its trace here. Only
+      # diagnostics: a failed upload must not fail the job (or the release that calls it).
+      - name: Upload the failed tests' traces
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-test-results
+          # e2e:m3 writes to its own folder (playwright.config.ts outputDir).
+          path: |
+            test-results/
+            test-results-m3/
+          retention-days: 14
+          if-no-files-found: ignore
+          overwrite: true
