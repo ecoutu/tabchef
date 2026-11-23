@@ -248,5 +248,5 @@ describe('check-contrast CLI (one process)', () => {
     const r = cli(tempFile(`:root { ${decls({ ...PASSING, '--ok': '#1e8e3e' })} }`));
     expect(r.code).toBe(1);
     expect(r.out).toMatch(/light: --ok #1e8e3e on --bg #fff is 4\.21:1/);
-  });
+  }, 30_000); // two node + Vite module runner processes: well under 5s alone, not on a loaded machine (#257)
 });
