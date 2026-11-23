@@ -12,7 +12,7 @@ import { parse as parseYaml } from 'yaml';
 import type { ConnectionStatus } from '../../src/core/connections/types';
 import type { Recipe, RecipeRef } from '../../src/core/lang/types';
 import { RATE_KEY } from '../../src/engine/connections/rate-limiter';
-import { config, EXT_PATH, groups, launch, openTab, reset, send, setConfig, tabs, waitPastStartupGrace, type Harness } from './helpers';
+import { config, groups, isE2eBuild, launch, openTab, reset, send, setConfig, tabs, waitPastStartupGrace, type Harness } from './helpers';
 import { connectionItems, issue, MOCK_LOGIN, mergedPr, mockGithubDef, mockJiraDef, openPr, prKey } from '../helpers/demo';
 import { startMockServices, type MockServices } from './mock-services';
 
@@ -24,13 +24,6 @@ const RECIPE_ID = 'merged-prs-e2e';
 const JIRA_RECIPE_ID = 'jira-ticket-e2e';
 const GH_ISSUE_RECIPE_ID = 'github-issue';
 const manifestOf = (dir: string) => JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')) as { host_permissions?: string[] };
-const isE2eBuild = (() => {
-  try {
-    return manifestOf(EXT_PATH).host_permissions?.includes('http://localhost/*') === true;
-  } catch {
-    return false;
-  }
-})();
 
 /**
  * The shipped Merged PRs recipe as a user recipe for the mock: only its PR URL pattern changes, to the mock origin

@@ -1,5 +1,5 @@
 import { chromium, expect, type BrowserContext, type Page, type Worker } from '@playwright/test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -10,6 +10,16 @@ import { defaultConfig } from '../../src/core/config/defaults';
 import { STARTUP_GRACE_MS, SESSION_MARKER } from '../../src/engine/dedupe-constants';
 
 export const EXT_PATH = resolve(import.meta.dirname, '../../.output/chrome-mv3');
+
+/** Whether .output/chrome-mv3 is the WXT_E2E_LOCALHOST=1 build (host permission http://localhost/*), which e2e:m3 needs. */
+export const isE2eBuild = (() => {
+  try {
+    return (JSON.parse(readFileSync(join(EXT_PATH, 'manifest.json'), 'utf8')) as { host_permissions?: string[] })
+      .host_permissions?.includes('http://localhost/*') === true;
+  } catch {
+    return false;
+  }
+})();
 
 /** Tiny local page server: every path returns a small HTML page titled after the path. */
 export async function startServer(): Promise<{ server: Server; port: number }> {
