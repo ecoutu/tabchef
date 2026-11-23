@@ -1,0 +1,51 @@
+name: PR tests
+
+# A pull request with user-visible changes ships a regression test (CLAUDE.md, Tests): when its title or any of its
+# commits is a feat/fix/perf Conventional Commit, it must change a test file. A change no automated test can cover
+# (Chrome's own UI, real accounts) carries the `no-test-needed` label, and its test plan says why. Commits scoped `deps`
+# are exempt (Renovate's `fix(deps):` for the packages that ship in the zip).
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  pull-requests: read
+
+# One run per PR at a time: a push and a label change right after it would otherwise race.
+concurrency:
+  group: pr-tests-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  regression-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check that a feat/fix/perf pull request changes a test
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          # Passed via env, never interpolated into the script (injection).
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          re='^(feat|fix|perf)(\([a-z0-9._/-]+\))?!?: '
+          subjects=$(gh api --paginate "repos/$GH_REPO/pulls/$PR_NUMBER/commits" --jq '.[].commit.message | split("\n")[0]')
+          needs=$(printf '%s\n%s\n' "$PR_TITLE" "$subjects" | grep -E "$re" | grep -vE '^[a-z]+\(deps\)!?: ' || true)
+          if [ -z "$needs" ]; then
+            echo "OK: no feat/fix/perf title or commit"
+            exit 0
+          fi
+          files=$(gh api --paginate "repos/$GH_REPO/pulls/$PR_NUMBER/files" --jq '.[] | select(.status != "removed") | .filename')
+          tests=$(printf '%s\n' "$files" | grep -E '^tests/|\.test\.ts$|\.spec\.ts$' || true)
+          # The labels as they are now, not as in the event: a re-run after adding the label passes.
+          labels=$(gh api "repos/$GH_REPO/issues/$PR_NUMBER/labels" --jq '.[].name')
+          if [ -n "$tests" ]; then
+            printf 'OK: changes tests:\n%s\n' "$tests"
+          elif grep -qx 'no-test-needed' <<<"$labels"; then
+            echo "OK: labelled no-test-needed"
+          else
+            printf '::error::This pull request has user-visible changes but changes no test file:%%0A%s\n' "$(printf '%s' "$needs" | sed 's/%/%25/g; s/\r/%0D/g' | sed ':a;N;$!ba;s/\n/%0A/g')"
+            echo "::error::Add a regression test at the lowest level that catches the bug coming back (tests/**, tests/ui, tests/browser, tests/e2e), or add the no-test-needed label and say why in the test plan."
+            exit 1
+          fi
