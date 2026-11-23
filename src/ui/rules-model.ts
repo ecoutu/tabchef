@@ -191,6 +191,32 @@ export function errorsForPath(errors: string[], path: string): string[] {
   return out;
 }
 
+/**
+ * #244: the errors of a failed Save (`errors`, checked against `checked`) that still apply to `current`, the draft
+ * being edited since. A rule's errors follow the rule (by id) to its current index, and go once it is edited or
+ * deleted; an error elsewhere (`/dedupe/...`) goes once that part of the config changes. Errors without a path stay.
+ */
+export function liveErrors(errors: string[], checked: Config, current: Config): string[] {
+  const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
+  const out: string[] = [];
+  for (const e of errors) {
+    const sp = e.indexOf(' ');
+    const path = sp < 0 ? e : e.slice(0, sp);
+    const [top, index] = path.split('/').slice(1);
+    if (!path.startsWith('/') || top === undefined || !(top in checked)) { out.push(e); continue; }
+    if (top === 'rules' && index !== undefined && /^\d+$/.test(index)) {
+      const rule = checked.rules[Number(index)];
+      // A rule whose id isn't unique (the error may be that) can't be followed: its error stays as it is.
+      if (!rule || checked.rules.findIndex((r) => r.id === rule.id) !== Number(index)) { out.push(e); continue; }
+      const now = current.rules.findIndex((r) => r.id === rule.id);
+      if (now >= 0 && same(current.rules[now], rule)) out.push(`/rules/${now}${e.slice(`/rules/${index}`.length)}`);
+      continue;
+    }
+    if (same(current[top as keyof Config], checked[top as keyof Config])) out.push(e);
+  }
+  return out;
+}
+
 const FIELD_PATH = new RegExp(
   '^/(rules/\\d+/(name|enabled|dryRun|match/(all/0/)?url(/\\d+)?|match/(all/1/)?title|actions/\\d+/group/(title|color|collapsed|sortGroups|strict|merge)'
   + '|actions/\\d+/dedupe(/mode)?|actions/\\d+/close(/(after|mode))?)'

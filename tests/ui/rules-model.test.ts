@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { reorderRules, addRule, updateRule, removeRule, previewMatches, patternError, configPatternErrors, errorsForPath, orderedUserRules, formRule, addNewRule, groupRuleChoices, addSampleRule, RULE_SAMPLES, ruleForm, ruleRows, setRecipeRuleOn } from '../../src/ui/rules-model';
+import { liveErrors, reorderRules, addRule, updateRule, removeRule, previewMatches, patternError, configPatternErrors, errorsForPath, orderedUserRules, formRule, addNewRule, groupRuleChoices, addSampleRule, RULE_SAMPLES, ruleForm, ruleRows, setRecipeRuleOn } from '../../src/ui/rules-model';
 import { defaultConfig } from '../../src/core/config/defaults';
 import { validateConfig } from '../../src/core/config/schema';
 import type { Config, GroupRule, Rule, TabSnap } from '../../src/core/types';
@@ -645,5 +645,37 @@ describe('rules-model: sample rules', () => {
     expect(groupOf(c, titled('https://a.com/', 'Weekly docs review'))).toBe('Docs');
     expect(groupOf(c, titled('https://a.com/', 'Google DOCS'))).toBe('Docs');
     expect(groupOf(c, titled('https://a.com/', 'Something else'))).toBeUndefined();
+  });
+});
+
+describe('liveErrors (#244: a failed Save\'s errors after later edits)', () => {
+  const r = (id: string, url: string): Rule => ({ id, enabled: true, match: { url }, actions: [{ group: { title: id } }] }) as Rule;
+  const checked: Config = { ...defaultConfig(), rules: [r('a', 'a.com/*'), r('b', '/(/'), r('c', 'c.com/*')] };
+  const errs = ['/rules/1/match/url invalid regex', '/dedupe/mode must be one of', 'invalid config'];
+
+  it('keeps every error while nothing changed', () => {
+    expect(liveErrors(errs, checked, structuredClone(checked))).toEqual(errs);
+  });
+  it('a rule\'s errors follow it to its new index after a reorder or a delete above it', () => {
+    const moved = { ...checked, rules: [checked.rules[1]!, checked.rules[0]!, checked.rules[2]!] };
+    expect(liveErrors(errs, checked, moved)[0]).toBe('/rules/0/match/url invalid regex');
+    const deleted = { ...checked, rules: [checked.rules[1]!, checked.rules[2]!] };
+    expect(liveErrors(errs, checked, deleted)[0]).toBe('/rules/0/match/url invalid regex');
+  });
+  it('a rule\'s errors go once that rule is edited or deleted; other rules\' edits leave them', () => {
+    const fixed = { ...checked, rules: [checked.rules[0]!, r('b', 'b.com/*'), checked.rules[2]!] };
+    expect(liveErrors(errs, checked, fixed)).toEqual(errs.slice(1));
+    expect(liveErrors(errs, checked, { ...checked, rules: [checked.rules[0]!, checked.rules[2]!] })).toEqual(errs.slice(1));
+    const other = { ...checked, rules: [r('a', 'x.com/*'), checked.rules[1]!, checked.rules[2]!] };
+    expect(liveErrors(errs, checked, other)).toEqual(errs);
+  });
+  it('an error on a rule whose id is not unique, or at the root, stays as it is', () => {
+    const dup: Config = { ...checked, rules: [r('a', 'a.com/*'), r('a', 'b.com/*')] };
+    expect(liveErrors(['/rules/1/id duplicate rule id: a'], dup, structuredClone(dup))).toEqual(['/rules/1/id duplicate rule id: a']);
+    expect(liveErrors(['/ must have required property'], checked, { ...checked, rules: [] })).toEqual(['/ must have required property']);
+  });
+  it('an error elsewhere goes once that part changes; an error without a path stays', () => {
+    const dedupe = { ...checked, dedupe: { ...checked.dedupe, stripFragment: !checked.dedupe.stripFragment } };
+    expect(liveErrors(errs, checked, dedupe)).toEqual([errs[0], errs[2]]);
   });
 });

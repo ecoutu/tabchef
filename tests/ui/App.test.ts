@@ -188,6 +188,25 @@ describe('App: preview before Save (M2 T13)', () => {
   });
 });
 
+describe('App: a failed Save\'s errors after later edits (#244)', () => {
+  it('a rule\'s error goes once that rule is edited; an error without a path stays', async () => {
+    const base = send.getMockImplementation()!;
+    const err = { ok: false, error: 'invalid config', errors: ['/rules/0/match/url/0 must match pattern', 'something else wrong'] };
+    send.mockImplementation(async (req: { type: string }) => {
+      if (req.type === 'preview.change' || req.type === 'config.set') return err;
+      return base(req);
+    });
+    render(App);
+    await edit();
+    await fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await screen.findByText(/must match pattern/)).toBeTruthy();
+    expect(screen.getByText('something else wrong')).toBeTruthy();
+    await fireEvent.input(screen.getByLabelText('Rule name'), { target: { value: 'Edited again' } });
+    expect(screen.queryByText(/must match pattern/)).toBeNull();
+    expect(screen.getByText('something else wrong')).toBeTruthy();
+  });
+});
+
 describe('App: recipe rule toggle saves (R56)', () => {
   it('turning a locked recipe row off saves a ruleEnabled override through Save → preview → config.set', async () => {
     stored = { ...withRule(), recipes: withRule().recipes.map((r) => (r.id === 'finished' ? { ...r, enabled: true } : r)) };

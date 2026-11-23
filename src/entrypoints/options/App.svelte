@@ -4,7 +4,7 @@
   import { browser } from 'wxt/browser';
   import { send } from '../../ui/send';
   import { isConfigChangedMessage } from '../../engine/messages';
-  import { unclaimedErrors } from '../../ui/rules-model';
+  import { liveErrors, unclaimedErrors } from '../../ui/rules-model';
   import type { Config, TabSnap } from '../../core/types';
   import Rules from './Rules.svelte';
   import Recipes from './Recipes.svelte';
@@ -46,6 +46,8 @@
   let tabs = $state<TabSnap[]>([]);
   let loadError = $state('');
   let saveErrors = $state<string[]>([]);
+  /** The config the failed Save checked: its errors show only while the part they point at is unchanged (#244). */
+  let checked = $state.raw<Config | null>(null);
   let saveMessage = $state('');
   let saving = $state(false);
   let baseRev = $state<string | undefined>(undefined);
@@ -57,8 +59,10 @@
   let preview = $state<{ result: PreviewResult; answer: (apply: boolean) => void } | null>(null);
 
   const dirty = $derived(saved !== null && draft !== null && JSON.stringify(saved) !== JSON.stringify(draft));
-  // NewRule (T16) shows no per-field server errors, so on its page every error goes to the summary.
-  const summary = $derived(route === '/rules/new' ? saveErrors : unclaimedErrors(saveErrors));
+  const liveSaveErrors = $derived(checked && draft ? liveErrors(saveErrors, checked, draft) : saveErrors);
+  // NewRule (T16) shows no per-field server errors, so on its page every error goes to the summary (its rule isn't
+  // in the draft until it saves, so it keeps them all).
+  const summary = $derived(route === '/rules/new' ? saveErrors : unclaimedErrors(liveSaveErrors));
 
   async function loadConfig(): Promise<void> {
     const r = await send({ type: 'config.get' });
@@ -137,6 +141,7 @@
     saving = false;
     if (r.error === 'conflict') { conflict = true; return false; }
     saveErrors = r.errors?.length ? r.errors : [r.error];
+    checked = structuredClone(toSave);
     return false;
   }
 
@@ -217,9 +222,9 @@
         <NewRule url={matched.params.url ?? ''} kind={matched.params.kind ?? ''} config={draft} {tabs} {saving} onSave={saveNewRule} />
       {/key}
     {:else if draft && current.page === 'rules'}
-      <Rules config={draft} saved={saved!} {tabs} {dirty} {saving} serverErrors={saveErrors} onChange={edit} onSave={save} />
+      <Rules config={draft} saved={saved!} {tabs} {dirty} {saving} serverErrors={liveSaveErrors} onChange={edit} onSave={save} />
     {:else if draft && current.page === 'dedupe'}
-      <Dedupe config={draft} {dirty} {saving} serverErrors={saveErrors} onChange={edit} onSave={save} />
+      <Dedupe config={draft} {dirty} {saving} serverErrors={liveSaveErrors} onChange={edit} onSave={save} />
     {:else if draft}
       {@const Page = current.page as Component<{ config: Config }>}
       <Page config={draft} />
