@@ -11,6 +11,7 @@ Requires Node.js 24 and Chrome or Chromium 116 or newer.
 
 ```sh
 npm ci
+npx playwright install chromium   # the browser for npm test's browser project and the e2e tests
 npm run dev        # Chromium with the extension loaded and hot reload
 ```
 

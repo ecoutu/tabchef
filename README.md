@@ -57,6 +57,7 @@ Requires Node.js 24 and Chrome or Chromium 116 or newer.
 
 ```sh
 npm ci
+npx playwright install chromium   # the browser for npm test's browser project and the e2e tests
 npm run dev        # Chromium with the extension loaded and hot reload
 npm run build      # production build in .output/chrome-mv3 (load it unpacked from chrome://extensions)
 npm run zip        # the store zip
@@ -67,7 +68,7 @@ Checks (CI runs all of them):
 ```sh
 npm run lint
 npm run check            # svelte-check and tsc
-npm test                 # Vitest unit and component tests
+npm test                 # Vitest unit and component tests (tests/browser/ in headless Chromium)
 npm run e2e              # Playwright end-to-end tests against the built extension
 npm run e2e:m3           # end-to-end tests of the GitHub and Jira flows against local mock services
 npm run check:secrets    # the build holds no tokens and no test-only localhost access

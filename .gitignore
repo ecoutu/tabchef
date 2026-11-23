@@ -29,6 +29,8 @@ web-ext.config.ts
 test-results
 test-results-m3
 playwright-report
+# Vitest browser mode: failure screenshots
+.vitest
 
 # Recorded fixtures hold real tab data; commit only sanitized *.synthetic.* or scrubbed copies.
 fixtures/**/*.real.json
