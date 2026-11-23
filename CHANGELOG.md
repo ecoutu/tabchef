@@ -1,3 +1,21 @@
+# [1.12.0](https://github.com/ecoutu/tabchef/compare/v1.11.0...v1.12.0) (2026-11-23)
+
+
+### Bug Fixes
+
+* **rules:** keep a rule that matches no URL from matching every tab when edited in the form ([fa1ed38](https://github.com/ecoutu/tabchef/commit/fa1ed3844623f6fc80e2b91ecdcf64c2e229edcb)), closes [#240](https://github.com/ecoutu/tabchef/issues/240)
+* **rules:** keep a section open while one of its rules has an error ([30896ce](https://github.com/ecoutu/tabchef/commit/30896cebc79603b1f61f6824d24d1c93b40574a3)), closes [#239](https://github.com/ecoutu/tabchef/issues/239)
+
+
+### Features
+
+* **recipes:** collapse recipe cards on the Recipes page, collapsed by default ([e350294](https://github.com/ecoutu/tabchef/commit/e350294cdaf3fb2250e1a1568a3601db4197b1b6))
+
+
+### Performance Improvements
+
+* **recipes:** work out the Recipes page's rule statuses once per change, not once per rule ([2b842d9](https://github.com/ecoutu/tabchef/commit/2b842d9dc9b3a18d684a574660bcb82ab0abde7c))
+
 # [1.11.0](https://github.com/ecoutu/tabchef/compare/v1.10.0...v1.11.0) (2026-11-22)
 
 
