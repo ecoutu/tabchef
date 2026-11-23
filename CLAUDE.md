@@ -48,4 +48,16 @@
 `docs/superpowers/**`, `MEMORY.md`, `NEXT.md`, `spikes/`, `fixtures/*.real.json`. These are local only, and most are listed in `.git/info/exclude`.
 
 ## Before committing
-Run the scripts from `package.json`: `npm run lint`, `npm run check`, `npm test`. Never guess other commands.
+Run the scripts from `package.json`: `npm run lint`, `npm run check`, `npm test` (it needs Chromium: see Tests). Never guess other commands.
+
+## Tests: every user-visible change ships a regression test
+- Each `feat`, `fix` or `perf` commit adds or changes a test that fails without it (check by reverting the change), unless no test can reach it (below). Dependency bumps (scope `deps`) are exempt. Put it at the lowest level that catches the bug coming back:
+  - `tests/` outside `ui/`, `browser/` and `e2e/`: logic (unit, Vitest);
+  - `tests/ui/`: Svelte components in jsdom (rendering, events, state);
+  - `tests/browser/`: components in headless Chromium, for what jsdom can't do (layout, scrolling, focus, pointer, CSS);
+  - `tests/e2e/`: the built extension in Chromium (tabs, groups, the worker), through `tests/e2e/helpers.ts`; `m3.spec.ts` (`npm run e2e:m3`) for GitHub and Jira against local mock services.
+- Only what no test can reach stays manual: Chrome's own UI (tab strip, context menus, opening the popup from the toolbar; `popup.html` itself is reachable in e2e) and real accounts. Write those as steps in the PR's test plan, and label a feat/fix/perf PR that has no test at all `no-test-needed`. The `PR tests` check flags a feat/fix/perf PR that changes no test file.
+- `npm test` includes the browser project: run `npx playwright install chromium` once after `npm ci` (`--with-deps` on a fresh Linux machine).
+- A failed e2e test leaves a trace and screenshots in `test-results/` (`test-results-m3/` for m3); CI uploads them as the `e2e-test-results` artifact (`e2e-test-results-latest-chromium` from the weekly Chromium check). Open a trace with `npx playwright show-trace <trace.zip>`.
+- `npm run e2e:open` opens the extension in a browser with a remote-debugging port (`npm run e2e:open -- --demo` for demo data, `-- --headless` for agents), to explore a bug or check a change by hand before writing its test.
+- Run one full suite at a time: two at once run out of memory on small machines.
