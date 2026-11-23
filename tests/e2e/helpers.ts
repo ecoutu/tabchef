@@ -60,14 +60,14 @@ export async function launch(): Promise<Harness> {
 type Res<T> = { ok: true; data: T } | { ok: false; error: string; errors?: string[] };
 
 /** Sends a UI request from the extension page, exactly as the popup / options page do. */
-export async function send<T = unknown>(h: Harness, req: Record<string, unknown>): Promise<T> {
+export async function send<T = unknown>(h: Pick<Harness, 'ui'>, req: Record<string, unknown>): Promise<T> {
   const r = await h.ui.evaluate((m) => chrome.runtime.sendMessage(m), req) as Res<T>;
   if (!r.ok) throw new Error(`${String(req.type)} failed: ${r.error} ${(r.errors ?? []).join('; ')}`);
   return r.data;
 }
 
 /** config.set with the current rev as baseRev (optimistic concurrency, like the options page). */
-export async function setConfig(h: Harness, config: Config): Promise<void> {
+export async function setConfig(h: Pick<Harness, 'ui'>, config: Config): Promise<void> {
   const { rev } = await send<{ rev: string }>(h, { type: 'config.get' });
   await send(h, { type: 'config.set', config, baseRev: rev });
 }

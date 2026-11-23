@@ -14,6 +14,7 @@
     "check": "svelte-check --tsconfig ./tsconfig.json && tsc --noEmit",
     "e2e": "wxt build && playwright test",
     "e2e:m3": "WXT_E2E_LOCALHOST=1 wxt build && WXT_E2E_LOCALHOST=1 playwright test tests/e2e/m3.spec.ts",
+    "e2e:open": "node scripts/run-ts.mjs scripts/e2e-open.ts",
     "postinstall": "wxt prepare",
     "prepare": "husky",
     "gen:validator": "node scripts/gen-validator.mjs",

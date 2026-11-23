@@ -9,6 +9,7 @@ lerna-debug.log*
 
 node_modules
 .output
+.output-e2e-open
 stats.html
 stats-*.json
 .wxt

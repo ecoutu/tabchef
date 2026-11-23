@@ -17,7 +17,7 @@ const UPWARD_DYNAMIC = dynamicImports({ dirs: ['ui', 'entrypoints'], message: UP
 const FROM_CORE_DYNAMIC = dynamicImports({ dirs: ['engine', 'storage', 'platform', 'recipes'], message: FROM_CORE.message });
 
 export default tseslint.config(
-  { ignores: ['.output/**', '.wxt/**', 'node_modules/**', 'fixtures/**', 'scripts/**', 'spikes/**', '**/*.generated.js'] },
+  { ignores: ['.output/**', '.output-e2e-open/**', '.wxt/**', 'node_modules/**', 'fixtures/**', 'scripts/**', 'spikes/**', '**/*.generated.js'] },
   ...tseslint.configs.recommended,
   ...svelte.configs['flat/recommended'],
   {

@@ -76,10 +76,22 @@ async function answer(route: Route, mock: MockServices): Promise<void> {
 
 interface Session extends Harness { mock: MockServices; page: (path: string, viewport?: { width: number; height: number }) => Promise<Page> }
 
-async function session(extPath: string): Promise<Session> {
+/** The e2e:m3 mock services, answering the demo pull requests and tickets. Also used by `npm run e2e:open --demo`. */
+export async function startDemoServices(): Promise<MockServices> {
   const mock = await startMockServices();
   for (const [key, pr] of Object.entries(DEMO_PRS)) mock.github.setPr(key, pr);
   for (const [key, issue] of Object.entries(DEMO_ISSUES)) mock.jira.setIssue(key, issue);
+  return mock;
+}
+
+/** Answers the demo tabs' pages in-process (answer()), for the pages Playwright loads in `context`. */
+export async function routeDemoPages(context: BrowserContext, mock: MockServices): Promise<void> {
+  await context.route(/^https:\/\/(github\.com|[a-z0-9-]+\.atlassian\.net|developer\.mozilla\.org)\//, (r) => answer(r, mock));
+  await context.route(/^http:\/\/localhost:3000\//, (r) => answer(r, mock));
+}
+
+async function session(extPath: string): Promise<Session> {
+  const mock = await startDemoServices();
   const userDataDir = mkdtempSync(join(tmpdir(), 'tabchef-store-'));
   const context: BrowserContext = await chromium.launchPersistentContext(userDataDir, {
     channel: 'chromium',
@@ -94,8 +106,7 @@ async function session(extPath: string): Promise<Session> {
       '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE localhost, EXCLUDE 127.0.0.1'],
   });
   for (const p of context.pages()) await p.close();
-  await context.route(/^https:\/\/(github\.com|[a-z0-9-]+\.atlassian\.net|developer\.mozilla\.org)\//, (r) => answer(r, mock));
-  await context.route(/^http:\/\/localhost:3000\//, (r) => answer(r, mock));
+  await routeDemoPages(context, mock);
   const sw: Worker = context.serviceWorkers()[0] ?? (await context.waitForEvent('serviceworker', { timeout: 15_000 }));
   const extensionId = new URL(sw.url()).host;
   const ui = await context.newPage();
@@ -120,7 +131,7 @@ async function session(extPath: string): Promise<Session> {
  * Opens a demo tab in the background: chrome.tabs.create (the extension sees a new tab in the same window), then the
  * page loads through Playwright, so its routes answer it (they do not see a navigation the extension starts itself).
  */
-async function open(h: Session, p: DemoPage): Promise<Page> {
+export async function open(h: Pick<Session, 'context' | 'sw'>, p: DemoPage): Promise<Page> {
   const [page] = await Promise.all([
     h.context.waitForEvent('page'),
     h.sw.evaluate(async () => { await chrome.tabs.create({ url: 'about:blank', active: false }); }),
@@ -129,12 +140,12 @@ async function open(h: Session, p: DemoPage): Promise<Page> {
   return page;
 }
 
-const webTabs = (h: Session) => h.sw.evaluate(async () => (await chrome.tabs.query({}))
+const webTabs = (h: Pick<Session, 'sw'>) => h.sw.evaluate(async () => (await chrome.tabs.query({}))
   .filter((t) => !/^(chrome-extension:|about:)/.test(t.url ?? t.pendingUrl ?? ''))
   .map((t) => ({ id: t.id!, windowId: t.windowId, url: t.url ?? '', title: t.title ?? '', status: t.status, groupId: t.groupId, index: t.index, favIconUrl: t.favIconUrl })));
 
 /** Waits until every web tab has loaded, has its title and (where the site has one) its favicon. */
-async function settle(h: Session, n: number): Promise<void> {
+export async function settle(h: Pick<Session, 'sw'>, n: number): Promise<void> {
   await until(`${n} demo tabs to load with their titles and favicons`, async () => {
     const ts = await webTabs(h);
     return ts.length === n && ts.every((t) => t.status === 'complete' && t.title !== '' && !t.title.startsWith('http')
@@ -143,7 +154,7 @@ async function settle(h: Session, n: number): Promise<void> {
 }
 
 /** The github and jira connections on the mock, stored the way the e2e:m3 tests store them (setToken validates against the real hosts). */
-async function connect(h: Session): Promise<void> {
+export async function connect(h: Pick<Harness, 'sw' | 'ui'> & { mock: MockServices }): Promise<void> {
   // The pull request tabs are on github.com (the recipes' patterns); only the API calls go to the mock.
   const items = connectionItems([mockGithubDef(h.mock.origin, 'https://github.com'), mockJiraDef(h.mock.origin, JIRA_SITE)]);
   await h.sw.evaluate(async (i) => { await chrome.storage.local.set(i); }, items);
@@ -151,7 +162,7 @@ async function connect(h: Session): Promise<void> {
   if (login.login !== MOCK_LOGIN) throw new Error('store:assets: the github connection did not reach the mock');
 }
 
-const recipes = (c: Config, over: Record<string, Partial<RecipeRef>>): Config => ({
+export const recipes = (c: Config, over: Record<string, Partial<RecipeRef>>): Config => ({
   ...c, recipes: c.recipes.map((r) => (over[r.id] ? { ...r, ...over[r.id] } : r)),
 });
 

@@ -90,6 +90,28 @@ The extension icon's source is `docs/store/icon.svg`; after editing it, run `npm
 After changing `src/core/config/config.schema.json` or `src/core/lang/*.schema.json`, regenerate the validators with
 `npm run gen:validator`.
 
+### A debuggable browser
+
+```sh
+npm run e2e:open                         # headed, CDP on 9222, clean extension
+npm run e2e:open -- --headless --demo    # for agents: no window, demo data
+```
+
+It builds the e2e flavor into a folder of its own under `.output-e2e-open/` (never `.output`), opens it in Playwright's
+Chromium with a remote-debugging port, prints the CDP endpoint, extension id and page URLs (also written to
+`.output-e2e-open/state.json`), and stays open until Ctrl-C. Each run builds its own copy, so a second instance never
+rewrites the files a running browser has loaded; the build, the temp profile and the state file go away on shutdown.
+Flags: `--headless`, `--port <n>` (`0` picks a free one), `--demo` (the store images' demo: mock GitHub and Jira
+connections, group rules and tabs; the browser then resolves only localhost, so nothing reaches the real sites),
+`--ext <dir>` (skip the build and load an existing one: `.output/chrome-mv3` from `npm run e2e`, or a
+`WXT_E2E_LOCALHOST=1 npx wxt build`, which `--demo` needs; rebuilding that folder while the browser runs breaks it),
+`--state <file>`. A person can click around in the window while an agent attaches to the same browser:
+
+```sh
+npx @playwright/mcp --cdp-endpoint http://127.0.0.1:9222
+npx chrome-devtools-mcp --browserUrl http://127.0.0.1:9222
+```
+
 ### Store assets
 
 ```sh
