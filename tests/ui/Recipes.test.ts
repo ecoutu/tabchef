@@ -18,6 +18,11 @@ vi.mock('../../src/ui/permissions', async (orig) => ({
   ...(await orig<typeof import('../../src/ui/permissions')>()),
   onPermissionsChanged: (cb: () => void) => { permListeners.list.push(cb); return () => { permListeners.list = permListeners.list.filter((x) => x !== cb); }; },
 }));
+const ruleRowsCalls = vi.hoisted(() => ({ n: 0 }));
+vi.mock('../../src/ui/rules-model', async (orig) => {
+  const m = await orig<typeof import('../../src/ui/rules-model')>();
+  return { ...m, ruleRows: (...a: Parameters<typeof m.ruleRows>) => { ruleRowsCalls.n++; return m.ruleRows(...a); } };
+});
 import Recipes from '../../src/entrypoints/options/Recipes.svelte';
 import { RECIPES_GUIDE_URL } from '../../src/ui/routes';
 
@@ -104,6 +109,16 @@ describe('Recipes: cards', () => {
     const c = await card('Finished');
     expect(c.querySelector('[data-rule="finished/redirect"]')!.textContent).toContain('Inactive: no URL patterns');
     expect(c.querySelector('[data-rule="finished/oauth-callback"]')!.textContent).toContain('Active');
+  });
+
+  it('rule statuses read the substituted rules once, not once per rule shown (#250)', async () => {
+    items = [finishedItem({ enabled: true }, true)];
+    const saved = { ...defaultConfig(), recipes: defaultConfig().recipes.map((r) => (r.id === 'finished' ? { ...r, enabled: true } : r)) };
+    ruleRowsCalls.n = 0;
+    await renderOpen(props({ saved }));
+    const c = await card('Finished');
+    expect(c.querySelectorAll('[data-rule]').length).toBeGreaterThanOrEqual(3);
+    expect(ruleRowsCalls.n).toBe(1);
   });
 
   it('a Meet rule whose page texts were cleared reads Inactive ("no patterns"), not Active', async () => {

@@ -124,6 +124,11 @@
     return parts.join('. ');
   }
   const recipeStatus = (i: RecipeListItem): string => (!i.enabled ? 'Off' : i.status.ok ? 'On' : (i.status.reason ?? 'Paused'));
+  /** Why each enabled recipe rule (by `<recipe>/<rule>` key) can never match, from `saved`: one ruleRows per change (#250). */
+  const inactive = $derived(new Map(ruleRows(saved, builtins).flatMap((r) => {
+    const why = r.kind === 'recipe' ? inactiveReason(r.rule) : undefined;
+    return why ? [[r.key, why] as const] : [];
+  })));
   function ruleStatus(i: RecipeListItem, rule: Rule): string {
     const ruleId = rule.id;
     // Effective state: ruleOn, the rule compileProgram uses (the #/rules override, else the body default).
@@ -132,8 +137,7 @@
     const st = i.rules[`${i.id}/${ruleId}`]?.status;
     if (st && !st.ok) return st.reason ?? 'Paused';
     // With the stored params substituted, a rule may never match (e.g. an empty URL list param).
-    const shown = ruleRows(saved, builtins).find((r) => r.key === `${i.id}/${ruleId}`);
-    const why = shown ? inactiveReason(shown.rule) : undefined;
+    const why = inactive.get(`${i.id}/${ruleId}`);
     return why ? `Inactive: ${why}` : 'Active';
   }
   /**
@@ -273,7 +277,8 @@
             <ul class="rules">
               {#each body.rules as r (r.id)}
                 {@const unlock = pausedRule(item, r)}
-                <li data-rule={`${item.id}/${r.id}`}>{r.name}: <span class:paused={ruleStatus(item, r).startsWith('Paused')}>{ruleStatus(item, r)}</span>{#if unlock?.missing}{@const missing = unlock.missing}
+                {@const st = ruleStatus(item, r)}
+                <li data-rule={`${item.id}/${r.id}`}>{r.name}: <span class:paused={st.startsWith('Paused')}>{st}</span>{#if unlock?.missing}{@const missing = unlock.missing}
                   <button type="button" disabled={busy !== null} onclick={() => allow(item.id, missing, `${r.name}: ${deniedText(item.rules[`${item.id}/${r.id}`]?.status ?? {}, 'Not allowed')}`)}>Allow access</button>{/if}{#if unlock?.connection}
                   <a href="#/connections">Set up a connection</a>{/if}</li>
               {/each}
